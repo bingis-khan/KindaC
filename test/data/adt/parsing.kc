@@ -1,0 +1,16 @@
+Bool
+  False
+  True
+  FileNotFound
+
+Maybe a
+  Nothing
+  Just a
+
+Either e a
+  Left e
+  Right a
+
+
+Big bomba helikopter
+  Big Int Bool Fuck (Either Bool Int) Either Int Bool

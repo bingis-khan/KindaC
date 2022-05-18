@@ -1,0 +1,34 @@
+
+x = 2
+
+id (x a) => x + 5 * 3 + id(x)
+id' (x) => x
+
+id'' (x)
+  print x
+  print x + 1
+  print x + 2
+
+
+y = x + 6
+print y
+print x + 3
+
+Maybe a
+  Nothing
+  Just a
+
+if x == y
+  print x + y + 69
+  print x
+
+if False
+  print True
+elif False
+  print 1
+
+  
+elif True
+  print 420
+else
+  print 1 + 2 + 3 + 4 + 5 / 10

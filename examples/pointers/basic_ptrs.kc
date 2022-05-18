@@ -1,0 +1,108 @@
+
+# How would pointers look like in our language?
+
+# Would they be (like) a datatype?
+Ptr a
+  Ptr a
+
+# Implementation of deref()
+deref (ptr Ptr a) -> a
+  case ptr
+    Ptr x
+      return x
+
+# We want different types of pointers. Like Ptr, APtr, MovPtr, etc.
+# So, some other kind of polymorphism is needed. Either:
+#  - datatype inheritance
+#  - interface inheritance
+# Because we just want to restrict what can be done with a pointer, I think interface inheritance is better.
+# First, it would be easier to implement - I think? Or maybe not? Either way, we don't want to change the internal representation and multiple inheritance could be supported: eg. FullPtr : MovPtr, APtr and APtr : Ptr and MovPtr: Ptr.
+# Interesting: maybe the "base" case should do the most things and inheritance can only restrict stuff. But it would be hard to design methods for this.
+
+####### 1: Datatypes #######
+# Either this:
+APtr a < Ptr a
+MovPtr a < Ptr a
+
+# And then possible methods:
+deref (ptr Ptr a) -> a
+
+# and
+free (ptr APtr a)
+offset (ptr MovPtr a, ofst Int) -> ptr MovPtr a
+
+# Like newtypes basically, but they are automatically cast to appropriate types (Which might actually be... kinda bad, but in our case, I plan making normal datatypes with a single type exactly the same as newtype, automatically)
+
+####### 2: Interfaces #######
+# Or use interfaces.
+
+trait Ptr a
+  deref (ptr @ a) -> a  # This is syntax sugar for:
+
+# If we're taking a Ptr as a parameter, then we can write
+whatever (ptr Ptr a) -> a
+
+# Below is the above declaration, but desugared.
+whatever (ptr b) -> a <= (b ~ Ptr a)   # Ptr is an interface.
+
+# Another example
+p2 (ptr Ptr a, ptr' Ptr a)
+p2 (ptr b, ptr c) <= (b ~ Ptr a, c ~ Ptr a)  # desugared
+
+# We then would be able to derive interfaces like so:
+APtr a < Ptr a
+  free (ptr @ a)
+
+# It might be a bit harder (or the same difficulty), but it's more expressive.
+# Basically inheritance with the power of type inference. 
+# Also, something like this is possible.
+printPtr (ptr ptrt) -> ptrt <= ptrt ~ Ptr a
+  print ptr
+  return ptr
+
+# Because it's an interface/typclass/trait/whatever, we can do this:
+alloc(1) printPtr() free()
+
+# The type will pass through the function. Otherwise, we'd have to do something like this:
+ptr = alloc(1)
+printPtr(ptr)
+free(ptr)
+
+# Also, I already have plans for including it:
+trait Plus
+  + (@, @) -> @
+
+trait Minus
+  - (@, @) -> @
+# etc...
+
+trait Num < Plus, Minus, Times, Divide
+
+
+
+
+# Or would they be an interface/typeclass/trait/whatever?
+trait Ptr a
+  # '@' refers to its own type.
+  @ (@ a) -> a   # Idea: traits can have a sorta-unique method for deconstructing themselves. How to represent the return type? A new struct? Then we don't really need new syntax.
+
+################# Is it necessary? ######################
+# We can also leave it for now and pointers will have the same type of Ptr.
+# It's not that stupid, I forgot I want to do something like this:
+Expr
+  Lit Int
+  Op (Ptr Expr) Operator (Ptr Expr)
+  # ...
+
+trait Freeable
+  free (Ptr @)
+
+instance Freeable Expr
+  free (expr Ptr Expr)
+    case deref(expr)   # Again, is deref necessary? I dunno.
+      Op ptr _ ptr'
+        free(ptr)
+        free(ptr')
+      # Ignore others
+    
+    freePtr(expr)  # Call to stdlib's free().
