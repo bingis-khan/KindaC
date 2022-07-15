@@ -134,7 +134,7 @@ localDefs = foldMap $ cata $ \case
 
 -- For now, used only for the statement list.
 inferFunction :: Globals -> RFunDec -> ([Constraint], TFunDec)
-inferFunction globals (FD name params ret body) = swap $ evalRWS go (Env (M.mapKeys Left M.empty)) (TVG 0)
+inferFunction globals (FD name params ret body) = undefined $ swap $ evalRWS go (Env (M.mapKeys Left M.empty)) (TVG 0)
   where
     numLocals = S.size $ localDefs body
     go = do
@@ -142,7 +142,7 @@ inferFunction globals (FD name params ret body) = swap $ evalRWS go (Env (M.mapK
       local (\(Env globals) -> Env $ locals `M.union` globals) (traverse inferStmt body)
 
 inferModule :: RModule -> ([Constraint], TModule)
-inferModule (RModule funs dds stmts) = undefined
+inferModule RModule {} = undefined
   where
     
 
@@ -238,7 +238,7 @@ solve = toEither . foldl' (<>) mempty . fmap (uncurry unify)
 
 
 typecheck :: RModule -> Either (NonEmpty TypeError) [TStmt]
-typecheck (RModule functions datatypes tlStmts) =
+typecheck (RModule { rmFunctions, rmDataDecs, rmTLStmts }) =
   let (cts, stmts) = undefined
       valSubst = solve cts
   in case valSubst of

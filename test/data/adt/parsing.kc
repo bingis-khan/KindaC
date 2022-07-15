@@ -11,6 +11,12 @@ Either e a
   Left e
   Right a
 
+Int
+  Int
+
+Fuck
+  Fuck
+
 
 Big bomba helikopter
-  Big Int Bool Fuck (Either Bool Int) Either Int Bool
+  Big Int Bool Fuck (Either Bool Int) Either Int Bool bomba

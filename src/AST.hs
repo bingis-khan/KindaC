@@ -18,6 +18,7 @@ import Data.Coerce (coerce)
 import qualified Data.Map as M
 import Data.Set (Set)
 import Data.Functor.Classes (Eq1)
+import Data.Bimap (Bimap)
 
 
 -- File structure:
@@ -194,7 +195,12 @@ type RFunDec = FunDec Global Local (Maybe TypedType) RStmt
 
 -- This will be returned from Resolver.hs.
 -- Uh, not the best use case for GADTs, but I still kinda want to try it.
-data RModule = RModule (Set RFunDec) (Set RDataDec) [RStmt] deriving Show
+data RModule = RModule 
+  { rmFunctions  :: (Set RFunDec)
+  , rmDataDecs  :: (Set RDataDec)
+  , rmTLStmts   :: [RStmt]
+  , rmTLLocaLGlobals :: (Bimap Local Global)
+  } deriving Show
 
 
 -----------

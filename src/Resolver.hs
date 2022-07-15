@@ -1,12 +1,12 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
-module Resolver (resolveAll) where
+module Resolver (resolveAll, bmUnion) where
 
 import AST hiding (datatypes)
 import qualified AST
 
-import Control.Monad.Trans.State ( runState, withState, StateT(runStateT) )
+import Control.Monad.Trans.State ( runState, withState, StateT(runStateT), State, evalState )
 import qualified Control.Monad.Trans.State as ST
 import Lens.Micro
 import Lens.Micro.TH
@@ -61,13 +61,12 @@ data ResolveError
   deriving Show
 
 
-type Globals = Map String Global
+type Globals = Bimap String Global
 type Datatypes = Map String TypeID
 
 data TopLevelBindings' = TLBindings
   { _globalIDs :: [Global]
   , _globals :: Globals
-  , _topLevelGlobals :: Bimap Local Global
 
   , _typeIDs :: [TypeID]
   , _datatypes :: Datatypes
@@ -96,8 +95,7 @@ type Bindings = RWS TopLevelBindings' [ResolveError] Bindings'
 initialTLBindings :: TypeID -> Global -> TopLevelBindings'
 initialTLBindings lastTypeID lastGlobal = TLBindings
   { _globalIDs = [lastGlobal ..]
-  , _globals = M.empty
-  , _topLevelGlobals = BM.empty
+  , _globals = BM.empty
 
   , _typeIDs = [lastTypeID ..]
   , _datatypes = M.empty
@@ -138,6 +136,13 @@ class Resolvable r where
 -- Newtypes to be used with the Resolvable class.
 newtype R'Expr  t g l = R'Expr    { fromR'Expr :: Expr l g } deriving (Eq, Show)
 newtype R'Stmt  t g l = R'Stmt    { fromR'Stmt :: Stmt l g (R'Expr t g l) } deriving (Eq, Show)
+
+
+toR'Stmt :: UStmt -> R'Stmt String String String
+toR'Stmt = R'Stmt . hoistFix coerce   -- Conversion function, because coerce does not terminate, becuase of that y-combinator (Fix datatype).
+
+fromR'Stmt' :: R'Stmt TypeID Global Local -> RStmt
+fromR'Stmt' = hoistFix coerce . fromR'Stmt
 
 
 
@@ -188,7 +193,7 @@ findVar name = do
   let scopesWithLocal = NE.filter (BM.member name) locals -- All of the scopes with the variable.
   case scopesWithLocal of
     (scope : _) -> pure $ Right $ scope BM.! name
-    []          -> case globals !? name of
+    []          -> case globals BM.!? name of
       Just gl -> pure $ Left gl
       Nothing -> tell [UndeclaredVariable name] >> pure (Left badGlobal)
 
@@ -196,12 +201,12 @@ findVar name = do
 findType :: String -> Int -> TopLevelBindings TypeID
 findType name kind = do
   datatypes <- (^. datatypes) <$> ST.get
-  
+
   case datatypes !? name of
     Nothing -> do
       tlError (UndeclaredType name kind)
       return (TypeID 0)
-    Just gl -> 
+    Just gl ->
       return gl
 
 
@@ -222,17 +227,17 @@ existingType name = do
 existingGlobal :: String -> TopLevelBindings Global
 existingGlobal name = do
   gs <- ST.get
-  return $ fromMaybe (error $ concat ["Resolver error: Global '", name, "' is not defined, but *should* be."]) $ (gs ^. globals) !? name
+  return $ fromMaybe (error $ concat ["Resolver error: Global '", name, "' is not defined, but *should* be."]) $ (gs ^. globals) BM.!? name
 
 instance TopLevelResolvable R'Type where
   resolveTL (R'Type t) = R'Type <$> mapARS go t
-    where 
+    where
       go :: Base (Type String) (TopLevelBindings (Type TypeID)) -> TopLevelBindings (Base (Type TypeID) (Type TypeID))
       go (TCon name apps) = do
         apps' <- sequenceA apps
         t <- findType name (length apps')
         pure $ TCon t apps'
-      
+
       -- Trash.
       go (TVar tv) = pure (TVar tv)
       go (TFun args ret) = liftA2 TFun (sequenceA args) ret
@@ -261,7 +266,7 @@ dcsftv = foldMap (godc . fromR'DataCon)
       t -> fold t
 
 tlError :: ResolveError -> TopLevelBindings ()
-tlError err = lift $ W.tell $ pure err 
+tlError err = lift $ W.tell $ pure err
 
 instance TopLevelResolvable R'DataDec where
   -- Note, that we assume that the names already exist in top level bindings,
@@ -285,9 +290,24 @@ instance TopLevelResolvable R'DataDec where
     -- In the future change the type to reflect the fact that tvars are unique.
     return $ R'DataDec $ DD t (S.toList tvarSet) cons'
 
-instance TopLevelResolvable R'FunDec where
-  resolveTL (R'FunDec (FD name params ret body)) = do
-    g <- existingGlobal name  -- Note, that we scraped the function names beforehand, so we have to look them up.
+-- instance TopLevelResolvable R'FunDec where
+--   resolveTL (R'FunDec (FD name params ret body)) = do
+--     g <- addOverwriteGlobal name   -- Special behaviour. We assume the right global is already here.
+--     params' <- (traverse . traverse . traverse) typeType params  -- Resolve types but *not* names. It's just easier to do it here.
+--     ret' <- traverse typeType ret
+
+--     let
+--       defineParameters :: [(String, t)] -> Bindings [(Local, t)]
+--       defineParameters = traverse $ \(name, t) -> (,t) <$> defineVar name
+
+--     -- And resolve the body, yo.
+--     ((params'', body'), _) <- runBindings initialBindings $
+--       liftA2 (,) (defineParameters params') (traverse resolve body)  -- Note, that we don't have to create a new scope -> outermost is the default.
+
+--     return $ R'FunDec $ FD g params'' ret' body'
+
+resolveFunDec :: Globals -> Global -> UFunDec -> TopLevelBindings (R'FunDec TypeID Global Local)
+resolveFunDec gs g (FD name params ret body) = do
     params' <- (traverse . traverse . traverse) typeType params  -- Resolve types but *not* names. It's just easier to do it here.
     ret' <- traverse typeType ret
 
@@ -296,8 +316,8 @@ instance TopLevelResolvable R'FunDec where
       defineParameters = traverse $ \(name, t) -> (,t) <$> defineVar name
 
     -- And resolve the body, yo.
-    ((params'', body'), _) <- runBindings initialBindings $
-      liftA2 (,) (defineParameters params') (traverse resolve body)  -- Note, that we don't have to create a new scope -> outermost is the default.
+    ((params'', body'), _) <- runBindings initialBindings $ withRWS (\r s -> (r & globals %~ (`bmUnion` gs), s)) $
+      liftA2 (,) (defineParameters params') (traverse (resolve . R'Stmt . hoistFix coerce) body)  -- Note, that we don't have to create a new scope -> outermost is the default.
 
     return $ R'FunDec $ FD g params'' ret' body'
 
@@ -357,20 +377,41 @@ addType typename = do
     Just ti -> do
       tlError (RedeclaredType typename)
       return badType
-  
 
+
+addGlobalWithID :: String -> Global -> TopLevelBindings ()
+addGlobalWithID name gid =
+  ST.modify (\tlbs -> tlbs & globals %~ BM.insert name gid)
+
+forceGlobalWithID :: String -> Global -> TopLevelBindings ()
+forceGlobalWithID name gid = do
+  tlError (RedeclaredVariable name)
+  addGlobalWithID name gid
+
+checkGlobal :: String -> TopLevelBindings (Maybe Global)
+checkGlobal name = ST.get <&> \tlbs -> (tlbs ^.globals) BM.!? name
+
+-- If a global exists, overrides it.
+-- If it doesn't - creates a new one.
 addOverwriteGlobal :: String -> TopLevelBindings Global
 addOverwriteGlobal name = do
-  nextGlobalID <- ST.get <&> \tlbs -> head (tlbs ^. globalIDs)
-  ST.modify (\tlbs -> tlbs & globalIDs %~ tail & globals %~ M.insert name nextGlobalID)
-  return nextGlobalID
+  mGid <- checkGlobal name
+  gid <- case mGid of
+    Nothing -> do
+      nextGlobalID <- ST.get <&> \tlbs -> head (tlbs ^. globalIDs)
+      ST.modify $ \tlbs -> tlbs & globalIDs %~ tail
+      return nextGlobalID
+    Just gid -> return gid
+
+  addGlobalWithID name gid
+  return gid
 
 -- Adds a new global and returns a sentinel value
 -- if the global already exists.
 addGlobal :: String -> TopLevelBindings Global
 addGlobal name = do
-  gs <- ST.get <&> (^. globals)
-  case gs !? name of
+  mGid <- checkGlobal name
+  case mGid of
     Nothing -> do
       -- Duplicate code. Should create some sort of "Dispenser" datatype.
       addOverwriteGlobal name
@@ -397,6 +438,47 @@ runBindings bindings bindingsRWS = do
   return (a, bindings')
 
 
+-- This is only used for resolving statements - it will manage the
+-- combined state of both Bindings and TopLevelBindings.
+data TopLevelStatementResolver' = TLSR TopLevelBindings' Bindings' [ResolveError]
+type TopLevelStatementResolver = State TopLevelStatementResolver'
+
+tlsrRunBindings :: Bindings a -> TopLevelStatementResolver a
+tlsrRunBindings f = do
+  TLSR _ bs _ <- ST.get
+
+  (x, bs') <- tlsrRunTLBindings $ runBindings bs f
+
+  ST.modify $ \(TLSR tlbs _ errs) -> TLSR tlbs bs' errs
+  return x
+
+bmUnion :: (Ord a, Ord b) => Bimap a b -> Bimap a b -> Bimap a b
+bmUnion l r = foldr (uncurry BM.insert) r $ BM.toList l
+
+-- Runs TLBindings with user supplied globals.
+-- Note: the ones already declared have priority.
+tlsrRunTLBindings :: TopLevelBindings a -> TopLevelStatementResolver a
+tlsrRunTLBindings f = do
+  TLSR tlbs bs errs <- ST.get
+  let 
+    ((x, tlbs''), errs') = runWriter $ runStateT f tlbs
+  ST.put $ TLSR tlbs'' bs (errs <> errs')
+  return x
+
+ensureGlobalIsUndeclared :: String -> TopLevelStatementResolver ()
+ensureGlobalIsUndeclared name = do
+  funNameGlobal <- tlsrRunTLBindings $ checkGlobal name
+
+  -- Error + recovery. We assume the function being here is correct.
+  case funNameGlobal of
+    Nothing -> pure () -- Cool, nothing is declared.
+
+    -- Bad: a top-level variable with this name was already declared.
+    Just g -> do
+      -- Signal error and recover (we prefer replace the gid again with that of the function).
+      tlsrRunTLBindings $ tlError (RedeclaredVariable name)
+
+
 -- For now, only top level statements.
 -- Resolves all, nuff said. 
 -- RModule ~ Set RDataDec, Set RFunDec, (Int, [RTLStmt])
@@ -405,23 +487,6 @@ resolveAll nextTypeID nextGlobalID dds tls = case errs of
   []      -> Right (lastTypeID, lastGlobalID, rmodule)
   x : xs  -> Left (x :| xs)
   where
-    -- Checking
-    -- First, we need to check all of the data constructors.
-    -- Possible errors:
-    --  - same datatype name (in the future, resolveAll should receive the whole environment of already declared stuff from other modules)
-    --  - same constructor name
-
-
-    -- Then we need to extract all of the function names.
-    --funNames = undefined
-
-    -- And check them: redeclarations can occur.
-    --afterFuns = dataVars <> Vars funNames mempty mempty
-
-    -- Now, check the "either fun body" things.
-    -- Note: during implementation of check and resolve for function defs: we need to remember to *not* add a name / make a new global for the function.
-    --vars = afterFuns <> undefined
-
     -- NO! Haskell is a declarative language!
     -- I'm gonna make datatypes that represent what I want to do.
     -- NO SHORTCUTS!
@@ -447,9 +512,9 @@ resolveAll nextTypeID nextGlobalID dds tls = case errs of
     -- Main function for resolving the module.
     doStuff :: TopLevelBindings RModule
     doStuff = do
+      -- Register each type.
       let typeNames = map (\(DD name _ _) -> name) dds  -- Get all type names.
-
-      traverse_ addType typeNames  -- Register each type.
+      traverse_ addType typeNames
 
       -- Now, we want to find each global EXCEPT global variables.
       let functionNames = mapMaybe (either (\(FD name _ _ _) -> Just name) (const Nothing)) tls
@@ -464,36 +529,90 @@ resolveAll nextTypeID nextGlobalID dds tls = case errs of
       dds' <- S.fromList . map coerce . fromR'List <$> resolveTL (coerce dds :: R'List R'DataDec String String String)
 
       -- Now we'll start checking functions and top-level statements.
-      let toR'Stmt :: UStmt -> R'Stmt String String String
-          toR'Stmt = R'Stmt . hoistFix coerce   -- Conversion function, because coerce does not terminate.
-      (tls', tlbs) <- runBindings initialBindings $ (traverse . traverse) (resolve . toR'Stmt) tls
+      -- tls' <- traverse (bitraverse (resolveTL . R'FunDec . fmap toR'Stmt) pure) tls
 
-      -- Now, we can do the funny thing:
-      let tlVars = NE.head $ (\x -> show x `trace` x) $ tlbs ^. variables
+      -- Now, we can do the funny thing.
+      -- In top level, declaration order matters. Why?
+      -- x = f()
+      -- f ()
+      --   print x
+      -- What the fuck?
+      -- So, we throw our current globals out (except data constructors - they will never conflict - although maybe throwing them out and having them be "declared" will be the least surprising option?)
+      -- Right now, no globals can repeat.
+      -- But, do we allow top level redeclarations?
+      -- Only redeclaration of a function with a top-level ?  <-- this one
+      -- So, when we are resolving a statement, we have to delete all of the functions
+      -- BUT leave the globals which were already declared.
 
-          onFunOrStmt :: Either UFunDec (R'Stmt TypeID Global Local) -> TopLevelBindings (Either (R'FunDec TypeID Global Local) (R'Stmt TypeID Global Local))
-          onFunOrStmt (Right stmt@(R'Stmt (Fix (Assignment local _)))) = do  -- Make a global out of the top level variable.
-            addTLVar tlVars local
-            pure (Right stmt)
-          onFunOrStmt (Right stmt) = pure (Right stmt)        -- If it's not a variable definition, leave it alone.
-          onFunOrStmt (Left fun) = Left <$> resolveTL (R'FunDec $ fmap toR'Stmt fun)
-      tls'' <- traverse onFunOrStmt tls'
+      -- Save the current global state.
+      availableGlobals <- (\x -> show x `trace` x) . (^. globals) <$> ST.get
+      tlbs' <- ST.get
 
-      -- Now we have functions :D as a set and top level statements
-      let (funs, tlStmts) = first (S.fromList . map coerce) $ partitionEithers tls''
+      let onFunOrStmt :: Either UFunDec UStmt -> TopLevelStatementResolver (Either (R'FunDec TypeID Global Local) (R'Stmt TypeID Global Local))
+          -- On a top-level assignment, resolve the statement and add a global with this name.
+          onFunOrStmt (Right stmt@(Fix (Assignment name _))) = do  -- Make a global out of the top level variable.
+            rstmt <- tlsrRunBindings $ resolve $ toR'Stmt stmt
+            tlsrRunTLBindings $ addOverwriteGlobal name
+            return $ Right rstmt
+
+          -- Normal statement - just resolve.
+          onFunOrStmt (Right stmt) = do
+            rstmt <- tlsrRunBindings $ resolve $ toR'Stmt stmt
+            return $ Right rstmt
+
+          -- Function - just resolve. Note, that functions cannot redeclare global variables.
+          -- Also note, that, because functions can access each function no matter
+          -- where it's declared, we use a special function to "inject" them.
+          onFunOrStmt (Left ufd@(FD name _ _ _)) = do
+            ensureGlobalIsUndeclared name
+            let functionGid = availableGlobals BM.! name
+            rfd <- tlsrRunTLBindings $ resolveFunDec availableGlobals functionGid ufd
+            return $ Left rfd
+
+          noFunTLBS = tlbs' & globals %~ \gs -> foldr BM.delete gs functionNames
+          (tls'', TLSR tlsrTLBs tlsrBs errs) = runState (traverse onFunOrStmt tls) $ TLSR noFunTLBS initialBindings []
+
+          -- We have to create a mapping between added globals and 
+
+          -- Now we have functions :D as a set and top level statements
+          (funs, tlStmts) = first (S.fromList . map coerce) $ partitionEithers tls''
+
+
+          -- Now scrape all of the top level globals.
+          -- We are searching for top-level assignments and we know,
+          -- that those variables are accessible.
+
+          scrapeAssignment (Right (Fix (Assignment name _))) = Just name
+          scrapeAssignment _ = Nothing
+
+          getBoth name = do
+            l <- tlsrRunBindings (findVar name) <&> \case
+               Right lo -> lo
+               Left gl -> error "Resolver error: Huh? This local does not exist??? That... should not be possible."
+
+            g <- tlsrRunTLBindings (checkGlobal name) <&> \case
+              Just gl -> gl
+              Nothing -> error "Resolver error: Huh??? This should have a global"
+
+            return (l, g)
+
+          tlgs = BM.fromList $ evalState (traverse getBoth $ mapMaybe scrapeAssignment tls) $ TLSR tlsrTLBs tlsrBs []
+
+      lift $ W.tell errs
 
       -- Now, we can check for cycles. Todo! But it should be easy.
       -- undefined
 
-      let fromR'Stmt' :: R'Stmt TypeID Global Local -> RStmt
-          fromR'Stmt' = hoistFix coerce . fromR'Stmt
+      -- We can remove top-level variables from tlgs which were never used.
+      -- todo
 
       -- And lastly, return the module.
-      return $ RModule 
-        (S.map (fmap fromR'Stmt' . fromR'FunDec) funs) 
-        dds' 
-        (map fromR'Stmt' tlStmts)
-        
+      return $ RModule
+        { rmFunctions = S.map (fmap fromR'Stmt' . fromR'FunDec) funs
+        , rmDataDecs = dds'
+        , rmTLStmts = map fromR'Stmt' tlStmts
+        , rmTLLocaLGlobals = tlgs
+        }
 
 
     -- Now for the resolving itself.

@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 module ASTPrettyPrinter (ppModule) where
 
 import Prettyprinter
@@ -111,7 +112,7 @@ instance (PrettyPrintable g, PrettyPrintable l, PrettyPrintable t, PrettyPrintab
     pp name <+> encloseSep "(" ")" "," (map (\(param, pType) -> pp param <> ":" <+> pp pType) params) <+> "->" <+> pp ret
 
 instance PrettyPrintable RModule where
-  pp rmodule = vsep [pp (datatypes rmodule), pp (functions rmodule), pp (tlStmts rmodule)]
+  pp (RModule { rmFunctions, rmDataDecs, rmTLStmts }) = vsep [pp rmFunctions, pp rmDataDecs, pp rmTLStmts]
 
 ppModule :: RModule -> String
 ppModule = show . pp

@@ -12,6 +12,7 @@ import ASTPrettyPrinter (ppModule)
 import System.Process (callCommand)
 import System.Environment (getArgs)
 import Data.Set (Set)
+import TypecheckAdditional (makeCallGraph, flattenCallGraph )
 
 
 groupAfterParsing :: [TopLevel] -> ([UDataDec], [Either UFunDec UStmt])
@@ -30,9 +31,13 @@ main = do
     Right tls -> 
       let (datadecs, eFunStmts) = groupAfterParsing tls
       in case resolveAll (TypeID 0) (Global 0) datadecs eFunStmts of
-        Left res -> print res
-        Right (_, _, rmodule) -> case typecheck rmodule of
-          Left ne -> print ne
-          Right tstmts -> do
-            writeFile "test.c" $ pp tstmts
-            callCommand "gcc test.c"
+        Left res -> do
+          putStrLn "Resolve Errors"
+          print res
+        Right (_, _, rmodule) -> do
+          putStrLn $ ppModule rmodule
+          print $ flattenCallGraph $ makeCallGraph rmodule -- case typecheck rmodule of
+          -- Left ne -> print ne
+          -- Right tstmts -> do
+          --   writeFile "test.c" $ pp tstmts
+          --   callCommand "gcc test.c"

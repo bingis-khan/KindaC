@@ -1,0 +1,24 @@
+
+print 1
+print 2
+y = 2
+
+g ()
+    f()
+
+f ()
+    print 123
+
+f = 69
+
+
+g' ()
+    print f
+
+id (x) => x
+
+print 1
+
+z = 5
+
+print f
