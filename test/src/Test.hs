@@ -8,7 +8,7 @@ data Level = Level
   } deriving (Show, Eq, Ord)
 
 findLevels :: IO [Level]
-findLevels = return $ sort . undefined
+findLevels = return  undefined
 
 main :: IO ()
 main = hspec $ do

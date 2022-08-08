@@ -7,12 +7,11 @@ import Data.Functor.Foldable (cata)
 import AST
 import Typecheck (typecheck)
 import CPrettyPrinter (pp)
-import ASTPrettyPrinter (ppModule)
+import ASTPrettyPrinter (ppModule, ppShow)
 
 import System.Process (callCommand)
 import System.Environment (getArgs)
 import Data.Set (Set)
-import TypecheckAdditional (makeCallGraph, flattenCallGraph )
 
 
 groupAfterParsing :: [TopLevel] -> ([UDataDec], [Either UFunDec UStmt])
@@ -35,9 +34,10 @@ main = do
           putStrLn "Resolve Errors"
           print res
         Right (_, _, rmodule) -> do
-          putStrLn $ ppModule rmodule
-          print $ flattenCallGraph $ makeCallGraph rmodule -- case typecheck rmodule of
-          -- Left ne -> print ne
-          -- Right tstmts -> do
-          --   writeFile "test.c" $ pp tstmts
-          --   callCommand "gcc test.c"
+          --putStrLn $ ppModule rmodule
+          case typecheck rmodule of
+            Left ne -> print ne
+            Right module'@(TModule funs _ tstmts) -> do
+              putStrLn $ ppShow module'
+              writeFile "test.c" $ pp tstmts
+              callCommand "gcc test.c"

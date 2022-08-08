@@ -1,0 +1,25 @@
+
+h (x)
+    print g(5)
+    return x
+
+g (x)
+    print f(1)
+    return x
+
+f (x)
+    print h(True)
+    print g(1)
+    return x
+
+
+xxx (x)
+    return x + 1
+
+dupa ()
+    n = 1
+    b = 2
+    c = n + b
+    print xxx(c)
+
+

@@ -1,0 +1,10 @@
+
+dupa = 1
+
+f ()
+    print dupa
+
+kupa = 2
+
+print kupa
+print dupa

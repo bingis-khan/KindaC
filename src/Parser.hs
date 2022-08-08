@@ -37,7 +37,8 @@ sanitize :: String -> String
 sanitize = concatMap sub
   where
     sub :: Char -> String
-    sub '\'' = "_prime_"
+    sub '\'' = "_prime"
+    sub '_' = "__"
     sub s = [s]
 
 typeName :: Parser String
@@ -174,7 +175,7 @@ stmt = Fix <$> choice
 parseType :: Parser UntypedType
 parseType = polyType <|> concrete
   where
-    polyType = Fix . TVar <$> generic
+    polyType = Fix . TDecVar <$> generic
     concrete = do
       tcon <- typeName
       targs <- many $ between (symbol "(") (symbol ")") parseType <|> polyType <|> ((\name -> Fix $ TCon name []) <$> typeName)

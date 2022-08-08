@@ -30,7 +30,7 @@ import qualified Data.List.NonEmpty as NE
 import Data.Semigroup (sconcat)
 import Data.Bifunctor (first)
 import Data.Maybe (catMaybes, mapMaybe, listToMaybe, isJust, fromMaybe)
-import Debug.Trace (trace)
+import Debug.Trace (trace, traceShowId)
 import Data.Bifoldable (bifoldr, bifold, biconcatMap)
 import Control.Monad ((<=<), when)
 import Data.Tuple (swap)
@@ -169,7 +169,7 @@ defineVar name = do
   localId <- nextLocal
   bs <- get
 
-  let currentScope = NE.head $ bs ^. variables
+  let currentScope = (\cs -> concat ["In scope: ", show cs, ", define var: ", name] `trace` cs) $ NE.head $ bs ^. variables
   if BM.member name currentScope
     then tell [RedeclaredVariable name]
     else modify $ \bs -> bs & variables . ix 0 %~ BM.insert name localId
@@ -239,6 +239,7 @@ instance TopLevelResolvable R'Type where
         pure $ TCon t apps'
 
       -- Trash.
+      go (TDecVar tdv) = pure (TDecVar tdv)
       go (TVar tv) = pure (TVar tv)
       go (TFun args ret) = liftA2 TFun (sequenceA args) ret
 
@@ -395,7 +396,7 @@ checkGlobal name = ST.get <&> \tlbs -> (tlbs ^.globals) BM.!? name
 -- If it doesn't - creates a new one.
 addOverwriteGlobal :: String -> TopLevelBindings Global
 addOverwriteGlobal name = do
-  mGid <- checkGlobal name
+  mGid <- traceShowId <$> checkGlobal (traceShowId name)
   gid <- case mGid of
     Nothing -> do
       nextGlobalID <- ST.get <&> \tlbs -> head (tlbs ^. globalIDs)
@@ -460,7 +461,7 @@ bmUnion l r = foldr (uncurry BM.insert) r $ BM.toList l
 tlsrRunTLBindings :: TopLevelBindings a -> TopLevelStatementResolver a
 tlsrRunTLBindings f = do
   TLSR tlbs bs errs <- ST.get
-  let 
+  let
     ((x, tlbs''), errs') = runWriter $ runStateT f tlbs
   ST.put $ TLSR tlbs'' bs (errs <> errs')
   return x
@@ -545,10 +546,13 @@ resolveAll nextTypeID nextGlobalID dds tls = case errs of
       -- BUT leave the globals which were already declared.
 
       -- Save the current global state.
-      availableGlobals <- (\x -> show x `trace` x) . (^. globals) <$> ST.get
+      availableGlobals <- (\x -> ("Available globals: " ++ show x) `trace` x) . (^. globals) <$> ST.get
       tlbs' <- ST.get
 
-      let onFunOrStmt :: Either UFunDec UStmt -> TopLevelStatementResolver (Either (R'FunDec TypeID Global Local) (R'Stmt TypeID Global Local))
+      let
+          withAvailableGlobals = withState (\(TLSR tlbs bs res) -> TLSR (tlbs & globals %~ flip bmUnion availableGlobals) bs res)
+
+          onFunOrStmt :: Either UFunDec UStmt -> TopLevelStatementResolver (Either (R'FunDec TypeID Global Local) (R'Stmt TypeID Global Local))
           -- On a top-level assignment, resolve the statement and add a global with this name.
           onFunOrStmt (Right stmt@(Fix (Assignment name _))) = do  -- Make a global out of the top level variable.
             rstmt <- tlsrRunBindings $ resolve $ toR'Stmt stmt

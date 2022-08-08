@@ -1,0 +1,9 @@
+x = True
+y = False
+
+if x
+    print 1
+elif y
+    print 2
+else
+    print 3

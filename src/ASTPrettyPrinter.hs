@@ -4,7 +4,7 @@
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-module ASTPrettyPrinter (ppModule) where
+module ASTPrettyPrinter (ppModule, ppShow) where
 
 import Prettyprinter
 import AST
@@ -61,6 +61,9 @@ instance PrettyPrintable t => PrettyPrintable (Type t) where
     TVar (TV tv) -> pretty tv
     TFun args ret -> "(" <> hsep (punctuate "," args) <+> "->" <+> ret <> ")"
 
+instance PrettyPrintable TExpr where
+  pp = cata $ \(ExprType t expr) -> hsep ["(", pp t <> ":", ppExpr expr, ")"]
+
 instance (PrettyPrintable g, PrettyPrintable tid)
   => PrettyPrintable (DataCon g tid) where
     pp (DC g ts) = "ctor '" <> pp g <> "':" <+> hsep (fmap pp ts)
@@ -83,7 +86,10 @@ instance PrettyPrintable Op where
 
 
 instance (PrettyPrintable g, PrettyPrintable l) => PrettyPrintable (Expr l g) where
-  pp = cata $ \case
+  pp = cata ppExpr
+
+ppExpr :: (PrettyPrintable g, PrettyPrintable l) => ExprF (Either g l) (Doc String) -> Doc String
+ppExpr = \case
     Lit lt -> case lt of
       LBool x -> pretty x
       LInt x -> pretty x
@@ -114,5 +120,11 @@ instance (PrettyPrintable g, PrettyPrintable l, PrettyPrintable t, PrettyPrintab
 instance PrettyPrintable RModule where
   pp (RModule { rmFunctions, rmDataDecs, rmTLStmts }) = vsep [pp rmFunctions, pp rmDataDecs, pp rmTLStmts]
 
+instance PrettyPrintable TModule where
+  pp (TModule funs dds stmts) = vsep [pp funs, pp dds, pp stmts]
+
 ppModule :: RModule -> String
 ppModule = show . pp
+
+ppShow :: PrettyPrintable a => a -> String
+ppShow = show . pp

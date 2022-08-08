@@ -12,6 +12,7 @@ import Data.Ord.Deriving
 import Data.List.NonEmpty (NonEmpty)
 import Data.Bitraversable (Bitraversable)
 import Data.Bifunctor
+import Data.Bifunctor.TH
 import Data.Bifoldable
 import Data.Functor ((<&>))
 import Data.Coerce (coerce)
@@ -97,8 +98,9 @@ type Stmt l g expr = Fix (StmtF l g expr)
 newtype TVar = TV String deriving (Show, Eq, Ord)
 
 data TypeF t a
-  = TCon t [a]  -- Just add parameters when adding polymorphic types.
+  = TCon t [a]
   | TVar TVar
+  | TDecVar TVar  -- This is declared TVar, which ignores normal inference and essentially acts as another type.
   | TFun [a] a
   deriving (Show, Eq, Ord, Functor, Foldable)
 type Type t = Fix (TypeF t)
@@ -195,7 +197,7 @@ type RFunDec = FunDec Global Local (Maybe TypedType) RStmt
 
 -- This will be returned from Resolver.hs.
 -- Uh, not the best use case for GADTs, but I still kinda want to try it.
-data RModule = RModule 
+data RModule = RModule
   { rmFunctions  :: (Set RFunDec)
   , rmDataDecs  :: (Set RDataDec)
   , rmTLStmts   :: [RStmt]
@@ -221,7 +223,7 @@ type TDataDec = DataDec Global TypeID TDataCon
 
 
 -- A bit of duplication...
-data TModule = TModule (Set TFunDec) (Set TDataDec) (Set TStmt) deriving Show
+data TModule = TModule (Set TFunDec) (Set TDataDec) [TStmt] deriving Show
 
 ---------------------------------------------
 -- Built-in Datatypes
@@ -285,3 +287,11 @@ instance Bifoldable (StmtF l g) where
       where
         sfoldr g bd b = foldr g b bd
         body = sfoldr g
+
+
+
+$(deriveBitraversable ''StmtF)
+
+$(deriveBifoldable ''FunDec)
+$(deriveBifunctor ''FunDec)
+$(deriveBitraversable ''FunDec)
