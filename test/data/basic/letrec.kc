@@ -14,7 +14,7 @@ f (x)
 
 
 xxx (x)
-    return x + 1
+    return x
 
 dupa ()
     n = 1

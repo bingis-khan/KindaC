@@ -5,7 +5,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE BangPatterns #-}
 
-module Typecheck (typecheck) where
+module Typecheck (typecheck, solve) where
 
 import AST
 
@@ -131,7 +131,7 @@ inferExpr = mapARS $ go <=< sequenceA   -- Apply inference and THEN modify the c
 
       Call f args -> do
         ret <- fresh
-        let funType = Fix (TFun args ret) :: TypedType
+        let funType = traceShowId $ Fix (TFun args ret) :: TypedType
 
         uni f funType
         return ret
@@ -263,7 +263,11 @@ bind tv t | t == Fix (TVar tv)  = mempty
 unifyMany :: [TypedType] -> [TypedType] -> Validation (NonEmpty TypeError) Subst
 unifyMany [] [] = mempty
 unifyMany t t' | length t /= length t' = Failure $ NE.singleton $ ParameterMismatch t t'
-unifyMany t t' = mconcat $ zipWith unify t t'
+unifyMany (t : rest) (t' : rest') = do
+  su1 <- unify t t'
+  su2 <- unifyMany (apply su1 rest) (apply su1 rest')
+  return $ su2 <> su1
+unifyMany _ _ = error "Should not happen. (should be covered by the length check)"
 
 unify :: TypedType -> TypedType -> Validation (NonEmpty TypeError) Subst
 unify t t' | t == t' = mempty
@@ -271,7 +275,7 @@ unify (Fix (TVar v)) t = bind v t
 unify (Fix (TDecVar v)) t = bind v t
 unify t (Fix (TVar v)) = bind v t
 unify t (Fix (TDecVar v)) = bind v t
-unify (Fix (TFun ps r)) (Fix (TFun ps' r')) = unifyMany ps ps' <> unify r r'
+unify (Fix (TFun ps r)) (Fix (TFun ps' r')) = unifyMany (ps ++ [r]) (ps' ++ [r'])
 unify t t' = Failure $ NE.singleton $ UnificationMismatch t t'
 
 toEither :: Validation e a -> Either e a
@@ -329,7 +333,7 @@ inferLetrec mrfds = do
     -- Then, gather the inferred global -> fun type. And unify them with the fresh bois, since they are not instantiated.
     withRWST noopFEnv $ zipWithM_ (\(_, t) (t', _) -> uni t t') lrTypes tfs
     return (M.fromList (map (\(t, FD g _ _ _) -> (g, t)) tfs), S.fromList $ map snd tfs)
-  
+
   let esubst = solve cts
   return $ case esubst of
     Left _ -> (ts, funs)
@@ -343,7 +347,7 @@ climb' = go
       (Env !env) <- traceShowId <$> ask
       return mempty
     go (AcyclicSCC fd@(FD g _ _ _) : rest) = do
-      ((t, tfd), cts) <- listen $ inferLet mempty fd
+      ((t, tfd), cts) <- (\x@((_, fun), _) -> ppShow fun `trace` x) <$> listen (inferLet mempty fd)
       let (t', tfd') = case solve cts of
               Left ne -> (t, tfd)
               Right subst -> (apply subst t, apply subst tfd)

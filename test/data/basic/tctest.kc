@@ -1,0 +1,14 @@
+
+help ()
+    print 1
+
+
+g (x)
+    return x
+
+add (x)
+    return x + 1
+
+h (x)
+    print add(help())
+    return x + g(help())

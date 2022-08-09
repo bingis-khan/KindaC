@@ -5,24 +5,28 @@ import Parser
 import Resolver (resolveAll)
 import Data.Functor.Foldable (cata)
 import AST
-import Typecheck (typecheck)
+import Typecheck (typecheck, solve)
 import CPrettyPrinter (pp)
 import ASTPrettyPrinter (ppModule, ppShow)
 
 import System.Process (callCommand)
 import System.Environment (getArgs)
 import Data.Set (Set)
+import Data.Fix
 
 
 groupAfterParsing :: [TopLevel] -> ([UDataDec], [Either UFunDec UStmt])
 groupAfterParsing =  mconcat . map go
-  where 
+  where
     go (FunDec fd) = (mempty, pure (Left fd))
     go (TLStmt stmt) = (mempty, pure (Right stmt))
     go (DataDec dd) = (pure dd, mempty)
 
 main :: IO ()
 main = do
+  -- -- Proof of another b00g. Happens with id(x) => x.
+  -- let cs = [(Fix (TFun [Fix (TVar (TV "k"))] (Fix (TVar (TV "k")))), Fix (TFun [Fix (TVar (TV "a"))] (Fix (TVar (TV "b")))))]
+  -- in print $ solve cs
   (filename:_) <- getArgs
   file <- readFile filename
   case parse file of
