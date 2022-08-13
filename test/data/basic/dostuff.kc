@@ -1,9 +1,17 @@
+a = 69
 
 applyBoth (f, x, y)
     return f(x, y)
 
 add2 (x, y)
-    return x + y
+    return x + y + a
+
+applyApplyBoth (f, g, x, y)
+    return f(g, x, y)
+
+applyApplyApplyBoth (f, g, h, x, y)
+    return f(g, h, x, y)
 
 print add2(42, 69)
-print applyBoth(add2, 1, 2)
+print applyApplyApplyBoth(applyApplyBoth, applyBoth, add2, 1, 2)
+print a

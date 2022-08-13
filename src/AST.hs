@@ -17,10 +17,12 @@ import Data.Bifoldable
 import Data.Functor ((<&>))
 import Data.Coerce (coerce)
 import qualified Data.Map as M
-import Data.Set (Set)
+import Data.Set (Set, (\\))
 import Data.Functor.Classes (Eq1)
 import Data.Bimap (Bimap)
 import Data.Unique (Unique, hashUnique)
+import qualified Data.Set as S
+import Data.Semigroup (sconcat)
 
 
 -- File structure:
@@ -277,6 +279,26 @@ mapRS f = cata (Fix . f)
 
 mapARS :: (Recursive t, Corecursive b, Functor f) => (Base t (f b) -> f (Base b b)) -> t -> f b
 mapARS f = cata (fmap embed . f)
+
+foldStmt :: Monoid m => (expr -> m) -> Stmt l g expr -> m
+foldStmt f = cata $ go . first f
+  where
+    go = \case
+      Print m -> m
+      Assignment _ m -> m
+      If cond ifTrue elifs ifFalse -> cond <> sconcat ifTrue <> foldMap (uncurry (<>) . fmap sconcat) elifs <> maybe mempty sconcat ifFalse
+      ExprStmt m -> m
+      Return m -> m
+  
+ezFoldStmt :: Monoid m => (ExprF (Either Global Local) m -> m) -> Stmt l g (Fix (ExprType t)) -> m
+ezFoldStmt f = foldStmt $ cata $ \case
+  ExprType _ expr -> f expr
+
+-- Gets all nonlocal (global) variables.
+usedLocals :: TFunDec -> Set Local
+usedLocals (FD name params ret body) = flip foldMap body $ ezFoldStmt $ \case
+  Var (Right l) -> S.singleton l
+  _ -> mempty
 
 
 
