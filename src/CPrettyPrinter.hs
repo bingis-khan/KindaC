@@ -26,9 +26,19 @@ ppOp = \case
   Equals -> "=="
   NotEquals -> "!="
 
-ppVar :: Either Global Local -> Doc String
-ppVar (Right (Local l)) = pretty $ "loc" ++ show l
-ppVar (Left (Global g)) = pretty $ "loc" ++ show g
+ppIdType :: TypedType -> Doc String
+ppIdType = cata $ \case
+  TFun args ret -> "br_" <> mconcat (fmap (<> "_") args) <> "ret_" <> ret
+  TCon (TypeID x) _ -> "t" <> pretty (show x)
+
+ppGlobal :: TypedType -> Global -> Doc String
+ppGlobal t g = "g" <> pretty (show g) <> ppIdType t
+
+ppVar :: TypedType -> Either Global Local -> Doc String
+ppVar _ (Right l) = pretty $ "loc" ++ show l
+ppVar t (Left g) = ppGlobal t g
+
+
 
 ppExpr :: TExpr -> Doc String
 ppExpr = cata $ \(ExprType t e) -> case e of
@@ -38,7 +48,9 @@ ppExpr = cata $ \(ExprType t e) -> case e of
 
   Op l op r -> l <+> ppOp op <+> r
 
-  Var name -> ppVar name
+  Var name -> ppVar t name
+
+  Call f args -> f <> "(" <> hsep (punctuate comma args) <> ")"
 
 builtin :: TypeID -> String -> Bool
 builtin tid name = Just name == (builtIns !? tid)
@@ -49,6 +61,7 @@ ppFmt (Fix t) = first (\s -> "\"" <> s <> "\\n\"") $ case t of
   TCon g _ | builtin g "Int" -> ("%d", id)
   TCon g _ -> undefined
   TVar tv -> undefined
+  TDecVar tv -> undefined
   TFun fixs fix -> ("", id)
 
 ppType :: TypedType -> Doc String
@@ -56,6 +69,14 @@ ppType = cata $ \case
   TCon g _ | builtin g "Bool" -> "bool"
   TCon g _ | builtin g "Int" -> "int"
   TCon t _ -> error $ "Unrecognized type: " ++ show t  -- Add a dictionary of TypeIDs to Strings.
+
+  TFun args ret -> ret <+> "(" <> hsep (punctuate comma args) <> ")"
+
+ppParam :: Local -> TypedType -> Doc String
+ppParam l (Fix t@(TFun _ _)) =
+  let (TFun args ret) = fmap ppType t
+  in ret <+> ppVar (Fix t) (Right l) <+> encloseSep "(" ")" comma args
+ppParam l t = ppType t <+> ppVar t (Right l)
 
 ppBody :: NonEmpty (Doc String) -> Doc String
 ppBody = (<> (line <> "}")) . ("{" <>) . nest 4 . (line <>) . vsep . NE.toList
@@ -72,7 +93,7 @@ ppStmt = cata $ (<> ";") . go . first (\e@(Fix (ExprType t _)) -> (t, ppExpr e))
         in "printf(" <> fmt <> "," <+> arg e <> ")"
 
       Assignment name (t, e) ->
-        ppType t <+> ppVar (Right name) <+> "=" <+> e
+        ppType t <+> ppVar t (Right name) <+> "=" <+> e
 
       If (_, cond) ifTrue elifs mifFalse ->
         "if" <+> "(" <> cond <> ")"
@@ -80,10 +101,28 @@ ppStmt = cata $ (<> ";") . go . first (\e@(Fix (ExprType t _)) -> (t, ppExpr e))
           <+> sep (fmap (\((_, c), b) -> "else if" <+> "(" <> c <> ")" <+> ppBody b) elifs)
           <+> maybe mempty (\ifFalse -> "else" <+> ppBody ifFalse) mifFalse
 
-pp :: [TStmt] -> String
-pp stmts = show $ case stmts of
+      Return (t, e) ->
+        "return" <+> e
+
+      ExprStmt (t, e) ->
+          e
+
+ppFun :: TFunDec -> Doc String
+ppFun (FD name params ret body) = header <+> ppBody' body
+  where
+    t = Fix $ TFun (map snd params) ret
+    header = "static" <+> ppType ret <+> ppVar t (Left name) <+> "(" <> hsep (punctuate comma $ map (uncurry ppParam) params) <> ")"
+
+ppDec :: MonoFunDec -> Doc String
+ppDec (MonoFunDec name t@(Fix (TFun params ret))) = ppType ret <+> ppVar t (Left name) <+> "(" <> hsep (punctuate comma $ map ppType params) <> ");"
+ppDec _ = error "Should not happen."
+
+pp :: [Either MonoFunDec TFunDec] -> [TStmt] -> String
+pp funs stmts = show $ case stmts of
   [] -> mainDec <+> ppBody (NE.singleton "return 0;")
-  (stmt : stmts') -> headers <> line <> line <> mainDec <+> ppBody' (stmt :| stmts')
+  (stmt : stmts') -> headers <> line <> line <> functions <> line <> line <> mainDec <+> ppBody' (stmt :| stmts')
   where
     mainDec = sep ["int", "main", "(", ")"]
     headers = vsep $ fmap (\s -> "#include" <+> "<" <> s <> ">") ["stdbool.h", "stdio.h"]
+
+    functions = vsep $ punctuate line $ map (either ppDec ppFun) funs

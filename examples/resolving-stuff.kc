@@ -1,0 +1,17 @@
+
+x = 1  # Local
+
+f (x) # Global (Local)
+    print x
+    return x
+
+g (y) # Global (Local)
+    print x
+    print y
+    return x
+
+y = True # Local
+
+f(69)
+g(420)
+print y

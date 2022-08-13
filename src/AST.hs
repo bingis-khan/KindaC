@@ -20,6 +20,7 @@ import qualified Data.Map as M
 import Data.Set (Set)
 import Data.Functor.Classes (Eq1)
 import Data.Bimap (Bimap)
+import Data.Unique (Unique, hashUnique)
 
 
 -- File structure:
@@ -130,7 +131,7 @@ instance Ord g => Ord (FunDec g l tid stmt) where
 -- Datatype --
 --------------
 
-data DataCon g tid = DC g [Type tid] deriving (Eq, Ord, Show)
+data DataCon g t = DC g [t] deriving (Eq, Ord, Show)
 data DataDec g tid con = DD tid [TVar] (NonEmpty con) deriving (Show)
 -- Todo: make [TVar] into f TVar where f will change from [] to Set during resolving.
 -- Unfortunately, the deriveEq instance does not seem to add an Eq1 constraint to the f parameter.
@@ -168,7 +169,7 @@ type UntypedType = Type String
 type UExpr = Expr String String   -- Was: Fix (ExprF String). It's for resolving, because Resolvable needs an instance with either. Should be temporary.
                                   -- I can use this https://web.archive.org/web/20070702202021/https://www.cs.vu.nl/boilerplate/. to quickly map those things.
 type UStmt = Stmt String String UExpr
-type UDataCon = DataCon String String
+type UDataCon = DataCon String (Type String)
 type UDataDec = DataDec String String UDataCon
 type UFunDec = FunDec String String (Maybe (Type String)) UStmt
 
@@ -177,9 +178,15 @@ type UFunDec = FunDec String String (Maybe (Type String)) UStmt
 --------------
 -- Resolved --
 --------------
-newtype Global = Global { fromGlobal :: Int } deriving (Show, Eq, Ord, Enum)
-newtype Local = Local { fromLocal :: Int } deriving (Show, Eq, Ord, Enum)
+newtype Global = Global { fromGlobal :: Unique } deriving (Eq, Ord)
+newtype Local = Local { fromLocal :: Unique } deriving (Eq, Ord)
 newtype TypeID = TypeID Int deriving (Show, Eq, Ord, Enum)
+
+instance Show Global where
+  show (Global u) = show $ hashUnique u 
+
+instance Show Local where
+  show (Local u) = show $ hashUnique u
 
 
 type TypedType = Type TypeID
@@ -191,17 +198,16 @@ boolType = Fix (TCon (TypeID 1) [])
 
 type RExpr = Expr Local Global
 type RStmt = Stmt Local Global RExpr
-type RDataCon = DataCon Global TypeID
+type RDataCon = DataCon Global (Type TypeID)
 type RDataDec = DataDec Global TypeID RDataCon
 type RFunDec = FunDec Global Local (Maybe TypedType) RStmt
 
 -- This will be returned from Resolver.hs.
 -- Uh, not the best use case for GADTs, but I still kinda want to try it.
 data RModule = RModule
-  { rmFunctions  :: (Set RFunDec)
-  , rmDataDecs  :: (Set RDataDec)
+  { rmFunctions  :: Set RFunDec
+  , rmDataDecs  :: Set RDataDec
   , rmTLStmts   :: [RStmt]
-  , rmTLLocaLGlobals :: (Bimap Local Global)
   } deriving Show
 
 
@@ -224,6 +230,20 @@ type TDataDec = DataDec Global TypeID TDataCon
 
 -- A bit of duplication...
 data TModule = TModule (Set TFunDec) (Set TDataDec) [TStmt] deriving Show
+
+
+-----------------
+-- Monomorphic --
+-----------------
+
+-- Maybe later reflect monomorphism in type (ie. impossible to have TVars rn).
+data MonoFunDec = MonoFunDec Global TypedType deriving (Show, Eq, Ord)
+
+toMonoFunDec :: TFunDec -> MonoFunDec
+toMonoFunDec (FD name params ret _) = MonoFunDec name $ Fix (TFun (map snd params) ret)
+
+data MModule = MModule [Either MonoFunDec TFunDec] [TStmt] deriving Show
+
 
 ---------------------------------------------
 -- Built-in Datatypes

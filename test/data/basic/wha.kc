@@ -1,0 +1,18 @@
+
+f (x, y)
+    if x
+        print y
+    elif y
+        print x
+
+    #case x
+    #    Just x
+    #        print x
+    #    Nothing
+    #        print 69
+    
+    return y
+
+main ()
+    print f(True, False)
+    print 420 + 69

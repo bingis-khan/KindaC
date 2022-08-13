@@ -25,10 +25,10 @@ class PrettyPrintable a where
   pp = pretty . show
 
 instance PrettyPrintable Global where
-  pp (Global g) = "G" <> pretty g
+  pp g = "G" <> pretty (show g)
 
 instance PrettyPrintable Local where
-  pp (Local l) = "L" <> pretty l
+  pp l = "L" <> pretty (show l)
 
 instance PrettyPrintable TypeID where
   pp (TypeID t) = "T" <> pretty t
@@ -107,7 +107,7 @@ instance (PrettyPrintable expr, PrettyPrintable l, PrettyPrintable g) => PrettyP
         Assignment name expr -> pp name <+> "=" <+> expr
         If cond ifTrue elseIfs ifFalse -> vsep
           [ nest' ("if" <+> cond) (vsep (NE.toList ifTrue))
-          , vsep (map (\(c, b) -> nest' ("elif" <+> cond) (vsep (NE.toList b))) elseIfs)
+          , vsep (map (\(c, b) -> nest' ("elif" <+> c) (vsep (NE.toList b))) elseIfs)
           , maybe "" (nest' "else" . vsep . NE.toList) ifFalse
           ]
         Return expr -> "return" <+> expr

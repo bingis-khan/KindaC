@@ -1,0 +1,14 @@
+id (x)
+    return x + 1
+
+fib (x)
+    if x == 0
+        return 0
+    elif (id(id(x)) == 1)
+        return 1
+    else
+        return fib(x - 2) + fib(x - 1)
+
+
+
+print fib(30)

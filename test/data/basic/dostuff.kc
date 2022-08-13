@@ -1,0 +1,9 @@
+
+applyBoth (f, x, y)
+    return f(x, y)
+
+add2 (x, y)
+    return x + y
+
+print add2(42, 69)
+print applyBoth(add2, 1, 2)

@@ -5,7 +5,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE BangPatterns #-}
 
-module Typecheck (typecheck, solve) where
+module Typecheck (typecheck, Substitutable(..), Subst(..)) where
 
 import AST
 
@@ -55,7 +55,7 @@ data TypeError
 -----------------------------
 -- Context / Typing environment (Gamma)
 -- FEnv (normal 'let' env) ('letrec' env - don't instantiate) (teturn type)
-newtype Env = Env (Map Global TypedType) deriving (Show)
+newtype Env = Env (Map (Either Global Local) TypedType) deriving (Show)
 data FEnv = FEnv (Map (Either Global Local) TypedType) (Map Global TypedType) TypedType deriving Show
 type Constraint = (TypedType, TypedType)
 newtype TVarGen = TVG Int deriving (Show, Eq, Ord)
@@ -80,8 +80,8 @@ lookupEnv (Left g) = do
     Nothing -> instantiate $ env ! Left g
     Just t -> return t
 lookupEnv (Right l) = do
-  (FEnv env _ _) <- ask
-  return $ env ! Right l
+  fenv@(FEnv env env' _) <- ask
+  return $ env ! (\x -> show env `trace` x) (Right l)
 
 -- Straight outta dev.stephendiehl.com
 letters :: [String]
@@ -94,7 +94,7 @@ fresh = do
   return $ Fix $ TVar $ TV $ letters !! nextVar
 
 noopFEnv :: Env -> TVarGen -> (FEnv, TVarGen)
-noopFEnv (Env env) tvg = (FEnv (M.mapKeys Left env) mempty undefined, tvg)
+noopFEnv (Env env) tvg = (FEnv env mempty undefined, tvg)
 
 fresh' :: TLInfer TypedType
 fresh' = withRWST noopFEnv fresh
@@ -164,16 +164,6 @@ localDefs :: (Foldable f) => f (Stmt Local a b) -> Set Local
 localDefs = foldMap $ cata $ \case
   Assignment l _ -> S.singleton l
   stmt -> fold stmt
-
--- For now, used only for the statement list.
--- inferFunction :: Globals -> RFunDec -> ([Constraint], TFunDec)
--- inferFunction globals (FD name params ret body) = undefined $ swap $ evalRWS go (Env (M.mapKeys Left M.empty)) (TVG 0)
---   where
---     numLocals = S.size $ localDefs body
---     go = do
---       locals <- M.fromList . zip (map (Right . Local) [1..numLocals]) <$> replicateM numLocals fresh
---       local (\(Env globals) -> Env $ locals `M.union` globals) (traverse inferStmt body)
-
 
 -------------------------------------------------------------
 -- Constraint Solving
@@ -314,18 +304,22 @@ inferLet letrecDefs (FD name params ret body) = do
   let typedVars = M.fromList $ (fmap . first) Right $ M.toList $ M.fromList freshParams <> freshVars
   freshReturn <- maybe fresh' pure ret
 
-  withRWST (\(Env env) tvg -> (FEnv (M.mapKeys Left env <> typedVars) letrecDefs freshReturn, tvg)) $ do
+  withRWST (\(Env env) tvg -> (FEnv (env <> typedVars) letrecDefs freshReturn, tvg)) $ do
     body' <- traverse inferStmt body
 
     let inferredType = Fix $ TFun (map snd freshParams) freshReturn
+    (FEnv env _ _) <- ask
+    let t = env ! Left name
+    uni t inferredType
+
     return (inferredType, FD name freshParams freshReturn body')
 
 inferLetrec :: [RFunDec] -> TLInfer (Map Global TypedType, Set TFunDec)
 inferLetrec mrfds = do
   ((ts, funs), cts) <- listen $ do
-
+    (Env funs) <- ask
     -- Assign fresh names to each letrec thingy.
-    lrTypes <- traverse (\(FD g _ _ _) -> (,) g <$> fresh') mrfds
+    let lrTypes = map (\(FD g _ _ _) -> (g, funs ! Left g)) mrfds
 
     -- We're gonna do this a bit differently - we're not gonna wait 'til we check if the "normal" constraints are correct.
     tfs <- traverse (inferLet (M.fromList lrTypes)) mrfds
@@ -339,29 +333,31 @@ inferLetrec mrfds = do
     Left _ -> (ts, funs)
     Right subst -> (apply subst <$> ts, apply subst funs)
 
-climb' :: [SCC RFunDec] -> TLInfer (Set TFunDec)
-climb' = go
+climb' :: [RStmt] -> [SCC RFunDec] -> TLInfer ([TStmt], Set TFunDec)
+climb' tlStmts = go
   where
-    go :: [SCC RFunDec] -> TLInfer (Set TFunDec)
+    go :: [SCC RFunDec] -> TLInfer ([TStmt], Set TFunDec)
     go [] = do
       (Env !env) <- traceShowId <$> ask
-      return mempty
+      tstmts <- withRWST noopFEnv $ traverse inferStmt tlStmts
+      return (tstmts, mempty)
     go (AcyclicSCC fd@(FD g _ _ _) : rest) = do
       ((t, tfd), cts) <- (\x@((_, fun), _) -> ppShow fun `trace` x) <$> listen (inferLet mempty fd)
       let (t', tfd') = case solve cts of
               Left ne -> (t, tfd)
               Right subst -> (apply subst t, apply subst tfd)
-      S.insert tfd' <$> local (\(Env env) -> Env $ M.insert g t' env) (go rest)
+      fmap (S.insert tfd') <$> local (\(Env env) -> Env $ M.insert (Left g) t' env) (go rest)
     go (CyclicSCC fds : rest) = do
       (ts, letrecs) <- inferLetrec fds
-      S.union letrecs <$> local (\(Env env) -> Env $ M.union ts env) (go rest)
+      fmap (S.union letrecs) <$> local (\(Env env) -> Env $ M.union (M.mapKeys Left ts) env) (go rest)
 
 climb :: Set RFunDec -> [RStmt] -> ([Constraint], Set TFunDec, [TStmt])
 climb fds stmts = (\((fds, stmts), cts) -> (cts, fds, stmts)) $ (\m -> evalRWS m (Env mempty) (TVG 0)) $ do
-  --
-  withRWS (\_ tvg -> (Env mempty, tvg)) $ do
-    tfds <- climb' $ (\x -> show ((map . fmap) (\(FD g _ _ _) -> g) x) `trace` x) $ poukładaj fds
-    tstmts <- withRWST noopFEnv $ traverse inferStmt stmts  -- Should be U8 as return type. 
+  -- Don't forget to declare top level globals first.
+  tlVars <- M.fromList <$> traverse (\local -> (,) local <$> fresh') (S.toList (localDefs stmts))
+  funs <- M.fromList <$> traverse (\(FD g _ _ _) -> (,) g <$> fresh') (S.toList fds)
+  withRWS (\_ tvg -> (Env (M.mapKeys Right tlVars <> M.mapKeys Left funs), tvg)) $ do
+    (tstmts, tfds) <- climb' stmts $ (\x -> show ((map . fmap) (\(FD g _ _ _) -> g) x) `trace` x) $ poukładaj fds
     return (tfds, tstmts)
 
 typecheck :: RModule -> Either (NonEmpty TypeError) TModule

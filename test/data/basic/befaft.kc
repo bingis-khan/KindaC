@@ -1,10 +1,20 @@
 
 dupa = 1
 
-f ()
-    print dupa
+f (x)
+    return x
+
+h (x)
+    print g(True)
+    return x
+
+g (x)
+    print h(1)
+    return x
 
 kupa = 2
 
 print kupa
 print dupa
+print f(69)
+print h(1)
