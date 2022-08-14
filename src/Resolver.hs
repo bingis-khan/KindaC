@@ -109,7 +109,7 @@ findVar name = do
 
     case findInScopes of
       Nothing -> case findTopLevel of
-        Nothing -> return $ Right undefined -- Dunno, maybe sentinel value?
+        Nothing -> liftIO (putStrLn (name ++ ": name")) >> return (Right undefined) -- Dunno, maybe sentinel value?
         Just egl -> return egl
       Just l -> return $ Right l
 
@@ -199,7 +199,6 @@ resolveAll tId _ funStmt =
                 return $ FD g params' ret' body'
 
         (rFunStmts, errs) <- evalRWST (traverse (bitraverse onFunction onTopLevel) funStmt) (Functions (traceShowId funsWithGlobals)) (TopLevelVariables mempty)
-        putStrLn "dupa"
         return $ case errs of
           re : res -> Left (re :| res)
           [] ->

@@ -35,6 +35,7 @@ main = do
   case parse file of
     Left s -> putStrLn s
     Right tls -> do
+      print tls
       let (datadecs, eFunStmts) = groupAfterParsing tls
       resolveAll (TypeID 0) datadecs eFunStmts >>= \case
         Left res -> do

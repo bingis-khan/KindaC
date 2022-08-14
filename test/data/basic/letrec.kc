@@ -20,6 +20,10 @@ dupa ()
     n = 1
     b = 2
     c = n + b
-    print xxx(c)
+    f(1)
+    return c
 
-
+x = 1
+#dupa()
+f(1) # undefined <- wtf, why
+print 1

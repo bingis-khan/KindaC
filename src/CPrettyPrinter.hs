@@ -130,7 +130,7 @@ ppFun (FD name params ret body) = header <+> ppBody' body
     header = "static" <+> ppType ret <+> ppVar t (Left name) <+> "(" <> hsep (punctuate comma $ map (uncurry ppParam) params) <> ")"
 
 ppDec :: MonoFunDec -> Doc String
-ppDec (MonoFunDec name t@(Fix (TFun params ret))) = ppType ret <+> ppVar t (Left name) <+> "(" <> hsep (punctuate comma $ map ppType params) <> ");"
+ppDec (MonoFunDec name t@(Fix (TFun params ret))) = "static" <+> ppType ret <+> ppVar t (Left name) <+> "(" <> hsep (punctuate comma $ map ppType params) <> ");"
 ppDec _ = error "Should not happen."
 
 
@@ -144,10 +144,11 @@ pp funs stmts = show $ case stmts of
     mainDec = sep ["int", "main", "(", ")"]
     headers = vsep $ fmap (\s -> "#include" <+> "<" <> s <> ">") ["stdbool.h", "stdio.h"]
 
-    tlDeclarations = vsep $ map (\(l, t) -> "static" <+> ppType t <+> ppVar t (Right l) <> ";") tlAssignments
+    tlDeclarations = vsep $ map (\(l, t) -> "static" <+> ppType t <+> ppVar t (Right l) <> ";") $ filter (\(l, t) -> l `S.member` actualTLVars) tlAssignments
     functions = vsep $ punctuate line $ map (either ppDec ppFun) funs
 
     tlAssignments = mapMaybe (\case { Fix (Assignment l (Fix (ExprType t _))) -> Just (l, t); _ -> Nothing }) stmts
     locals = foldMap usedLocals $ rights funs
 
-    actualTLVars = S.union (S.fromList $ map fst tlAssignments) locals
+    actualTLVars = S.intersection (S.fromList $ map fst tlAssignments) locals
+    

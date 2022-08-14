@@ -55,7 +55,7 @@ identifierChar = alphaNumChar <|> char '\''
 identifier :: Parser String
 identifier = do
   s <- lexeme $ do
-    x <- alphaNumChar
+    x <- lowerChar
     xs <- many identifierChar
     return (x:xs)
   return $ sanitize s
@@ -239,7 +239,7 @@ funDec = L.indentBlock scn $ do
 topLevel :: Parser TopLevel
 topLevel
   =   DataDec <$> dataDec
-  -- Okay, this is fucking stupid, but it's necessary to differentiate functions and call definintions.
+  -- Okay, this is fucking stupid, but it's necessary to differentiate function definitions and calls.
   <|> (try (lookAhead (onlyFunctionDeclaration >> eol)) >> either (TLStmt . Fix . ExprStmt) FunDec <$> funDec)
   <|> TLStmt <$> stmt
 
