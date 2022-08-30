@@ -1,0 +1,8 @@
+
+f (x a, y)
+    if x == y
+        print x
+    return x
+
+print f(10, 1)
+print f(True, True)

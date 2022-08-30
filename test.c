@@ -5,26 +5,24 @@
 
 static int g2br_t0_ret_t0 (int);
 
-static int g3br_t0_ret_t0 (int);
-
-static bool g1br_t1_ret_t1 (bool loc6) {
-    printf("%d\n", g2br_t0_ret_t0(5));
-    return loc6;
+static bool g1br_t1_ret_t1 (bool loc3) {
+    int loc4 = g2br_t0_ret_t0(10);
+    printf("%d\n", loc4);
+    return loc3;
 }
 
-static int g2br_t0_ret_t0 (int loc7) {
-    printf("%d\n", g3br_t0_ret_t0(1));
-    return loc7;
-}
-
-static int g3br_t0_ret_t0 (int loc8) {
+static int g2br_t0_ret_t0 (int loc5) {
     printf("%s\n", g1br_t1_ret_t1(true) ? "True" : "False");
-    printf("%d\n", g2br_t0_ret_t0(1));
-    return loc8;
+    return loc5;
+}
+
+static int g1br_t0_ret_t0 (int loc3) {
+    int loc4 = g2br_t0_ret_t0(10);
+    printf("%d\n", loc4);
+    return loc3;
 }
 
 int main ( ) {
-    int loc13 = 1;
-    g3br_t0_ret_t0(1);
-    printf("%d\n", 1);
+    printf("%d\n", g2br_t0_ret_t0(1));
+    printf("%d\n", g1br_t0_ret_t0(1));
 }

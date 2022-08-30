@@ -60,6 +60,7 @@ instance PrettyPrintable t => PrettyPrintable (Type t) where
     TCon con ts -> "(" <> pp con <+> hsep ts <> ")"
     TVar (TV tv) -> pretty tv
     TFun args ret -> "(" <> hsep (punctuate "," args) <+> "->" <+> ret <> ")"
+    TDecVar (TV tv) -> pretty tv
 
 instance PrettyPrintable TExpr where
   pp = cata $ \(ExprType t expr) -> hsep ["(", pp t <> ":", ppExpr expr, ")"]

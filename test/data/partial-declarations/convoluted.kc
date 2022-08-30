@@ -1,0 +1,16 @@
+
+
+f (x a) -> a
+    dupa = g(10)
+    print dupa
+    return x
+
+g (x Int) -> Int
+    print f(True)
+    return x
+
+
+
+
+print g(1)
+print f(1)

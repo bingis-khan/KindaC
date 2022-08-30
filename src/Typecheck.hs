@@ -13,11 +13,11 @@ import Data.Map (Map, (!), (!?))
 import qualified Data.Map as M
 
 import Data.Fix (Fix (Fix), hoistFix, unFix)
-import Control.Monad ((<=<), zipWithM, replicateM, zipWithM_)
+import Control.Monad ((<=<), zipWithM, replicateM, zipWithM_, when)
 import Data.Functor.Foldable (transverse, Base, embed, project, cata, histo)
 import Debug.Trace (trace, traceShowId)
 import Data.Bifunctor (first, Bifunctor, bimap)
-import Data.Foldable (fold, traverse_, Foldable (foldl'), sequenceA_)
+import Data.Foldable (fold, traverse_, Foldable (foldl'), sequenceA_, for_)
 import Control.Monad.Trans.RWS (RWST, ask, tell, get, put, RWS, evalRWS, local, withRWST, withRWS, listen)
 import Control.Monad.Trans.Except (Except)
 import Data.Tuple (swap)
@@ -31,6 +31,7 @@ import Data.Maybe (isNothing, fromJust)
 import TypecheckAdditional (poukładaj)
 import Data.Graph (SCC (..))
 import ASTPrettyPrinter (ppModule, ppShow)
+import Data.Traversable (for)
 
 
 -- Okay, what types do we need?
@@ -47,6 +48,7 @@ data TypeError
   | InfiniteType TVar TypedType
   | Ambiguous TVar
   | ParameterMismatch [TypedType] [TypedType]
+  | NoPartialDeclarationInLetrec Global TypedType
   deriving (Show)
 
 
@@ -66,11 +68,20 @@ type TLInfer a = RWS Env [Constraint] TVarGen a
 
 -- We don't really need a type scheme.
 -- We collect all of the ftvs, then make fresh variables for them.
-instantiate :: TypedType -> Infer TypedType
-instantiate t = do
-  let ftvs = ftv t
+instantiate' :: (TypedType -> Set TVar) -> TypedType -> Infer TypedType
+instantiate' f t = do
+  let ftvs = (\x -> concat ["wtf ftvs: ", show x, " for type: ", show t] `trace` x) (f t)
   freshSubst <- Subst . M.fromList <$> traverse (\t -> (,) t <$> fresh) (S.toList ftvs)
   return $ apply freshSubst t
+
+instantiate :: TypedType -> Infer TypedType
+instantiate = instantiate' ftv
+
+-- This here assumes that fresh variables start with '. Maybe later enforce it with a type.
+instantiateDeclared :: TypedType -> Infer TypedType
+instantiateDeclared = instantiate' $ S.filter (\(TV tv) -> head tv /= '\'') . ftv
+
+
 
 lookupEnv :: Either Global Local -> Infer TypedType
 lookupEnv (Left g) = do
@@ -78,7 +89,7 @@ lookupEnv (Left g) = do
 
   case letrecEnv !? g of
     Nothing -> instantiate $ env ! Left g
-    Just t -> return t
+    Just t -> instantiateDeclared t
 lookupEnv (Right l) = do
   fenv@(FEnv env env' _) <- ask
   return $ env ! (\x -> show env `trace` x) (Right l)
@@ -178,9 +189,11 @@ class Substitutable a where
 instance Substitutable TypedType where
   apply s@(Subst subst) = cata $ \case
     t@(TVar tv) -> M.findWithDefault (Fix t) tv subst
+    t@(TDecVar tv) -> M.findWithDefault (Fix t) tv subst
     t -> Fix t
   ftv = cata $ \case
     t@(TVar tv) -> S.singleton tv
+    t@(TDecVar tv) -> S.singleton tv
     t -> fold t
 
 instance Substitutable TExpr where
@@ -262,9 +275,9 @@ unifyMany _ _ = error "Should not happen. (should be covered by the length check
 unify :: TypedType -> TypedType -> Validation (NonEmpty TypeError) Subst
 unify t t' | t == t' = mempty
 unify (Fix (TVar v)) t = bind v t
-unify (Fix (TDecVar v)) t = bind v t
+--unify (Fix (TDecVar v)) t = bind v t
 unify t (Fix (TVar v)) = bind v t
-unify t (Fix (TDecVar v)) = bind v t
+--unify t (Fix (TDecVar v)) = bind v t
 unify (Fix (TFun ps r)) (Fix (TFun ps' r')) = unifyMany (ps ++ [r]) (ps' ++ [r'])
 unify t t' = Failure $ NE.singleton $ UnificationMismatch t t'
 
@@ -296,36 +309,59 @@ solve = toEither . go mempty
           go (subst' <> subst) (apply subst' cs)
 
 
-inferLet :: Map Global TypedType -> RFunDec -> TLInfer (TypedType, TFunDec)
-inferLet letrecDefs (FD name params ret body) = do
-  let vars = localDefs body <> S.fromList (map fst params)
+instantiateFunction (FD _ params ret _) = do
   freshParams <- (traverse . traverse) (maybe fresh' pure) params
+  freshReturn <- maybe fresh' pure ret
+  return (map snd freshParams, freshReturn)
+
+inferLet' :: ([TypedType], TypedType) -> Map Global TypedType -> RFunDec -> TLInfer (TypedType, TFunDec)
+inferLet' (freshParamTypes, freshReturn) letrecDefs fd@(FD name params ret body) = do
+  let vars = localDefs body <> S.fromList (map fst params)
   freshVars <- M.fromList <$> traverse (\local -> (,) local <$> fresh') (S.toList vars)
+  let freshParams = zip (map fst params) freshParamTypes
   let typedVars = M.fromList $ (fmap . first) Right $ M.toList $ M.fromList freshParams <> freshVars
   freshReturn <- maybe fresh' pure ret
 
   withRWST (\(Env env) tvg -> (FEnv (env <> typedVars) letrecDefs freshReturn, tvg)) $ do
     body' <- traverse inferStmt body
 
-    let inferredType = Fix $ TFun (map snd freshParams) freshReturn
+    let inferredType = Fix $ TFun freshParamTypes freshReturn
     (FEnv env _ _) <- ask
     let t = env ! Left name
     uni t inferredType
 
     return (inferredType, FD name freshParams freshReturn body')
 
+inferLet :: Map Global TypedType -> RFunDec -> TLInfer (TypedType, TFunDec)
+inferLet letrecDefs fd = do
+  paramsRet <- instantiateFunction fd
+  inferLet' paramsRet letrecDefs fd
+
+hasPartialDeclaration :: RFunDec -> Bool
+hasPartialDeclaration (FD _ params ret _) = 
+  let types = ret : map snd params
+  in any isNothing types && not (all isNothing types)
+
 inferLetrec :: [RFunDec] -> TLInfer (Map Global TypedType, Set TFunDec)
 inferLetrec mrfds = do
   ((ts, funs), cts) <- listen $ do
     (Env funs) <- ask
-    -- Assign fresh names to each letrec thingy.
-    let lrTypes = map (\(FD g _ _ _) -> (g, funs ! Left g)) mrfds
 
+    -- Globals are instatiated at the beginning for every global...
+    let ogGlobals = map (\(FD g _ _ _) -> (g, funs ! Left g)) mrfds
+
+    -- Shit, partial declarations don't work in letrecs (at least the way we do it).
+    -- Either declare function type fully, or let me infer it. No middle ground.
+    let partialDeclarationErrors = map undefined $ filter hasPartialDeclaration mrfds
+
+    lrTypes <- for mrfds $ \fd@(FD g _ _ _) -> if not (hasPartialDeclaration fd) then (,) g <$> instantiateFunction fd else error "Can't have fuckin' partial declarations for letrec. Also, I'll have to think of a way to signal this error better, but I don't feel like it right now."
+
+    let lrTypesAsFuns = M.fromList $ (map . fmap) (Fix . uncurry TFun) lrTypes
+    withRWST noopFEnv $ zipWithM_ (\(_, t) (param, ret) -> uni t (Fix (TFun param ret))) ogGlobals (map snd lrTypes)
     -- We're gonna do this a bit differently - we're not gonna wait 'til we check if the "normal" constraints are correct.
-    tfs <- traverse (inferLet (M.fromList lrTypes)) mrfds
+    tfs <- traverse (\(ft, fd) -> inferLet' ft lrTypesAsFuns fd) $ zip (map snd lrTypes) mrfds
 
     -- Then, gather the inferred global -> fun type. And unify them with the fresh bois, since they are not instantiated.
-    withRWST noopFEnv $ zipWithM_ (\(_, t) (t', _) -> uni t t') lrTypes tfs
     return (M.fromList (map (\(t, FD g _ _ _) -> (g, t)) tfs), S.fromList $ map snd tfs)
 
   let esubst = solve cts

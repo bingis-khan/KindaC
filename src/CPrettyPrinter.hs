@@ -34,6 +34,10 @@ ppIdType :: TypedType -> Doc String
 ppIdType = cata $ \case
   TFun args ret -> "br_" <> mconcat (fmap (<> "_") args) <> "ret_" <> ret
   TCon (TypeID x) _ -> "t" <> pretty (show x)
+  
+  -- Invalid state.
+  TDecVar (TV tv) -> error $ concat ["'", tv, "' decvar should not be here."]
+  TVar (TV tv) -> error $ concat ["'", tv, "' decvar should not be here."]
 
 ppGlobal :: TypedType -> Global -> Doc String
 ppGlobal t g = "g" <> pretty (show g) <> ppIdType t

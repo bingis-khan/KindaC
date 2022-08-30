@@ -28,8 +28,10 @@ substitution t t' = Subst $ go t t'
         go (Fix (TCon t ts)) (Fix (TCon t' ts')) = mconcat $ zipWith go ts ts'
         go (Fix (TFun args ret)) (Fix (TFun args' ret')) = mconcat $ go ret ret' : zipWith go args args'
         go (Fix (TVar tv)) t = M.singleton tv t
-        go (Fix (TCon _ _)) (Fix (TVar tv)) = M.singleton tv t
-        go t t' = error $ show t ++ " " ++ show t'
+        go (Fix (TDecVar tv)) t = M.singleton tv t
+        go t (Fix (TVar tv)) = M.singleton tv t
+        go t (Fix (TDecVar tv)) = M.singleton tv t
+        go t t' = error $ "Not the same type:" ++ show t ++ " " ++ show t'
 
 
 findApplyFun :: MonoFunDec -> Funs TFunDec
