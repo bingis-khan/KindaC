@@ -1,4 +1,6 @@
 a = 69
+b = a
+
 
 applyBoth (f, x, y)
     return f(x, y)
@@ -7,7 +9,7 @@ add2 (x, y)
     return x + y + a
 
 applyApplyBoth (f, g, x, y)
-    return f(g, x, y)
+    return f(g, x, y) + a
 
 applyApplyApplyBoth (f, g, h, x, y)
     return f(g, h, x, y)

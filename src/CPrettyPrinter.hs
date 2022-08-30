@@ -9,7 +9,7 @@ import Data.Biapplicative (first, bimap)
 import Data.Fix (Fix(Fix))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as NE
-import Data.Foldable (foldl')
+import Data.Foldable (foldl', fold)
 import Data.Semigroup (sconcat)
 import Data.Maybe (fromMaybe, mapMaybe)
 
@@ -18,6 +18,7 @@ import Data.List (intercalate)
 import qualified Data.Set as S
 import Data.Either (rights)
 import Data.Set ((\\), Set)
+import Data.Bifoldable (bifold)
 
 
 -- Todo: make a class for pretty printing
@@ -88,7 +89,7 @@ ppType = cata $ \case
 ppParam :: Local -> TypedType -> Doc String
 ppParam l (Fix t@(TFun _ _)) =
   let (TFun args ret) = fmap ppType t
-  in ret <+> ppVar (Fix t) (Right l) <+> encloseSep "(" ")" comma args
+  in ret <+> "(*" <> ppVar (Fix t) (Right l) <> ")" <> encloseSep "(" ")" comma args
 ppParam l t = ppType t <+> ppVar t (Right l)
 
 ppBody :: NonEmpty (Doc String) -> Doc String
@@ -113,7 +114,7 @@ ppStmt = cata $ (<> ";") . go . first (\e@(Fix (ExprType t _)) -> (t, ppExpr e))
         in "printf(" <> fmt <> "," <+> arg e <> ")"
 
       Assignment name (t, e) ->
-        ppType t <+> ppVar t (Right name) <+> "=" <+> e
+        ppParam name t <+> "=" <+> e
 
       If (_, cond) ifTrue elifs mifFalse ->
         "if" <+> "(" <> cond <> ")"
@@ -138,7 +139,8 @@ ppDec (MonoFunDec name t@(Fix (TFun params ret))) = "static" <+> ppType ret <+> 
 ppDec _ = error "Should not happen."
 
 
--- Check if variables
+-- Check which are global variables.
+
 
 pp :: [Either MonoFunDec TFunDec] -> [TStmt] -> String
 pp funs stmts = show $ case stmts of

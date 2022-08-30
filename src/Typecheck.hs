@@ -171,11 +171,6 @@ inferStmt = mapARS $ go <=< bindExpr inferExpr <=< sequenceA
 
 type Globals = Map Global TypedType
 
-localDefs :: (Foldable f) => f (Stmt Local a b) -> Set Local
-localDefs = foldMap $ cata $ \case
-  Assignment l _ -> S.singleton l
-  stmt -> fold stmt
-
 -------------------------------------------------------------
 -- Constraint Solving
 -------------------------------------

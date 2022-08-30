@@ -1,0 +1,7 @@
+
+f (x)
+    return x
+
+f = f
+
+f(1)
