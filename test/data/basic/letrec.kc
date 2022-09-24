@@ -25,5 +25,5 @@ dupa ()
 
 x = 1
 #dupa()
-f(1) # undefined <- wtf, why
+f(1) # undefined <- wtf, why. Update: no undefined, ay.
 print 1

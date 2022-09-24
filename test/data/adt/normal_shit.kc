@@ -1,0 +1,31 @@
+
+
+Either e a
+    Right a
+    Left e
+
+Maybe a
+    Just a
+    Nothing
+
+File
+    Open
+    Closed
+    Fucked
+
+Tupler a b c
+    Unit
+    Singleton c
+    Tuple b c
+    Threeple a b c
+
+
+uni (x a, y a) -> a
+    return x
+
+uni(1, 2)
+uni(Nothing, Just(Fucked))
+x = True
+
+uni(Tuple(1, Fucked), Threeple(1, 2, Closed))
+

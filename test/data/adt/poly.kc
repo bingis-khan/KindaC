@@ -1,0 +1,6 @@
+
+id (x)
+    return x
+
+print id(1)
+print id(True)

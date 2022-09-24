@@ -60,13 +60,16 @@ identifier = do
     return (x:xs)
   return $ sanitize s
 
-varDec :: Parser String
-varDec = do
+dataConstructor :: Parser String
+dataConstructor = do
   s <- lexeme $ do
-    x <- lowerChar
+    x <- upperChar
     xs <- many identifierChar
     return (x:xs)
   return $ sanitize s
+
+varDec :: Parser String
+varDec = identifier
 
 generic :: Parser TVar
 generic = TV <$> varDec
@@ -123,10 +126,10 @@ operatorTable =
 term :: Parser UExpr
 term = choice
   [ Fix . Lit . LInt <$> lexeme (L.signed sc L.decimal)
-  , symbol "True" >> return (Fix $ Lit $ LBool True)
-  , symbol "False" >> return (Fix $ Lit $ LBool False)
+  --, symbol "True" >> return (Fix $ Lit $ LBool True)
+  --, symbol "False" >> return (Fix $ Lit $ LBool False)
   , between (symbol "(") (symbol ")") expr
-  , Fix . Var . Right <$> identifier
+  , Fix . Var . Right <$> (identifier <|> dataConstructor)
   ]
 
 expr :: Parser UExpr

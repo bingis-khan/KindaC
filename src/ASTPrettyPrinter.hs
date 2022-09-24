@@ -16,26 +16,46 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 import Data.Functor.Foldable (cata, Base)
 import Data.Bifunctor (first)
+import Control.Monad.Trans.Reader (ReaderT, Reader, runReader)
+import Control.Monad.Trans.Class (lift)
+import Control.Applicative (liftA2)
+import Data.Functor ((<&>))
+import Data.Bitraversable (Bitraversable(bitraverse))
 
+
+data Context' = Context
+type Context a = Reader Context' (Doc a)
+
+instance Semigroup (Context a) where
+  l <> r = do
+    l' <- l
+    r' <- r
+    pure $ l' <> r'
+
+instance Monoid a => Monoid (Context a) where
+  mempty = pure mempty
 
 class PrettyPrintable a where
-  pp :: a -> Doc String
+  pp :: a -> Context String
 
-  default pp :: Show a => a -> Doc String
-  pp = pretty . show
+  default pp :: Show a => a -> Context String
+  pp = pure . pretty . show
 
 instance PrettyPrintable Global where
-  pp g = "G" <> pretty (show g)
+  pp g = pure $ "G" <> pretty (show g)
 
 instance PrettyPrintable Local where
-  pp l = "L" <> pretty (show l)
+  pp l = pure $ "L" <> pretty (show l)
 
 instance PrettyPrintable TypeID where
-  pp (TypeID t) = "T" <> pretty t
+  pp t = pure $ "T" <> pretty (show t)
+
+instance PrettyPrintable String where
+  pp = pure . pretty
 
 
 instance PrettyPrintable a => PrettyPrintable [a] where
-  pp = vsep . fmap pp
+  pp = fmap vsep . traverse pp
 
 instance PrettyPrintable a => PrettyPrintable (Set a) where
   pp = pp . S.toList
@@ -47,36 +67,46 @@ instance PrettyPrintable a => PrettyPrintable (Maybe a) where
   pp (Just x) = pp x
   pp Nothing = mempty
 
-nest' :: Doc ann -> Doc ann -> Doc ann
-nest' header = (header <>) . nest 4 . (line <>)
+instance (PrettyPrintable e, PrettyPrintable a) => PrettyPrintable (Either e a) where
+  pp (Left e) = ("Left" <+>) <$> pp e
+  pp (Right a) = ("Right" <+>) <$> pp a
 
-ppNest :: PrettyPrintable a => Doc String -> a -> Doc String
+instance (PrettyPrintable e, PrettyPrintable a) => PrettyPrintable (e, a) where
+  pp (e, a) = liftA2 (\e a -> "(" <> e <> "," <+> a <> ")") (pp e) (pp a)
+
+nest' :: Context ann -> Context ann -> Context ann
+nest' header = (header <>) . fmap (nest 4 . (line <>))
+
+ppNest :: PrettyPrintable a => Context String -> a -> Context String
 ppNest header = nest' header . pp
 
 
 instance PrettyPrintable t => PrettyPrintable (Type t) where
   pp = cata $ \case
     TCon con [] -> pp con
-    TCon con ts -> "(" <> pp con <+> hsep ts <> ")"
-    TVar (TV tv) -> pretty tv
-    TFun args ret -> "(" <> hsep (punctuate "," args) <+> "->" <+> ret <> ")"
-    TDecVar (TV tv) -> pretty tv
+    TCon con ts -> liftA2 (\con ts -> "(" <> con <+> hsep ts <> ")") (pp con) (sequenceA ts)
+    TVar (TV tv) -> pure $ pretty tv
+    TFun args ret -> liftA2 (\args ret -> "(" <> hsep (punctuate "," args) <+> "->" <+> ret <> ")") (sequenceA args) ret
+    TDecVar (TV tv) -> pure $ pretty tv
 
 instance PrettyPrintable TExpr where
-  pp = cata $ \(ExprType t expr) -> hsep ["(", pp t <> ":", ppExpr expr, ")"]
+  pp = cata $ \(ExprType t expr) -> (\t expr -> hsep ["(", t <> ":", expr, ")"]) <$> pp t <*> ppExpr expr
 
 instance (PrettyPrintable g, PrettyPrintable tid)
   => PrettyPrintable (DataCon g tid) where
-    pp (DC g ts) = "ctor '" <> pp g <> "':" <+> hsep (fmap pp ts)
+    pp (DC g ts) = (\g ts -> "ctor '" <> g <> "':" <+> hsep ts) <$> pp g <*> traverse pp ts
 
 instance (PrettyPrintable g, PrettyPrintable tid, PrettyPrintable con)
   => PrettyPrintable (DataDec g tid con) where
   pp (DD tid tvs cons) = flip ppNest cons $
-      "data" <+> pp tid <+> hsep (fmap (\(TV tv) -> pretty tv) tvs)
+      (\tid tvs -> "data" <+> tid <+> hsep tvs) <$> pp tid <*> traverse (\(TV tv) -> pure $ pretty tv) tvs
+
+instance PrettyPrintable MonoDataDec where
+  pp (MonoDataDec g apps) = (\g apps -> "data" <+> "dec" <+> g <+> apps) <$> pp g <*> pp apps
 
 
 instance PrettyPrintable Op where
-  pp = \case
+  pp = pure . \case
     Plus -> "+"
     Minus -> "-"
     Times -> "*"
@@ -89,43 +119,64 @@ instance PrettyPrintable Op where
 instance (PrettyPrintable g, PrettyPrintable l) => PrettyPrintable (Expr l g) where
   pp = cata ppExpr
 
-ppExpr :: (PrettyPrintable g, PrettyPrintable l) => ExprF (Either g l) (Doc String) -> Doc String
+ppExpr :: (PrettyPrintable g, PrettyPrintable l) => ExprF (Either g l) (Context String) -> Context String
 ppExpr = \case
     Lit lt -> case lt of
-      LBool x -> pretty x
-      LInt x -> pretty x
-    
-    Var egl -> either pp pp egl 
-    Op l op r -> hsep ["(", l, pp op, r, ")"]
-    Call c args -> c <+> encloseSep "(" ")" "," args
+      LBool x -> pure $ pretty x
+      LInt x -> pure $ pretty x
+
+    Var egl -> either pp pp egl
+    Op l op r -> (\l op r -> hsep ["(", l, op, r, ")"]) <$> l <*> pp op <*> r
+    Call c args -> (\c args -> c <+> encloseSep "(" ")" "," args) <$> c <*> sequenceA args
 
 instance (PrettyPrintable expr, PrettyPrintable l, PrettyPrintable g) => PrettyPrintable (Stmt l g expr) where
   pp = cata $ go . first pp
     where
+      go :: (PrettyPrintable l, PrettyPrintable g) => Base (Stmt l g (Context String)) (Context String) -> Context String
       go = \case
         ExprStmt expr -> expr
-        Print expr -> "print" <+> expr
-        Assignment name expr -> pp name <+> "=" <+> expr
-        If cond ifTrue elseIfs ifFalse -> vsep
-          [ nest' ("if" <+> cond) (vsep (NE.toList ifTrue))
-          , vsep (map (\(c, b) -> nest' ("elif" <+> c) (vsep (NE.toList b))) elseIfs)
-          , maybe "" (nest' "else" . vsep . NE.toList) ifFalse
-          ]
-        Return expr -> "return" <+> expr
+        Print expr -> ("print" <+>) <$> expr
+        Assignment name expr -> (\name expr -> name <+> "=" <+> expr) <$> pp name <*> expr
+        If cond ifTrue elseIfs ifFalse -> do
+          cond' <- cond
+          ifTrue' <- nest' (("if" <+>) <$> cond) (vsep . NE.toList <$> sequenceA ifTrue)
+          elseIfs' <- vsep <$> traverse (\(c, b) -> nest' (("elif" <+>) <$> c) (vsep . NE.toList <$> sequenceA b)) elseIfs
+          ifFalse' <- maybe (pure "") (nest' (pure "else") . fmap (vsep . NE.toList) . sequenceA) ifFalse
+          return $ vsep
+            [ ifTrue'
+            , elseIfs'
+            , ifFalse'
+            ]
+        Return expr -> ("return" <+>) <$> expr
+
+
+instance PrettyPrintable MonoFunDec
 
 instance (PrettyPrintable g, PrettyPrintable l, PrettyPrintable t, PrettyPrintable stmt)
   => PrettyPrintable (FunDec g l t stmt) where
-  pp (FD name params ret stmts) = flip ppNest stmts $
-    pp name <+> encloseSep "(" ")" "," (map (\(param, pType) -> pp param <> ":" <+> pp pType) params) <+> "->" <+> pp ret
+  pp (FD name params ret stmts) = do
+    name <- pp name
+    params <- traverse (\(param, pType) -> (\p t -> p <> ":" <+> t) <$> pp param <*> pp pType) params
+    ret <- pp ret
+    flip ppNest stmts $ pure $
+      name <+> encloseSep "(" ")" "," params <+> "->" <+> ret
 
 instance PrettyPrintable RModule where
-  pp (RModule { rmFunctions, rmDataDecs, rmTLStmts }) = vsep [pp rmFunctions, pp rmDataDecs, pp rmTLStmts]
+  pp (RModule { rmFunctions, rmDataDecs, rmTLStmts }) = do
+    funs <- pp rmFunctions 
+    dds <- pp rmDataDecs
+    stmts <- pp rmTLStmts
+    return $ vsep [funs, dds, stmts]
 
 instance PrettyPrintable TModule where
-  pp (TModule funs dds stmts) = vsep [pp funs, pp dds, pp stmts]
+  pp (TModule funs dds stmts) = do
+    funs <- pp funs
+    dds <- pp dds
+    stmts <- pp stmts
+    return $ vsep [funs, dds, stmts]
 
-ppModule :: RModule -> String
-ppModule = show . pp
+ppModule :: Context' -> RModule -> String
+ppModule ctx = show . flip runReader ctx . pp
 
-ppShow :: PrettyPrintable a => a -> String
-ppShow = show . pp
+ppShow :: PrettyPrintable a => Context' -> a -> String
+ppShow ctx = show . flip runReader ctx . pp

@@ -1,5 +1,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE BangPatterns #-}
 module Main where
 
 import Parser
@@ -7,7 +9,7 @@ import Resolver (resolveAll)
 import Data.Functor.Foldable (cata)
 import AST
 import Typecheck (typecheck)
-import CPrettyPrinter (pp)
+import CPrettyPrinter (pp, Context'(..))
 import ASTPrettyPrinter (ppModule, ppShow)
 
 import System.Process (callCommand)
@@ -16,6 +18,13 @@ import Data.Set (Set)
 import Data.Fix
 import Data.Functor ((<&>))
 import Monomorphizer (monomorphize)
+import qualified Data.Map as M
+import Data.Unique (newUnique)
+import Data.Map (Map, (!))
+import Debug.Trace (traceShowId)
+import Data.Foldable (toList)
+import Data.Either (rights)
+import Data.Biapplicative (bimap)
 
 
 groupAfterParsing :: [TopLevel] -> ([UDataDec], [Either UFunDec UStmt])
@@ -25,6 +34,26 @@ groupAfterParsing =  mconcat . map go
     go (TLStmt stmt) = (mempty, pure (Right stmt))
     go (DataDec dd) = (pure dd, mempty)
 
+prepareContext :: (Foldable t, Functor t) => Builtins -> t (TDataDec, [TypedType]) -> Context'
+prepareContext builtins dds = Context { datas, builtins }
+  where
+    datas = M.fromList $ toList $ fmap (\(dd@(DD t _ _), tts) -> ((t, tts), dd)) dds
+
+
+data CType = CType String [(String, String)] String
+
+builtinTypes :: [CType]
+builtinTypes =
+  [ CType "Int" [] "int"
+  , CType "Bool" [("True", "true"), ("False", "false")] "bool"
+  ]
+
+prepareTypes :: IO Builtins
+prepareTypes = do
+  (toTypes, fromTypes) <- bimap M.fromList M.fromList . unzip <$> traverse (\(CType name _ cName) -> TypeID <$> newUnique <&> \t -> ((name, Fix (TCon t [])), (t, cName))) builtinTypes
+  (toCons, fromCons) <- bimap M.fromList M.fromList . unzip <$> traverse (\(name, cName, (cons, cCons)) -> Global <$> newUnique <&> \g -> ((cons, (g, toTypes ! name)), (g, cCons))) (concatMap (\(CType name cons cName) -> (name, cName,) <$> cons) builtinTypes)
+  return $ Builtins toTypes fromTypes toCons fromCons
+
 main :: IO ()
 main = do
   -- -- Proof of another b00g. Happens with id(x) => x.
@@ -32,21 +61,28 @@ main = do
   -- in print $ solve cs
   (filename:_) <- getArgs
   file <- readFile filename
+
+  builtins <- prepareTypes
+  print builtins
   case parse file of
     Left s -> putStrLn s
     Right tls -> do
       print tls
       let (datadecs, eFunStmts) = groupAfterParsing tls
-      resolveAll (TypeID 0) datadecs eFunStmts >>= \case
+      resolveAll builtins datadecs eFunStmts >>= \case
         Left res -> do
           putStrLn "Resolve Errors"
           print res
-        Right (_, rmodule) -> do
-          putStrLn $ ppModule rmodule
-          case typecheck rmodule of
+        Right rmodule -> do
+          putStrLn $ ppModule undefined rmodule
+          case typecheck builtins rmodule of
             Left ne -> print ne
-            Right module'@(TModule funs _ tstmts) -> do
-              putStrLn $ ppShow module'
-              let (funs, stmts) = monomorphize module'
-              writeFile "test.c" $ pp funs tstmts
-              callCommand "gcc test.c"
+            Right module' -> do
+              putStrLn $ ppShow undefined module'
+              let (dds, funs, stmts) = monomorphize builtins module'
+              putStrLn $ ppShow undefined dds
+              putStrLn $ ppShow undefined funs
+              putStrLn $ ppShow undefined stmts
+              writeFile "test.c" $ pp (prepareContext builtins (rights dds)) dds funs stmts
+              -- callCommand "gcc test.c"
+              return ()

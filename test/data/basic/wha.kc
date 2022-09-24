@@ -16,3 +16,6 @@ f (x, y)
 main ()
     print f(True, False)
     print 420 + 69
+    return 1
+
+main()

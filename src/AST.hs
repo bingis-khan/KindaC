@@ -24,6 +24,7 @@ import Data.Unique (Unique, hashUnique)
 import qualified Data.Set as S
 import Data.Semigroup (sconcat)
 import Data.Foldable (fold)
+import Data.Map (Map)
 
 
 -- File structure:
@@ -183,7 +184,7 @@ type UFunDec = FunDec String String (Maybe (Type String)) UStmt
 --------------
 newtype Global = Global { fromGlobal :: Unique } deriving (Eq, Ord)
 newtype Local = Local { fromLocal :: Unique } deriving (Eq, Ord)
-newtype TypeID = TypeID Int deriving (Show, Eq, Ord, Enum)
+newtype TypeID = TypeID { fromTypeID :: Unique } deriving (Eq, Ord)
 
 instance Show Global where
   show (Global u) = show $ hashUnique u 
@@ -191,12 +192,11 @@ instance Show Global where
 instance Show Local where
   show (Local u) = show $ hashUnique u
 
+instance Show TypeID where
+  show (TypeID t) = show $ hashUnique t
+
 
 type TypedType = Type TypeID
-
-intType, boolType :: TypedType
-intType = Fix (TCon (TypeID 0) [])
-boolType = Fix (TCon (TypeID 1) [])
 
 
 type RExpr = Expr Local Global
@@ -227,7 +227,7 @@ type TExpr = Fix (ExprType TypeID)
 type TStmt = Stmt Local Global TExpr
 
 type TFunDec = FunDec Global Local TypedType TStmt
-type TDataCon = DataCon Global TypeID
+type TDataCon = DataCon Global (Type TypeID)
 type TDataDec = DataDec Global TypeID TDataCon
 
 
@@ -238,6 +238,8 @@ data TModule = TModule (Set TFunDec) (Set TDataDec) [TStmt] deriving Show
 -----------------
 -- Monomorphic --
 -----------------
+-- Maybe, we should create unique type IDs and then MDataCon will be DataCon Global TypeID (TypeID is instead of (Type TypeID))
+data MonoDataDec = MonoDataDec TypeID [TypedType]
 
 -- Maybe later reflect monomorphism in type (ie. impossible to have TVars rn).
 data MonoFunDec = MonoFunDec Global TypedType deriving (Show, Eq, Ord)
@@ -245,23 +247,13 @@ data MonoFunDec = MonoFunDec Global TypedType deriving (Show, Eq, Ord)
 toMonoFunDec :: TFunDec -> MonoFunDec
 toMonoFunDec (FD name params ret _) = MonoFunDec name $ Fix (TFun (map snd params) ret)
 
-data MModule = MModule [Either MonoFunDec TFunDec] [TStmt] deriving Show
+data MModule = MModule [TDataDec] [Either MonoFunDec TFunDec] [TStmt] deriving Show
 
 
 ---------------------------------------------
 -- Built-in Datatypes
 ---------------------------------------------
-
-builtIns :: M.Map TypeID String
-builtIns = M.fromList $ zip (coerce [(0 :: Int) ..] :: [TypeID])
-  [ "Int"
-  , "Bool"
-  ]
-
-firstTypeID :: TypeID
-firstTypeID = maximum $ M.keys builtIns
-
-
+data Builtins = Builtins (Map String TypedType) (Map TypeID String) (Map String (Global, TypedType)) (Map Global String) deriving Show
 
 ---------------------------------------------
 -- Misc. functions
@@ -298,6 +290,9 @@ localDefs :: (Foldable f) => f (Stmt Local a b) -> Set Local
 localDefs = foldMap $ cata $ \case
   Assignment l _ -> S.singleton l
   stmt -> fold stmt
+
+dataDeclarationToType :: DataDec Global TypeID datacon -> TypedType
+dataDeclarationToType (DD t tvs _) = Fix $ TCon t $ map (Fix . TDecVar) tvs
 
 --------------------------------------------
 -- Instances 

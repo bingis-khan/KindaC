@@ -19,10 +19,12 @@ import Control.Monad.Trans.Class (lift)
 import Control.Monad.IO.Class (liftIO)
 import Control.Applicative (liftA2, liftA3)
 import Data.Traversable (for)
-import Control.Monad ((<=<))
+import Control.Monad ((<=<), when, unless)
 import Data.Bitraversable (bisequenceA, bitraverse)
 import Data.Maybe (mapMaybe, fromMaybe)
 import Debug.Trace (traceShowId)
+import Data.Foldable (traverse_)
+import Data.Set (Set)
 
 
 data ResolveError
@@ -45,11 +47,12 @@ data ResolveError
 
 newtype TopLevelVariables = TopLevelVariables (Map String Local)
 newtype Functions = Functions (Map String Global)
+newtype Datatypes = Datatypes (Map String TypeID)
 
-type TopLevelResolve = RWST Functions [ResolveError] TopLevelVariables IO
+type TopLevelResolve = RWST (Functions, Datatypes) [ResolveError] TopLevelVariables IO
 
 
-data TopLevelEnv = TopLevelEnv Functions TopLevelVariables
+data TopLevelEnv = TopLevelEnv Functions TopLevelVariables Datatypes
 newtype Locals = Locals (NonEmpty (Map String Local))
 
 type Resolve = RWST TopLevelEnv [ResolveError] Locals IO
@@ -71,9 +74,9 @@ addTopLevelVariable name = do
 
 runResolve :: Map String Local -> Resolve a -> TopLevelResolve a
 runResolve initialLocals res = do
-    funs <- ask
+    (funs, dts) <- ask
     tlVars <- get
-    (x, errs) <- liftIO $ evalRWST res (TopLevelEnv funs tlVars) (Locals (initialLocals :| mempty))
+    (x, errs) <- liftIO $ evalRWST res (TopLevelEnv funs tlVars dts) (Locals (initialLocals :| mempty))
     tell errs
     return x
 
@@ -102,7 +105,8 @@ findVar name = do
           l : _ -> Just l
           [] -> Nothing
 
-    (TopLevelEnv (Functions funs) (TopLevelVariables tlVars)) <- ask
+    (TopLevelEnv (Functions funs) (TopLevelVariables tlVars) _) <- ask
+    -- todo: search for constructor.
     let findTopLevel = case tlVars !? name of
           Nothing -> (Just . Left) =<< (funs !? name)
           Just l -> Just $ Right l
@@ -144,21 +148,58 @@ resolveStmt = mapARS $ go <=< bindExpr resolveExpr
 
 resolveType :: Type String -> Resolve (Type TypeID)
 resolveType = mapARS $ \case
-    -- Temporary, since we cannot declare any datatypes right now.
-    TCon name types -> TCon (M.findWithDefault undefined name (M.fromList [("Int", TypeID 0), ("Bool", TypeID 1)])) <$> sequenceA types
+    TCon name types -> do
+      (TopLevelEnv _ _ (Datatypes dts)) <- ask
+      tcon <- case dts !? name of
+        Nothing -> do
+          resolveError $ UndeclaredType name (length types)
+          return undefined
+        Just t -> return t
+      TCon tcon <$> sequenceA types
     TVar tv -> pure $ TVar tv
     TDecVar tv -> pure $ TDecVar tv
     TFun params ret -> liftA2 TFun (sequenceA params) ret
 
+resolveDataConstructor :: Set TVar -> UDataCon -> TopLevelResolve RDataCon
+resolveDataConstructor tvs (DC name types) = do
+  (Functions funs, _) <- ask
+  DC (funs ! name) <$> traverse (runEmptyResolve . resolveType) types
 
-resolveAll :: TypeID -> [UDataDec] -> [Either UFunDec UStmt] -> IO (Either (NonEmpty ResolveError) (TypeID, RModule))
-resolveAll tId _ funStmt =
-    let funNames = map (\(FD name _ _ _) -> name) $ lefts funStmt
-        duplicateFunNames = map head $ filter ((>1) . length) $ group $ sort funNames
-    in case duplicateFunNames of
-      s : ss -> pure $ Left $ fmap RedeclaredVariable $ s :| ss
+resolveDataDeclaration :: UDataDec -> TopLevelResolve RDataDec
+resolveDataDeclaration (DD name tvs cons) = do
+  (_, Datatypes dts) <- ask
+  let g = dts ! name
+  let repeatingTVs = map head $ filter ((>1) . length) $ group $ sort tvs
+  unless (null repeatingTVs) $
+    traverse_ (resolveError . RepeatingTVar) repeatingTVs
+  let tvSet = S.fromList tvs
+  rCons <- traverse (resolveDataConstructor tvSet) cons
+  return $ DD g tvs rCons
+
+typeIDsFromBuiltins :: Builtins -> (Map String TypeID, Map String Global)
+typeIDsFromBuiltins (Builtins builtinTypes _ builtinConstructors _) = (M.map (\(Fix (TCon g _)) -> g) builtinTypes, M.map fst builtinConstructors)
+
+-- Need to check for circular references here.
+resolveAll :: Builtins -> [UDataDec] -> [Either UFunDec UStmt] -> IO (Either (NonEmpty ResolveError) RModule)
+resolveAll ttBuiltins dataDeclarations funStmt =
+    let (builtinTypes, builtinConstructors) = typeIDsFromBuiltins ttBuiltins
+
+        funNames = map (\(FD name _ _ _) -> name) $ lefts funStmt
+        dtNames = map (\(DD name _ _) -> name) dataDeclarations
+        duplicateFunNames = map (RedeclaredVariable . head) $ filter ((>1) . length) $ group $ sort funNames
+        duplicateDataNames = map (RedeclaredType . head) $ filter ((> 1) . length) $ group $ sort dtNames
+    in case duplicateFunNames <> duplicateDataNames of
+      s : ss -> pure $ Left $ s :| ss
       [] -> do
+        dtsWithGlobals <- Datatypes . (<> builtinTypes) . M.fromList <$> traverse (\name -> (,) name . TypeID <$> newUnique) dtNames
         funsWithGlobals <- M.fromList <$> traverse (\name -> (,) name . Global <$> newUnique) funNames
+        dataConstructors <- M.fromList <$> traverse (\name -> (,) name . Global <$> newUnique) (concatMap (\(DD _ _ dcs) -> map (\(DC g _) -> g) (NE.toList dcs)) dataDeclarations)
+        let allFunctions = Functions $ funsWithGlobals <> dataConstructors <> builtinConstructors  -- Treat data constructor as a function. Maps should be disjoint.
+
+        let prepareDatatypes :: [UDataDec] -> TopLevelResolve [RDataDec]
+            prepareDatatypes dds = do
+              traverse_ addTopLevelVariable $ concatMap (\(DD _ _ cons) -> map (\(DC name _) -> name) (NE.toList cons)) dds
+              for dds resolveDataDeclaration
 
         -- Resolve top level, yo.
         let onTopLevel :: UStmt -> TopLevelResolve RStmt
@@ -195,13 +236,14 @@ resolveAll tId _ funStmt =
                     return (params, body, ret)
 
                 -- Function name.
-                g <- (\(Functions funs) -> funs ! name) <$> ask
+                g <- (\(Functions funs, _) -> funs ! name) <$> ask
                 return $ FD g params' ret' body'
 
-        (rFunStmts, errs) <- evalRWST (traverse (bitraverse onFunction onTopLevel) funStmt) (Functions (traceShowId funsWithGlobals)) (TopLevelVariables mempty)
-        return $ case errs of
+        (rDataDecs, dtsErrs) <- evalRWST (prepareDatatypes dataDeclarations) (allFunctions, dtsWithGlobals) (TopLevelVariables mempty)
+        (rFunStmts, errs) <- evalRWST (traverse (bitraverse onFunction onTopLevel) funStmt) (allFunctions, dtsWithGlobals) (TopLevelVariables mempty)
+        return $ case errs <> dtsErrs of
           re : res -> Left (re :| res)
           [] ->
             let stmts = rights rFunStmts
                 funs = S.fromList $ lefts rFunStmts
-            in Right (TypeID 2, RModule { rmFunctions = funs, rmDataDecs = mempty, rmTLStmts = stmts })
+            in Right (RModule { rmFunctions = funs, rmDataDecs = S.fromList rDataDecs, rmTLStmts = stmts })

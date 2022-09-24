@@ -1,0 +1,38 @@
+
+Bul
+    Tru
+    Fols
+
+Either e a
+    Right a
+    Left e
+
+
+
+fun (f, x)
+    return f(x)
+
+plusOne (x)
+    return x + 1
+
+x = Right(10)
+y = Left(True)
+bul = True
+
+
+Tuple a b
+    Tuple a b
+
+xx = Tuple(1, Tru)
+
+apply2 (f, x, y)
+    return f(x, y)
+
+xxx = apply2(Tuple, 420, Fols)
+
+add2 (x, y)
+    return x + y
+
+xxxx = apply2(add2, 2, 1)
+
+dupsko = x == y

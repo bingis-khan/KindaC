@@ -57,8 +57,10 @@ data TypeError
 -----------------------------
 -- Context / Typing environment (Gamma)
 -- FEnv (normal 'let' env) ('letrec' env - don't instantiate) (teturn type)
-newtype Env = Env (Map (Either Global Local) TypedType) deriving (Show)
-data FEnv = FEnv (Map (Either Global Local) TypedType) (Map Global TypedType) TypedType deriving Show
+
+-- Builtins are used for getting a type for stuff like 'if'.
+data Env = Env Builtins (Map (Either Global Local) TypedType) deriving (Show)
+data FEnv = FEnv Builtins (Map (Either Global Local) TypedType) (Map Global TypedType) TypedType deriving Show
 type Constraint = (TypedType, TypedType)
 newtype TVarGen = TVG Int deriving (Show, Eq, Ord)
 
@@ -85,13 +87,13 @@ instantiateDeclared = instantiate' $ S.filter (\(TV tv) -> head tv /= '\'') . ft
 
 lookupEnv :: Either Global Local -> Infer TypedType
 lookupEnv (Left g) = do
-  (FEnv env letrecEnv _) <- ask
+  (FEnv _ env letrecEnv _) <- ask
 
   case letrecEnv !? g of
     Nothing -> instantiate $ env ! Left g
     Just t -> instantiateDeclared t
 lookupEnv (Right l) = do
-  fenv@(FEnv env env' _) <- ask
+  fenv@(FEnv _ env env' _) <- ask
   return $ env ! (\x -> show env `trace` x) (Right l)
 
 -- Straight outta dev.stephendiehl.com
@@ -105,13 +107,23 @@ fresh = do
   return $ Fix $ TVar $ TV $ letters !! nextVar
 
 noopFEnv :: Env -> TVarGen -> (FEnv, TVarGen)
-noopFEnv (Env env) tvg = (FEnv env mempty undefined, tvg)
+noopFEnv (Env builtins env) tvg = (FEnv builtins env mempty undefined, tvg)
 
 fresh' :: TLInfer TypedType
 fresh' = withRWST noopFEnv fresh
 
-uni ::TypedType -> TypedType -> Infer ()
+uni :: TypedType -> TypedType -> Infer ()
 uni t t' = tell [(t, t')]
+
+builtin :: String -> Infer TypedType
+builtin name = do
+  (FEnv (Builtins builtins _ _ _) _ _ _) <- ask
+  return $ builtins ! name
+
+intType, boolType :: Infer TypedType
+intType = builtin "Int"
+boolType = builtin "Bool"
+
 
 inferExpr :: RExpr -> Infer TExpr
 inferExpr = mapARS $ go <=< sequenceA   -- Apply inference and THEN modify the current expression. 
@@ -122,23 +134,24 @@ inferExpr = mapARS $ go <=< sequenceA   -- Apply inference and THEN modify the c
 
     go' :: ExprF (Either Global Local) TypedType -> Infer TypedType
     go' = \case
-      Lit (LInt _) -> return intType
-      Lit (LBool _) -> return boolType
+      Lit (LInt _) -> intType
+      Lit (LBool _) -> boolType
       Var gl -> lookupEnv gl
 
       Op t Equals t' -> do
         uni t t'
-        return boolType
+        boolType
 
       Op t NotEquals t' -> do
         uni t t'
-        return boolType
+        boolType
 
       -- All arithmetic operators.
       Op t op t' -> do
-        uni t intType
-        uni t' intType
-        return intType
+        it <- intType
+        uni t it
+        uni t' it
+        intType
 
       Call f args -> do
         ret <- fresh
@@ -158,13 +171,14 @@ inferStmt = mapARS $ go <=< bindExpr inferExpr <=< sequenceA
     go' :: StmtF Local Global TypedType TStmt -> Infer ()
     go' = \case
       If cond _ elifs _ -> do
-        uni cond boolType
-        traverse_ (uni boolType . fst) elifs
+        bt <- boolType
+        uni cond bt
+        traverse_ (uni bt . fst) elifs
       Assignment name t -> do
         varType <- lookupEnv (Right name)
         uni varType t
       Return t -> do
-        (FEnv _ _ ret) <- ask
+        (FEnv _ _ _ ret) <- ask
         uni t ret
       stmt -> return ()
 
@@ -206,6 +220,10 @@ instance Substitutable TFunDec where
       declared = ftv $ (ret:) $ map snd params
       inferred = ftv body
     in inferred \\ declared
+
+instance Substitutable TDataCon where
+  apply s (DC g ts) = DC g (apply s ts)
+  ftv (DC g ts) = ftv ts
 
 instance Substitutable a => Substitutable [a] where
   apply s = fmap (apply s)
@@ -274,6 +292,7 @@ unify (Fix (TVar v)) t = bind v t
 unify t (Fix (TVar v)) = bind v t
 --unify t (Fix (TDecVar v)) = bind v t
 unify (Fix (TFun ps r)) (Fix (TFun ps' r')) = unifyMany (ps ++ [r]) (ps' ++ [r'])
+unify (Fix (TCon t params)) (Fix (TCon t' params')) | t == t' = unifyMany params params'
 unify t t' = Failure $ NE.singleton $ UnificationMismatch t t'
 
 toEither :: Validation e a -> Either e a
@@ -317,11 +336,11 @@ inferLet' (freshParamTypes, freshReturn) letrecDefs fd@(FD name params ret body)
   let typedVars = M.fromList $ (fmap . first) Right $ M.toList $ M.fromList freshParams <> freshVars
   freshReturn <- maybe fresh' pure ret
 
-  withRWST (\(Env env) tvg -> (FEnv (env <> typedVars) letrecDefs freshReturn, tvg)) $ do
+  withRWST (\(Env builtins env) tvg -> (FEnv builtins (env <> typedVars) letrecDefs freshReturn, tvg)) $ do
     body' <- traverse inferStmt body
 
     let inferredType = Fix $ TFun freshParamTypes freshReturn
-    (FEnv env _ _) <- ask
+    (FEnv _ env _ _) <- ask
     let t = env ! Left name
     uni t inferredType
 
@@ -333,22 +352,20 @@ inferLet letrecDefs fd = do
   inferLet' paramsRet letrecDefs fd
 
 hasPartialDeclaration :: RFunDec -> Bool
-hasPartialDeclaration (FD _ params ret _) = 
+hasPartialDeclaration (FD _ params ret _) =
   let types = ret : map snd params
   in any isNothing types && not (all isNothing types)
 
 inferLetrec :: [RFunDec] -> TLInfer (Map Global TypedType, Set TFunDec)
 inferLetrec mrfds = do
   ((ts, funs), cts) <- listen $ do
-    (Env funs) <- ask
+    (Env _ funs) <- ask
 
     -- Globals are instatiated at the beginning for every global...
     let ogGlobals = map (\(FD g _ _ _) -> (g, funs ! Left g)) mrfds
 
     -- Shit, partial declarations don't work in letrecs (at least the way we do it).
     -- Either declare function type fully, or let me infer it. No middle ground.
-    let partialDeclarationErrors = map undefined $ filter hasPartialDeclaration mrfds
-
     lrTypes <- for mrfds $ \fd@(FD g _ _ _) -> if not (hasPartialDeclaration fd) then (,) g <$> instantiateFunction fd else error "Can't have fuckin' partial declarations for letrec. Also, I'll have to think of a way to signal this error better, but I don't feel like it right now."
 
     let lrTypesAsFuns = M.fromList $ (map . fmap) (Fix . uncurry TFun) lrTypes
@@ -369,42 +386,47 @@ climb' tlStmts = go
   where
     go :: [SCC RFunDec] -> TLInfer ([TStmt], Set TFunDec)
     go [] = do
-      (Env !env) <- traceShowId <$> ask
+      (Env _ !env) <- traceShowId <$> ask
       tstmts <- withRWST noopFEnv $ traverse inferStmt tlStmts
       return (tstmts, mempty)
     go (AcyclicSCC fd@(FD g _ _ _) : rest) = do
-      ((t, tfd), cts) <- (\x@((_, fun), _) -> ppShow fun `trace` x) <$> listen (inferLet mempty fd)
+      ((t, tfd), cts) <- (\x@((_, fun), _) -> ppShow undefined fun `trace` x) <$> listen (inferLet mempty fd)
       let (t', tfd') = case solve cts of
               Left ne -> (t, tfd)
               Right subst -> (apply subst t, apply subst tfd)
-      fmap (S.insert tfd') <$> local (\(Env env) -> Env $ M.insert (Left g) t' env) (go rest)
+      fmap (S.insert tfd') <$> local (\(Env builtins env) -> Env builtins $ M.insert (Left g) t' env) (go rest)
     go (CyclicSCC fds : rest) = do
       (ts, letrecs) <- inferLetrec fds
-      fmap (S.union letrecs) <$> local (\(Env env) -> Env $ M.union (M.mapKeys Left ts) env) (go rest)
+      fmap (S.union letrecs) <$> local (\(Env builtins env) -> Env builtins $ M.union (M.mapKeys Left ts) env) (go rest)
 
-climb :: Set RFunDec -> [RStmt] -> ([Constraint], Set TFunDec, [TStmt])
-climb fds stmts = (\((fds, stmts), cts) -> (cts, fds, stmts)) $ (\m -> evalRWS m (Env mempty) (TVG 0)) $ do
+climb :: Builtins -> Map Global TypedType -> Set RFunDec -> [RStmt] -> ([Constraint], Set TFunDec, [TStmt])
+climb builtins dcs fds stmts = (\((fds, stmts), cts) -> (cts, fds, stmts)) $ (\m -> evalRWS m (Env builtins mempty) (TVG 0)) $ do
   -- Don't forget to declare top level globals first.
   tlVars <- M.fromList <$> traverse (\local -> (,) local <$> fresh') (S.toList (localDefs stmts))
   funs <- M.fromList <$> traverse (\(FD g _ _ _) -> (,) g <$> fresh') (S.toList fds)
-  withRWS (\_ tvg -> (Env (M.mapKeys Right tlVars <> M.mapKeys Left funs), tvg)) $ do
+  withRWS (\_ tvg -> (Env builtins (M.mapKeys Right tlVars <> M.mapKeys Left (funs <> dcs)), tvg)) $ do
     (tstmts, tfds) <- climb' stmts $ (\x -> show ((map . fmap) (\(FD g _ _ _) -> g) x) `trace` x) $ poukładaj fds
     return (tfds, tstmts)
 
-typecheck :: RModule -> Either (NonEmpty TypeError) TModule
-typecheck (RModule { rmFunctions, rmDataDecs, rmTLStmts }) =
+dataConstructors :: Set RDataDec -> Map Global TypedType
+dataConstructors = M.fromList . concatMap (\dd@(DD _ _ dcs) -> map (\case DC g [] -> (g, dataDeclarationToType dd); DC g args -> (g, Fix $ TFun args $ dataDeclarationToType dd)) (NE.toList dcs)) . S.toList
+
+typecheck :: Builtins -> RModule -> Either (NonEmpty TypeError) TModule
+typecheck builtins@(Builtins _ _ ogDCs _) (RModule { rmFunctions, rmDataDecs, rmTLStmts }) =
   let
-    (cts, tfuns, stmts) = climb rmFunctions rmTLStmts
-    valSubst = fmap (\(Subst x) -> concatMap (("\t" ++) . (++ "\n") . show . bimap show ppShow) (M.toList x) `trace` Subst x) $ solve $ (\x -> ("Constraints: " ++ show (length x) ++ "\n" ++ concatMap (("\t" ++) . (++ "\n") . show . bimap ppShow ppShow) x) `trace` x) cts
+    dcs = dataConstructors rmDataDecs <> M.fromList (M.elems ogDCs)
+    (cts, tfuns, stmts) = climb builtins dcs rmFunctions rmTLStmts
+    valSubst = fmap (\(Subst x) -> concatMap (("\t" ++) . (++ "\n") . show . bimap show (ppShow undefined)) (M.toList x) `trace` Subst x) $ solve $ (\x -> ("Constraints: " ++ show (length x) ++ "\n" ++ concatMap (("\t" ++) . (++ "\n") . show . bimap (ppShow undefined) (ppShow undefined)) x) `trace` x) cts
   in case valSubst of
     Left tes -> Left tes
     Right su ->
       let
         finalFuns = apply su tfuns
         finalStmts = apply su stmts
+        finalDataDecs = rmDataDecs -- same structure
       in case S.toList (ftv finalStmts <> ftv finalFuns) of
-        []    -> Right $ TModule finalFuns mempty finalStmts
-        (tv : tvs) -> Left $ (\x -> ppShow (TModule finalFuns mempty finalStmts) `trace` x) $ (\x -> ppShow (TModule tfuns mempty stmts) `trace` x) $ Ambiguous <$> (tv :| tvs)
+        []    -> Right $ TModule finalFuns finalDataDecs finalStmts
+        (tv : tvs) -> Left $ (\x -> ppShow undefined (TModule finalFuns finalDataDecs finalStmts) `trace` x) $ (\x -> ppShow undefined (TModule tfuns finalDataDecs stmts) `trace` x) $ Ambiguous <$> (tv :| tvs)
   -- let withUniqueTypes = assignUniqueTypes rstmts  -- Assign each expression (only expressions right now) a unique type.
   -- env <- infer withUniqueTypes                    -- Then, try to infer them.
 

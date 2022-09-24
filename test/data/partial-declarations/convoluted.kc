@@ -5,7 +5,7 @@ f (x a) -> a
     print dupa
     return x
 
-g (x Int) -> Int
+g (x)
     print f(True)
     return x
 
