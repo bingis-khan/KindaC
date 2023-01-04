@@ -1,77 +1,58 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-enum t7__ {t7_____14_tag,t7_____15_tag,t7_____16_tag};
-struct t8__int_int_t7__ { 
-    enum {t8__int_int_t7_____17_tag
-    ,t8__int_int_t7_____18_tag
-    ,t8__int_int_t7_____19_tag
-    ,t8__int_int_t7_____20_tag} t8__int_int_t7____tags;
+struct t6__bool_int { 
+    enum {t6__bool_int___14_tag,t6__bool_int___15_tag} t6__bool_int__tags;
     union { 
         struct { 
-            enum t7__ t8__int_int_t7_____18__0;
-             } t8__int_int_t7_____18;
+            int t6__bool_int___14__0;
+             } t6__bool_int___14;
         struct { 
-            int t8__int_int_t7_____19__0;
-            enum t7__ t8__int_int_t7_____19__1;
-             } t8__int_int_t7_____19;
-        struct { 
-            int t8__int_int_t7_____20__0;
-            int t8__int_int_t7_____20__1;
-            enum t7__ t8__int_int_t7_____20__2;
-             } t8__int_int_t7_____20;
-         } t8__int_int_t7____union;
+            bool t6__bool_int___15__0;
+             } t6__bool_int___15;
+         } t6__bool_int__union;
      };
-static struct t8__int_int_t7__ t8__int_int_t7_____17_con = {.t8__int_int_t7____tags = t8__int_int_t7_____17_tag} ;
-static struct t8__int_int_t7__ t8__int_int_t7_____18_con (enum t7__ t8__int_int_t7_____18__0_param) {
-    return (struct t8__int_int_t7__) {.t8__int_int_t7____tags = t8__int_int_t7_____18_tag
-    ,.t8__int_int_t7____union.t8__int_int_t7_____18 = {.t8__int_int_t7_____18__0 = t8__int_int_t7_____18__0_param}};
+static struct t6__bool_int t6__bool_int___14_con (int t6__bool_int___14__0_param) {
+    return (struct t6__bool_int) {.t6__bool_int__tags = t6__bool_int___14_tag
+    ,.t6__bool_int__union.t6__bool_int___14 = {.t6__bool_int___14__0 = t6__bool_int___14__0_param}};
 }
-static struct t8__int_int_t7__ t8__int_int_t7_____19_con (int t8__int_int_t7_____19__0_param
-,enum t7__ t8__int_int_t7_____19__1_param) {
-    return (struct t8__int_int_t7__) {.t8__int_int_t7____tags = t8__int_int_t7_____19_tag
-    ,.t8__int_int_t7____union.t8__int_int_t7_____19 = {.t8__int_int_t7_____19__0 = t8__int_int_t7_____19__0_param
-    ,.t8__int_int_t7_____19__1 = t8__int_int_t7_____19__1_param}};
+static struct t6__bool_int t6__bool_int___15_con (bool t6__bool_int___15__0_param) {
+    return (struct t6__bool_int) {.t6__bool_int__tags = t6__bool_int___15_tag
+    ,.t6__bool_int__union.t6__bool_int___15 = {.t6__bool_int___15__0 = t6__bool_int___15__0_param}};
 }
-static struct t8__int_int_t7__ t8__int_int_t7_____20_con (int t8__int_int_t7_____20__0_param
-,int t8__int_int_t7_____20__1_param
-,enum t7__ t8__int_int_t7_____20__2_param) {
-    return (struct t8__int_int_t7__) {.t8__int_int_t7____tags = t8__int_int_t7_____20_tag
-    ,.t8__int_int_t7____union.t8__int_int_t7_____20 = {.t8__int_int_t7_____20__0 = t8__int_int_t7_____20__0_param
-    ,.t8__int_int_t7_____20__1 = t8__int_int_t7_____20__1_param
-    ,.t8__int_int_t7_____20__2 = t8__int_int_t7_____20__2_param}};
-}
-struct t6__t7__ { 
-    enum {t6__t7_____12_tag,t6__t7_____13_tag} t6__t7____tags;
-    union { 
-        struct { 
-            enum t7__ t6__t7_____12__0;
-             } t6__t7_____12;
-         } t6__t7____union;
+enum t5__ {t5_____12_tag,t5_____13_tag};
+struct t7__int_t5__ { 
+    int t7__int_t5_____16__0;
+    enum t5__ t7__int_t5_____16__1;
      };
-static struct t6__t7__ t6__t7_____12_con (enum t7__ t6__t7_____12__0_param) {
-    return (struct t6__t7__) {.t6__t7____tags = t6__t7_____12_tag
-    ,.t6__t7____union.t6__t7_____12 = {.t6__t7_____12__0 = t6__t7_____12__0_param}};
-}
-static struct t6__t7__ t6__t7_____13_con = {.t6__t7____tags = t6__t7_____13_tag} ;
-
-
-
-static struct t8__int_int_t7__ g9br_t8_t8_ret_t8 (struct t8__int_int_t7__ loc32, struct t8__int_int_t7__ loc33) {
-    return loc32;
+static struct t7__int_t5__ t7__int_t5_____16_con (int t7__int_t5_____16__0_param
+,enum t5__ t7__int_t5_____16__1_param) {
+    return (struct t7__int_t5__) {.t7__int_t5_____16__0 = t7__int_t5_____16__0_param
+    ,.t7__int_t5_____16__1 = t7__int_t5_____16__1_param};
 }
 
-static struct t6__t7__ g9br_t6_t6_ret_t6 (struct t6__t7__ loc32, struct t6__t7__ loc33) {
-    return loc32;
+
+
+static int g11br_t1_t1_ret_t1 (int loc33, int loc34) {
+    return loc33+loc34;
 }
 
-static int g9br_t1_t1_ret_t1 (int loc32, int loc33) {
-    return loc32;
+static struct t7__int_t5__ g10br_br_t1_t5_ret_t7_t1_t5_ret_t7 (struct t7__int_t5__ (*loc29)(int
+,enum t5__), int loc30, enum t5__ loc31) {
+    return loc29(loc30, loc31);
+}
+
+static int g10br_br_t1_t1_ret_t1_t1_t1_ret_t1 (int (*loc29)(int
+,int), int loc30, int loc31) {
+    return loc29(loc30, loc31);
 }
 
 int main ( ) {
-    g9br_t1_t1_ret_t1(1, 2);
-    g9br_t6_t6_ret_t6(t6__t7_____13_con, t6__t7_____12_con(t7_____16_tag));
-    bool loc34 = true;
-    g9br_t8_t8_ret_t8(t8__int_int_t7_____19_con(1, t7_____16_tag), t8__int_int_t7_____20_con(1, 2, t7_____15_tag));
+    struct t6__bool_int loc25 = t6__bool_int___14_con(10);
+    struct t6__bool_int loc26 = t6__bool_int___15_con(true);
+    bool loc27 = true;
+    struct t7__int_t5__ loc28 = t7__int_t5_____16_con(1, t5_____12_tag);
+    struct t7__int_t5__ loc32 = g10br_br_t1_t5_ret_t7_t1_t5_ret_t7(t7__int_t5_____16_con, 420, t5_____13_tag);
+    int loc35 = g10br_br_t1_t1_ret_t1_t1_t1_ret_t1(g11br_t1_t1_ret_t1, 2, 1);
+    //bool loc36 = loc25==loc26;
 }
