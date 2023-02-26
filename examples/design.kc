@@ -1,0 +1,6 @@
+
+f (x (a, c) -> b) -> (a, c) -> b
+    return x
+
+g (x (a, b) -> c): x as (a, b) -> c
+

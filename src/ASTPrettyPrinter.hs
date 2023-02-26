@@ -21,24 +21,25 @@ import Control.Monad.Trans.Class (lift)
 import Control.Applicative (liftA2)
 import Data.Functor ((<&>))
 import Data.Bitraversable (Bitraversable(bitraverse))
+import Data.Text (Text)
 
 
 data Context' = Context
-type Context a = Reader Context' (Doc a)
+type Context = Reader Context' (Doc ())  -- Annotaion is, for now, '()'. This will be used for stuff like syntax coloring,
 
-instance Semigroup (Context a) where
+instance Semigroup Context where
   l <> r = do
     l' <- l
     r' <- r
     pure $ l' <> r'
 
-instance Monoid a => Monoid (Context a) where
+instance Monoid Context where
   mempty = pure mempty
 
 class PrettyPrintable a where
-  pp :: a -> Context String
+  pp :: a -> Context
 
-  default pp :: Show a => a -> Context String
+  default pp :: Show a => a -> Context
   pp = pure . pretty . show
 
 instance PrettyPrintable Global where
@@ -50,8 +51,11 @@ instance PrettyPrintable Local where
 instance PrettyPrintable TypeID where
   pp t = pure $ "T" <> pretty (show t)
 
-instance PrettyPrintable String where
+instance PrettyPrintable Text where
   pp = pure . pretty
+
+instance PrettyPrintable Context where
+  pp = id
 
 
 instance PrettyPrintable a => PrettyPrintable [a] where
@@ -74,10 +78,10 @@ instance (PrettyPrintable e, PrettyPrintable a) => PrettyPrintable (Either e a) 
 instance (PrettyPrintable e, PrettyPrintable a) => PrettyPrintable (e, a) where
   pp (e, a) = liftA2 (\e a -> "(" <> e <> "," <+> a <> ")") (pp e) (pp a)
 
-nest' :: Context ann -> Context ann -> Context ann
+nest' :: Context -> Context -> Context
 nest' header = (header <>) . fmap (nest 4 . (line <>))
 
-ppNest :: PrettyPrintable a => Context String -> a -> Context String
+ppNest :: PrettyPrintable a => Context -> a -> Context
 ppNest header = nest' header . pp
 
 
@@ -86,7 +90,7 @@ instance PrettyPrintable t => PrettyPrintable (Type t) where
     TCon con [] -> pp con
     TCon con ts -> liftA2 (\con ts -> "(" <> con <+> hsep ts <> ")") (pp con) (sequenceA ts)
     TVar (TV tv) -> pure $ pretty tv
-    TFun args ret -> liftA2 (\args ret -> "(" <> hsep (punctuate "," args) <+> "->" <+> ret <> ")") (sequenceA args) ret
+    TFun args ret -> liftA2 (\args ret -> enclose "<" ">" (hsep (punctuate "," args)) <+> "->" <+> ret) (sequenceA args) ret
     TDecVar (TV tv) -> pure $ pretty tv
 
 instance PrettyPrintable TExpr where
@@ -119,7 +123,7 @@ instance PrettyPrintable Op where
 instance (PrettyPrintable g, PrettyPrintable l) => PrettyPrintable (Expr l g) where
   pp = cata ppExpr
 
-ppExpr :: (PrettyPrintable g, PrettyPrintable l) => ExprF (Either g l) (Context String) -> Context String
+ppExpr :: (PrettyPrintable g, PrettyPrintable l) => ExprF (Either g l) Context -> Context
 ppExpr = \case
     Lit lt -> case lt of
       LBool x -> pure $ pretty x
@@ -128,11 +132,13 @@ ppExpr = \case
     Var egl -> either pp pp egl
     Op l op r -> (\l op r -> hsep ["(", l, op, r, ")"]) <$> l <*> pp op <*> r
     Call c args -> (\c args -> c <+> encloseSep "(" ")" "," args) <$> c <*> sequenceA args
+    Lam params expr -> fmap (hsep . punctuate comma) (traverse pp params) <> pure (colon <> space) <> expr
+
 
 instance (PrettyPrintable expr, PrettyPrintable l, PrettyPrintable g) => PrettyPrintable (Stmt l g expr) where
   pp = cata $ go . first pp
     where
-      go :: (PrettyPrintable l, PrettyPrintable g) => Base (Stmt l g (Context String)) (Context String) -> Context String
+      go :: (PrettyPrintable l, PrettyPrintable g) => Base (Stmt l g Context) Context -> Context
       go = \case
         ExprStmt expr -> expr
         Print expr -> ("print" <+>) <$> expr
@@ -163,7 +169,7 @@ instance (PrettyPrintable g, PrettyPrintable l, PrettyPrintable t, PrettyPrintab
 
 instance PrettyPrintable RModule where
   pp (RModule { rmFunctions, rmDataDecs, rmTLStmts }) = do
-    funs <- pp rmFunctions 
+    funs <- pp $ (fmap (<> line) . pp <$> S.toList rmFunctions)
     dds <- pp rmDataDecs
     stmts <- pp rmTLStmts
     return $ vsep [funs, dds, stmts]
@@ -174,6 +180,12 @@ instance PrettyPrintable TModule where
     dds <- pp dds
     stmts <- pp stmts
     return $ vsep [funs, dds, stmts]
+
+-- Additional line when printing a list of TopLevels.
+instance PrettyPrintable TopLevel where
+  pp (FunDec fd) = pp fd
+  pp (DataDec dd) = pp dd
+  pp (TLStmt stmt) = pp stmt
 
 ppModule :: Context' -> RModule -> String
 ppModule ctx = show . flip runReader ctx . pp

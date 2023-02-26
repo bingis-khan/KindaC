@@ -4,6 +4,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Typecheck (typecheck, Substitutable(..), Subst(..)) where
 
@@ -32,6 +33,8 @@ import TypecheckAdditional (poukładaj)
 import Data.Graph (SCC (..))
 import ASTPrettyPrinter (ppModule, ppShow)
 import Data.Traversable (for)
+import Data.Text (Text)
+import qualified Data.Text as T
 
 
 -- Okay, what types do we need?
@@ -81,7 +84,7 @@ instantiate = instantiate' ftv
 
 -- This here assumes that fresh variables start with '. Maybe later enforce it with a type.
 instantiateDeclared :: TypedType -> Infer TypedType
-instantiateDeclared = instantiate' $ S.filter (\(TV tv) -> head tv /= '\'') . ftv
+instantiateDeclared = instantiate' $ S.filter (\(TV tv) -> T.head tv /= '\'') . ftv
 
 
 
@@ -97,8 +100,8 @@ lookupEnv (Right l) = do
   return $ env ! (\x -> show env `trace` x) (Right l)
 
 -- Straight outta dev.stephendiehl.com
-letters :: [String]
-letters = map ('\'': ) $ [1..] >>= flip replicateM ['a'..'z']
+letters :: [Text]
+letters = map (T.pack . ('\'':)) $ [1..] >>= flip replicateM ['a'..'z']
 
 fresh :: Infer TypedType
 fresh = do
@@ -115,7 +118,7 @@ fresh' = withRWST noopFEnv fresh
 uni :: TypedType -> TypedType -> Infer ()
 uni t t' = tell [(t, t')]
 
-builtin :: String -> Infer TypedType
+builtin :: Text -> Infer TypedType
 builtin name = do
   (FEnv (Builtins builtins _ _ _) _ _ _) <- ask
   return $ builtins ! name

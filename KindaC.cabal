@@ -41,6 +41,7 @@ executable kc
                      , process
                      , bimap
                      , split
+                     , text
 
 test-suite kc-test
   type: exitcode-stdio-1.0

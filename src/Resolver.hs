@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, OverloadedStrings, BangPatterns #-}
 module Resolver where
 
 import AST
@@ -25,15 +25,18 @@ import Data.Maybe (mapMaybe, fromMaybe)
 import Debug.Trace (traceShowId)
 import Data.Foldable (traverse_)
 import Data.Set (Set)
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 
 
 data ResolveError
-  = UndeclaredVariable String
-  | RedeclaredVariable String
-  | FunctionDeclaredAfterTopLevelVariable String
+  = UndeclaredVariable Text
+  | RedeclaredVariable Text
+  | FunctionDeclaredAfterTopLevelVariable Text
 
-  | UndeclaredType String Int -- Type name & arity
-  | RedeclaredType String
+  | UndeclaredType Text Int -- Type name & arity
+  | RedeclaredType Text
 
   | RepeatingTVar TVar
   | FTVInDataConstructor TVar
@@ -45,21 +48,21 @@ data ResolveError
 -- 2. Go through each line and assign a local to a top level variable (and lookup a global for the function).
 -- 2.1. Assign locals to the body.
 
-newtype TopLevelVariables = TopLevelVariables (Map String Local)
-newtype Functions = Functions (Map String Global)
-newtype Datatypes = Datatypes (Map String TypeID)
+newtype TopLevelVariables = TopLevelVariables (Map Text Local) 
+newtype Functions = Functions (Map Text Global)
+newtype Datatypes = Datatypes (Map Text TypeID)
 
 type TopLevelResolve = RWST (Functions, Datatypes) [ResolveError] TopLevelVariables IO
 
 
 data TopLevelEnv = TopLevelEnv Functions TopLevelVariables Datatypes
-newtype Locals = Locals (NonEmpty (Map String Local))
+newtype Locals = Locals (NonEmpty (Map Text Local)) deriving Show
 
 type Resolve = RWST TopLevelEnv [ResolveError] Locals IO
 
 
 
-addTopLevelVariable :: String -> TopLevelResolve Local
+addTopLevelVariable :: Text -> TopLevelResolve Local
 addTopLevelVariable name = do
     (TopLevelVariables tlVars) <- get
     case tlVars !? name of
@@ -72,7 +75,7 @@ addTopLevelVariable name = do
     return l
 
 
-runResolve :: Map String Local -> Resolve a -> TopLevelResolve a
+runResolve :: Map Text Local -> Resolve a -> TopLevelResolve a
 runResolve initialLocals res = do
     (funs, dts) <- ask
     tlVars <- get
@@ -83,7 +86,7 @@ runResolve initialLocals res = do
 resolveError :: Monad m => ResolveError -> RWST r [ResolveError] s m ()
 resolveError = tell . pure
 
-addVariable :: String -> Resolve Local
+addVariable :: Text -> Resolve Local
 addVariable name = do
     (Locals (vars :| rest)) <- get
     case vars !? name of
@@ -98,7 +101,7 @@ runEmptyResolve :: Resolve a -> TopLevelResolve a
 runEmptyResolve = runResolve mempty
 
 
-findVar :: String -> Resolve (Either Global Local)
+findVar :: Text -> Resolve (Either Global Local)
 findVar name = do
     (Locals scopes) <- get
     let findInScopes = case mapMaybe (!? name) $ NE.toList scopes of
@@ -113,7 +116,7 @@ findVar name = do
 
     case findInScopes of
       Nothing -> case findTopLevel of
-        Nothing -> liftIO (putStrLn (name ++ ": name")) >> return (Right undefined) -- Dunno, maybe sentinel value?
+        Nothing -> liftIO (TIO.putStrLn (name <> ": name")) >> return (Right undefined) -- Dunno, maybe sentinel value?
         Just egl -> return egl
       Just l -> return $ Right l
 
@@ -125,28 +128,44 @@ resolveExpr = mapARS $ \case
         in Var <$> findVar var
     Op l op r -> liftA3 Op l (pure op) r
     Call f params -> liftA2 Call f (sequenceA params)
+    Lam params expr -> withScope $ do
+      -- First, add new variables (in a new scope)
+      params' <- traverse (addVariable . either id id) params
+      Lam (map Right params') <$> expr  -- TODO: This is definitely bad. Make global/local parameters of expression later.
 
-beginScope :: NonEmpty (Resolve RStmt) -> Resolve (NonEmpty RStmt)
-beginScope body =
-    withRWST (\tl (Locals scopes) -> (tl , Locals (NE.insert mempty scopes))) $ sequenceA body
+withScope :: Resolve a -> Resolve a
+withScope m = do
+  -- looks kinda shit, but we don't want to modify that state, yo.
+  locals@(Locals scopes) <- get
+  put $ Locals (NE.insert mempty scopes)
+  x <- m
+  put locals
+
+  return x
+
+    
+
+withBody :: NonEmpty (Resolve RStmt) -> Resolve (NonEmpty RStmt)
+withBody = withScope . sequenceA
 
 resolveStmt :: UStmt -> Resolve RStmt
 resolveStmt = mapARS $ go <=< bindExpr resolveExpr
     where
-        go :: StmtF String String RExpr (Resolve RStmt) -> Resolve (StmtF Local Global RExpr RStmt)
+        go :: StmtF Text Text RExpr (Resolve RStmt) -> Resolve (StmtF Local Global RExpr RStmt)
         go = \case
           Print expr -> pure $ Print expr
-          Assignment name expr -> liftA2 Assignment (addVariable name) (pure expr)
-          If cond ifTrue elseIfs mIfFalse
+          Assignment name expr -> 
+            liftA2 Assignment (addVariable name) (pure expr)
+          If cond ifTrue elseIfs ifFalse
             ->  If cond
-            <$> beginScope ifTrue
-            <*> (traverse . traverse) beginScope elseIfs
-            <*> traverse beginScope mIfFalse
+            <$> withBody ifTrue
+            <*> (traverse . traverse) withBody elseIfs
+            <*> traverse withBody ifFalse
 
           ExprStmt expr -> pure $ ExprStmt expr
           Return expr -> pure $ Return expr
 
-resolveType :: Type String -> Resolve (Type TypeID)
+resolveType :: Type Text -> Resolve (Type TypeID)
 resolveType = mapARS $ \case
     TCon name types -> do
       (TopLevelEnv _ _ (Datatypes dts)) <- ask
@@ -176,7 +195,7 @@ resolveDataDeclaration (DD name tvs cons) = do
   rCons <- traverse (resolveDataConstructor tvSet) cons
   return $ DD g tvs rCons
 
-typeIDsFromBuiltins :: Builtins -> (Map String TypeID, Map String Global)
+typeIDsFromBuiltins :: Builtins -> (Map Text TypeID, Map Text Global)
 typeIDsFromBuiltins (Builtins builtinTypes _ builtinConstructors _) = (M.map (\(Fix (TCon g _)) -> g) builtinTypes, M.map fst builtinConstructors)
 
 -- Need to check for circular references here.

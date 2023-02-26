@@ -1,0 +1,13 @@
+
+
+g (x a -> a)
+    return x
+
+h (x (a, b) -> c)
+    return x
+
+f (x (a, b) -> c) -> (a, b) -> c
+    return x
+
+xx (x (a, b) -> c)
+    return x

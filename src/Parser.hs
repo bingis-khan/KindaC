@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, OverloadedStrings #-}
 module Parser (parse) where
 
 import AST
@@ -17,9 +17,11 @@ import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as NE
 import Control.Applicative (liftA2)
 import Data.Maybe (isNothing)
+import Data.Text (Text)
+import qualified Data.Text as T
 
 
-type Parser = Parsec Void String
+type Parser = Parsec Void Text
 
 lineComment :: Parser ()
 lineComment = L.skipLineComment "#"
@@ -33,42 +35,42 @@ sc = L.space hspace1 lineComment empty
 lexeme :: Parser a -> Parser a
 lexeme = L.lexeme sc
 
-sanitize :: String -> String
-sanitize = concatMap sub
+sanitize :: Text -> Text
+sanitize = T.concatMap sub
   where
-    sub :: Char -> String
+    sub :: Char -> Text
     sub '\'' = "_prime"
     sub '_' = "__"
-    sub s = [s]
+    sub s = T.singleton s
 
-typeName :: Parser String
+typeName :: Parser Text
 typeName = do
   s <- lexeme $ do
     x <- upperChar
     xs <- many (alphaNumChar <|> char '\'')
-    return (x:xs)
+    pure $ T.pack (x:xs)
   return $ sanitize s
 
 identifierChar :: Parser Char
 identifierChar = alphaNumChar <|> char '\''
 
-identifier :: Parser String
+identifier :: Parser Text
 identifier = do
   s <- lexeme $ do
     x <- lowerChar
     xs <- many identifierChar
-    return (x:xs)
+    pure $ T.pack (x:xs)
   return $ sanitize s
 
-dataConstructor :: Parser String
+dataConstructor :: Parser Text
 dataConstructor = do
   s <- lexeme $ do
     x <- upperChar
     xs <- many identifierChar
-    return (x:xs)
+    pure $ T.pack (x:xs)
   return $ sanitize s
 
-varDec :: Parser String
+varDec :: Parser Text
 varDec = identifier
 
 generic :: Parser TVar
@@ -83,23 +85,28 @@ generic = TV <$> varDec
 --                 return $ FunType $ FunctionType returnType params))
 --         <|> (Polymorphic <$> generic)
 
-symbol :: String -> Parser String
+symbol :: Text -> Parser Text
 symbol = L.symbol sc
 
-keyword :: String -> Parser String
+keyword :: Text -> Parser Text
 keyword kword = lexeme (string kword <* notFollowedBy identifierChar)
 
 
-binary :: String -> (expr -> expr -> expr) -> Operator Parser expr
+binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
 binary s f = InfixL $ f <$ symbol s
 
-prefix :: String -> (expr -> expr) -> Operator Parser expr
+prefix :: Text -> (expr -> expr) -> Operator Parser expr
 prefix name f = Prefix $ f <$ symbol name
 
 call :: Operator Parser UExpr
 call = Postfix $ do
     args <- between (symbol "(") (symbol ")") $ expr `sepBy` symbol ","
     return $ Fix . flip Call args
+  
+lambda :: Operator Parser UExpr
+lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
+  params <- try $ (identifier `sepBy` symbol ",") <* symbol ":"
+  return $ Fix . Lam (map Right params)
 
 operatorTable :: [[Operator Parser UExpr]]
 operatorTable =
@@ -119,6 +126,8 @@ operatorTable =
   , [ binary' "==" Equals
     , binary' "/=" NotEquals
     ]
+  , [ lambda
+    ]
   ] where
     prefix' = prefix
     binary' name op = binary name $ \x y -> Fix (Op x op y)
@@ -136,7 +145,7 @@ expr :: Parser UExpr
 expr = makeExprParser term operatorTable
 
 
-definition :: Parser (StmtF String g UExpr a)
+definition :: Parser (StmtF Text g UExpr a)
 definition = do
   name <- try $ identifier <* symbol "="
 
@@ -175,13 +184,33 @@ stmt = Fix <$> choice
   , stmtExpr
   ]
 
+-- Iffy expression parser. When I add tuples *and* higher kinded types, we might be able to use the in-built expr parser.
+-- Why iffy? I want '(' and ')' to be used solely as grouping, but they are kinda in-built right now.
 parseType :: Parser UntypedType
-parseType = polyType <|> concrete
+parseType = choice
+  [ funType
+  , grouping
+  , concrete
+  , polyType
+  ]
   where
     polyType = Fix . TDecVar <$> generic
+    funType = do
+      args <- try $ do
+        params <- choice
+          [ between (symbol "(") (symbol ")") $ parseType `sepBy` symbol "," 
+          , (:[]) <$> (concrete <|> polyType)
+          ]
+        symbol "->"
+        return params
+      ret <- parseType
+      return $ Fix $ TFun args ret
+    
+    grouping = between (symbol "(") (symbol ")") parseType
+
     concrete = do
       tcon <- typeName
-      targs <- many $ between (symbol "(") (symbol ")") parseType <|> polyType <|> ((\name -> Fix $ TCon name []) <$> typeName)
+      targs <- many $ grouping <|> polyType <|> ((\name -> Fix $ TCon name []) <$> typeName)
       return $ Fix $ TCon tcon targs
 
 dataCon :: Parser UDataCon
@@ -207,7 +236,7 @@ dataDec = L.indentBlock scn $ do
 -- Also, we should throw a custom error if we *know* it's a function, but there's now body.
 
 -- If
-onlyFunctionDeclaration :: Parser (String, [(String, Maybe UntypedType)], Either UExpr (Maybe UntypedType))
+onlyFunctionDeclaration :: Parser (Text, [(Text, Maybe UntypedType)], Either UExpr (Maybe UntypedType))
 onlyFunctionDeclaration = do
   let param = liftA2 (,) identifier (optional parseType)
 
@@ -246,5 +275,5 @@ topLevel
   <|> (try (lookAhead (onlyFunctionDeclaration >> eol)) >> either (TLStmt . Fix . ExprStmt) FunDec <$> funDec)
   <|> TLStmt <$> stmt
 
-parse :: String -> Either String [TopLevel]
+parse :: Text -> Either String [TopLevel]
 parse = first errorBundlePretty . TM.parse (scn >> many (L.nonIndented sc topLevel <* scn) <* eof) "fairu"

@@ -29,6 +29,7 @@ import Data.Foldable (toList)
 import qualified Data.Map as M
 import Typecheck (apply, Subst (Subst))
 import Data.Bool (bool)
+import qualified Data.Text as T
 
 
 
@@ -57,8 +58,8 @@ ppIdType = cataA $ \case
   TCon t _ -> pure $ "t" <> pretty (show t)
 
   -- Invalid state.
-  TDecVar (TV tv) -> error $ concat ["'", tv, "' decvar should not be here."]
-  TVar (TV tv) -> error $ concat ["'", tv, "' decvar should not be here."]
+  TDecVar (TV tv) -> error $ concat ["'", T.unpack tv, "' decvar should not be here."]
+  TVar (TV tv) -> error $ concat ["'", T.unpack tv, "' decvar should not be here."]
 
 ppConstructor :: TypeID -> [TypedType] -> Global -> Context String
 ppConstructor t tts g = do

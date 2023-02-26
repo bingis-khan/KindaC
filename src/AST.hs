@@ -25,6 +25,7 @@ import qualified Data.Set as S
 import Data.Semigroup (sconcat)
 import Data.Foldable (fold)
 import Data.Map (Map)
+import Data.Text (Text)
 
 
 -- File structure:
@@ -70,6 +71,7 @@ data ExprF i a
   | Var i
   | Op a Op a
   | Call a [a]
+  | Lam [i] a
   deriving (Show, Functor, Foldable, Traversable)
 $(deriveShow1 ''ExprF)
 $(deriveEq1 ''ExprF)
@@ -100,7 +102,7 @@ type Stmt l g expr = Fix (StmtF l g expr)
 -- Type --
 ----------
 
-newtype TVar = TV String deriving (Show, Eq, Ord)
+newtype TVar = TV Text deriving (Show, Eq, Ord)
 
 data TypeF t a
   = TCon t [a]
@@ -167,14 +169,14 @@ data TopLevel
 -- Untyped --
 -------------
 
-type UntypedType = Type String
+type UntypedType = Type Text
 
-type UExpr = Expr String String   -- Was: Fix (ExprF String). It's for resolving, because Resolvable needs an instance with either. Should be temporary.
+type UExpr = Expr Text Text   -- Was: Fix (ExprF Text). It's for resolving, because Resolvable needs an instance with either. Should be temporary.
                                   -- I can use this https://web.archive.org/web/20070702202021/https://www.cs.vu.nl/boilerplate/. to quickly map those things.
-type UStmt = Stmt String String UExpr
-type UDataCon = DataCon String (Type String)
-type UDataDec = DataDec String String UDataCon
-type UFunDec = FunDec String String (Maybe (Type String)) UStmt
+type UStmt = Stmt Text Text UExpr
+type UDataCon = DataCon Text (Type Text)
+type UDataDec = DataDec Text Text UDataCon
+type UFunDec = FunDec Text Text (Maybe (Type Text)) UStmt
 
 
 
@@ -252,7 +254,7 @@ data MModule = MModule [TDataDec] [Either MonoFunDec TFunDec] [TStmt] deriving S
 ---------------------------------------------
 -- Built-in Datatypes
 ---------------------------------------------
-data Builtins = Builtins (Map String TypedType) (Map TypeID String) (Map String (Global, TypedType)) (Map Global String) deriving Show
+data Builtins = Builtins (Map Text TypedType) (Map TypeID Text) (Map Text (Global, TypedType)) (Map Global Text) deriving Show
 
 ---------------------------------------------
 -- Misc. functions
