@@ -188,7 +188,7 @@ newtype Local = Local { fromLocal :: Unique } deriving (Eq, Ord)
 newtype TypeID = TypeID { fromTypeID :: Unique } deriving (Eq, Ord)
 
 instance Show Global where
-  show (Global u) = show $ hashUnique u 
+  show (Global u) = show $ hashUnique u
 
 instance Show Local where
   show (Local u) = show $ hashUnique u
@@ -276,7 +276,7 @@ mapARS f = cata (fmap embed . f)
 
 foldStmt :: Monoid m => (expr -> m) -> Stmt l g expr -> m
 foldStmt f = cata $ bifold . first f
-  
+
 ezFoldStmt :: Monoid m => (ExprF Global Local m -> m) -> Stmt l g (Fix (ExprType t)) -> m
 ezFoldStmt f = foldStmt $ cata $ \case
   ExprType _ expr -> f expr
@@ -287,10 +287,22 @@ usedLocals (FD name params ret body) = flip foldMap body $ ezFoldStmt $ \case
   Var (Right l) -> S.singleton l
   s -> fold s
 
-localDefs :: (Foldable f) => f (Stmt Local a b) -> Set Local
-localDefs = foldMap $ cata $ \case
-  Assignment l _ -> S.singleton l
-  stmt -> fold stmt
+
+cataBoth :: (Monoid a) => (Base (Expr Local g) a -> a) -> (Base (Stmt Local g' a) a  -> a) -> Stmt Local g' (Expr Local g) -> a
+cataBoth e s = cata $ s . first (cata e)
+
+-- Get local defs including lambdas (might be bad, but it works)
+localDefs :: (Foldable f) => f (Stmt Local g (Expr Local g)) -> Set Local
+localDefs = foldMap $ cataBoth e s
+  where
+    e = \case
+      Lam params locals -> S.fromList params <> locals
+      expr -> fold expr
+
+    s = \case
+      Assignment l locals -> S.singleton l <> locals
+      stmt -> bifold stmt
+
 
 dataDeclarationToType :: DataDec Global TypeID datacon -> TypedType
 dataDeclarationToType (DD t tvs _) = Fix $ TCon t $ map (Fix . TDecVar) tvs

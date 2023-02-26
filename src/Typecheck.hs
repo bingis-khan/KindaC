@@ -97,7 +97,7 @@ lookupEnv (Left g) = do
     Just t -> instantiateDeclared t
 lookupEnv (Right l) = do
   fenv@(FEnv _ env env' _) <- ask
-  return $ env ! (\x -> show env `trace` x) (Right l)
+  return $ env ! (\x -> (show l <> " " <> show env) `trace` x) (Right l)  -- fucks up here
 
 -- Straight outta dev.stephendiehl.com
 letters :: [Text]
@@ -162,6 +162,10 @@ inferExpr = mapARS $ go <=< sequenceA   -- Apply inference and THEN modify the c
 
         uni f funType
         return ret
+      
+      Lam params ret -> do
+        paramTypes <- traverse (lookupEnv . Right) params 
+        return $ Fix $ TFun paramTypes ret
 
 
 inferStmt :: RStmt -> Infer TStmt

@@ -75,10 +75,10 @@ main = do
           print res
         Right rmodule -> do
           putStrLn $ ppModule undefined rmodule
-      --     case typecheck builtins rmodule of
-      --       Left ne -> print ne
-      --       Right module' -> do
-      --         putStrLn $ ppShow undefined module'
+          case typecheck builtins rmodule of
+            Left ne -> print ne
+            Right module' -> do
+              putStrLn $ ppShow undefined module'
       --         let (dds, funs, stmts) = monomorphize builtins module'
       --         putStrLn $ ppShow undefined dds
       --         putStrLn $ ppShow undefined funs

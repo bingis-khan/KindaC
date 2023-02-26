@@ -94,7 +94,7 @@ instance PrettyPrintable t => PrettyPrintable (Type t) where
     TDecVar (TV tv) -> pure $ pretty tv
 
 instance PrettyPrintable TExpr where
-  pp = cata $ \(ExprType t expr) -> (\t expr -> hsep ["(", t <> ":", expr, ")"]) <$> pp t <*> ppExpr expr
+  pp = cata $ \(ExprType t expr) -> (\t expr -> hsep ["(", expr, "::", t,  ")"]) <$> pp t <*> ppExpr expr
 
 instance (PrettyPrintable g, PrettyPrintable tid)
   => PrettyPrintable (DataCon g tid) where
