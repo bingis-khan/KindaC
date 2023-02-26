@@ -106,7 +106,7 @@ call = Postfix $ do
 lambda :: Operator Parser UExpr
 lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
   params <- try $ (identifier `sepBy` symbol ",") <* symbol ":"
-  return $ Fix . Lam (map Right params)
+  return $ Fix . Lam params
 
 operatorTable :: [[Operator Parser UExpr]]
 operatorTable =

@@ -123,7 +123,7 @@ instance PrettyPrintable Op where
 instance (PrettyPrintable g, PrettyPrintable l) => PrettyPrintable (Expr l g) where
   pp = cata ppExpr
 
-ppExpr :: (PrettyPrintable g, PrettyPrintable l) => ExprF (Either g l) Context -> Context
+ppExpr :: (PrettyPrintable g, PrettyPrintable l) => ExprF g l Context -> Context
 ppExpr = \case
     Lit lt -> case lt of
       LBool x -> pure $ pretty x

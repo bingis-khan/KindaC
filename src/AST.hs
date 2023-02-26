@@ -66,17 +66,17 @@ data LitType
   | LBool Bool
   deriving (Eq, Ord, Show)
 
-data ExprF i a
+data ExprF g l a
   = Lit LitType
-  | Var i
+  | Var (Either g l)
   | Op a Op a
   | Call a [a]
-  | Lam [i] a
+  | Lam [l] a
   deriving (Show, Functor, Foldable, Traversable)
 $(deriveShow1 ''ExprF)
 $(deriveEq1 ''ExprF)
 
-type Expr l g = Fix (ExprF (Either g l))
+type Expr l g = Fix (ExprF g l)
 
 
 
@@ -219,7 +219,7 @@ data RModule = RModule
 -- Typed --
 -----------
 data ExprType t a
-  = ExprType (Type t) (ExprF (Either Global Local) a)
+  = ExprType (Type t) (ExprF Global Local a)
   deriving (Show, Functor, Foldable)
 $(deriveShow1 ''ExprType)
 
@@ -277,7 +277,7 @@ mapARS f = cata (fmap embed . f)
 foldStmt :: Monoid m => (expr -> m) -> Stmt l g expr -> m
 foldStmt f = cata $ bifold . first f
   
-ezFoldStmt :: Monoid m => (ExprF (Either Global Local) m -> m) -> Stmt l g (Fix (ExprType t)) -> m
+ezFoldStmt :: Monoid m => (ExprF Global Local m -> m) -> Stmt l g (Fix (ExprType t)) -> m
 ezFoldStmt f = foldStmt $ cata $ \case
   ExprType _ expr -> f expr
 

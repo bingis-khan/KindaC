@@ -135,7 +135,7 @@ inferExpr = mapARS $ go <=< sequenceA   -- Apply inference and THEN modify the c
       let t = go' $ fmap (\(Fix (ExprType t _)) -> t) exprt
       in ExprType <$> t <*> pure exprt
 
-    go' :: ExprF (Either Global Local) TypedType -> Infer TypedType
+    go' :: ExprF Global Local TypedType -> Infer TypedType
     go' = \case
       Lit (LInt _) -> intType
       Lit (LBool _) -> boolType

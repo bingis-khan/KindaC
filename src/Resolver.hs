@@ -130,8 +130,8 @@ resolveExpr = mapARS $ \case
     Call f params -> liftA2 Call f (sequenceA params)
     Lam params expr -> withScope $ do
       -- First, add new variables (in a new scope)
-      params' <- traverse (addVariable . either id id) params
-      Lam (map Right params') <$> expr  -- TODO: This is definitely bad. Make global/local parameters of expression later.
+      params' <- traverse addVariable params
+      Lam params' <$> expr  -- TODO: This is definitely bad. Make global/local parameters of expression later.
 
 withScope :: Resolve a -> Resolve a
 withScope m = do
