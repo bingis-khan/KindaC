@@ -6,7 +6,7 @@ import Resolver (resolveAll)
 import Data.Functor.Foldable (cata)
 import AST
 import Typecheck (typecheck)
-import CPrettyPrinter (Context'(..))
+import CPrettyPrinter (Context''(..), pp)
 import ASTPrettyPrinter (ppModule, ppShow)
 
 import System.Process (callCommand)
@@ -33,7 +33,7 @@ groupAfterParsing =  mconcat . map go
     go (TLStmt stmt) = (mempty, pure (Right stmt))
     go (DataDec dd) = (pure dd, mempty)
 
-prepareContext :: (Foldable t, Functor t) => Builtins -> t (TDataDec, [TypedType]) -> Context'
+prepareContext :: (Foldable t, Functor t) => Builtins -> t (TDataDec, [TypedType]) -> Context''
 prepareContext builtins dds = Context { datas, builtins }
   where
     datas = M.fromList $ toList $ fmap (\(dd@(DD t _ _), tts) -> ((t, tts), dd)) dds
@@ -47,8 +47,8 @@ builtinTypes =
   , CType "Bool" [("True", "true"), ("False", "false")] "bool"
   ]
 
-prepareTypes :: IO Builtins
-prepareTypes = do
+prepareTypes :: [CType] -> IO Builtins
+prepareTypes builtinTypes = do
   (toTypes, fromTypes) <- bimap M.fromList M.fromList . unzip <$> traverse (\(CType name _ cName) -> TypeID <$> newUnique <&> \t -> ((name, Fix (TCon t [])), (t, cName))) builtinTypes
   (toCons, fromCons) <- bimap M.fromList M.fromList . unzip <$> traverse (\(name, cName, (cons, cCons)) -> Global <$> newUnique <&> \g -> ((cons, (g, toTypes ! name)), (g, cCons))) (concatMap (\(CType name cons cName) -> (name, cName,) <$> cons) builtinTypes)
   return $ Builtins toTypes fromTypes toCons fromCons
@@ -61,7 +61,7 @@ main = do
   (filename:_) <- getArgs
   file <- TIO.readFile filename
 
-  builtins <- prepareTypes
+  builtins <- prepareTypes builtinTypes
   print builtins
   case parse file of
     Left s -> putStrLn s
@@ -79,10 +79,10 @@ main = do
             Left ne -> print ne
             Right module' -> do
               putStrLn $ ppShow undefined module'
-      --         let (dds, funs, stmts) = monomorphize builtins module'
-      --         putStrLn $ ppShow undefined dds
-      --         putStrLn $ ppShow undefined funs
-      --         putStrLn $ ppShow undefined stmts
-      --         writeFile "test.c" $ pp (prepareContext builtins (rights dds)) dds funs stmts
-      --         -- callCommand "gcc test.c"
-      --         return ()
+              let (dds, funs, stmts) = monomorphize builtins module'
+              putStrLn $ ppShow undefined dds
+              putStrLn $ ppShow undefined funs
+              putStrLn $ ppShow undefined stmts
+              writeFile "test.c" =<< pp (prepareContext builtins (rights dds)) dds funs stmts
+              -- callCommand "gcc test.c"
+              return ()

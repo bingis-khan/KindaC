@@ -169,14 +169,21 @@ instance (PrettyPrintable g, PrettyPrintable l, PrettyPrintable t, PrettyPrintab
 
 instance PrettyPrintable RModule where
   pp (RModule { rmFunctions, rmDataDecs, rmTLStmts }) = do
-    funs <- pp $ (fmap (<> line) . pp <$> S.toList rmFunctions)
+    funs <- pp (fmap (<> line) . pp <$> S.toList rmFunctions)
     dds <- pp rmDataDecs
     stmts <- pp rmTLStmts
     return $ vsep [funs, dds, stmts]
 
 instance PrettyPrintable TModule where
   pp (TModule funs dds stmts) = do
-    funs <- pp funs
+    funs <- pp (fmap (<> line) . pp <$> S.toList funs)
+    dds <- pp dds
+    stmts <- pp stmts
+    return $ vsep [funs, dds, stmts]
+  
+instance PrettyPrintable MModule where
+  pp (MModule dds funs stmts) = do
+    funs <- pp (fmap (<> line) . pp <$> funs)
     dds <- pp dds
     stmts <- pp stmts
     return $ vsep [funs, dds, stmts]

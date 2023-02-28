@@ -1,21 +1,32 @@
 
+id (x)
+    return x
+
 fun (f a -> a, x a) -> a
     return f(x)
+
+
+
 
 funny (x Int)
     return y: x + y
 
-wut (which Bool)
+print funny
+
+wut (which)
     if which
         return x: x + 1
     else
         return x: x - 1
+
+print wut
 
 main ()
     # Basic
     lambda = x: x + 1
     withParens = (x: (x * 69))
     x = fun(x: x + 420, 69)
+
     # With args
     argful = x, y, z: x + y - z
     argless = : 69
@@ -28,3 +39,6 @@ main ()
     # Nested lambdas
     nested = x: y: x + y
     nested' = x: y: z: x + y + z
+    return 0
+
+print main

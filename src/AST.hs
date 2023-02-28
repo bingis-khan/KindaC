@@ -291,7 +291,7 @@ usedLocals (FD name params ret body) = flip foldMap body $ ezFoldStmt $ \case
 cataBoth :: (Monoid a) => (Base (Expr Local g) a -> a) -> (Base (Stmt Local g' a) a  -> a) -> Stmt Local g' (Expr Local g) -> a
 cataBoth e s = cata $ s . first (cata e)
 
--- Get local defs including lambdas (might be bad, but it works)
+-- Get local defs including lambdas (might be bad, but it)
 localDefs :: (Foldable f) => f (Stmt Local g (Expr Local g)) -> Set Local
 localDefs = foldMap $ cataBoth e s
   where

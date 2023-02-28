@@ -1,0 +1,37 @@
+
+x = :69
+f = x, y: x + y
+id = x: x
+
+Maybe a
+    Nothing
+    Just a
+
+nothing () -> Maybe a
+    return Nothing
+
+just () -> a -> Maybe a
+    return Just
+
+
+test'' (x, y, z)
+    return 1
+
+test' (x, y)
+    return test''
+
+test (x)
+    return test'
+
+n = test(1)(1, 2)(1, 2, 3)
+print n
+#print n == o
+#print n == p
+
+print x
+print f
+
+print x()
+print f(1, 2)
+print id
+print id(True)

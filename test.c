@@ -1,58 +1,38 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-struct t6__bool_int { 
-    enum {t6__bool_int___14_tag,t6__bool_int___15_tag} t6__bool_int__tags;
-    union { 
-        struct { 
-            int t6__bool_int___14__0;
-             } t6__bool_int___14;
-        struct { 
-            bool t6__bool_int___15__0;
-             } t6__bool_int___15;
-         } t6__bool_int__union;
-     };
-static struct t6__bool_int t6__bool_int___14_con (int t6__bool_int___14__0_param) {
-    return (struct t6__bool_int) {.t6__bool_int__tags = t6__bool_int___14_tag
-    ,.t6__bool_int__union.t6__bool_int___14 = {.t6__bool_int___14__0 = t6__bool_int___14__0_param}};
-}
-static struct t6__bool_int t6__bool_int___15_con (bool t6__bool_int___15__0_param) {
-    return (struct t6__bool_int) {.t6__bool_int__tags = t6__bool_int___15_tag
-    ,.t6__bool_int__union.t6__bool_int___15 = {.t6__bool_int___15__0 = t6__bool_int___15__0_param}};
-}
-enum t5__ {t5_____12_tag,t5_____13_tag};
-struct t7__int_t5__ { 
-    int t7__int_t5_____16__0;
-    enum t5__ t7__int_t5_____16__1;
-     };
-static struct t7__int_t5__ t7__int_t5_____16_con (int t7__int_t5_____16__0_param
-,enum t5__ t7__int_t5_____16__1_param) {
-    return (struct t7__int_t5__) {.t7__int_t5_____16__0 = t7__int_t5_____16__0_param
-    ,.t7__int_t5_____16__1 = t7__int_t5_____16__1_param};
-}
 
 
 
-static int g11br_t1_t1_ret_t1 (int loc33, int loc34) {
-    return loc33+loc34;
+
+
+static int g8br_t1_t1_t1_ret_t1 (int loc21, int loc22, int loc23) {
+    return 1;
 }
 
-static struct t7__int_t5__ g10br_br_t1_t5_ret_t7_t1_t5_ret_t7 (struct t7__int_t5__ (*loc29)(int
-,enum t5__), int loc30, enum t5__ loc31) {
-    return loc29(loc30, loc31);
+
+static int (int, int, int) g9br_t1_t1_ret_br_t1_t1_t1_ret_t1 (int loc24, int loc25) {
+    return g8br_t1_t1_t1_ret_t1;
 }
 
-static int g10br_br_t1_t1_ret_t1_t1_t1_ret_t1 (int (*loc29)(int
-,int), int loc30, int loc31) {
-    return loc29(loc30, loc31);
+
+static int (int, int, int) (int, int) g10br_t1_ret_br_t1_t1_ret_br_t1_t1_t1_ret_t1 (int loc26) {
+    return g9br_t1_t1_ret_br_t1_t1_t1_ret_t1;
 }
 
+static int lam28 () { return 69; }
+static int lam29 (int loc16, int loc17) { return loc16+loc17; }
+static bool lam30 (bool loc19) { return loc19; }
 int main ( ) {
-    struct t6__bool_int loc25 = t6__bool_int___14_con(10);
-    struct t6__bool_int loc26 = t6__bool_int___15_con(true);
-    bool loc27 = true;
-    struct t7__int_t5__ loc28 = t7__int_t5_____16_con(1, t5_____12_tag);
-    struct t7__int_t5__ loc32 = g10br_br_t1_t5_ret_t7_t1_t5_ret_t7(t7__int_t5_____16_con, 420, t5_____13_tag);
-    int loc35 = g10br_br_t1_t1_ret_t1_t1_t1_ret_t1(g11br_t1_t1_ret_t1, 2, 1);
-    //bool loc36 = loc25==loc26;
+    int (*loc15)() = lam28;
+    int (*loc18)(int,int) = lam29;
+    bool (*loc20)(bool) = lam30;
+    int loc27 = g10br_t1_ret_br_t1_t1_ret_br_t1_t1_t1_ret_t1(1)(1, 2)(1, 2, 3);
+    printf("%d\n", loc27);
+    printf("%x: () 1\n", loc15);
+    printf("%x: (1,  1) 1\n", loc18);
+    printf("%d\n", loc15());
+    printf("%d\n", loc18(1, 2));
+    printf("%x: (2) 2\n", loc20);
+    printf("%s\n", loc20(true) ? "True" : "False");
 }
