@@ -99,7 +99,7 @@ prefix :: Text -> (expr -> expr) -> Operator Parser expr
 prefix name f = Prefix $ f <$ symbol name
 
 call :: Operator Parser UExpr
-call = Postfix $ do
+call = Postfix $ fmap (foldr1 (.) . reverse) $ some $ do
     args <- between (symbol "(") (symbol ")") $ expr `sepBy` symbol ","
     return $ Fix . flip Call args
   
