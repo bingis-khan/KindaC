@@ -14,17 +14,12 @@ just () -> a -> Maybe a
     return Just
 
 
-test'' (x, y, z)
-    return 1
 
-test' (x, y)
-    return test''
+n = x: y: 1
+id' = x:x
 
-test (x)
-    return test'
-
-n = test(1)(1, 2)(1, 2, 3)
-print n
+print n(1)(True)
+print id'(n)
 #print n == o
 #print n == p
 

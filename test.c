@@ -6,33 +6,25 @@
 
 
 
-static int g8br_t1_t1_t1_ret_t1 (int loc21, int loc22, int loc23) {
-    return 1;
-}
 
-
-static int (int, int, int) g9br_t1_t1_ret_br_t1_t1_t1_ret_t1 (int loc24, int loc25) {
-    return g8br_t1_t1_t1_ret_t1;
-}
-
-
-static int (int, int, int) (int, int) g10br_t1_ret_br_t1_t1_ret_br_t1_t1_t1_ret_t1 (int loc26) {
-    return g9br_t1_t1_ret_br_t1_t1_t1_ret_t1;
-}
-
-static int lam28 () { return 69; }
-static int lam29 (int loc16, int loc17) { return loc16+loc17; }
-static bool lam30 (bool loc19) { return loc19; }
+static int lam23 () { return 69; }
+static int lam24 (int loc13, int loc14) { return loc13+loc14; }
+static bool lam25 (bool loc16) { return loc16; }
+static int lam27 (bool loc19) { return 1; }
+static int (bool) lam26 (int loc18) { return lam27; }
+static int (bool) (int) lam28 (int (bool) (*loc21)(int)) { return loc21; }
 int main ( ) {
-    int (*loc15)() = lam28;
-    int (*loc18)(int,int) = lam29;
-    bool (*loc20)(bool) = lam30;
-    int loc27 = g10br_t1_ret_br_t1_t1_ret_br_t1_t1_t1_ret_t1(1)(1, 2)(1, 2, 3);
-    printf("%d\n", loc27);
-    printf("%x: () 1\n", loc15);
-    printf("%x: (1,  1) 1\n", loc18);
-    printf("%d\n", loc15());
-    printf("%d\n", loc18(1, 2));
-    printf("%x: (2) 2\n", loc20);
-    printf("%s\n", loc20(true) ? "True" : "False");
+    int (*loc12)() = lam23;
+    int (*loc15)(int,int) = lam24;
+    bool (*loc17)(bool) = lam25;
+    int (bool) (*loc20)(int) = lam26;
+    int (bool) (int) (*loc22)(int (bool) (int)) = lam28;
+    printf("%d\n", loc20(1)(true));
+    printf("%x: (1) (2) 1\n", loc22(loc20));
+    printf("%x: () 1\n", loc12);
+    printf("%x: (1,  1) 1\n", loc15);
+    printf("%d\n", loc12());
+    printf("%d\n", loc15(1, 2));
+    printf("%x: (2) 2\n", loc17);
+    printf("%s\n", loc17(true) ? "True" : "False");
 }

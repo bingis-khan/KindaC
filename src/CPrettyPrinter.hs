@@ -135,6 +135,10 @@ addLambda params ret expr = do
   return name
 
 
+
+arglist :: [Docc] -> Docc
+arglist = tupled
+
 ppExpr :: TExpr -> StmtContext
 ppExpr = cataA $ \(ExprType t e) -> case e of
   Lit (LInt x) -> pure $ pretty x
@@ -143,7 +147,7 @@ ppExpr = cataA $ \(ExprType t e) -> case e of
 
   Var name -> liftCtx $ ppVar t name
 
-  Call f args -> liftA2 (\f args -> f <> "(" <> hsep (punctuate comma args) <> ")") f $ sequenceA args
+  Call f args -> liftA2 (\f args -> f <> arglist args) f $ sequenceA args
 
   Lam params body ->
     let Fix (TFun paramTypes ret) = t  -- if it's a lambda, must match.
@@ -155,7 +159,7 @@ ppExpr = cataA $ \(ExprType t e) -> case e of
 ppRealType :: TypedType -> Context
 ppRealType = cataA $ \case
   TCon g _ -> pure $ pretty $ show g --fromMaybe "???" (builtIns !? g)
-  TFun args ret -> liftA2 (\args ret -> "(" <> hsep (punctuate ", " args) <> ") " <> ret) (sequenceA args) ret
+  TFun args ret -> liftA2 (\args ret -> arglist args <+> ret) (sequenceA args) ret
 
 ppFmt :: TypedType -> Context' (Docc, Docc -> Docc)
 ppFmt (Fix t) = (fmap . first) (\s -> "\"" <> s <> "\\n\"") $ case t of
@@ -179,36 +183,35 @@ ppDatatypeName :: TypeID -> [TypedType] -> Context
 ppDatatypeName = structName
 
 
-ppTypeName :: TypedType -> Context
-ppTypeName t = do
-  (Builtins _ toTypes _ _) <- builtins <$> ask
-  let go (Fix t) = case t of
-        TCon t apps -> case toTypes !? t of
-          Just s -> return $ pretty s  -- We don't need no applications with built in types.
-          Nothing -> ppDatatypeName t apps
-        TCon t params -> traverse ppType params <&> \ps -> pretty (show t) <> "___" <> mconcat (fmap (<> "_") ps)
-        TCon t _ -> error $ "Unrecognized type: " ++ show t  -- Add a dictionary of TypeIDs to Strings.
+-- Named type is an outer type that descirbes a variable. From www.fuckingfunctionpointers.com , those types i 
+ppInnerType :: TypedType -> Context
+ppInnerType (Fix t) = builtins <$> ask >>= \(Builtins _ toTypes _ _) -> case t of
+  TCon t apps -> case toTypes !? t of
+    Just s -> return $ pretty s  -- We don't need no applications with built in types.
+    Nothing -> ppDatatypeName t apps
+  -- TCon t params -> traverse ppInnerType params <&> \ps -> pretty (show t) <> "___" <> mconcat (fmap (<> "_") ps)
+  -- TCon t _ -> error $ "Unrecognized type: " ++ show t  -- Add a dictionary of TypeIDs to Strings.
 
-        TFun args ret -> liftA2 (\args ret -> ret <+> "(" <> hsep (punctuate comma args) <> ")") (traverse ppType args) (ppType ret)
-  go t
+  TFun args ret -> liftA2 (\args ret -> ret <+> "(*" <> hsep (punctuate comma args) <> ")") (traverse ppType args) (ppType ret)
 
-ppType :: TypedType -> Context
-ppType (Fix t) = do
-  (Builtins _ toTypes _ _) <- builtins <$> ask
-  case t of
-    TCon t apps -> case toTypes !? t of
-      Just s -> return $ pretty s  -- We don't need no applications with built in types.
-      Nothing -> do
-        (DD _ _ cons) <- (! (t, apps)) . datas <$> ask
-        let preamble = if isEnum cons then "enum" else "struct"
-        (preamble <+>) <$> ppDatatypeName t apps
-    t -> ppTypeName $ Fix t
+
+ppNamedType :: Docc -> TypedType -> Context
+ppNamedType inner (Fix t) = builtins <$> ask >>= \(Builtins _ toTypes _ _) -> case t of
+  TCon t apps -> case toTypes !? t of
+    Just s -> return $ pretty s
+    Nothing -> do
+      (DD _ _ cons) <- (! (t, apps)) . datas <$> ask
+      let preamble = if isEnum cons then "enum" else "struct"
+      (preamble <+>) <$> ppDatatypeName t apps
+  
+  TFun params ret -> liftA2 (\params ret -> ret <+> "(" <> "*" <> inner <> ")" <+> arglist params) (traverse ppInnerType params) (ppNamedType ret)
+  t -> ppInnerType $ Fix t
 
 
 ppParam :: Local -> TypedType -> Context
 ppParam l (Fix t@(TFun _ _)) =
   let (TFun args ret) = fmap ppType t
-  in (\var args ret -> ret <+> "(*" <> var <> ")" <> encloseSep "(" ")" comma args) <$> ppVar (Fix t) (Right l) <*> sequenceA args <*> ret
+  in (\var args ret -> ret <+> "(*" <> var <> ")" <> arglist args) <$> ppVar (Fix t) (Right l) <*> sequenceA args <*> ret
 ppParam l t = liftA2 (<+>) (ppType t) (ppVar t (Right l))
 
 ppBody :: Traversable t => t StmtContext -> StmtContext
