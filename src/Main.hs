@@ -6,7 +6,7 @@ import Resolver (resolveAll)
 import Data.Functor.Foldable (cata)
 import AST
 import Typecheck (typecheck)
-import CPrettyPrinter (Context''(..), pp)
+import CPrint (cprint)
 import ASTPrettyPrinter (ppModule, ppShow)
 
 import System.Process (callCommand)
@@ -24,6 +24,7 @@ import Data.Either (rights)
 import Data.Biapplicative (bimap)
 import Data.Text (Text)
 import qualified Data.Text.IO as TIO
+import qualified Data.Text.IO as Text
 
 
 groupAfterParsing :: [TopLevel] -> ([UDataDec], [Either UFunDec UStmt])
@@ -33,10 +34,10 @@ groupAfterParsing =  mconcat . map go
     go (TLStmt stmt) = (mempty, pure (Right stmt))
     go (DataDec dd) = (pure dd, mempty)
 
-prepareContext :: (Foldable t, Functor t) => Builtins -> t (TDataDec, [TypedType]) -> Context''
-prepareContext builtins dds = Context { datas, builtins }
-  where
-    datas = M.fromList $ toList $ fmap (\(dd@(DD t _ _), tts) -> ((t, tts), dd)) dds
+-- prepareContext :: (Foldable t, Functor t) => Builtins -> t (TDataDec, [TypedType]) -> Context''
+-- prepareContext builtins dds = Context { datas, builtins }
+--   where
+--     datas = M.fromList $ toList $ fmap (\(dd@(DD t _ _), tts) -> ((t, tts), dd)) dds
 
 
 data CType = CType Text [(Text, Text)] Text
@@ -83,6 +84,6 @@ main = do
               putStrLn $ ppShow undefined dds
               putStrLn $ ppShow undefined funs
               putStrLn $ ppShow undefined stmts
-              writeFile "test.c" =<< pp (prepareContext builtins (rights dds)) dds funs stmts
+              Text.writeFile "test.c" =<< cprint ((fmap . fmap) (uncurry MonoDataDef) dds) funs stmts
               -- callCommand "gcc test.c"
               return ()

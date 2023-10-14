@@ -23,6 +23,37 @@ import qualified Data.Text as T
 
 type Parser = Parsec Void Text
 
+
+parse :: Text -> Either String [TopLevel]
+parse = first errorBundlePretty . TM.parse (scn >> topLevels <* eof) "fairu"
+
+
+-- Top level
+topLevels :: Parser [TopLevel]
+topLevels = many $ L.nonIndented sc topLevel <* scn
+
+topLevel :: Parser TopLevel
+topLevel
+  =   dataDec
+  -- Okay, this is fucking stupid, but it's necessary to differentiate function definitions and calls.
+  <|> (try (lookAhead (onlyFunctionDeclaration >> eol)) >> either (TLStmt . Fix . ExprStmt) FunDec <$> funDec)
+  <|> TLStmt <$> stmt
+
+
+-- Data definitions
+dataDec :: Parser TopLevel
+dataDec = DataDef $ L.indentBlock scn $ do
+  tname <- typeName
+  polys <- many generic
+  return $ L.IndentSome Nothing (return . DD tname polys . NE.fromList) dataCon
+
+dataCon :: Parser (DataCon Untyped)
+dataCon = do
+  conName <- typeName
+  types <- many parseType
+  return $ DC conName types
+
+
 lineComment :: Parser ()
 lineComment = L.skipLineComment "#"
 
@@ -213,17 +244,7 @@ parseType = choice
       targs <- many $ grouping <|> polyType <|> ((\name -> Fix $ TCon name []) <$> typeName)
       return $ Fix $ TCon tcon targs
 
-dataCon :: Parser UDataCon
-dataCon = do
-  conName <- typeName
-  types <- many parseType
-  return $ DC conName types
 
-dataDec :: Parser UDataDec
-dataDec = L.indentBlock scn $ do
-  tname <- typeName
-  polys <- many generic
-  return $ L.IndentSome Nothing (return . DD tname polys . NE.fromList) dataCon
 
 
 -- This'll be tricky: a function definition can look exactly like a function call. Welp, I guess I know why `def`s are needed.
@@ -268,12 +289,4 @@ funDec = L.indentBlock scn $ do
 
 
 
-topLevel :: Parser TopLevel
-topLevel
-  =   DataDec <$> dataDec
-  -- Okay, this is fucking stupid, but it's necessary to differentiate function definitions and calls.
-  <|> (try (lookAhead (onlyFunctionDeclaration >> eol)) >> either (TLStmt . Fix . ExprStmt) FunDec <$> funDec)
-  <|> TLStmt <$> stmt
 
-parse :: Text -> Either String [TopLevel]
-parse = first errorBundlePretty . TM.parse (scn >> many (L.nonIndented sc topLevel <* scn) <* eof) "fairu"

@@ -429,7 +429,7 @@ ppDataDeclarations = fmap vsep . traverse (either ppDataDeclaration ppDataDefini
 
 -- Check which are global variables.
 
-pp :: Context'' -> [Either MonoDataDec (TDataDec, [TypedType])] -> [Either MonoFunDec TFunDec] -> [TStmt] -> IO String -- IO is for uniques
+pp :: Context'' -> [Either MonoDataDec MonoDataDef] -> [Either MonoFunDec TFunDec] -> [TStmt] -> IO String -- IO is for uniques
 pp ctx dds funs stmts = fmap show $ flip runReaderT ctx $
   let mainDec = sep ["int", "main", "(", ")"]
   in case stmts of
