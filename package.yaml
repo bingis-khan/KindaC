@@ -1,0 +1,58 @@
+name:                KindaC
+version:             0.1.0.0
+#synopsis:
+#description:
+homepage:            https://github.com/githubuser/surcher#readme
+license:             BSD3
+author:              Big Bobby
+maintainer:          example@example.com
+copyright:           2023 Big Bobby
+category:            Console
+extra-source-files:
+- README.md
+
+
+dependencies:
+  - base >= 4.7 && < 5
+  - recursion-schemes
+  - data-fix
+  - transformers
+  - containers
+  - megaparsec
+  - parser-combinators
+  - deriving-compat
+  - bifunctors
+  - prettyprinter
+  - process
+  - bimap
+  - split
+  - text
+
+ghc-options:
+- -Wall
+- -Wcompat
+- -Widentities
+- -Wincomplete-record-updates
+- -Wincomplete-uni-patterns
+- -Wmissing-export-lists
+- -Wmissing-home-modules
+- -Wpartial-fields
+- -Wredundant-constraints
+
+executables:
+  surcher:
+    source-dirs:      src
+    other-modules:    
+    - AST
+    - Parser
+    main:             Main.hs
+
+tests:
+  all:
+    main: Spec.hs
+    source-dirs: test/src
+    dependencies:
+    - hspec
+    - text
+    - directory
+    

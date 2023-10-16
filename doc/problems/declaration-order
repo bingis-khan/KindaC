@@ -1,0 +1,58 @@
+The problem of declaration ordering.
+
+Let's assume my previous way to resolve variables for my language:
+
+
+y = f(B(420, 1337)) # wtf?
+
+class Dupsko
+	f (x @) -> Int
+
+Bob
+	B Int Int
+
+
+x = y
+
+impl Dupsko Bob
+	f (_) -> Int
+		return x
+
+
+Yeah, it has some holes.
+
+So, right now, my idea is to do this:
+
+
+class Dupsko
+	f (x @) -> Int
+
+Bob
+	B Int Int
+
+x = 1
+impl Dupsko Bob
+	f (_) -> Int
+		return x
+
+x = f(B(1, 2))
+
+
+This also allows me to also do this:
+
+everything_happens_locally (see)
+	class Dupa
+		f (x @) -> Int
+
+	D
+		A Int Int
+
+	impl Dupa D
+		f (_) -> Int
+			return see
+
+	d = A(420, 1337)
+	return f(d)
+
+
+Local definitions... see?

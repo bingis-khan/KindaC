@@ -1,0 +1,33 @@
+
+a ()
+	b (x)
+		if x == 0
+			return 1 
+		else
+			return c(x - 1)
+
+	# since there are no statements between the two, both functions are visible to each other
+	# in the future: add it so that if the preceding function is not used between the two functions
+	# (for example, you only define constants between the two)
+	# you can still use it
+	# example:
+	# add69() ...
+	#
+	# f ()
+	# 	return g()
+	# c1 = 420
+	# x = 1337 * 2
+	# y = add69(1)
+	# g ()
+	#   return 1
+	# print f()
+	# ^^^^^^^^^^^^^^^^ this will be correct, because f is only called AFTER we define g
+	c (x)
+		if x == 0
+			return 420
+		else
+			return b(x - 1)
+
+	return b(10)
+
+print a()

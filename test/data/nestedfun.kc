@@ -1,0 +1,10 @@
+
+
+help ()
+	x = 1
+	me ()
+		return 1
+
+	return me()
+
+print help()
