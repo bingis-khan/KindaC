@@ -130,7 +130,7 @@ instance Ord g => Ord (GFunDec g l tid) where
 type family DataCon phase
 data GDataCon g t = DC g [t] deriving (Eq, Ord, Show)
 type family DataDef phase
-data GDataDef g tid con = DD tid [TVar] (NonEmpty con) deriving (Show)
+data GDataDef g tid con = DD tid [TVar] [con] deriving (Show)
 -- Todo: make [TVar] into f TVar where f will change from [] to Set during resolving.
 -- Unfortunately, the deriveEq instance does not seem to add an Eq1 constraint to the f parameter.
 -- Might be a bug.

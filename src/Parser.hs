@@ -43,6 +43,7 @@ statement = choice
   [ sIf
   , sPrint
   , sReturn
+  , sDataDefinition
 
   , sDefinition
 
@@ -126,26 +127,19 @@ functionHeader = do
     Left expr -> (FD name params Nothing, Just expr)
     Right mType -> (FD name params mType, Nothing)
 
--- topLevel :: Parser (Stmt Untyped)
--- topLevel
---   =   dataDec
---   -- Okay, this is fucking stupid, but it's necessary to differentiate function definitions and calls.
---   <|> (try (lookAhead (onlyFunctionDeclaration >> eol)) >> either (TLStmt . Fix . ExprStmt) FD <$> funDec)
---   <|> TLStmt <$> stmt
-
 
 -- Data definitions
--- dataDec :: Parser (TopLevel Untyped)
--- dataDec = DD $ L.indentBlock scn $ do
---   tname <- typeName
---   polys <- many generic
---   return $ L.IndentSome Nothing (return . DD tname polys . NE.fromList) dataCon
+sDataDefinition :: Parser (Stmt Untyped)
+sDataDefinition = L.indentBlock scn $ do
+  tname <- typeName
+  polys <- many generic
+  return $ L.IndentMany Nothing (retf . DataDefinition . DD tname polys) dataCon
 
--- dataCon :: Parser (DataCon Untyped)
--- dataCon = do
---   conName <- typeName
---   types <- many parseType
---   return $ DC conName types
+dataCon :: Parser (DataCon Untyped)
+dataCon = do
+  conName <- typeName
+  types <- many pType
+  return $ DC conName types
 
 
 
@@ -234,8 +228,7 @@ eIdentifier = do
 -- Types --
 -----------
 
--- Iffy expression parser. When I add tuples *and* higher kinded types, we might be able to use the in-built expr parser.
--- Why iffy? I want '(' and ')' to be used solely as grouping, but they are kinda in-built right now.
+-- This is used to parse a standalone type
 pType :: Parser (Type Untyped)
 pType = do
   term <- choice
@@ -256,15 +249,27 @@ pType = do
   where
     concrete = do
       tcon <- typeName
-      targs <- many $ grouping <|> poly <|> concreteType
+      targs <- many pTypePart
       return $ Fix $ TCon tcon targs
-    poly = Fix . TDecVar <$> generic
     groupingOrParams = between (symbol "(") (symbol ")") $ sepBy pType (symbol ",")
 
+-- This is used to parse a type "term", for example if you're parsing a data definition.
+-- Ex. you cannot do this: Int -> Int, you have to do this: (Int -> Int)
+pTypePart :: Parser (Type Untyped)
+pTypePart = choice
+  [ grouping
+  , poly
+  , concreteType
+  ]
+  where
     grouping = between (symbol "(") (symbol ")") pType
     concreteType = do
       tname <- typeName
       retf $ TCon tname []
+
+poly :: Parser (Type Untyped)
+poly = Fix . TDecVar <$> generic
+
 
 
 -- This'll be tricky: a function definition can look exactly like a function call. Welp, I guess I know why `def`s are needed.
