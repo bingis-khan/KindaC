@@ -1,3 +1,5 @@
+# functions: 1
+# top level statements: 2
 
 fib (x)
 	if x == 0

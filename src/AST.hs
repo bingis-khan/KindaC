@@ -53,11 +53,12 @@ data LitType
   deriving (Eq, Ord, Show)
 
 
-data ExprF g l a
+data ExprF t g l a
   = Lit LitType
   | Var (Either g l)
   | Op a Op a
   | Call a [a]
+  | As a t
   | Lam [l] a
   deriving (Show, Functor, Foldable, Traversable)
 $(deriveShow1 ''ExprF)
@@ -158,7 +159,7 @@ type instance TopLevel phase = [Stmt phase]  -- right now, we don't need special
 -------------
 data Untyped
 type instance Type Untyped = Fix (TypeF Text)
-type instance Expr Untyped  = Fix (ExprF Text Text)   -- Was: Fix (ExprF Text). It's for resolving, because Resolvable needs an instance with either. Should be temporary.
+type instance Expr Untyped  = Fix (ExprF (Type Untyped) Text Text)   -- Was: Fix (ExprF Text). It's for resolving, because Resolvable needs an instance with either. Should be temporary.
                                 -- I can use this https://web.archive.org/web/20070702202021/https://www.cs.vu.nl/boilerplate/. to quickly map those things.
 type instance DataCon Untyped = GDataCon Text (Type Untyped)
 type instance DataDef Untyped = GDataDef Text Text (DataCon Untyped)

@@ -1,0 +1,2 @@
+
+print x as (Int -> Int) -> (Int -> Int -> Int) -> Int -> Int

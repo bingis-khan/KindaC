@@ -1,3 +1,5 @@
+# functions: 1
+# top level statements: 2
 
 test ()
 	return 1

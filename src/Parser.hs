@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase, OverloadedStrings #-}
+{-# OPTIONS_GHC -Wno-name-shadowing #-}
 module Parser (parse) where
 
 import AST
@@ -7,7 +8,7 @@ import AST
 import Data.Void (Void)
 import Text.Megaparsec hiding (parse)
 import Text.Megaparsec.Char
-import qualified Text.Megaparsec as TM (parse, parseMaybe, parseTest)
+import qualified Text.Megaparsec as TM (parse)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Control.Monad.Combinators.Expr
 import Data.Bifunctor (first)
@@ -16,7 +17,7 @@ import Data.Fix (Fix(Fix))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as NE
 import Control.Applicative (liftA2)
-import Data.Maybe (isNothing, isJust)
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text as Text
@@ -93,7 +94,7 @@ sFunctionOrCall = L.indentBlock scn $ do
 
   -- If it's a single expression function (has the '=>'), we know it's not a call.
   return $ case mExpr of
-    Just expr -> 
+    Just expr ->
       let stmt = Fix $ ExprStmt expr
           body = NonEmpty.singleton stmt
       in L.IndentNone $ Fix $ FunctionDefinition header body
@@ -103,10 +104,10 @@ sFunctionOrCall = L.indentBlock scn $ do
       let (FD name params ret) = header
           types = ret : map snd params
       in if any isJust types
-        then L.IndentSome Nothing (retf . FunctionDefinition header . NonEmpty.fromList) statement 
+        then L.IndentSome Nothing (retf . FunctionDefinition header . NonEmpty.fromList) statement
         else flip (L.IndentMany Nothing) statement $ \case
           (stmt:stmts) -> retf $ FunctionDefinition header (stmt :| stmts)
-          [] -> 
+          [] ->
             let args = map (Fix . Var . Right . fst) params
                 funName = Fix $ Var $ Right name
             in retf $ ExprStmt $ Fix $ Call funName args
@@ -173,6 +174,8 @@ operatorTable =
   , [ binary' "==" Equals
     , binary' "/=" NotEquals
     ]
+  , [ as
+    ]
   , [ lambda
     ]
   ] where
@@ -182,13 +185,16 @@ operatorTable =
 binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
 binary s f = InfixL $ f <$ symbol s
 
-prefix :: Text -> (expr -> expr) -> Operator Parser expr
-prefix name f = Prefix $ f <$ symbol name
-
 call :: Operator Parser (Expr Untyped)
 call = Postfix $ fmap (foldr1 (.) . reverse) $ some $ do
     args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
     return $ Fix . flip Call args
+
+as :: Operator Parser (Expr Untyped)
+as = Postfix $ do
+    symbol "as"
+    t <- pType
+    return $ Fix . flip As t
 
 lambda :: Operator Parser (Expr Untyped)
 lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
@@ -231,29 +237,31 @@ eIdentifier = do
 -- Iffy expression parser. When I add tuples *and* higher kinded types, we might be able to use the in-built expr parser.
 -- Why iffy? I want '(' and ')' to be used solely as grouping, but they are kinda in-built right now.
 pType :: Parser (Type Untyped)
-pType = makeExprParser typeTerm [[ functionArrow ]]
-  where functionArrow = Prefix $ fmap (foldr1 (.)) $ some $ do
-          params <- choice
-            [ between (symbol "(") (symbol ")") (pType `sepBy` symbol ",")
-            , (:[]) <$> pType
-            ]
-          symbol "->"
-          return $ Fix . undefined
+pType = do
+  term <- choice
+    [ (:[]) <$> concrete
+    , (:[]) <$> poly
+    , groupingOrParams
+    ]
 
-typeTerm :: Parser (Type Untyped)
-typeTerm = choice
-  [ concrete
-  , poly
-  , grouping
-  ]
+  fun <- optional $ do
+    symbol "->"
+    pType
+  case fun of
+    Nothing -> case term of
+      [t] -> return t
+      ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> show ts <> ")"  -- this would later mean that we're returning a tuple
+    Just ret -> return $ Fix $ TFun term ret
+
   where
     concrete = do
       tcon <- typeName
       targs <- many $ grouping <|> poly <|> concreteType
       return $ Fix $ TCon tcon targs
     poly = Fix . TDecVar <$> generic
-    grouping = between (symbol "(") (symbol ")") pType
+    groupingOrParams = between (symbol "(") (symbol ")") $ sepBy pType (symbol ",")
 
+    grouping = between (symbol "(") (symbol ")") pType
     concreteType = do
       tname <- typeName
       retf $ TCon tname []
@@ -273,10 +281,6 @@ scope :: (a -> NonEmpty (Stmt Untyped) -> b) -> Parser a -> Parser b
 scope f ref = L.indentBlock scn $ do
   x <- ref
   return $ L.IndentSome Nothing (return . f x . NE.fromList) statement
-
-scope' :: Parser (NonEmpty (Stmt Untyped) -> b) -> Parser b
-scope' = scope ($)
-
 
 lineComment :: Parser ()
 lineComment = L.skipLineComment "#"
@@ -308,12 +312,11 @@ identifier = do
     pure $ T.pack (x:xs)
 
 dataConstructor :: Parser Text
-dataConstructor = do
-  s <- lexeme $ do
+dataConstructor =
+  lexeme $ do
     x <- upperChar
     xs <- many identifierChar
     pure $ T.pack (x:xs)
-  return s
 
 varDec :: Parser Text
 varDec = identifier
@@ -337,4 +340,5 @@ keyword :: Text -> Parser ()
 keyword kword = void $ lexeme (string kword <* notFollowedBy identifierChar)
 
 
+retf :: f (Fix f) -> Parser (Fix f)
 retf = return . Fix

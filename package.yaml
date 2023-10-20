@@ -50,7 +50,12 @@ executables:
 tests:
   all:
     main: Spec.hs
-    source-dirs: test/src
+    source-dirs:
+    - test/src
+    - src
+    other-modules:
+    - AST
+    - Parser
     dependencies:
     - hspec
     - text
