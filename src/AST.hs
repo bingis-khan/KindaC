@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase, DeriveTraversable, GeneralisedNewtypeDeriving, TemplateHaskell, TypeFamilies, UndecidableInstances, StandaloneDeriving #-}
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
 module AST where
 
@@ -29,6 +30,9 @@ import Data.Text (Text)
 --  - Instances
 
 
+-- (note: everything here is declared in the order bottom-top, as type families are order dependent)
+
+
 --------------------------------------
 -- AST
 --------------------------------------
@@ -36,6 +40,8 @@ import Data.Text (Text)
 ----------------
 -- Expression --
 ----------------
+
+type family Expr phase
 
 data Op
   = Plus
@@ -60,15 +66,16 @@ data ExprF t g l a
   | Call a [a]
   | As a t
   | Lam [l] a
-  deriving (Show, Functor, Foldable, Traversable)
+  deriving (Show, Eq, Functor, Foldable, Traversable)
 $(deriveShow1 ''ExprF)
 $(deriveEq1 ''ExprF)
 
-type family Expr phase
 
 ---------------
 -- Statement --
 ---------------
+
+type family Stmt phase
 
 data StmtF dataDef funDec l g expr a
   -- Typical statements
@@ -81,16 +88,15 @@ data StmtF dataDef funDec l g expr a
   -- Big bois
   | DataDefinition dataDef
   | FunctionDefinition funDec (NonEmpty a)
-  deriving (Show, Functor, Foldable, Traversable)
+  deriving (Show, Eq, Functor, Foldable, Traversable)
 $(deriveShow1 ''StmtF)
-$(deriveEq1 ''StmtF)
-
-type family Stmt phase
 
 
 ----------
 -- Type --
 ----------
+
+type family Type phase
 
 newtype TVar = TV Text deriving (Show, Eq, Ord)
 
@@ -101,7 +107,6 @@ data TypeF t a
   | TFun [a] a
   deriving (Show, Eq, Ord, Functor, Foldable)
 
-type family Type phase
 
 $(deriveShow1 ''TypeF)
 $(deriveEq1 ''TypeF)
@@ -112,7 +117,9 @@ $(deriveOrd1 ''TypeF)
 --------------
 -- Function --
 --------------
+
 type family FunDec phase
+
 data GFunDec g l t = FD g [(l, t)] t deriving (Show, Functor)
 
 -- We only take names into account when seearching for a function
@@ -127,8 +134,10 @@ instance Ord g => Ord (GFunDec g l tid) where
 --------------
 -- Datatype --
 --------------
+
 type family DataCon phase
 data GDataCon g t = DC g [t] deriving (Eq, Ord, Show)
+
 type family DataDef phase
 data GDataDef g tid con = DD tid [TVar] [con] deriving (Show)
 -- Todo: make [TVar] into f TVar where f will change from [] to Set during resolving.
@@ -145,6 +154,7 @@ instance Ord tid => Ord (GDataDef g tid con) where
 ---------------
 -- Top Level --
 ---------------
+
 type family TopLevel phase
 type instance TopLevel phase = [Stmt phase]  -- right now, we don't need specialised instances for TopLevel
 
@@ -344,7 +354,7 @@ instance Bifoldable (StmtF dataDef funDec l g) where
       $ sfoldr (flip (bifoldr f body)) elifs   -- What the fuck?
       $ sfoldr body ifFalse b
       where
-        sfoldr g bd b = foldr g b bd
+        sfoldr g' bd b' = foldr g' b' bd
         body = sfoldr g
 
     DataDefinition _ -> b

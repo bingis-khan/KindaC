@@ -16,7 +16,7 @@ import Data.Functor (void)
 import Data.Fix (Fix(Fix))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as NE
-import Control.Applicative (liftA2)
+
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -34,6 +34,7 @@ parse filename = first (Text.pack . errorBundlePretty) . TM.parse (scn >> topLev
 -- Top level
 topLevels :: Parser (TopLevel Untyped)
 topLevels = many $ L.nonIndented sc statement <* scn
+
 
 ------------------------
 -- Parsing statements --
@@ -55,9 +56,9 @@ statement = choice
 -- Each statement
 sIf :: Parser (Stmt Untyped)
 sIf = do
-  (cond, ifBody) <- scope (,) $ keyword "if" >> expression
-  elifs <- many $ scope (,) $ keyword "elif" >> expression
-  elseBody <- optional $ scope (const id) $ keyword "else"
+  (cond, ifBody) <- scope (,) (keyword "if" >> expression)
+  elifs <- many $ scope (,) (keyword "elif" >> expression)
+  elseBody <- optional $ scope (const id) (keyword "else")
   retf $ If cond ifBody elifs elseBody
 
 sPrint :: Parser (Stmt Untyped)
@@ -93,7 +94,7 @@ sFunctionOrCall :: Parser (Stmt Untyped)
 sFunctionOrCall = L.indentBlock scn $ do
   (header, mExpr) <- functionHeader
 
-  -- If it's a single expression function (has the '=>'), we know it's not a call.
+  -- If it's a single expression function (has the ':'), we know it's not a call.
   return $ case mExpr of
     Just expr ->
       let stmt = Fix $ ExprStmt expr
@@ -119,7 +120,7 @@ functionHeader = do
   name <- identifier
   params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
   ret <- choice
-    [ Left <$> (symbol "=>" >> expression)
+    [ Left <$> (symbol ":" >> expression)
     , Right <$> optional (symbol "->" >> pType)
     ]
 

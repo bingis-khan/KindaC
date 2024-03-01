@@ -39,24 +39,31 @@ ghc-options:
 - -Wpartial-fields
 - -Wredundant-constraints
 
+library:
+  source-dirs: src
+
 executables:
-  surcher:
-    source-dirs:      src
-    other-modules:    
-    - AST
-    - Parser
+  KindaC-exe:
+    source-dirs:      app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
     main:             Main.hs
+    dependencies:
+    - KindaC
 
 tests:
   all:
     main: Spec.hs
     source-dirs:
     - test/src
-    - src
-    other-modules:
-    - AST
-    - Parser
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
     dependencies:
+    - KindaC
     - hspec
     - text
     - directory
