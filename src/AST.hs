@@ -13,6 +13,7 @@ import Data.Bifunctor
 import Data.Bifunctor.TH
 import Data.Bifoldable
 import Data.Text (Text)
+import Data.Unique (Unique, hashUnique)
 
 
 -- File structure:
@@ -23,7 +24,6 @@ import Data.Text (Text)
 --     - Function, Datatype, Top Level
 --  - Types for phases:
 --     - Untyped
---     - Resolved
 --     - Typechecked
 --     - Monomorphic
 --  - Misc. functions
@@ -59,13 +59,15 @@ data LitType
   deriving (Eq, Ord, Show)
 
 
-data ExprF t g l a
+data ExprF t c v a
   = Lit LitType
-  | Var (Either g l)
+  | Var v
+  | Con c
+
   | Op a Op a
   | Call a [a]
   | As a t
-  | Lam [l] a
+  | Lam [v] a
   deriving (Show, Eq, Functor, Foldable, Traversable)
 $(deriveShow1 ''ExprF)
 $(deriveEq1 ''ExprF)
@@ -77,10 +79,10 @@ $(deriveEq1 ''ExprF)
 
 type family Stmt phase
 
-data StmtF dataDef funDec l g expr a
+data StmtF dataDef funDec c v expr a
   -- Typical statements
   = Print expr
-  | Assignment l expr
+  | Assignment v expr
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
   | ExprStmt expr
   | Return expr
@@ -107,6 +109,11 @@ data TypeF t a
   | TFun [a] a
   deriving (Show, Eq, Ord, Functor, Foldable)
 
+data MonoTypeF t a
+  = TType t
+  | TMonoFun [a] [a]
+  deriving (Show, Eq, Ord, Functor, Foldable)
+
 
 $(deriveShow1 ''TypeF)
 $(deriveEq1 ''TypeF)
@@ -120,15 +127,10 @@ $(deriveOrd1 ''TypeF)
 
 type family FunDec phase
 
-data GFunDec g l t = FD g [(l, t)] t deriving (Show, Functor)
+data GFunDec c v t = FD v [(v, t)] t deriving (Show, Functor, Eq)
 
 -- We only take names into account when seearching for a function
 -- so instances should reflect this.
-instance Eq g => Eq (GFunDec g l tid)  where
-  FD name _ _ == FD name' _ _ = name == name'
-
-instance Ord g => Ord (GFunDec g l tid) where
-  FD name _ _ `compare` FD name' _ _ = name `compare` name'
 
 
 --------------
@@ -136,27 +138,27 @@ instance Ord g => Ord (GFunDec g l tid) where
 --------------
 
 type family DataCon phase
-data GDataCon g t = DC g [t] deriving (Eq, Ord, Show)
+data GDataCon c t = DC c [t] deriving (Eq, Ord, Show)
 
 type family DataDef phase
-data GDataDef g tid con = DD tid [TVar] [con] deriving (Show)
+data GDataDef tid con = DD tid [TVar] [con] deriving (Show)
 -- Todo: make [TVar] into f TVar where f will change from [] to Set during resolving.
 -- Unfortunately, the deriveEq instance does not seem to add an Eq1 constraint to the f parameter.
 -- Might be a bug.
 
-instance Eq tid => Eq (GDataDef g tid con) where
+instance Eq tid => Eq (GDataDef tid con) where
   DD tid _ _ == DD tid' _ _ = tid == tid'
 
-instance Ord tid => Ord (GDataDef g tid con) where
+instance Ord tid => Ord (GDataDef tid con) where
   DD tid _ _ `compare` DD tid' _ _ = tid `compare` tid'
 
 
 ---------------
--- Top Level --
+-- Module --
 ---------------
 
-type family TopLevel phase
-type instance TopLevel phase = [Stmt phase]  -- right now, we don't need specialised instances for TopLevel
+type family Module phase
+type instance Module phase = [Stmt phase]  -- right now, we don't need specialised instances for Module
 
 
 
@@ -172,63 +174,40 @@ type instance Type Untyped = Fix (TypeF Text)
 type instance Expr Untyped  = Fix (ExprF (Type Untyped) Text Text)   -- Was: Fix (ExprF Text). It's for resolving, because Resolvable needs an instance with either. Should be temporary.
                                 -- I can use this https://web.archive.org/web/20070702202021/https://www.cs.vu.nl/boilerplate/. to quickly map those things.
 type instance DataCon Untyped = GDataCon Text (Type Untyped)
-type instance DataDef Untyped = GDataDef Text Text (DataCon Untyped)
+type instance DataDef Untyped = GDataDef Text (DataCon Untyped)
 type instance FunDec Untyped = GFunDec Text Text (Maybe (Type Untyped))
 type instance Stmt Untyped = Fix (StmtF (DataDef Untyped) (FunDec Untyped) Text Text (Expr Untyped))
 
 
--- --------------
--- -- Resolved --
--- --------------
--- data Resolved
--- newtype Global = Global { fromGlobal :: Unique } deriving (Eq, Ord)
--- newtype Local = Local { fromLocal :: Unique } deriving (Eq, Ord)
--- newtype TypeID = TypeID { fromTypeID :: Unique } deriving (Eq, Ord)
+--------------
+-- Typed --  -- resolving and typechecking in one step (resolving with this grammar is pretty easy)
+--------------
 
--- instance Show Global where
---   show (Global u) = show $ hashUnique u
+data Typed
 
--- instance Show Local where
---   show (Local u) = show $ hashUnique u
+type instance Type Typed = Fix (TypeF TypeID)
+type instance Expr Typed = Fix ExprType
 
--- instance Show TypeID where
---   show (TypeID t) = show $ hashUnique t
+type instance DataCon Typed = GDataCon ConID (Type Typed)
+type instance DataDef Typed = GDataDef TypeID (DataCon Typed)
+type instance FunDec Typed = GFunDec ConID VarID (Type Typed)
+type instance Stmt Typed = Fix (StmtF (DataDef Typed) (FunDec Typed) ConID VarID (Expr Typed))
 
 
--- type instance Type Resolved = Fix (TypeF TypeID)
--- type instance Expr Resolved = Fix (ExprF Local Global)
--- type instance DataCon Resolved = GDataCon Global (Type Resolved)
--- type instance DataDef Resolved = GDataDef Global TypeID (DataCon Resolved)
--- type instance FunDef Resolved = GFunDef Global Local (Maybe (Type Resolved)) (Stmt Resolved)
--- type instance Stmt Resolved = Fix (StmtF (DataDef Resolved) (FunDef Resolved) Local Global (Expr Resolved))
+data ExprType a = ExprType (Type Typed) (ExprF (Type Typed) ConID VarID a) deriving (Show, Functor)
 
--- -- This will be returned from Resolver.hs.
--- -- Uh, not the best use case for GADTs, but I still kinda want to try it.
--- data family Module phase
--- data instance Module Resolved = RModule
---   { functions  :: Set (FunDef Resolved)
---   , rmDataDefs :: Set (DataDef Resolved)
---   , rmTLStmts  :: [Stmt Resolved]
---   } deriving Show
+newtype VarID = VID { fromVar :: Unique } deriving (Eq, Ord)
+newtype ConID = CID { fromCon :: Unique } deriving (Eq, Ord)
+newtype TypeID = TID { fromType :: Unique } deriving (Eq, Ord)  -- all called ID for some sweet sweetconvention
 
+instance Show VarID where
+  show (VID u) = show $ hashUnique u
 
--- -----------
--- -- Typed --
--- -----------
--- data Typed
+instance Show TypeID where
+  show (TID t) = show $ hashUnique t
 
--- type instance Type Typed = Fix (TypeF TypeID)
-
--- data TExpr t a = TExpr t (ExprF Global Local a) deriving (Show, Functor)
--- $(deriveShow1 ''TExpr)
-
--- type instance Expr Typed = Fix (TExpr (Type Typed))
-
--- type instance FunDef Typed = GFunDef Global Local (Type Typed) (Stmt Typed)
--- type instance DataCon Typed = GDataCon Global (Type Typed)
--- type instance DataDef Typed = GDataDef Global TypeID (DataCon Typed)
--- type instance Stmt Typed = Fix (StmtF (DataDef ) Local Global (Expr Typed))
-
+instance Show ConID where
+  show (CID t) = show $ hashUnique t
 
 
 -- -- A bit of duplication...

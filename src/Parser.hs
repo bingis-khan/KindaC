@@ -27,12 +27,12 @@ import qualified Data.List.NonEmpty as NonEmpty
 type Parser = Parsec Void Text
 type FileName = String
 
-parse :: FileName -> Text -> Either Text (TopLevel Untyped)
+parse :: FileName -> Text -> Either Text (Module Untyped)
 parse filename = first (Text.pack . errorBundlePretty) . TM.parse (scn >> topLevels <* eof) filename
 
 
 -- Top level
-topLevels :: Parser (TopLevel Untyped)
+topLevels :: Parser (Module Untyped)
 topLevels = many $ L.nonIndented sc statement <* scn
 
 
@@ -110,8 +110,8 @@ sFunctionOrCall = L.indentBlock scn $ do
         else flip (L.IndentMany Nothing) statement $ \case
           (stmt:stmts) -> retf $ FunctionDefinition header (stmt :| stmts)
           [] ->
-            let args = map (Fix . Var . Right . fst) params
-                funName = Fix $ Var $ Right name
+            let args = map (Fix . Var . fst) params
+                funName = Fix $ Var name
             in retf $ ExprStmt $ Fix $ Call funName args
 
 functionHeader :: Parser (FunDec Untyped, Maybe (Expr Untyped))
@@ -220,9 +220,8 @@ eGrouping = between (symbol "(") (symbol ")") expression
 
 eIdentifier :: Parser (Expr Untyped)
 eIdentifier = do
-  id <- identifier <|> dataConstructor
-  retf $ Var $ Right id
-
+  id <- (Var <$> identifier) <|> (Con <$> dataConstructor)
+  retf id
 
 
 -----------
@@ -250,14 +249,14 @@ pType = do
   where
     concrete = do
       tcon <- typeName
-      targs <- many pTypePart
+      targs <- many typeTerm
       return $ Fix $ TCon tcon targs
     groupingOrParams = between (symbol "(") (symbol ")") $ sepBy pType (symbol ",")
 
 -- This is used to parse a type "term", for example if you're parsing a data definition.
 -- Ex. you cannot do this: Int -> Int, you have to do this: (Int -> Int)
-pTypePart :: Parser (Type Untyped)
-pTypePart = choice
+typeTerm :: Parser (Type Untyped)
+typeTerm = choice
   [ grouping
   , poly
   , concreteType
@@ -282,34 +281,22 @@ poly = Fix . TDecVar <$> generic
 -- We have to check if there are any indents. If there aren't -> it's a function.
 -- Also, we should throw a custom error if we *know* it's a function, but there's now body.
 
--- If
-scope :: (a -> NonEmpty (Stmt Untyped) -> b) -> Parser a -> Parser b
-scope f ref = L.indentBlock scn $ do
-  x <- ref
-  return $ L.IndentSome Nothing (return . f x . NE.fromList) statement
-
-lineComment :: Parser ()
-lineComment = L.skipLineComment "#"
-
-scn :: Parser ()
-scn = L.space space1 lineComment empty
-
-sc :: Parser ()
-sc = L.space hspace1 lineComment empty
-
-lexeme :: Parser a -> Parser a
-lexeme = L.lexeme sc
-
+-- type-level identifiers
 typeName :: Parser Text
 typeName = do
   lexeme $ do
     x <- upperChar
-    xs <- many (alphaNumChar <|> char '\'')
+    xs <- many identifierChar
     pure $ T.pack (x:xs)
 
-identifierChar :: Parser Char
-identifierChar = alphaNumChar <|> char '\''
+generic :: Parser TVar
+generic = TV <$> varDec
 
+varDec :: Parser Text
+varDec = identifier
+
+
+-- term-level identifiers
 identifier :: Parser Text
 identifier = do
   lexeme $ do
@@ -324,11 +311,12 @@ dataConstructor =
     xs <- many identifierChar
     pure $ T.pack (x:xs)
 
-varDec :: Parser Text
-varDec = identifier
 
-generic :: Parser TVar
-generic = TV <$> varDec
+-- identifiers: common
+identifierChar :: Parser Char
+identifierChar = alphaNumChar <|> char '\''
+
+
 
 -- parseType :: Parser Type
 -- parseType = (Concrete <$>
@@ -345,6 +333,22 @@ symbol = void . L.symbol sc
 keyword :: Text -> Parser ()
 keyword kword = void $ lexeme (string kword <* notFollowedBy identifierChar)
 
+scope :: (a -> NonEmpty (Stmt Untyped) -> b) -> Parser a -> Parser b
+scope f ref = L.indentBlock scn $ do
+  x <- ref
+  return $ L.IndentSome Nothing (return . f x . NE.fromList) statement
+
+lineComment :: Parser ()
+lineComment = L.skipLineComment "#"
+
+scn :: Parser ()
+scn = L.space space1 lineComment empty
+
+sc :: Parser ()
+sc = L.space hspace1 lineComment empty
+
+lexeme :: Parser a -> Parser a
+lexeme = L.lexeme sc
 
 retf :: f (Fix f) -> Parser (Fix f)
 retf = return . Fix

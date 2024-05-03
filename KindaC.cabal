@@ -20,7 +20,9 @@ extra-source-files:
 library
   exposed-modules:
       AST
+      ASTPrettyPrinter
       Parser
+      Typecheck
   other-modules:
       Paths_KindaC
   hs-source-dirs:

@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings, LambdaCase, TupleSections #-}
-{-# LANGUAGE EmptyCase #-}
+
 
 import Test.Hspec (hspec, describe, it, shouldBe, Spec, Expectation, expectationFailure)
 import Data.Text (Text)
@@ -11,8 +11,7 @@ import qualified Data.Text.IO as TextIO
 import Data.Maybe (mapMaybe, listToMaybe)
 import Data.Fix (Fix(Fix))
 import Parser (parse)
-import Debug.Trace (traceShowId)
-import Data.Functor.Foldable (cata, para)
+import Data.Functor.Foldable (cata)
 import Data.Monoid (Sum(..))
 
 
@@ -36,18 +35,17 @@ testFile :: (FilePath, Source) -> Spec
 testFile (filename, file) = describe filename $ do
   let res = compile filename file
   it "whole file" $ do
-    let maybeError = eitherToMaybe res
-    case maybeError of
-      Nothing -> return ()
-      Just err -> expectationFailure $ Text.unpack err
+    case res of
+      Right _ -> return ()
+      Left err -> expectationFailure $ Text.unpack err
 
   case res of
     Left _ -> return ()
-    Right res -> do
+    Right res' -> do
       -- Only run tests after a properly compiled code
       let additionalSpecs = findSpecs file
       for_ additionalSpecs $ \spec ->
-        it (specLabel spec) $ testSpec spec res
+        it (specLabel spec) $ testSpec spec res'
 
 
 
@@ -55,7 +53,7 @@ testFile (filename, file) = describe filename $ do
 type Source = Text
 type Result = TopLevel Untyped
 
--- This should be changed as the result get's changed
+-- This should be changed as the result gets changed
 compile :: FilePath -> Source -> Either Text Result
 compile = parse
 
@@ -72,7 +70,7 @@ testSpec (TopLevelStatements num) stmts =
 testSpec (DataDefinitions num) stmts =
   let numOfDDs = countStatements (\case { DataDefinition _ -> True; _ -> False }) stmts
   in fromIntegral numOfDDs `shouldBe` num
-testSpec (DataConstructors name num) stmts = 
+testSpec (DataConstructors name num) stmts =
   let firstDDWithName = listToMaybe $ mapMaybe (\case { Fix (DataDefinition (DD ddname _ cons)) | ddname == name -> Just (length cons); _ -> Nothing }) $ streamStatements stmts
   in case firstDDWithName of
     Nothing -> expectationFailure $ Text.unpack $ "No Datatype with name \"" <> name <> "\""
@@ -128,8 +126,3 @@ data AdditionalSpec
   | DataConstructors Text Word
 
 
-
--- Utils
-eitherToMaybe :: Either a b -> Maybe a
-eitherToMaybe (Left a) = Just a
-eitherToMaybe (Right _) = Nothing
