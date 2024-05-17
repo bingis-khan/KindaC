@@ -21,6 +21,21 @@ impl Dupsko Bob
 
 Yeah, it has some holes.
 
+Update May 2024:
+	But it's easy to work around, isn't it? Like, after scraping the class for class definitions, no matter what x will be, we don't have to evaluate the function yet. We'll know its type anyway...
+	Oh wait, no. Stuff like this would work in Haskell, but not here: what would initialization look like? It doesn't make sense, as y wouldn't be initialized.
+	In Java for example, I think the only possible way would be to do this:
+		class Bob {
+			static int y = new Bob().f();
+
+			int f() {
+				return y;
+			}
+		}
+	Bob.y returns 0 - 0 is the default value for int in Java (static fields are automatically initialized). But this drives the point home: this field was not initialized.
+	Also, it required some weird pre-definition.
+	Eh, I'll do anything to make my language simpler, since I don't use it at all.
+
 So, right now, my idea is to do this:
 
 

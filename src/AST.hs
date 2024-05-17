@@ -1,5 +1,7 @@
 {-# LANGUAGE LambdaCase, DeriveTraversable, GeneralisedNewtypeDeriving, TemplateHaskell, TypeFamilies, UndecidableInstances, StandaloneDeriving #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Avoid lambda using `infix`" #-}
 
 module AST where
 
@@ -13,7 +15,8 @@ import Data.Bifunctor
 import Data.Bifunctor.TH
 import Data.Bifoldable
 import Data.Text (Text)
-import Data.Unique (Unique, hashUnique)
+import Data.Unique (Unique)
+import Data.Functor.Foldable (Base)
 
 
 -- File structure:
@@ -78,11 +81,16 @@ $(deriveEq1 ''ExprF)
 ---------------
 
 type family Stmt phase
+type family AnnStmt phase  -- For the Stmt without annotations.
 
 data StmtF dataDef funDec c v expr a
   -- Typical statements
   = Print expr
   | Assignment v expr
+
+  | MutDefinition v (Maybe expr)
+  | MutAssignment v expr
+
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
   | ExprStmt expr
   | Return expr
@@ -92,6 +100,10 @@ data StmtF dataDef funDec c v expr a
   | FunctionDefinition funDec (NonEmpty a)
   deriving (Show, Eq, Functor, Foldable, Traversable)
 $(deriveShow1 ''StmtF)
+
+-- It's possible to annotate statements
+data AnnStmtF stmt a = AnnStmt [Ann] (stmt a) deriving (Show, Eq, Ord, Functor, Foldable)
+data Ann = Ann deriving (Show, Eq, Ord)
 
 
 ----------
@@ -105,7 +117,6 @@ newtype TVar = TV Text deriving (Show, Eq, Ord)
 data TypeF t a
   = TCon t [a]
   | TVar TVar
-  | TDecVar TVar  -- This is declared TVar, which ignores normal inference and essentially acts as another type.
   | TFun [a] a
   deriving (Show, Eq, Ord, Functor, Foldable)
 
@@ -158,7 +169,7 @@ instance Ord tid => Ord (GDataDef tid con) where
 ---------------
 
 type family Module phase
-type instance Module phase = [Stmt phase]  -- right now, we don't need specialised instances for Module
+type instance Module phase = [AnnStmt phase]  -- right now, we don't need specialised instances for Module
 
 
 
@@ -176,7 +187,66 @@ type instance Expr Untyped  = Fix (ExprF (Type Untyped) Text Text)   -- Was: Fix
 type instance DataCon Untyped = GDataCon Text (Type Untyped)
 type instance DataDef Untyped = GDataDef Text (DataCon Untyped)
 type instance FunDec Untyped = GFunDec Text Text (Maybe (Type Untyped))
-type instance Stmt Untyped = Fix (StmtF (DataDef Untyped) (FunDec Untyped) Text Text (Expr Untyped))
+type instance AnnStmt Untyped = Fix (AnnStmtF (StmtF (DataDef Untyped) (FunDec Untyped) Text Text (Expr Untyped)))
+type instance Stmt Untyped = StmtF (DataDef Untyped) (FunDec Untyped) Text Text (Expr Untyped) (AnnStmt Untyped)
+
+--------------
+-- Resolved --
+--------------
+
+data Resolved
+
+type instance Type Resolved = Fix (TypeF TypeInfo)
+type instance Expr Resolved = Fix (ExprF (Type Resolved) ConInfo VarInfo)
+type instance AnnStmt Resolved = Fix (AnnStmtF (StmtF (DataDef Resolved) (FunDec Resolved) ConInfo VarInfo (Expr Resolved)))
+type instance Stmt Resolved = StmtF (DataDef Resolved) (FunDec Resolved) ConInfo VarInfo (Expr Resolved) (AnnStmt Resolved)
+
+type instance DataCon Resolved = GDataCon ConInfo (Type Resolved)
+type instance DataDef Resolved = GDataDef TypeInfo (DataCon Resolved)
+type instance FunDec Resolved = GFunDec ConInfo VarInfo (Maybe (Type Resolved))
+
+
+data VarInfo = VI
+  { varID :: Unique
+  , varName :: Text
+  , varType :: VarType
+  }
+
+
+data ConInfo = CI 
+  { conID :: Unique
+  , conName :: Text
+  }
+
+data TypeInfo = TI
+  { typeID :: Unique
+  , typeName :: Text
+  }
+
+data VarType = Immutable | Mutable
+
+
+-- type instances for the small datatypes
+
+instance Eq VarInfo where
+  VI { varID = l } == VI { varID = r } = l == r
+
+instance Ord VarInfo where
+  VI { varID = l } `compare` VI { varID = r } = l `compare` r
+
+
+instance Eq ConInfo where
+  CI { conID = l } == CI { conID = r } = l == r
+
+instance Ord ConInfo where
+  CI { conID = l } `compare` CI { conID = r } = l `compare` r
+
+
+instance Eq TypeInfo where
+  TI { typeID = l } == TI { typeID = r } = l == r
+
+instance Ord TypeInfo where
+  TI { typeID = l } `compare` TI { typeID = r } = l `compare` r
 
 
 --------------
@@ -185,29 +255,17 @@ type instance Stmt Untyped = Fix (StmtF (DataDef Untyped) (FunDec Untyped) Text 
 
 data Typed
 
-type instance Type Typed = Fix (TypeF TypeID)
-type instance Expr Typed = Fix ExprType
+type instance Type Typed = Fix (TypeF TypeInfo)
+type instance Expr Typed = Fix (ExprType (Type Typed))
 
-type instance DataCon Typed = GDataCon ConID (Type Typed)
-type instance DataDef Typed = GDataDef TypeID (DataCon Typed)
-type instance FunDec Typed = GFunDec ConID VarID (Type Typed)
-type instance Stmt Typed = Fix (StmtF (DataDef Typed) (FunDec Typed) ConID VarID (Expr Typed))
+type instance DataCon Typed = GDataCon ConInfo (Type Typed)
+type instance DataDef Typed = GDataDef TypeInfo (DataCon Typed)
+type instance FunDec Typed = GFunDec ConInfo VarInfo (Type Typed)
+type instance AnnStmt Typed = Fix (StmtF (DataDef Typed) (FunDec Typed) ConInfo VarInfo (Expr Typed))
+type instance Stmt Typed = StmtF (DataDef Typed) (FunDec Typed) ConInfo VarInfo (Expr Typed) (AnnStmt Typed)
 
 
-data ExprType a = ExprType (Type Typed) (ExprF (Type Typed) ConID VarID a) deriving (Show, Functor)
-
-newtype VarID = VID { fromVar :: Unique } deriving (Eq, Ord)
-newtype ConID = CID { fromCon :: Unique } deriving (Eq, Ord)
-newtype TypeID = TID { fromType :: Unique } deriving (Eq, Ord)  -- all called ID for some sweet sweetconvention
-
-instance Show VarID where
-  show (VID u) = show $ hashUnique u
-
-instance Show TypeID where
-  show (TID t) = show $ hashUnique t
-
-instance Show ConID where
-  show (CID t) = show $ hashUnique t
+data ExprType t a = ExprType t (ExprF t ConInfo VarInfo a) deriving (Functor)
 
 
 -- -- A bit of duplication...
@@ -258,12 +316,19 @@ instance Show ConID where
 -- -- Misc. functions
 -- ---------------------------------------------
 
--- bindExpr :: Applicative f => (expr -> f expr') -> Base (Fix (StmtF l g expr)) stmt -> f (Base (Fix (StmtF l g expr')) stmt)
--- bindExpr f (Print expr) = Print <$> f expr
--- bindExpr f (If cond ifTrue elifs ifFalse) = If <$> f cond <*> pure ifTrue <*> traverse (\(c, b) -> (,) <$> f c <*> pure b) elifs <*> pure ifFalse
--- bindExpr f (Assignment name expr) = Assignment name <$> f expr
--- bindExpr f (ExprStmt expr) = ExprStmt <$> f expr
--- bindExpr f (Return expr) = Return <$> f expr
+traverseExpr :: Applicative f => (expr -> f expr') -> Base (Fix (StmtF dat (GFunDec x y z) c v expr)) stmt -> f (Base (Fix (StmtF dat (GFunDec x y z) c v expr')) stmt)
+traverseExpr f = go . first f
+  where
+    go = \case
+      Print expr -> Print <$> expr
+      If cond ifTrue elifs ifFalse -> If <$> cond <*> pure ifTrue <*> traverse (\(c, b) -> (,) <$> c <*> pure b) elifs <*> pure ifFalse 
+      Assignment name expr -> Assignment name <$> expr
+      ExprStmt expr -> ExprStmt <$> expr
+      Return expr -> Return <$> expr
+      MutDefinition v mexpr -> MutDefinition v <$> sequenceA mexpr
+      MutAssignment v expr -> MutAssignment v <$> expr
+      DataDefinition dd -> pure $ DataDefinition dd
+      FunctionDefinition def body -> pure $ FunctionDefinition def body
 
 -- -- Not needed - hoist.
 -- mapRS :: Data.Functor.Foldable.Recursive t => (Data.Functor.Foldable.Base t (Fix f) -> f (Fix f)) -> t -> Fix f
@@ -313,6 +378,8 @@ instance Bifunctor (StmtF dataDef funDec l g) where
   first f = \case
     Print e -> Print (f e)
     Assignment name e -> Assignment name (f e)
+    MutDefinition name e -> MutDefinition name (f <$> e)
+    MutAssignment name e -> MutAssignment name (f e)
     If e ifTrue elifs ifFalse -> If (f e) ifTrue ((map . first) f elifs) ifFalse
     ExprStmt e -> ExprStmt (f e)
     Return e -> Return (f e)
@@ -326,6 +393,8 @@ instance Bifoldable (StmtF dataDef funDec l g) where
     ExprStmt e -> f e b
     Print a -> f a b
     Assignment _ a -> f a b
+    MutDefinition _ ma -> maybe b (\a -> f a b) ma
+    MutAssignment _ a -> f a b
     Return a -> f a b
     If cond ifTrue elifs ifFalse
       -> f cond

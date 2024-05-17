@@ -1,0 +1,58 @@
+
+# Okay, I've decided something, then realized something can be done and I'm not sure.
+# I wanted a more dogmatic approach of every lambda variable being immutable.
+# And I just realized it'll be like this still.
+# What do I mean?
+
+# I though I could make code with mutable variables compile to this:
+fun ()
+	mut x <= 1  # 1
+
+	inc ()
+		x <= x + 1  # 2
+		print x
+
+	print x  # 3
+
+	return inc  # 4
+
+
+# This can be compiled like so:
+
+void fun() {
+	// ...
+
+	Env env;
+	env.x = 1; // 1
+
+	// ...
+
+	printf("%d\n", env.x);
+
+	return Tuple { inc, env }  // 3
+}
+
+void inc(Env *env) {
+	*env.x += 1;  // 4
+}
+
+
+# But there's a simple problem: what if we duplicate the environment.
+
+fun ()
+	mut x <= 1
+
+	inc ()
+		x <= x + 1
+		print x
+
+	return (inc, inc)
+
+(inc1, inc2) = fun()
+
+
+# Where would x be stored then?
+inc1()
+inc2()
+
+# kek

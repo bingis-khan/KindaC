@@ -42,8 +42,11 @@ ghc-options:
 library:
   source-dirs: src
 
+data-files:
+- kcsrc/prelude/prelude.kc
+
 executables:
-  KindaC-exe:
+  kc:
     source-dirs:      app
     ghc-options:
     - -threaded

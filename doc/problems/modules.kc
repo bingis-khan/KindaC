@@ -1,0 +1,75 @@
+# How should modules work in KindaC?
+# Can they be spread in multiple files?
+# Or only one file?
+# Imagine we're doing it like Haskell
+# How is haskell prelude structured?
+
+# Basically, I would have to do:
+prelude.kc
+prelude # <-- this would house more files, maybe stuff like Types, StringOperations, etc.
+
+# Eh, good enough. It's also nice, since because it's simple and I know by looking at the top level file what gets included.
+
+# Also, I would like make it, so that the module name is automatically the file name.
+#  So for the file hash.kc
+#  To use it in another module, just do this in the calling code: `use hash`
+
+use hash
+
+# Oh shiet, should the default be qualified imports or unqualified?
+# I guess it's safer for them to be qualified by default
+
+use hash as h  # I think this is okay
+
+# How do we import unqualified?
+use hash (..)  # haskell style
+from hash use *  # python style
+
+# I think I prefer haskell style
+
+use hash (encode, decode)
+from hash use encode, decode
+
+# uhhh..... it's nice that we don't have to write parens...
+
+# what about this?
+
+use hash encode, decode
+
+# ???
+
+use hash encode decode
+
+# kinda ugly
+
+# 1
+use hash: encode decode
+
+# 2
+use hash
+	encode
+	decode
+
+# 3
+use hash: encode, decode
+
+# I'll sleep on it, but I think I prefer 2? It's looks very KindaC-like
+# But the all import will look weird
+
+use hash
+	..
+
+# or
+
+use hash
+	*
+
+# maybe a shorthand would be nice?
+
+use hash *
+
+# since there can be nested modules, I think * is better than ..
+
+use hash (..)  # but this looks kinda nice also
+
+# I'll sleep on it. I don't need it yet anyway

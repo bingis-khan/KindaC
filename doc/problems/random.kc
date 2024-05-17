@@ -1,0 +1,36 @@
+# Maybe I should disallow the `return` keyword for top level?
+# Instead of writing (this is top level):
+
+hadError = doSomeIO()
+
+if hadError
+	return 1
+
+
+# A clearer way would be
+
+hadError = doSomeIO()
+
+if hadError
+	exit(1)
+
+
+# Maybe I can force this "good style"
+# Plus, it's more functional!
+
+# But both options are easy, so I don't care right now.
+# Right now it's ALLOWED.
+
+
+##############################################
+# Should I resolve in the same step or separately?
+# Right now, resolution would add ConID and VarID to the structure.
+# These are GLOBAL, so during constraint generation, we don't have to maintain any sort of stack, just a ConID -> Type and VarID -> Type mapping.
+# So, we won't have to repeat any of the "stack" motions.
+
+# But, there's also one other thing: resolving impacts typechecking errors. So, I'll have to find a way to remove incorrect typechecking errors due to resolution.
+# That's why, I'll put resolution in typechecking right now, due to their need to interact.
+
+###########
+
+# But, is TVar unique? I should maybe assign unique TVar IDs, since an extra resolution before generating constraints. I'm going to make them unique.

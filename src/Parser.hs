@@ -2,7 +2,7 @@
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 module Parser (parse) where
 
-import AST
+import AST hiding (typeName)
 
 
 import Data.Void (Void)
@@ -39,19 +39,23 @@ topLevels = many $ L.nonIndented sc statement <* scn
 ------------------------
 -- Parsing statements --
 ------------------------
-statement :: Parser (Stmt Untyped)
-statement = choice
-  [ sIf
-  , sPrint
-  , sReturn
-  , sDataDefinition
+statement :: Parser (AnnStmt Untyped)
+statement = do
+  anns <- annotation
+  retf . AnnStmt anns =<< choice
+    [ sIf
+    , sPrint
+    , sReturn
+    , sDataDefinition
 
-  , sDefinition
+    , sDefinition
 
-  , try (checkIfFunction >> sFunctionOrCall)
-  , sExpression
-  ]
+    , sMutDefinition
+    , sMutAssignment
 
+    , try (checkIfFunction >> sFunctionOrCall)
+    , sExpression
+    ]
 
 -- Each statement
 sIf :: Parser (Stmt Untyped)
@@ -59,31 +63,44 @@ sIf = do
   (cond, ifBody) <- scope (,) (keyword "if" >> expression)
   elifs <- many $ scope (,) (keyword "elif" >> expression)
   elseBody <- optional $ scope (const id) (keyword "else")
-  retf $ If cond ifBody elifs elseBody
+  ret $ If cond ifBody elifs elseBody
 
 sPrint :: Parser (Stmt Untyped)
 sPrint = do
   keyword "print"
   expr <- expression
-  retf $ Print expr
+  ret $ Print expr
 
 sDefinition :: Parser (Stmt Untyped)
 sDefinition = do
   name <- try $ identifier <* symbol "="
   rhs <- expression
-  retf $ Assignment name rhs
+  ret $ Assignment name rhs
+
+sMutDefinition :: Parser (Stmt Untyped)
+sMutDefinition = do
+  keyword "mut"
+  name <- identifier
+  rhs <- optional $ symbol "<=" *> expression  -- I'm not sure if this should be optional (design reason: i want users to use inline if/case/whatever for conditional assignment). Right now we'll allow it, as it's easy to disallow it anyway.
+  ret $ MutDefinition name rhs
+
+sMutAssignment :: Parser (Stmt Untyped)
+sMutAssignment = do
+  name <- try $ identifier <* symbol "<="
+  rhs <- expression
+  ret $ MutAssignment name rhs
 
 sReturn :: Parser (Stmt Untyped)
 sReturn = do
   keyword "return"
   expr <- expression
-  retf $ Return  expr
+  ret $ Return expr
 
 sExpression :: Parser (Stmt Untyped)
 sExpression = do
   expr@(Fix chkExpr) <- expression
   case chkExpr of
-    Call _ _ -> retf $ ExprStmt expr
+    Call _ _ -> ret $ ExprStmt expr
     _ -> fail "The only statement-expression thingy you can do is call."
 
 
@@ -95,24 +112,25 @@ sFunctionOrCall = L.indentBlock scn $ do
   (header, mExpr) <- functionHeader
 
   -- If it's a single expression function (has the ':'), we know it's not a call.
-  return $ case mExpr of
+  ret $ case mExpr of
     Just expr ->
-      let stmt = Fix $ ExprStmt expr
+      let expr2stmt = Fix . AnnStmt [] . ExprStmt
+          stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
-      in L.IndentNone $ Fix $ FunctionDefinition header body
+      in L.IndentNone $ FunctionDefinition header body
 
-    Nothing ->
+    Nothing -> 
       -- If that's a normal function, we check if any types were defined
-      let (FD name params ret) = header
-          types = ret : map snd params
+      let (FD name params rett) = header
+          types = rett : map snd params
       in if any isJust types
-        then L.IndentSome Nothing (retf . FunctionDefinition header . NonEmpty.fromList) statement
+        then undefined $ L.IndentSome Nothing (ret . FunctionDefinition header . NonEmpty.fromList) statement
         else flip (L.IndentMany Nothing) statement $ \case
-          (stmt:stmts) -> retf $ FunctionDefinition header (stmt :| stmts)
+          (stmt:stmts) -> ret $ FunctionDefinition header (stmt :| stmts)
           [] ->
             let args = map (Fix . Var . fst) params
                 funName = Fix $ Var name
-            in retf $ ExprStmt $ Fix $ Call funName args
+            in ret $ ExprStmt $ Fix $ Call funName args
 
 functionHeader :: Parser (FunDec Untyped, Maybe (Expr Untyped))
 functionHeader = do
@@ -134,7 +152,7 @@ sDataDefinition :: Parser (Stmt Untyped)
 sDataDefinition = L.indentBlock scn $ do
   tname <- typeName
   polys <- many generic
-  return $ L.IndentMany Nothing (retf . DataDefinition . DD tname polys) dataCon
+  return $ L.IndentMany Nothing (ret . DataDefinition . DD tname polys) dataCon
 
 dataCon :: Parser (DataCon Untyped)
 dataCon = do
@@ -142,6 +160,9 @@ dataCon = do
   types <- many pType
   return $ DC conName types
 
+
+annotation :: Parser [Ann]
+annotation = undefined
 
 
 -----------------
@@ -268,7 +289,7 @@ typeTerm = choice
       retf $ TCon tname []
 
 poly :: Parser (Type Untyped)
-poly = Fix . TDecVar <$> generic
+poly = Fix . TVar <$> generic
 
 
 
@@ -333,7 +354,7 @@ symbol = void . L.symbol sc
 keyword :: Text -> Parser ()
 keyword kword = void $ lexeme (string kword <* notFollowedBy identifierChar)
 
-scope :: (a -> NonEmpty (Stmt Untyped) -> b) -> Parser a -> Parser b
+scope :: (a -> NonEmpty (AnnStmt Untyped) -> b) -> Parser a -> Parser b
 scope f ref = L.indentBlock scn $ do
   x <- ref
   return $ L.IndentSome Nothing (return . f x . NE.fromList) statement
@@ -352,3 +373,7 @@ lexeme = L.lexeme sc
 
 retf :: f (Fix f) -> Parser (Fix f)
 retf = return . Fix
+
+-- As a complement to retf
+ret :: a -> Parser a
+ret = pure
