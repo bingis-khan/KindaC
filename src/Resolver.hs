@@ -60,10 +60,10 @@ rStmts = traverse -- traverse through the list with Ctx
         pure $ Return re
       DataDefinition (DD tyName tyParams cons) -> do
         tid <- newType tyName
-        rCons <- traverse (\(DC cname ctys) -> do
+        rCons <- traverse (\(DC cname ctys anns) -> do
           cid <- newCon cname
           rConTys <- traverse rType ctys
-          pure $ DC cid rConTys) cons
+          pure $ DC cid rConTys anns) cons
         pure $ DataDefinition $ DD tid tyParams rCons
       FunctionDefinition (FD name params ret) body -> do
         vid <- newVar Immutable name

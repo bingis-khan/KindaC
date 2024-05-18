@@ -57,7 +57,7 @@ rStmts = ppLines rAnnStmt
 
 
 rAnnStmt :: AnnStmt Resolved -> Context
-rAnnStmt (Fix (AnnStmt anns stmt)) = ppLines id [ppAnn anns, rStmt stmt]
+rAnnStmt (Fix (AnnStmt ann stmt)) = annotate ann $ rStmt stmt
 
 -- I'll specify resolved variables as this:
 --  (x$idhash:type) 
@@ -79,8 +79,8 @@ rStmt s = case first rExpr s of
   ExprStmt e -> e
   Return e -> "return" <+> e
 
-  DataDefinition dd -> "\n" <> rDataDef dd <> "\n"
-  FunctionDefinition fd body -> "\n" <> rBody (rFunDec fd) body <> "\n"
+  DataDefinition dd -> rDataDef dd
+  FunctionDefinition fd body -> rBody (rFunDec fd) body
 
 
 rExpr :: Expr Resolved -> Context
@@ -108,10 +108,10 @@ rDataDef :: DataDef Resolved -> Context
 rDataDef (DD tid tvs cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (rTypeInfo tid) tvs) $ ppLines rConDef cons
 
 rConDef :: DataCon Resolved -> Context
-rConDef (DC g t) = foldl' (<+>) (rCon g) $ rTypes t
+rConDef (DC g t ann) = annotate ann $ foldl' (<+>) (rCon g) $ rTypes t
 
 rFunDec :: FunDec Resolved -> Context
-rFunDec (FD v params retType) = annotate "Function definition" $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> maybe "" ((" "<>) . rType) pType) params) <> maybe "" ((" "<>) . rType) retType
+rFunDec (FD v params retType) = comment "Function definition" $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> maybe "" ((" "<>) . rType) pType) params) <> maybe "" ((" "<>) . rType) retType
 
 
 rTypes :: Functor t => t (Type Resolved) -> t Context
@@ -180,8 +180,8 @@ utStmt s = case first utExpr s of
   Return e -> "return" <+> e
 
   -- Newlines are added to make the special "structures" more visible.
-  DataDefinition dd -> "\n" <> utDataDef dd <> "\n"
-  FunctionDefinition fd body -> "\n" <> utBody (utFunDec fd) body <> "\n"
+  DataDefinition dd -> utDataDef dd <> "\n"
+  FunctionDefinition fd body -> utBody (utFunDec fd) body <> "\n"
 
 
 utExpr :: Expr Untyped -> Context
@@ -224,10 +224,10 @@ utDataDef :: DataDef Untyped -> Context
 utDataDef (DD tid tvs cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (pretty tid) tvs) $ ppLines utConDef cons
 
 utConDef :: DataCon Untyped -> Context
-utConDef (DC g t) = foldl' (<+>) (pretty g) $ utTypes t
+utConDef (DC g t anns) = annotate anns $ foldl' (<+>) (pretty g) $ utTypes t
 
 utFunDec :: FunDec Untyped -> Context
-utFunDec (FD name params retType) = annotate "Function definition" $ pretty name <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> pretty pName <> maybe "" ((" "<>) . utType) pType) params) <> maybe "" ((" "<>) . utType) retType
+utFunDec (FD name params retType) = comment "Function definition" $ pretty name <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> pretty pName <> maybe "" ((" "<>) . utType) pType) params) <> maybe "" ((" "<>) . utType) retType
 
 
 
@@ -237,8 +237,12 @@ utBody header = indent header . ppLines utAnnStmt
 
 
 -- Technically should be something like Text for the annotation type, but I need to have access to context in annotations
-annotate :: Context -> Context -> Context
-annotate s ctx = "#" <+> s <\> ctx
+comment :: Context -> Context -> Context
+comment s ctx = "#" <+> s <\> ctx
+
+annotate :: [Ann] -> Context -> Context
+annotate [] ctx = ctx
+annotate xs ctx = "\n" <> ppAnn xs <\> ctx
 
 encloseSepBy :: Monoid a => a -> a -> a -> [a] -> a
 encloseSepBy l r p cs = l <> sepBy p cs <> r
@@ -252,8 +256,19 @@ indent header = (header <>) . fmap (PP.nest 2) . ("\n" <>)
 ppLines :: Foldable t => (a -> Context) -> t a -> Context
 ppLines f = foldMap ((<>"\n") . f)
 
+
 ppAnn :: [Ann] -> Context
-ppAnn = undefined
+ppAnn [] = mempty
+ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
+  where
+    ann :: Ann -> Context
+    ann = \case
+      ACType s -> "ctype" <+> quote s
+      ACStdInclude s -> "cstdinclude" <+> quote s
+      ACLit s -> "clit" <+> quote s
+
+    quote = pure . PP.squotes . PP.pretty
+      
 
 infixr 6 <+>
 (<+>) :: Context -> Context -> Context

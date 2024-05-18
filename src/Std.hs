@@ -8,8 +8,8 @@ import Paths_KindaC (getDataFileName)
 preparePrelude :: IO ()
 preparePrelude = do
   fn <- getDataFileName "kcsrc/prelude/prelude.kc"
-  undefined
+  return ()
 
 
 prepareStd :: IO ()
-prepareStd = undefined
+prepareStd = return ()

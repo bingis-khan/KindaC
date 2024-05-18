@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase, OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
+
 module Parser (parse) where
 
 import AST hiding (typeName)
@@ -14,7 +15,7 @@ import Control.Monad.Combinators.Expr
 import Data.Bifunctor (first)
 import Data.Functor (void)
 import Data.Fix (Fix(Fix))
-import Data.List.NonEmpty (NonEmpty ((:|)))
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 
 import Data.Maybe (isJust)
@@ -22,6 +23,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
+import Data.Foldable (foldl')
+import Debug.Trace (traceShowId)
 
 
 type Parser = Parsec Void Text
@@ -33,29 +36,31 @@ parse filename = first (Text.pack . errorBundlePretty) . TM.parse (scn >> topLev
 
 -- Top level
 topLevels :: Parser (Module Untyped)
-topLevels = many $ L.nonIndented sc statement <* scn
+topLevels = do
+  eas <- many $ L.nonIndented sc (annotationOr statement) <* scn
+  annotateStatements $ traceShowId eas
+
 
 
 ------------------------
 -- Parsing statements --
 ------------------------
-statement :: Parser (AnnStmt Untyped)
-statement = do
-  anns <- annotation
-  retf . AnnStmt anns =<< choice
-    [ sIf
-    , sPrint
-    , sReturn
-    , sDataDefinition
 
-    , sDefinition
+statement :: Parser (Stmt Untyped)
+statement = choice
+  [ sIf
+  , sPrint
+  , sReturn
+  , sDataDefinition
 
-    , sMutDefinition
-    , sMutAssignment
+  , sDefinition
 
-    , try (checkIfFunction >> sFunctionOrCall)
-    , sExpression
-    ]
+  , sMutDefinition
+  , sMutAssignment
+
+  , try (checkIfFunction >> sFunctionOrCall)
+  , sExpression
+  ]
 
 -- Each statement
 sIf :: Parser (Stmt Untyped)
@@ -119,14 +124,14 @@ sFunctionOrCall = L.indentBlock scn $ do
           body = NonEmpty.singleton stmt
       in L.IndentNone $ FunctionDefinition header body
 
-    Nothing -> 
+    Nothing ->
       -- If that's a normal function, we check if any types were defined
       let (FD name params rett) = header
           types = rett : map snd params
       in if any isJust types
-        then undefined $ L.IndentSome Nothing (ret . FunctionDefinition header . NonEmpty.fromList) statement
-        else flip (L.IndentMany Nothing) statement $ \case
-          (stmt:stmts) -> ret $ FunctionDefinition header (stmt :| stmts)
+        then L.IndentSome Nothing (fmap (FunctionDefinition header . NonEmpty.fromList) . annotateStatements) (annotationOr statement)
+        else flip (L.IndentMany Nothing) (annotationOr statement) $ \case
+          stmts@(_:_) -> FunctionDefinition header . NonEmpty.fromList <$> annotateStatements stmts
           [] ->
             let args = map (Fix . Var . fst) params
                 funName = Fix $ Var name
@@ -152,17 +157,54 @@ sDataDefinition :: Parser (Stmt Untyped)
 sDataDefinition = L.indentBlock scn $ do
   tname <- typeName
   polys <- many generic
-  return $ L.IndentMany Nothing (ret . DataDefinition . DD tname polys) dataCon
+  return $ L.IndentMany Nothing (fmap (DataDefinition . DD tname polys) . assignAnnotations (\anns (DC name ts _) -> DC name ts anns)) conOrAnnotation
+  where
+    conOrAnnotation :: Parser (Either [Ann] (DataCon Untyped))
+    conOrAnnotation = Left <$> annotation <|> Right <$> dataCon
 
 dataCon :: Parser (DataCon Untyped)
 dataCon = do
   conName <- typeName
   types <- many pType
-  return $ DC conName types
+  return $ DC conName types []  -- annotations will be added during parsing data constructor
 
+
+
+-----------------
+-- Annotations --
+-----------------
 
 annotation :: Parser [Ann]
-annotation = undefined
+annotation = do
+  void $ string commentDelimeter  -- Important that we don't consume whitespace after this (symbol consumes whitespace at the end).
+  between (symbol "[") (symbol "]") $ annotation `sepBy` symbol ","
+  where
+    annotation = do
+      key <- identifier  -- just parse the "key" part
+      value <- stringLiteral
+      case key of
+        "ctype" -> pure $ ACType value
+        "cstdinclude" -> pure $ ACStdInclude value
+        "clit" -> pure $ ACLit value
+        unknownKey -> fail $ T.unpack $ "Undefined unnotation '" <> unknownKey <> "'."  -- todo: add location information. also, make this error recoverable OR check annotations later.
+
+annotateStatements :: [Either [Ann] (Stmt Untyped)] -> Parser [AnnStmt Untyped]
+annotateStatements = assignAnnotations $ \anns stmt -> Fix $ AnnStmt anns stmt
+
+assignAnnotations :: ([Ann] -> a -> b) -> [Either [Ann] a] -> Parser [b]
+assignAnnotations f annors =
+  let (ns, leftOverAnns) = foldl' groupAnnotations ([], []) annors
+  in case leftOverAnns of
+    [] -> return $ reverse ns  -- the statements are added in reverse order in groupAnnotations, so we reverse it at the end.
+    _ -> fail "Annotations which do not belong to any statement."  -- todo: add location information
+  where
+    groupAnnotations (ns, anns) eas = case eas of
+      Left annotation -> (ns, anns ++ annotation)
+      Right n -> (f anns n : ns, [])
+
+
+annotationOr :: Parser a -> Parser (Either [Ann] a)
+annotationOr x = Left <$> annotation <|> Right <$> x
 
 
 -----------------
@@ -338,6 +380,11 @@ identifierChar :: Parser Char
 identifierChar = alphaNumChar <|> char '\''
 
 
+stringLiteral :: Parser Text
+stringLiteral = do
+  void $ char '\''
+  s <- manyTill L.charLiteral (char '\'')
+  return $ T.pack s
 
 -- parseType :: Parser Type
 -- parseType = (Concrete <$>
@@ -354,13 +401,20 @@ symbol = void . L.symbol sc
 keyword :: Text -> Parser ()
 keyword kword = void $ lexeme (string kword <* notFollowedBy identifierChar)
 
-scope :: (a -> NonEmpty (AnnStmt Untyped) -> b) -> Parser a -> Parser b
+scope :: (a -> Data.List.NonEmpty.NonEmpty (AnnStmt Untyped) -> b) -> Parser a -> Parser b
 scope f ref = L.indentBlock scn $ do
   x <- ref
-  return $ L.IndentSome Nothing (return . f x . NE.fromList) statement
+  return $ L.IndentSome Nothing (fmap (f x . NE.fromList) . annotateStatements) (annotationOr statement)
 
 lineComment :: Parser ()
-lineComment = L.skipLineComment "#"
+lineComment =
+  try (string commentDelimeter <* notFollowedBy "[") *> void (takeWhileP (Just "character") (/= '\n'))
+
+-- lineComment = L.skipLineComment "#"  -- previous implementation without considering annotations.
+
+commentDelimeter :: Text
+commentDelimeter = "#"
+
 
 scn :: Parser ()
 scn = L.space space1 lineComment empty

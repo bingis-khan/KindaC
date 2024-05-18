@@ -103,7 +103,12 @@ $(deriveShow1 ''StmtF)
 
 -- It's possible to annotate statements
 data AnnStmtF stmt a = AnnStmt [Ann] (stmt a) deriving (Show, Eq, Ord, Functor, Foldable)
-data Ann = Ann deriving (Show, Eq, Ord)
+data Ann  -- or should this be a Map or something?
+  = ACType Text
+  | ACLit Text
+  | ACStdInclude Text
+  deriving (Show, Eq, Ord)
+$(deriveShow1 ''AnnStmtF)
 
 
 ----------
@@ -149,7 +154,7 @@ data GFunDec c v t = FD v [(v, t)] t deriving (Show, Functor, Eq)
 --------------
 
 type family DataCon phase
-data GDataCon c t = DC c [t] deriving (Eq, Ord, Show)
+data GDataCon c t = DC c [t] [Ann] deriving (Eq, Ord, Show)
 
 type family DataDef phase
 data GDataDef tid con = DD tid [TVar] [con] deriving (Show)
