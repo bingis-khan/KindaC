@@ -35,6 +35,7 @@ rStmts = traverse -- traverse through the list with Ctx
         vid <- newVar Immutable name
         re <- rExpr e
         pure $ Assignment vid re
+      Pass -> pure Pass
       MutDefinition name me -> do
         vid <- newVar Mutable name
         mre <- traverse rExpr me

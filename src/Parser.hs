@@ -47,7 +47,8 @@ topLevels = do
 
 statement :: Parser (Stmt Untyped)
 statement = choice
-  [ sIf
+  [ sPass
+  , sIf
   , sPrint
   , sReturn
   , sDataDefinition
@@ -62,6 +63,11 @@ statement = choice
   ]
 
 -- Each statement
+sPass :: Parser (Stmt Untyped)
+sPass = do
+  keyword "pass"
+  pure Pass
+
 sIf :: Parser (Stmt Untyped)
 sIf = do
   (cond, ifBody) <- scope (,) (keyword "if" >> expression)

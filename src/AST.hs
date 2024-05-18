@@ -87,6 +87,7 @@ data StmtF dataDef funDec c v expr a
   -- Typical statements
   = Print expr
   | Assignment v expr
+  | Pass
 
   | MutDefinition v (Maybe expr)
   | MutAssignment v expr
@@ -327,6 +328,7 @@ traverseExpr f = go . first f
     go = \case
       Print expr -> Print <$> expr
       If cond ifTrue elifs ifFalse -> If <$> cond <*> pure ifTrue <*> traverse (\(c, b) -> (,) <$> c <*> pure b) elifs <*> pure ifFalse 
+      Pass -> pure Pass
       Assignment name expr -> Assignment name <$> expr
       ExprStmt expr -> ExprStmt <$> expr
       Return expr -> Return <$> expr
@@ -383,6 +385,7 @@ instance Bifunctor (StmtF dataDef funDec l g) where
   first f = \case
     Print e -> Print (f e)
     Assignment name e -> Assignment name (f e)
+    Pass -> Pass
     MutDefinition name e -> MutDefinition name (f <$> e)
     MutAssignment name e -> MutAssignment name (f e)
     If e ifTrue elifs ifFalse -> If (f e) ifTrue ((map . first) f elifs) ifFalse
@@ -397,6 +400,7 @@ instance Bifoldable (StmtF dataDef funDec l g) where
   bifoldr f g b = \case
     ExprStmt e -> f e b
     Print a -> f a b
+    Pass -> b
     Assignment _ a -> f a b
     MutDefinition _ ma -> maybe b (\a -> f a b) ma
     MutAssignment _ a -> f a b

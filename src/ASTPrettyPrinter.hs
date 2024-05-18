@@ -65,6 +65,7 @@ rStmt :: Stmt Resolved -> Context
 rStmt s = case first rExpr s of
   Print e -> "print" <+> e
   Assignment v e -> rVar v <+> "=" <+> e
+  Pass -> "pass"
   MutDefinition v me ->  "mut" <+> rVar v <+> rhs
     where
       rhs = case me of
@@ -164,6 +165,7 @@ utStmt :: Stmt Untyped -> Context
 utStmt s = case first utExpr s of
   Print e -> "print" <+> e
   Assignment name e -> pretty name <+> "=" <+> e
+  Pass -> "pass"
   MutDefinition name me -> "mut" <+> pretty name <+> rhs
     where
       rhs = case me of
