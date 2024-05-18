@@ -17,7 +17,6 @@ main = do
   case parse filename source of
     Left err -> TextIO.putStrLn err
     Right ast -> do
-      print ast
       (errs, rmod) <- resolve ast
       print errs
       putStrLn $ rModule rmod

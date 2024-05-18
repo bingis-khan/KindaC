@@ -6,7 +6,6 @@ module Parser (parse) where
 import AST hiding (typeName)
 
 
-import Data.Void (Void)
 import Text.Megaparsec hiding (parse)
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec as TM (parse)
@@ -24,11 +23,10 @@ import qualified Data.Text as T
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
-import Debug.Trace (traceShowId)
 import qualified Data.Set as Set
 
 
-type Parser = Parsec Void Text
+type Parser = Parsec MyParseError Text
 type FileName = String
 
 parse :: FileName -> Text -> Either Text (Module Untyped)
@@ -39,7 +37,7 @@ parse filename = first (Text.pack . errorBundlePretty) . TM.parse (scn >> topLev
 topLevels :: Parser (Module Untyped)
 topLevels = do
   eas <- many $ L.nonIndented sc (annotationOr statement) <* scn
-  annotateStatements $ traceShowId eas
+  annotateStatements eas
 
 
 
@@ -104,10 +102,14 @@ sReturn = do
 
 sExpression :: Parser (Stmt Untyped)
 sExpression = do
+  from <- getOffset
   expr@(Fix chkExpr) <- expression
+  to <- getOffset
   case chkExpr of
     Call _ _ -> ret $ ExprStmt expr
-    _ -> fail "The only statement-expression thingy you can do is call."
+    _ -> do
+      registerCustom $ MyPE (from, to) DisallowedExpressionAsStatement
+      ret $ ExprStmt expr  -- report an error, but return this for AST
 
 
 checkIfFunction :: Parser ()
@@ -192,7 +194,7 @@ annotation = do
         "clit" -> ann $ ACLit value
         unknownKey -> do
           registerExpect keyOffset unknownKey ["ctype", "cstdinclude", "clit"]
-          return Nothing
+          pure Nothing
         where
           ann = pure . Just
 
@@ -442,6 +444,23 @@ ret = pure
 
 
 -- Errors
+
+data MyParseError = MyPE (Int, Int) MyParseErrorType
+  deriving (Eq, Show, Ord)
+
+data MyParseErrorType
+  = DisallowedExpressionAsStatement
+  deriving (Eq, Show, Ord)
+
+instance ShowErrorComponent MyParseError where
+  showErrorComponent (MyPE _ err) = case err of
+    DisallowedExpressionAsStatement -> "Only call as an expression."
+
+  errorComponentLen (MyPE (from, to) _) = to - from
+
+
+registerCustom :: MyParseError -> Parser ()
+registerCustom err@(MyPE (from, _) _) = registerParseError $ FancyError from $ Set.singleton $ ErrorCustom err
 
 registerExpect :: Int -> Text -> [Text] -> Parser ()
 registerExpect offset found expected = registerParseError $ TrivialError offset tokenFound tokenExpected
