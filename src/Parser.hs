@@ -18,13 +18,14 @@ import Data.Fix (Fix(Fix))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import Debug.Trace (traceShowId)
+import qualified Data.Set as Set
 
 
 type Parser = Parsec Void Text
@@ -177,16 +178,23 @@ dataCon = do
 annotation :: Parser [Ann]
 annotation = do
   void $ string commentDelimeter  -- Important that we don't consume whitespace after this (symbol consumes whitespace at the end).
-  between (symbol "[") (symbol "]") $ annotation `sepBy` symbol ","
+  manns <- between (symbol "[") (symbol "]") $ annotation `sepBy` symbol ","
+  pure $ catMaybes manns
+
   where
     annotation = do
+      keyOffset <- getOffset
       key <- identifier  -- just parse the "key" part
       value <- stringLiteral
       case key of
-        "ctype" -> pure $ ACType value
-        "cstdinclude" -> pure $ ACStdInclude value
-        "clit" -> pure $ ACLit value
-        unknownKey -> fail $ T.unpack $ "Undefined unnotation '" <> unknownKey <> "'."  -- todo: add location information. also, make this error recoverable OR check annotations later.
+        "ctype" -> ann $ ACType value
+        "cstdinclude" -> ann $ ACStdInclude value
+        "clit" -> ann $ ACLit value
+        unknownKey -> do
+          registerExpect keyOffset unknownKey ["ctype", "cstdinclude", "clit"]
+          return Nothing
+        where
+          ann = pure . Just
 
 annotateStatements :: [Either [Ann] (Stmt Untyped)] -> Parser [AnnStmt Untyped]
 annotateStatements = assignAnnotations $ \anns stmt -> Fix $ AnnStmt anns stmt
@@ -431,3 +439,13 @@ retf = return . Fix
 -- As a complement to retf
 ret :: a -> Parser a
 ret = pure
+
+
+-- Errors
+
+registerExpect :: Int -> Text -> [Text] -> Parser ()
+registerExpect offset found expected = registerParseError $ TrivialError offset tokenFound tokenExpected
+  where
+    tokenFound = Just $ Tokens $ text2token found
+    tokenExpected = Set.fromList $ map (Tokens . text2token) expected
+    text2token = NE.fromList . T.unpack
