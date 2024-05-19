@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase, OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
+{-# LANGUAGE MultiWayIf #-}
 
 module Parser (parse) where
 
@@ -12,18 +13,19 @@ import qualified Text.Megaparsec as TM (parse)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Control.Monad.Combinators.Expr
 import Data.Bifunctor (first)
-import Data.Functor (void)
+import Data.Functor (void, ($>))
 import Data.Fix (Fix(Fix))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 
-import Data.Maybe (isJust, catMaybes)
+import Data.Maybe (isJust, catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
+import qualified Text.Megaparsec.Char as C
 
 
 type Parser = Parsec MyParseError Text
@@ -36,8 +38,8 @@ parse filename = first (Text.pack . errorBundlePretty) . TM.parse (scn >> topLev
 -- Top level
 topLevels :: Parser (Module Untyped)
 topLevels = do
-  eas <- many $ L.nonIndented sc (annotationOr statement) <* scn
-  annotateStatements eas
+  eas <- many $ recoverStmt (L.nonIndented sc  (annotationOr statement)) <* scn
+  annotateStatements eas  
 
 
 
@@ -122,13 +124,13 @@ checkIfFunction :: Parser ()
 checkIfFunction = void $ lookAhead (functionHeader >> eol)
 
 sFunctionOrCall :: Parser (Stmt Untyped)
-sFunctionOrCall = L.indentBlock scn $ do
+sFunctionOrCall = recoverableIndentBlock $ do
   (header, mExpr) <- functionHeader
 
   -- If it's a single expression function (has the ':'), we know it's not a call.
   ret $ case mExpr of
     Just expr ->
-      let expr2stmt = Fix . AnnStmt [] . ExprStmt
+      let expr2stmt = Fix . AnnStmt [] . Return
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
       in L.IndentNone $ FunctionDefinition header body
@@ -138,8 +140,8 @@ sFunctionOrCall = L.indentBlock scn $ do
       let (FD name params rett) = header
           types = rett : map snd params
       in if any isJust types
-        then L.IndentSome Nothing (fmap (FunctionDefinition header . NonEmpty.fromList) . annotateStatements) (annotationOr statement)
-        else flip (L.IndentMany Nothing) (annotationOr statement) $ \case
+        then L.IndentSome Nothing (fmap (FunctionDefinition header . NonEmpty.fromList) . annotateStatements) $ recoverStmt (annotationOr statement)
+        else flip (L.IndentMany Nothing) (recoverStmt (annotationOr statement)) $ \case
           stmts@(_:_) -> FunctionDefinition header . NonEmpty.fromList <$> annotateStatements stmts
           [] ->
             let args = map (Fix . Var . fst) params
@@ -163,10 +165,10 @@ functionHeader = do
 
 -- Data definitions
 sDataDefinition :: Parser (Stmt Untyped)
-sDataDefinition = L.indentBlock scn $ do
+sDataDefinition = recoverableIndentBlock $ do
   tname <- typeName
   polys <- many generic
-  return $ L.IndentMany Nothing (fmap (DataDefinition . DD tname polys) . assignAnnotations (\anns (DC name ts _) -> DC name ts anns)) conOrAnnotation
+  return $ L.IndentMany Nothing (fmap (DataDefinition . DD tname polys) . assignAnnotations (\anns (DC name ts _) -> DC name ts anns)) $ recoverCon conOrAnnotation
   where
     conOrAnnotation :: Parser (Either [Ann] (DataCon Untyped))
     conOrAnnotation = Left <$> annotation <|> Right <$> dataCon
@@ -186,7 +188,7 @@ dataCon = do
 annotation :: Parser [Ann]
 annotation = do
   void $ string commentDelimeter  -- Important that we don't consume whitespace after this (symbol consumes whitespace at the end).
-  manns <- between (symbol "[") (symbol "]") $ annotation `sepBy` symbol ","
+  manns <- between (symbol "[") (symbol "]") $ annotation `sepBy1` symbol ","
   pure $ catMaybes manns
 
   where
@@ -417,8 +419,8 @@ symbol = void . L.symbol sc
 keyword :: Text -> Parser ()
 keyword kword = void $ lexeme (string kword <* notFollowedBy identifierChar)
 
-scope :: (a -> Data.List.NonEmpty.NonEmpty (AnnStmt Untyped) -> b) -> Parser a -> Parser b
-scope f ref = L.indentBlock scn $ do
+scope :: (a -> NonEmpty (AnnStmt Untyped) -> b) -> Parser a -> Parser b
+scope f ref = recoverableIndentBlock $ do
   x <- ref
   return $ L.IndentSome Nothing (fmap (f x . NE.fromList) . annotateStatements) (annotationOr statement)
 
@@ -474,3 +476,66 @@ registerExpect offset found expected = registerParseError $ TrivialError offset 
     tokenFound = Just $ Tokens $ text2token found
     tokenExpected = Set.fromList $ map (Tokens . text2token) expected
     text2token = NE.fromList . T.unpack
+
+
+recoverStmt :: Parser (Either [Ann] (Stmt Untyped)) -> Parser (Either [Ann] (Stmt Untyped))
+recoverStmt = recoverLine (Right Pass)
+
+recoverCon :: Parser (Either [Ann] (DataCon Untyped)) -> Parser (Either [Ann](DataCon Untyped))
+recoverCon = recoverLine (Right (DC "PLACEHOLDER" [] []))
+
+recoverLine :: a -> Parser a -> Parser a
+recoverLine sentinel = withRecovery (\err -> registerParseError err >> many (anySingleBut '\n') >> char '\n' $> sentinel)
+
+
+recoverableIndentBlock ::
+  Parser (L.IndentOpt Parser a b) ->
+  Parser a
+recoverableIndentBlock r = do
+  scn
+  ref <- L.indentLevel
+  a <- r
+  case a of
+    L.IndentNone x -> x <$ scn
+    L.IndentMany indent f p -> do
+      mlvl <- (optional . try) (C.eol *> L.indentGuard scn GT ref)
+      done <- isJust <$> optional eof
+      case (mlvl, done) of
+        (Just lvl, False) ->
+          indentedItems ref (fromMaybe lvl indent) p >>= f
+        _ -> scn *> f []
+    L.IndentSome indent f p -> do
+      pos <- C.eol *> L.indentGuard scn GT ref
+      let lvl = fromMaybe pos indent
+      x <-
+        if
+          | pos <= ref -> L.incorrectIndent GT ref pos
+          | pos == lvl -> p
+          | otherwise -> L.incorrectIndent EQ lvl pos
+      xs <- indentedItems ref lvl p
+      f (x : xs)
+
+indentedItems ::
+  -- | Reference indentation level
+  Pos ->
+  -- | Level of the first indented item ('lookAhead'ed)
+  Pos ->
+  -- | How to parse indented tokens
+  Parser b ->
+  Parser [b]
+indentedItems ref lvl p = go
+  where
+    go = do
+      scn
+      pos <- L.indentLevel
+      done <- isJust <$> optional eof
+      if done
+        then return []
+        else
+          if
+            | pos <= ref -> return []
+            | pos == lvl -> (:) <$> p <*> go
+            | otherwise -> do
+              o <- getOffset
+              registerParseError $ FancyError o $ Set.singleton $ ErrorIndentation EQ lvl pos
+              (:) <$> p <*> go

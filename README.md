@@ -11,8 +11,19 @@ hehe
     - I may not end up needing the extra context, as VarInfo, TypeInfo, ConInfo, etc. embed information in them anyway. So no extra context is needed!
 - make a separate file for each pretty printing phase + common to avoid duplication
 - use relude (better types, nonempty, undefined triggers warning!)
-- should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?
+- better errors *messages*
+  Instead of this
+  ```
+     |
+  15 |  false
+     |  ^
+  unexpected 'f'
+  expecting '#' or uppercase letter
+  ```
+
+  write something like "expecting constructor (or annotation)"
+- look for places with recoverable errors
 
 # thoughts???
-- in resolver, there is a lot of duplication with the new(...), resolve(...) and placeholder(...). Is it okay? Or should I rewrite it?
+- should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?
 
