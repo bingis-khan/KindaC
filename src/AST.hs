@@ -15,7 +15,7 @@ import Data.Bifunctor
 import Data.Bifunctor.TH
 import Data.Bifoldable
 import Data.Text (Text)
-import Data.Unique (Unique)
+import Data.Unique (Unique, hashUnique)
 import Data.Functor.Foldable (Base)
 
 
@@ -83,7 +83,7 @@ $(deriveEq1 ''ExprF)
 type family Stmt phase
 type family AnnStmt phase  -- For the Stmt without annotations.
 
-data StmtF dataDef funDec c v expr a
+data StmtF c v expr a
   -- Typical statements
   = Print expr
   | Assignment v expr
@@ -95,15 +95,18 @@ data StmtF dataDef funDec c v expr a
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
   | ExprStmt expr
   | Return expr
-
-  -- Big bois
-  | DataDefinition dataDef
-  | FunctionDefinition funDec (NonEmpty a)
   deriving (Show, Eq, Functor, Foldable, Traversable)
 $(deriveShow1 ''StmtF)
 
+data BigStmtF datadef fundec stmt a
+  = DataDefinition datadef
+  | FunctionDefinition fundec (NonEmpty a)
+  | NormalStmt (stmt a)
+  deriving (Show, Eq, Functor, Foldable, Traversable)
+$(deriveShow1 ''BigStmtF)
+
 -- It's possible to annotate statements
-data AnnStmtF stmt a = AnnStmt [Ann] (stmt a) deriving (Show, Eq, Ord, Functor, Foldable)
+data AnnStmtF stmt a = AnnStmt [Ann] (stmt a) deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 data Ann  -- or should this be a Map or something?
   = ACType Text
   | ACLit Text
@@ -124,7 +127,7 @@ data TypeF t a
   = TCon t [a]
   | TVar TVar
   | TFun [a] a
-  deriving (Show, Eq, Ord, Functor, Foldable)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 data MonoTypeF t a
   = TType t
@@ -193,8 +196,8 @@ type instance Expr Untyped  = Fix (ExprF (Type Untyped) Text Text)   -- Was: Fix
 type instance DataCon Untyped = GDataCon Text (Type Untyped)
 type instance DataDef Untyped = GDataDef Text (DataCon Untyped)
 type instance FunDec Untyped = GFunDec Text Text (Maybe (Type Untyped))
-type instance AnnStmt Untyped = Fix (AnnStmtF (StmtF (DataDef Untyped) (FunDec Untyped) Text Text (Expr Untyped)))
-type instance Stmt Untyped = StmtF (DataDef Untyped) (FunDec Untyped) Text Text (Expr Untyped) (AnnStmt Untyped)
+type instance AnnStmt Untyped = Fix (AnnStmtF (BigStmtF (DataDef Untyped) (FunDec Untyped) (StmtF Text Text (Expr Untyped))))
+type instance Stmt Untyped = BigStmtF (DataDef Untyped) (FunDec Untyped) (StmtF Text Text (Expr Untyped)) (AnnStmt Untyped)
 
 --------------
 -- Resolved --
@@ -204,8 +207,8 @@ data Resolved
 
 type instance Type Resolved = Fix (TypeF TypeInfo)
 type instance Expr Resolved = Fix (ExprF (Type Resolved) ConInfo VarInfo)
-type instance AnnStmt Resolved = Fix (AnnStmtF (StmtF (DataDef Resolved) (FunDec Resolved) ConInfo VarInfo (Expr Resolved)))
-type instance Stmt Resolved = StmtF (DataDef Resolved) (FunDec Resolved) ConInfo VarInfo (Expr Resolved) (AnnStmt Resolved)
+type instance AnnStmt Resolved = Fix (AnnStmtF (BigStmtF (DataDef Resolved) (FunDec Resolved) (StmtF ConInfo VarInfo (Expr Resolved))))
+type instance Stmt Resolved = BigStmtF (DataDef Resolved) (FunDec Resolved) (StmtF ConInfo VarInfo (Expr Resolved)) (AnnStmt Resolved)
 
 type instance DataCon Resolved = GDataCon ConInfo (Type Resolved)
 type instance DataDef Resolved = GDataDef TypeInfo (DataCon Resolved)
@@ -248,6 +251,9 @@ instance Ord ConInfo where
   CI { conID = l } `compare` CI { conID = r } = l `compare` r
 
 
+instance Show TypeInfo where
+  show (TI { typeID = tid, typeName = name }) = show name <> "@" <> show (hashUnique tid)
+
 instance Eq TypeInfo where
   TI { typeID = l } == TI { typeID = r } = l == r
 
@@ -256,22 +262,22 @@ instance Ord TypeInfo where
 
 
 --------------
--- Typed --  -- resolving and typechecking in one step (resolving with this grammar is pretty easy)
+--  Typed   --
 --------------
 
 data Typed
 
 type instance Type Typed = Fix (TypeF TypeInfo)
-type instance Expr Typed = Fix (ExprType (Type Typed))
+type instance Expr Typed = Fix (ExprType (Type Typed) (Type Typed))
 
 type instance DataCon Typed = GDataCon ConInfo (Type Typed)
 type instance DataDef Typed = GDataDef TypeInfo (DataCon Typed)
 type instance FunDec Typed = GFunDec ConInfo VarInfo (Type Typed)
-type instance AnnStmt Typed = Fix (StmtF (DataDef Typed) (FunDec Typed) ConInfo VarInfo (Expr Typed))
-type instance Stmt Typed = StmtF (DataDef Typed) (FunDec Typed) ConInfo VarInfo (Expr Typed) (AnnStmt Typed)
+type instance AnnStmt Typed = Fix (AnnStmtF (BigStmtF (DataDef Typed) (FunDec Typed) (StmtF ConInfo VarInfo (Expr Typed))))
+type instance Stmt Typed = BigStmtF (DataDef Typed) (FunDec Typed) (StmtF ConInfo VarInfo (Expr Typed)) (AnnStmt Typed)
 
 
-data ExprType t a = ExprType t (ExprF t ConInfo VarInfo a) deriving (Functor)
+data ExprType t texpr a = ExprType t (ExprF texpr ConInfo VarInfo a) deriving (Functor)
 
 
 -- -- A bit of duplication...
@@ -303,9 +309,13 @@ data ExprType t a = ExprType t (ExprF t ConInfo VarInfo a) deriving (Functor)
 -- data MModule = MModule [DataDef Mono] [Either FunDec (FunDef Mono)] [Stmt Mono] deriving Show
 
 
--- ---------------------------------------------
--- -- Built-in Datatypes
--- ---------------------------------------------
+-------------
+-- PRELUDE --
+-------------
+
+type Prelude = Module Typed
+
+
 -- data Builtins = Builtins (Map Text (Type Typed)) (Map TypeID Text) (Map Text (Global, Type Typed)) (Map Global Text) deriving Show
 
 -- -- they kinda suck, but they are basically required for semigroup instances
@@ -322,20 +332,20 @@ data ExprType t a = ExprType t (ExprF t ConInfo VarInfo a) deriving (Functor)
 -- -- Misc. functions
 -- ---------------------------------------------
 
-traverseExpr :: Applicative f => (expr -> f expr') -> Base (Fix (StmtF dat (GFunDec x y z) c v expr)) stmt -> f (Base (Fix (StmtF dat (GFunDec x y z) c v expr')) stmt)
-traverseExpr f = go . first f
-  where
-    go = \case
-      Print expr -> Print <$> expr
-      If cond ifTrue elifs ifFalse -> If <$> cond <*> pure ifTrue <*> traverse (\(c, b) -> (,) <$> c <*> pure b) elifs <*> pure ifFalse 
-      Pass -> pure Pass
-      Assignment name expr -> Assignment name <$> expr
-      ExprStmt expr -> ExprStmt <$> expr
-      Return expr -> Return <$> expr
-      MutDefinition v mexpr -> MutDefinition v <$> sequenceA mexpr
-      MutAssignment v expr -> MutAssignment v <$> expr
-      DataDefinition dd -> pure $ DataDefinition dd
-      FunctionDefinition def body -> pure $ FunctionDefinition def body
+-- traverseExpr :: Applicative f => (expr -> f expr') -> Base (Fix (StmtF dat (GFunDec x y z) c v expr)) stmt -> f (Base (Fix (StmtF dat (GFunDec x y z) c v expr')) stmt)
+-- traverseExpr f = go . first f
+--   where
+--     go = \case
+--       Print expr -> Print <$> expr
+--       If cond ifTrue elifs ifFalse -> If <$> cond <*> pure ifTrue <*> traverse (\(c, b) -> (,) <$> c <*> pure b) elifs <*> pure ifFalse 
+--       Pass -> pure Pass
+--       Assignment name expr -> Assignment name <$> expr
+--       ExprStmt expr -> ExprStmt <$> expr
+--       Return expr -> Return <$> expr
+--       MutDefinition v mexpr -> MutDefinition v <$> sequenceA mexpr
+--       MutAssignment v expr -> MutAssignment v <$> expr
+--       DataDefinition dd -> pure $ DataDefinition dd
+--       FunctionDefinition def body -> pure $ FunctionDefinition def body
 
 -- -- Not needed - hoist.
 -- mapRS :: Data.Functor.Foldable.Recursive t => (Data.Functor.Foldable.Base t (Fix f) -> f (Fix f)) -> t -> Fix f
@@ -378,10 +388,10 @@ traverseExpr f = go . first f
 -- dataDeclarationToType (DD t tvs _) = Fix $ TCon t $ map (Fix . TDecVar) tvs
 
 --------------------------------------------
--- Instances 
+-- Instances and additional mapping functions
 --------------------------------------------
 
-instance Bifunctor (StmtF dataDef funDec l g) where
+instance Bifunctor (StmtF l g) where
   first f = \case
     Print e -> Print (f e)
     Assignment name e -> Assignment name (f e)
@@ -391,12 +401,9 @@ instance Bifunctor (StmtF dataDef funDec l g) where
     If e ifTrue elifs ifFalse -> If (f e) ifTrue ((map . first) f elifs) ifFalse
     ExprStmt e -> ExprStmt (f e)
     Return e -> Return (f e)
-
-    DataDefinition x -> DataDefinition x
-    FunctionDefinition dec body -> FunctionDefinition dec body
   second = fmap
 
-instance Bifoldable (StmtF dataDef funDec l g) where
+instance Bifoldable (StmtF l g) where
   bifoldr f g b = \case
     ExprStmt e -> f e b
     Print a -> f a b
@@ -414,13 +421,10 @@ instance Bifoldable (StmtF dataDef funDec l g) where
         sfoldr g' bd b' = foldr g' b' bd
         body = sfoldr g
 
-    DataDefinition _ -> b
-    FunctionDefinition _ body -> foldr g b body
-
-
 
 $(deriveBitraversable ''StmtF)
 
 $(deriveBifoldable ''GFunDec)
 $(deriveBifunctor ''GFunDec)
 $(deriveBitraversable ''GFunDec)
+

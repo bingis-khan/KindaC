@@ -11,3 +11,24 @@ Bool
 # Temporary, as I will use 'U32', 'I32', etc. types in code and there will be no "default" Int
 #[ctype 'int']
 Int  # Make sure this is parsed as DataDefinition with zero constructors instead of ExprType in the compiler.
+
+Maybe a
+	Just a
+	Nothing
+
+add = x,y: x + y
+#map = x,y: x(y)
+x = 1
+y = x
+z = y
+	
+
+
+## Test functions
+#fib (n)
+#	if n == 0
+#		return 0
+#	elif n == 1
+#		return 1
+#	else
+#		return fib(n - 2) + fib(n - 1)

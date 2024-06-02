@@ -43,7 +43,7 @@ library:
   source-dirs: src
 
 data-files:
-- kcsrc/prelude/prelude.kc
+- kcsrc/prelude.kc
 
 executables:
   kc:

@@ -1,0 +1,45 @@
+# oh fuck
+
+# okay
+
+# ahh
+
+# Fuck .kc, I'll just write normal.
+
+
+Number 1:
+during subSolve, should I ignore errors?
+
+Right now yes, however, won't this cause different errors down the line, thus different substitutions? IDK
+
+
+Number 2:
+During subSolve, should I ignore the environment?
+
+Right now yes. I won't need it anymore I think and this might fuck up the "type finding" when parsing without prelude, like this:
+
+f ()
+	Bool
+		Fuck
+		You
+
+	return
+
+if x  # when saving subSolve state, this will find the bool from f()
+	print 'oh fuck'
+
+
+# However, it's not all nice
+
+if n
+	Bool
+		Suck
+		My
+		Dicc
+
+if x  # This will have the fake Bool type. Right now I have to be strict to not redefine Bool in fucking prelude
+	pass  
+
+
+Number 3
+Instead of saving the substitution and substituting the current constraints / saving somewhere that substitution, I discard the substitution and forward the constraints... Would this lead to different errors later? Since I discard previous errors, this might be okay...

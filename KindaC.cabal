@@ -17,7 +17,7 @@ build-type:     Simple
 extra-source-files:
     README.md
 data-files:
-    kcsrc/prelude/prelude.kc
+    kcsrc/prelude.kc
 
 library
   exposed-modules:
@@ -27,6 +27,7 @@ library
       Resolver
       Std
       Typecheck
+      Typecheck.Types
   other-modules:
       Paths_KindaC
   hs-source-dirs:

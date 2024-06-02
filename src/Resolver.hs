@@ -27,38 +27,40 @@ rStmts = traverse -- traverse through the list with Ctx
   $ transverse (\(AnnStmt anns utStmt) -> AnnStmt anns <$> rStmt utStmt) -- go through Stmt recursively with Ctx
   where
     -- actual logic
+    -- maybe try to generalize it if possible using traverse n shit
     rStmt = \case
-      Print e -> do
-        re <- rExpr e
-        pure $ Print re
-      Assignment name e -> do
-        vid <- newVar Immutable name
-        re <- rExpr e
-        pure $ Assignment vid re
-      Pass -> pure Pass
-      MutDefinition name me -> do
-        vid <- newVar Mutable name
-        mre <- traverse rExpr me
-        pure $ MutDefinition vid mre
-      MutAssignment name e -> do
-        vid <- resolveVar name
-        re <- rExpr e
-        pure $ MutAssignment vid re
-      If cond ifTrue elseIfs elseBody -> do
-        rcond <- rExpr cond
-        rIfTrue <- scope $ sequenceA ifTrue
-        rElseIfs <- traverse (\(c, b) -> do
-          rc <- rExpr c
-          tb <- rBody b
-          pure (rc, tb)) elseIfs
-        rElseBody <- traverse rBody elseBody
-        pure $ If rcond rIfTrue rElseIfs rElseBody
-      ExprStmt e -> do
-        re <- rExpr e
-        pure $ ExprStmt re
-      Return e -> do
-        re <- rExpr e
-        pure $ Return re
+      NormalStmt stmt -> NormalStmt <$> case stmt of
+        Print e -> do
+          re <- rExpr e
+          pure $ Print re
+        Assignment name e -> do
+          vid <- newVar Immutable name
+          re <- rExpr e
+          pure $ Assignment vid re
+        Pass -> pure Pass
+        MutDefinition name me -> do
+          vid <- newVar Mutable name
+          mre <- traverse rExpr me
+          pure $ MutDefinition vid mre
+        MutAssignment name e -> do
+          vid <- resolveVar name
+          re <- rExpr e
+          pure $ MutAssignment vid re
+        If cond ifTrue elseIfs elseBody -> do
+          rcond <- rExpr cond
+          rIfTrue <- scope $ sequenceA ifTrue
+          rElseIfs <- traverse (\(c, b) -> do
+            rc <- rExpr c
+            tb <- rBody b
+            pure (rc, tb)) elseIfs
+          rElseBody <- traverse rBody elseBody
+          pure $ If rcond rIfTrue rElseIfs rElseBody
+        ExprStmt e -> do
+          re <- rExpr e
+          pure $ ExprStmt re
+        Return e -> do
+          re <- rExpr e
+          pure $ Return re
       DataDefinition (DD tyName tyParams cons) -> do
         tid <- newType tyName
         rCons <- traverse (\(DC cname ctys anns) -> do
@@ -140,7 +142,6 @@ data Scope = Scope
   , conScope :: Map Text ConInfo
   , tyScope :: Map Text TypeInfo
   }
-
 
 
 newVar :: VarType -> Text -> Ctx VarInfo

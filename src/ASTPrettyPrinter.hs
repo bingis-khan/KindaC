@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE LambdaCase #-}
 
-module ASTPrettyPrinter (utModule, rModule) where
+module ASTPrettyPrinter (utModule, rModule, tModule) where
 
 import Prettyprinter (Doc)
 import qualified Prettyprinter as PP
@@ -45,6 +45,80 @@ type Context = Reader CtxData (Doc ())  -- I guess I can add syntax coloring or 
 data CtxData = CtxData
 
 
+-----------
+-- Typed --
+-----------
+
+tModule :: Module Typed -> String
+tModule = show . flip runReader CtxData . tStmts
+
+tStmts :: [AnnStmt Typed] -> Context
+tStmts = ppLines tAnnStmt
+
+tAnnStmt :: AnnStmt Typed -> Context
+tAnnStmt (Fix (AnnStmt ann stmt)) = annotate ann $ tStmt stmt
+
+tStmt :: Stmt Typed -> Context
+tStmt = \case
+  NormalStmt s -> case first tExpr s of
+    Print e -> "print" <+> e
+    Assignment v e -> rVar v <+> "=" <+> e
+    Pass -> "pass"
+    MutDefinition v me ->  "mut" <+> rVar v <+> rhs
+      where
+        rhs = case me of
+          Nothing -> ""
+          Just e -> "<=" <+> e
+    MutAssignment v e -> rVar v <+> "<=" <+> e
+    If ifCond ifTrue elseIfs mElse ->
+      tBody ("if" <+> ifCond ) ifTrue <>
+      foldMap (\(cond, elseIf) ->
+          tBody ("elif" <+> cond) elseIf) elseIfs <>
+      maybe mempty (tBody "else") mElse
+    ExprStmt e -> e
+    Return e -> "return" <+> e
+
+  DataDefinition dd -> tDataDef dd
+  FunctionDefinition fd body -> tBody (tFunDec fd) body
+
+
+tExpr :: Expr Typed -> Context
+tExpr = cata $ \(ExprType t expr) ->
+  let encloseInType c = "(" <> c <+> "::" <+> tType t <> ")"
+  in encloseInType $ case expr of
+  Lit (LInt x) -> pretty x
+  Lit (LBool b) -> if b then "True" else "False"  -- This will have to be changed to actual types later.
+  Var v -> rVar v
+  Con c -> rCon c
+
+  Op l op r -> l <+> ppOp op <+> r
+  Call f args -> f <> encloseSepBy "(" ")" ", " args
+  As x at -> x <+> "as" <+> tType at
+  Lam params e -> sepBy " " (map rVar params) <> ":" <+> e
+  where
+    ppOp op = case op of
+      Plus -> "+"
+      Minus -> "-"
+      Times -> "*"
+      Divide -> "/"
+      Equals -> "=="
+      NotEquals -> "/="
+
+
+tDataDef :: DataDef Typed -> Context
+tDataDef = rDataDef
+
+tFunDec :: FunDec Typed -> Context
+tFunDec (FD v params retType) = comment "Function definition" $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType
+
+
+tType :: Type Typed -> Context
+tType = rType
+
+
+tBody :: Foldable f => Context -> f (AnnStmt Typed) -> Context
+tBody = ppBody tAnnStmt
+
 --------------
 -- Resolved --
 --------------
@@ -62,23 +136,24 @@ rAnnStmt (Fix (AnnStmt ann stmt)) = annotate ann $ rStmt stmt
 -- I'll specify resolved variables as this:
 --  (x$idhash:type) 
 rStmt :: Stmt Resolved -> Context
-rStmt s = case first rExpr s of
-  Print e -> "print" <+> e
-  Assignment v e -> rVar v <+> "=" <+> e
-  Pass -> "pass"
-  MutDefinition v me ->  "mut" <+> rVar v <+> rhs
-    where
-      rhs = case me of
-        Nothing -> ""
-        Just e -> "<=" <+> e
-  MutAssignment v e -> rVar v <+> "<=" <+> e
-  If ifCond ifTrue elseIfs mElse ->
-    rBody ("if" <+> ifCond ) ifTrue <>
-    foldMap (\(cond, elseIf) ->
-        rBody ("elif" <+> cond) elseIf) elseIfs <>
-    maybe mempty (rBody "else") mElse
-  ExprStmt e -> e
-  Return e -> "return" <+> e
+rStmt = \case
+  NormalStmt s -> case first rExpr s of
+    Print e -> "print" <+> e
+    Assignment v e -> rVar v <+> "=" <+> e
+    Pass -> "pass"
+    MutDefinition v me ->  "mut" <+> rVar v <+> rhs
+      where
+        rhs = case me of
+          Nothing -> ""
+          Just e -> "<=" <+> e
+    MutAssignment v e -> rVar v <+> "<=" <+> e
+    If ifCond ifTrue elseIfs mElse ->
+      rBody ("if" <+> ifCond ) ifTrue <>
+      foldMap (\(cond, elseIf) ->
+          rBody ("elif" <+> cond) elseIf) elseIfs <>
+      maybe mempty (rBody "else") mElse
+    ExprStmt e -> e
+    Return e -> "return" <+> e
 
   DataDefinition dd -> rDataDef dd
   FunctionDefinition fd body -> rBody (rFunDec fd) body
@@ -146,7 +221,7 @@ rTypeInfo t = pretty t.typeName <> "$" <> pretty (hashUnique t.typeID)
 
 
 rBody :: Foldable t => Context -> t (AnnStmt Resolved) -> Context
-rBody header = indent header . ppLines rAnnStmt
+rBody = ppBody rAnnStmt
 
 -------------
 -- Untyped --
@@ -162,24 +237,25 @@ utAnnStmt :: AnnStmt Untyped -> Context
 utAnnStmt (Fix (AnnStmt ann stmt)) = ppLines id [ppAnn ann, utStmt stmt]
 
 utStmt :: Stmt Untyped -> Context
-utStmt s = case first utExpr s of
-  Print e -> "print" <+> e
-  Assignment name e -> pretty name <+> "=" <+> e
-  Pass -> "pass"
-  MutDefinition name me -> "mut" <+> pretty name <+> rhs
-    where
-      rhs = case me of
-        Nothing -> ""
-        Just e -> "<=" <+> e
-  MutAssignment name e -> pretty name <+> "<=" <+> e
-  If ifCond ifTrue elseIfs mElse ->
-    utBody ("if" <+> ifCond ) ifTrue <>
-    foldMap (\(cond, elseIf) ->
-        utBody ("elif" <+> cond) elseIf) elseIfs <>
-    maybe mempty (utBody "else") mElse
+utStmt = \case
+  NormalStmt s -> case first utExpr s of
+    Print e -> "print" <+> e
+    Assignment name e -> pretty name <+> "=" <+> e
+    Pass -> "pass"
+    MutDefinition name me -> "mut" <+> pretty name <+> rhs
+      where
+        rhs = case me of
+          Nothing -> ""
+          Just e -> "<=" <+> e
+    MutAssignment name e -> pretty name <+> "<=" <+> e
+    If ifCond ifTrue elseIfs mElse ->
+      utBody ("if" <+> ifCond ) ifTrue <>
+      foldMap (\(cond, elseIf) ->
+          utBody ("elif" <+> cond) elseIf) elseIfs <>
+      maybe mempty (utBody "else") mElse
 
-  ExprStmt e -> e
-  Return e -> "return" <+> e
+    ExprStmt e -> e
+    Return e -> "return" <+> e
 
   -- Newlines are added to make the special "structures" more visible.
   DataDefinition dd -> utDataDef dd <> "\n"
@@ -233,9 +309,12 @@ utFunDec (FD name params retType) = comment "Function definition" $ pretty name 
 
 
 
--- Might be later generalized
 utBody :: Foldable t => Context -> t (AnnStmt Untyped) -> Context
-utBody header = indent header . ppLines utAnnStmt
+utBody = ppBody utAnnStmt
+
+
+ppBody :: Foldable t => (a -> Context) -> Context -> t a -> Context
+ppBody f header = indent header . ppLines f
 
 
 -- Technically should be something like Text for the annotation type, but I need to have access to context in annotations

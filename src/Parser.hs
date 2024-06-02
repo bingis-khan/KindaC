@@ -68,45 +68,45 @@ statement = choice
 sPass :: Parser (Stmt Untyped)
 sPass = do
   keyword "pass"
-  pure Pass
+  rets Pass
 
 sIf :: Parser (Stmt Untyped)
 sIf = do
   (cond, ifBody) <- scope (,) (keyword "if" >> expression)
   elifs <- many $ scope (,) (keyword "elif" >> expression)
   elseBody <- optional $ scope (const id) (keyword "else")
-  ret $ If cond ifBody elifs elseBody
+  rets $ If cond ifBody elifs elseBody
 
 sPrint :: Parser (Stmt Untyped)
 sPrint = do
   keyword "print"
   expr <- expression
-  ret $ Print expr
+  rets $ Print expr
 
 sDefinition :: Parser (Stmt Untyped)
 sDefinition = do
   name <- try $ identifier <* symbol "="
   rhs <- expression
-  ret $ Assignment name rhs
+  rets $ Assignment name rhs
 
 sMutDefinition :: Parser (Stmt Untyped)
 sMutDefinition = do
   keyword "mut"
   name <- identifier
   rhs <- optional $ symbol "<=" *> expression  -- I'm not sure if this should be optional (design reason: i want users to use inline if/case/whatever for conditional assignment). Right now we'll allow it, as it's easy to disallow it anyway.
-  ret $ MutDefinition name rhs
+  rets $ MutDefinition name rhs
 
 sMutAssignment :: Parser (Stmt Untyped)
 sMutAssignment = do
   name <- try $ identifier <* symbol "<="
   rhs <- expression
-  ret $ MutAssignment name rhs
+  rets $ MutAssignment name rhs
 
 sReturn :: Parser (Stmt Untyped)
 sReturn = do
   keyword "return"
   expr <- expression
-  ret $ Return expr
+  rets $ Return expr
 
 sExpression :: Parser (Stmt Untyped)
 sExpression = do
@@ -114,10 +114,10 @@ sExpression = do
   expr@(Fix chkExpr) <- expression
   to <- getOffset
   case chkExpr of
-    Call _ _ -> ret $ ExprStmt expr
+    Call _ _ -> rets $ ExprStmt expr
     _ -> do
       registerCustom $ MyPE (from, to) DisallowedExpressionAsStatement
-      ret $ ExprStmt expr  -- report an error, but return this for AST
+      rets $ ExprStmt expr  -- report an error, but return this for AST
 
 
 checkIfFunction :: Parser ()
@@ -130,7 +130,7 @@ sFunctionOrCall = recoverableIndentBlock $ do
   -- If it's a single expression function (has the ':'), we know it's not a call.
   ret $ case mExpr of
     Just expr ->
-      let expr2stmt = Fix . AnnStmt [] . Return
+      let expr2stmt = Fix . AnnStmt [] . NormalStmt . Return
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
       in L.IndentNone $ FunctionDefinition header body
@@ -146,7 +146,7 @@ sFunctionOrCall = recoverableIndentBlock $ do
           [] ->
             let args = map (Fix . Var . fst) params
                 funName = Fix $ Var name
-            in ret $ ExprStmt $ Fix $ Call funName args
+            in pure $ NormalStmt $ ExprStmt $ Fix $ Call funName args
 
 functionHeader :: Parser (FunDec Untyped, Maybe (Expr Untyped))
 functionHeader = do
@@ -450,6 +450,9 @@ retf = return . Fix
 ret :: a -> Parser a
 ret = pure
 
+rets :: stmt a -> Parser (BigStmtF datadec fundec stmt a)
+rets = pure . NormalStmt
+
 
 -- Errors
 
@@ -479,7 +482,7 @@ registerExpect offset found expected = registerParseError $ TrivialError offset 
 
 
 recoverStmt :: Parser (Either [Ann] (Stmt Untyped)) -> Parser (Either [Ann] (Stmt Untyped))
-recoverStmt = recoverLine (Right Pass)
+recoverStmt = recoverLine (Right $ NormalStmt Pass)
 
 recoverCon :: Parser (Either [Ann] (DataCon Untyped)) -> Parser (Either [Ann](DataCon Untyped))
 recoverCon = recoverLine (Right (DC "PLACEHOLDER" [] []))

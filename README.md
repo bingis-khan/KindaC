@@ -2,6 +2,9 @@
 
 hehe
 
+The plan is to do the whole pipeline (except codegen) in order to typecheck and import prelude automatically to files.
+
+
 
 # todo
 - parse pattern matching
@@ -23,6 +26,8 @@ hehe
 
   write something like "expecting constructor (or annotation)"
 - look for places with recoverable errors
+- incorrect indentation if/elif/else when pretty printing AST
+- shitty names for functions newVar and lookupVar in Typecheck.hs
 
 # thoughts???
 - should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?
