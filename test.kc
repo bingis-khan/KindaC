@@ -1,7 +1,9 @@
 
-print False
-x = True
 if x
-	print x
+	Data
+		One
+		Two
+		Three
+	print One
 else
-	print not x
+	print Two

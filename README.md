@@ -29,6 +29,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - incorrect indentation if/elif/else when pretty printing AST
 - shitty names for functions newVar and lookupVar in Typecheck.hs
 - better errors for extraenous symbols (try writing `print x y`)
+- scoping - make redefining a datatype an error? or only in the same scope
 
 # thoughts???
 - should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?

@@ -8,7 +8,7 @@ import Typecheck (typecheck, dbgTypecheck)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
-import ASTPrettyPrinter (tModule)
+import ASTPrettyPrinter (tModule, rModule)
 
 
 -- Loads and typechecks a module.
@@ -38,6 +38,8 @@ dbgLoadModule mPrelude filename = do
     Left err -> pure err
     Right ast -> do
       (rerrs, rmod) <- resolve mPrelude ast
+      print rerrs
+      putStrLn $ rModule rmod
 
       let (terrs, tmod) = dbgTypecheck mPrelude rmod
       let errors = s2t rerrs ++ s2t terrs

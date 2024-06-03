@@ -10,7 +10,7 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
-module Typecheck (typecheck, TypeError(..), dbgTypecheck, dbgPrintConstraints) where
+module Typecheck (typecheck, TypeError(..), dbgTypecheck, dbgPrintConstraints, ftv) where
 
 import Typecheck.Types
 import AST
@@ -55,14 +55,15 @@ typecheck mprelude rStmts =
         -- Three phases
         (tyStmts, constraints) = generateConstraints env senv rStmts
         (errors, su) = solveConstraints constraints
-    in case finalizeSubst su of
-          Left ambiguousTyvars ->
-            let ambiguousTyvarsErrors = fmap AmbiguousType ambiguousTyvars
-            in Left $ NonEmpty.prependList errors ambiguousTyvarsErrors
-          Right fsu -> case errors of
+        ambiguousTyVars = Set.toList $ ftv tyStmts \\ Map.keysSet su
+    in case ambiguousTyVars of
+        (amb:ambs) ->
+            let ambiguousTyVarsErrors = fmap AmbiguousType $ (amb :| ambs)
+            in Left $ NonEmpty.prependList errors ambiguousTyVarsErrors
+        _ -> case errors of
             (e:es) -> Left (e :| es)
             [] ->
-              let tstmts = substituteTypes fsu tyStmts
+              let tstmts = substituteTypes (Either.fromRight (error "should not happen") $ finalizeSubst su) tyStmts
               in Right tstmts
 
 
@@ -570,6 +571,15 @@ instance Substitutable (Fix (ExprType (Fix TypeF') (Fix (TypeF TypeInfo)))) wher
   ftv = cata $ \(ExprType t expr) -> ftv t <> fold expr
   subst su = cata $ \(ExprType t expr) -> Fix $ ExprType (subst su t) (fmap (subst su) expr)
 
+instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec ConInfo VarInfo (Fix TypeF')) (StmtF ConInfo VarInfo (Fix (ExprType (Fix TypeF') (Fix (TypeF TypeInfo)))))))) where
+
+  ftv = cata $ \(AnnStmt _ bstmt) -> case bstmt of
+    NormalStmt stmt -> bifoldMap ftv id stmt
+    DataDefinition _ -> mempty
+    FunctionDefinition _ stmts -> fold stmts
+
+  subst = undefined
+
 
 t2ty :: Type Typed -> Type TyVared
 t2ty = hoist (TF' . Right)
@@ -592,25 +602,26 @@ dbgTypecheck mprelude rStmts =
         -- Three phases
         (tyStmts, constraints) = generateConstraints env senv rStmts
         (errors, su) = solveConstraints constraints
-    in case finalizeSubst su of
-          Left ambiguousTyvars ->
-            let ambiguousTyvarsErrors = fmap AmbiguousType ambiguousTyvars
-                errs = errors ++ NonEmpty.toList ambiguousTyvarsErrors
+        ambiguousTyVars = ftv tyStmts \\ Map.keysSet su
+    in if (not . null) ambiguousTyVars
+          then
+            let ambiguousTyvarsErrors = fmap AmbiguousType $ Set.toList ambiguousTyVars
+                errs = errors ++ ambiguousTyvarsErrors
 
-                addMissing :: NonEmpty TyVar -> Subst -> Subst
+                addMissing :: Set TyVar -> Subst -> Subst
                 addMissing tyvs su =
-                  let tyvsu = Map.fromList $ fmap (\tyv@(TyVar tyvName) -> (tyv, makeType (TVar (TV tyvName)))) $ NonEmpty.toList tyvs
+                  let tyvsu = Map.fromList $ fmap (\tyv@(TyVar tyvName) -> (tyv, makeType (TVar (TV tyvName)))) $ Set.toList tyvs
                   in tyvsu `compose` su
 
-                su' = addMissing ambiguousTyvars su 
+                su' = addMissing ambiguousTyVars su 
                 fsu = Either.fromRight (error "Should not happen") $ finalizeSubst su'
 
                 tstmts = substituteTypes fsu tyStmts
             in (errs, tstmts)
-          Right fsu -> case errors of
-            errs ->
-              let tstmts = substituteTypes fsu tyStmts
-              in (errs, tstmts)
+          else
+            let fsu = Either.fromRight (error "Should not happen") $ finalizeSubst su
+                tstmts = substituteTypes fsu tyStmts
+            in (errors, tstmts)
 
 
 
