@@ -24,6 +24,7 @@ library
       AST
       ASTPrettyPrinter
       Parser
+      Pipeline
       Resolver
       Std
       Typecheck

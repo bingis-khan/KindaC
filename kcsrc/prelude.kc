@@ -16,14 +16,6 @@ Maybe a
 	Just a
 	Nothing
 
-add = x,y: x + y
-#map = x,y: x(y)
-x = 1
-y = x
-z = y
-	
-
-
 ## Test functions
 #fib (n)
 #	if n == 0

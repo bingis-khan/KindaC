@@ -285,8 +285,6 @@ lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
 term :: Parser (Expr Untyped)
 term = choice
   [ eDecimal
-  --, symbol "True" >> return (Fix $ Lit $ LBool True)
-  --, symbol "False" >> return (Fix $ Lit $ LBool False)
   , eGrouping
   , eIdentifier
   ]

@@ -87,7 +87,6 @@ tExpr = cata $ \(ExprType t expr) ->
   let encloseInType c = "(" <> c <+> "::" <+> tType t <> ")"
   in encloseInType $ case expr of
   Lit (LInt x) -> pretty x
-  Lit (LBool b) -> if b then "True" else "False"  -- This will have to be changed to actual types later.
   Var v -> rVar v
   Con c -> rCon c
 
@@ -162,7 +161,6 @@ rStmt = \case
 rExpr :: Expr Resolved -> Context
 rExpr = cata $ \case
   Lit (LInt x) -> pretty x
-  Lit (LBool b) -> if b then "True" else "False"  -- This will have to be changed to actual types later.
   Var v -> rVar v
   Con c -> rCon c
 
@@ -265,7 +263,6 @@ utStmt = \case
 utExpr :: Expr Untyped -> Context
 utExpr = cata $ \case
   Lit (LInt x) -> pretty x
-  Lit (LBool b) -> if b then "True" else "False"
   Var v -> pretty v
   Con c -> pretty c
 

@@ -10,7 +10,7 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
-module Typecheck where
+module Typecheck (typecheck, TypeError(..), dbgTypecheck, dbgPrintConstraints) where
 
 import Typecheck.Types
 import AST
@@ -38,6 +38,7 @@ import Data.List (find)
 import Data.Bifoldable (bifoldMap)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.List (intercalate)
+import qualified Data.Either as Either
 
 
 -- I have some goals alongside rewriting typechecking:
@@ -50,8 +51,9 @@ import Data.List (intercalate)
 typecheck :: Maybe Prelude -> Module Resolved -> Either (NonEmpty TypeError) (Module Typed)
 typecheck mprelude rStmts =
     let env = makeEnv mprelude
+        senv = makeSEnv mprelude
         -- Three phases
-        (tyStmts, constraints) = generateConstraints env rStmts
+        (tyStmts, constraints) = generateConstraints env senv rStmts
         (errors, su) = solveConstraints constraints
     in case finalizeSubst su of
           Left ambiguousTyvars ->
@@ -81,16 +83,37 @@ makeEnv mprelude = Env { preludeDefines = fmap dataTypes mprelude }
           _ -> Nothing
         )
 
+makeSEnv :: Maybe Prelude -> StatefulEnv
+makeSEnv Nothing = emptySEnv
+makeSEnv (Just prelude) = StatefulEnv
+  { variables = mempty
+  , tvargen = newTVarGen
+  , constructors = cons
+  , types = ts
+  } where
+    cons = Map.fromList $ foldMap manyCons $ mapMaybe (\case { Fix (AnnStmt _ (DataDefinition dd)) -> Just dd; _ -> Nothing }) prelude
+    manyCons dd@(DD tid tvars cons) =
+      let dt = t2ty $ dataType tid tvars
+      in fmap
+        (\(DC ci ts _) ->
+          let cont = case fmap t2ty ts of
+                [] -> dt
+                tys -> makeType $ TFun tys dt
+          in (ci, Forall (Set.fromList tvars) cont)
+        ) cons
+
+    ts = Map.fromList $ fmap oneType $ mapMaybe (\case { Fix (AnnStmt _ (DataDefinition dd)) -> Just dd; _ -> Nothing }) prelude
+    oneType (DD tid tvars _) = (tid, t2ty $ dataType tid tvars)
+
 
 ---------------------------
 -- CONSTRAINT GENERATION --
 ---------------------------
 
-generateConstraints :: Env -> Module Resolved -> (Module TyVared, [Constraint])
-generateConstraints env utModule = (tvModule, constraints)
+generateConstraints :: Env -> StatefulEnv -> Module Resolved -> (Module TyVared, [Constraint])
+generateConstraints env senv utModule = (tvModule, constraints)
   where
     (tvModule, constraints) = evalRWS inferModule env senv
-    senv = newStatefulEnv
     inferModule = inferStmts utModule
 
 
@@ -203,7 +226,6 @@ inferExpr = cata (fmap embed . inferExprType)
       pure $ ExprType t e'
 
     inferExprLayer = \case
-      Lit (LBool _) -> findType "Bool"
       Lit (LInt _ ) -> findType "Int"
 
       Var v -> lookupVar v
@@ -309,7 +331,7 @@ newCon :: ConInfo -> Scheme -> Infer ()
 newCon c scheme = RWS.modify $ \s -> s { constructors = Map.insert c scheme s.constructors }
 
 newType :: TypeInfo -> Type TyVared -> Infer ()
-newType ti t = RWS.modify $ \s -> s { types = Map.insert ti.typeName t s.types }
+newType ti t = RWS.modify $ \s -> s { types = Map.insert ti t s.types }
 
 
 
@@ -342,7 +364,7 @@ findType tname = do
     -- Use current environment to find required types.
     Nothing -> do
       ts <- RWS.gets types
-      case Map.lookup tname ts of
+      case findMap tname (\ti -> ti.typeName) ts of
         Just t -> pure t
         Nothing -> error $ "Required prelude type '" <> show tname <> "' not in scope. Exiting."
 
@@ -362,12 +384,12 @@ type Constraint = (Type TyVared, Type TyVared)
 data StatefulEnv = StatefulEnv
   { variables :: Map VarInfo Scheme
   , constructors :: Map ConInfo Scheme
-  , types :: Map Text (Type TyVared)
+  , types :: Map TypeInfo (Type TyVared)
   , tvargen :: TVarGen
   }
 
-newStatefulEnv :: StatefulEnv
-newStatefulEnv = StatefulEnv
+emptySEnv :: StatefulEnv
+emptySEnv = StatefulEnv
   { variables = mempty
   , constructors = mempty
   , tvargen = newTVarGen
@@ -483,14 +505,14 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
       Solve $ Writer.tell [te]
       pure emptySubst
 
-    compose :: Subst -> Subst -> Subst
-    compose sl sr = Map.map (subst sl) sr `Map.union` sl
-
     emptySubst = Map.empty :: Subst
+
+compose :: Subst -> Subst -> Subst
+compose sl sr = Map.map (subst sl) sr `Map.union` sl
 
 
 substituteTypes :: FullSubst -> Module TyVared -> Module Typed
-substituteTypes fsu = fmap subAnnStmt
+substituteTypes fsu tmod = fmap subAnnStmt tmod
   where
     subAnnStmt :: AnnStmt TyVared -> AnnStmt Typed
     subAnnStmt = hoist $ \(AnnStmt ann bstmt) -> AnnStmt ann $ case bstmt of
@@ -505,7 +527,8 @@ substituteTypes fsu = fmap subAnnStmt
     subType = cata $ \case
       TF' (Left tyv) -> case Map.lookup tyv fsu of
         Just t -> t
-        Nothing -> error $ "Failed finding tyvar '" <> show tyv <> "' in Full Subst, which should not happen."
+        Nothing ->
+          error $ "Failed finding tyvar '" <> show tyv <> "' in Full Subst, which should not happen." <> show (fsu, length tmod)
 
       TF' (Right t) -> Fix t
 
@@ -554,13 +577,45 @@ t2ty = hoist (TF' . Right)
 bidmap :: Bifunctor p => (c -> d) -> p c c -> p d d
 bidmap f = bimap f f
 
+findMap :: Eq a => a -> (b -> a) -> Map b c -> Maybe c
+findMap kk f = fmap snd . find (\(k, _) -> f k == kk). Map.toList
+
 
 -----
 -- DEBUG
 ----
 
-printConstraints :: [Constraint] -> String
-printConstraints = unlines . fmap pc
+dbgTypecheck :: Maybe Prelude -> Module Resolved -> ([TypeError], Module Typed)
+dbgTypecheck mprelude rStmts =
+    let env = makeEnv mprelude
+        senv = makeSEnv mprelude
+        -- Three phases
+        (tyStmts, constraints) = generateConstraints env senv rStmts
+        (errors, su) = solveConstraints constraints
+    in case finalizeSubst su of
+          Left ambiguousTyvars ->
+            let ambiguousTyvarsErrors = fmap AmbiguousType ambiguousTyvars
+                errs = errors ++ NonEmpty.toList ambiguousTyvarsErrors
+
+                addMissing :: NonEmpty TyVar -> Subst -> Subst
+                addMissing tyvs su =
+                  let tyvsu = Map.fromList $ fmap (\tyv@(TyVar tyvName) -> (tyv, makeType (TVar (TV tyvName)))) $ NonEmpty.toList tyvs
+                  in tyvsu `compose` su
+
+                su' = addMissing ambiguousTyvars su 
+                fsu = Either.fromRight (error "Should not happen") $ finalizeSubst su'
+
+                tstmts = substituteTypes fsu tyStmts
+            in (errs, tstmts)
+          Right fsu -> case errors of
+            errs ->
+              let tstmts = substituteTypes fsu tyStmts
+              in (errs, tstmts)
+
+
+
+dbgPrintConstraints :: [Constraint] -> String
+dbgPrintConstraints = unlines . fmap pc
   where
     pc (tl, tr) = pt tl <> " <=> " <> pt tr
     pt = cata $ \(TF' t) -> case t of

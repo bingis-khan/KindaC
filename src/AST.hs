@@ -58,7 +58,6 @@ data Op
 
 data LitType
   = LInt Int
-  | LBool Bool
   deriving (Eq, Ord, Show)
 
 

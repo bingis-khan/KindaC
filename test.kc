@@ -1,0 +1,7 @@
+
+print False
+x = True
+if x
+	print x
+else
+	print not x

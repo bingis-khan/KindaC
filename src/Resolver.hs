@@ -12,13 +12,16 @@ import Control.Monad.Trans.RWS (RWST)
 import Data.Map (Map)
 import qualified Control.Monad.Trans.RWS as RWST
 import qualified Data.Map as Map
+import Data.Maybe (mapMaybe)
+import Data.Fix (Fix(Fix))
 
 
 
 -- Resolves variables, constructors and types and replaces them with unique IDs.
-resolve :: Module Untyped -> IO ([ResolveError], Module Resolved)
-resolve uStmts = do
-  (rMod, errs) <- RWST.evalRWST (rStmts uStmts) () (Scope { varScope = mempty, conScope = mempty, tyScope = mempty })
+resolve :: Maybe Prelude -> Module Untyped -> IO ([ResolveError], Module Resolved)
+resolve mPrelude uStmts = do
+  let newScope = maybe emptyScope mkScope mPrelude
+  (rMod, errs) <- RWST.evalRWST (rStmts uStmts) () newScope
   return (errs, rMod)
 
 
@@ -142,6 +145,25 @@ data Scope = Scope
   , conScope :: Map Text ConInfo
   , tyScope :: Map Text TypeInfo
   }
+
+emptyScope :: Scope
+emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty }
+
+mkScope :: Prelude -> Scope
+mkScope prelude = Scope
+  { varScope = mempty
+  , conScope = cons
+  , tyScope = types
+  } where
+    cons = Map.fromList $ fmap (\ci -> (conName ci, ci)) $ foldMap extractCons prelude
+    extractCons = \case
+      Fix (AnnStmt _ (DataDefinition (DD _ _ dcons))) -> fmap (\(DC con _ _) -> con) dcons
+      _ -> []
+
+    types = Map.fromList $ mapMaybe extractTypes prelude
+    extractTypes = \case
+      Fix (AnnStmt _ (DataDefinition (DD tid _ _))) -> Just (typeName tid, tid)
+      _ -> Nothing
 
 
 newVar :: VarType -> Text -> Ctx VarInfo
