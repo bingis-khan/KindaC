@@ -1,0 +1,6 @@
+# redefining a constructor is okay right now
+A
+	Con
+
+B
+	Con

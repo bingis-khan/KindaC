@@ -1,9 +1,0 @@
-
-if x
-	Data
-		One
-		Two
-		Three
-	print One
-else
-	print Two

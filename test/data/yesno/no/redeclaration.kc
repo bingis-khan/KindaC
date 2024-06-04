@@ -1,0 +1,6 @@
+# redeclaration is not okay rn (but I realized it should be IMO)
+A
+	B
+
+A
+	C

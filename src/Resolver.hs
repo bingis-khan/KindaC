@@ -14,6 +14,10 @@ import qualified Control.Monad.Trans.RWS as RWST
 import qualified Data.Map as Map
 import Data.Maybe (mapMaybe)
 import Data.Fix (Fix(Fix))
+import Data.List.NonEmpty (NonEmpty ((:|)), (<|))
+import qualified Data.List.NonEmpty as NonEmpty
+import Control.Applicative ((<|>))
+import Control.Monad (when)
 
 
 
@@ -21,7 +25,7 @@ import Data.Fix (Fix(Fix))
 resolve :: Maybe Prelude -> Module Untyped -> IO ([ResolveError], Module Resolved)
 resolve mPrelude uStmts = do
   let newScope = maybe emptyScope mkScope mPrelude
-  (rMod, errs) <- RWST.evalRWST (rStmts uStmts) () newScope
+  (rMod, errs) <- RWST.evalRWST (rStmts uStmts) () (NonEmpty.singleton newScope)
   return (errs, rMod)
 
 
@@ -129,16 +133,16 @@ scope x = do
 closure :: Ctx a -> Ctx a
 closure x = do
   oldScope <- RWST.get          -- enter scope
-  RWST.modify $ \scope -> scope -- set all reachable variables as immutable
+  RWST.modify $ \scopes -> emptyScope <| fmap (\scope -> scope -- set all reachable variables as immutable
     { varScope = fmap (\v -> v { varType = Immutable }) scope.varScope
-    }
+    }) scopes
   x' <- x                       -- evaluate body
   RWST.put oldScope             -- exit scope
 
   return x'
 
 
-type Ctx = RWST () [ResolveError] Scope IO  -- I might add additional context later.
+type Ctx = RWST () [ResolveError] (NonEmpty Scope) IO  -- I might add additional context later.
 
 data Scope = Scope
   { varScope :: Map Text VarInfo
@@ -170,13 +174,13 @@ newVar :: VarType -> Text -> Ctx VarInfo
 newVar mut name = do
   vid <- liftIO newUnique
   let var = VI { varID = vid, varName = name, varType = mut }
-  RWST.modify $ \sc -> sc { varScope = Map.insert name var sc.varScope }
+  RWST.modify $ mapFirst $ \sc -> sc { varScope = Map.insert name var sc.varScope }
   return var
 
 resolveVar :: Text -> Ctx VarInfo
 resolveVar name = do
-  scope <- RWST.get
-  case Map.lookup name scope.varScope of
+  scopes <- RWST.get
+  case lookupScope name (fmap varScope scopes) of
     Just v -> pure v
     Nothing -> do
       err $ UndefinedVariable name
@@ -192,13 +196,13 @@ newCon :: Text -> Ctx ConInfo
 newCon name = do
   cid <- liftIO newUnique
   let con = CI { conID = cid, conName = name }
-  RWST.modify $ \sc -> sc { conScope = Map.insert name con sc.conScope }
+  RWST.modify $ mapFirst $ \sc -> sc { conScope = Map.insert name con sc.conScope }
   pure con
 
 resolveCon :: Text -> Ctx ConInfo
 resolveCon name = do
-  scope <- RWST.get
-  case Map.lookup name scope.conScope of
+  scopes <- RWST.get
+  case lookupScope name (fmap conScope scopes) of
     Just c -> pure c
     Nothing -> do
       err $ UndefinedConstructor name
@@ -212,15 +216,22 @@ placeholderCon name = do
 
 newType :: Text -> Ctx TypeInfo
 newType name = do
+  -- Check for duplication first
+  -- if it exists, we still replace it, but an error is signaled.
+  scope <- RWST.gets NonEmpty.head
+  when (name `Map.member` scope.tyScope) $
+    err $ TypeRedeclaration name
+
+  -- Generate a new unique type.
   tid <- liftIO newUnique
   let ty = TI { typeID = tid, typeName = name }
-  RWST.modify $ \sc -> sc { tyScope = Map.insert name ty sc.tyScope }
+  RWST.modify $ mapFirst $ \sc -> sc { tyScope = Map.insert name ty sc.tyScope }
   pure ty
 
 resolveType :: Text -> Ctx TypeInfo
 resolveType name = do
-  scope <- RWST.get
-  case Map.lookup name scope.tyScope of
+  scopes <- RWST.get
+  case lookupScope name (fmap tyScope scopes) of
     Just c -> pure c
     Nothing -> do
       err $ UndefinedType name
@@ -231,6 +242,11 @@ placeholderType name = do
   tid <- liftIO newUnique
   pure $ TI { typeID = tid, typeName = name }
 
+mapFirst :: (a -> a) -> NonEmpty a -> NonEmpty a
+mapFirst f (x :| xs) = f x :| xs
+
+lookupScope :: (Ord b, Foldable f) =>b -> f (Map b c) -> Maybe c
+lookupScope k = foldr (\l r -> Map.lookup k l <|> r) Nothing
 
 
 err :: ResolveError -> Ctx ()
@@ -240,4 +256,5 @@ data ResolveError
   = UndefinedVariable Text
   | UndefinedConstructor Text
   | UndefinedType Text
+  | TypeRedeclaration Text
   deriving Show

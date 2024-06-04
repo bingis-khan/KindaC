@@ -80,6 +80,8 @@ test-suite all
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      Specific
+      YesNo
       Paths_KindaC
   hs-source-dirs:
       test/src
