@@ -12,6 +12,13 @@ Bool
 #[ctype 'int']
 Int  # Make sure this is parsed as DataDefinition with zero constructors instead of ExprType in the compiler.
 
+# #[ctype 'uint8_t', cstdinclude 'stdint.h']
+# U8
+
+# #[ctype 'int8_t', cstdinclude 'stdint.h']
+# I8
+
+
 Maybe a
 	Just a
 	Nothing

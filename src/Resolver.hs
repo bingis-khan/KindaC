@@ -66,7 +66,7 @@ rStmts = traverse -- traverse through the list with Ctx
           re <- rExpr e
           pure $ ExprStmt re
         Return e -> do
-          re <- rExpr e
+          re <- traverse rExpr e
           pure $ Return re
       DataDefinition (DD tyName tyParams cons) -> do
         tid <- newType tyName

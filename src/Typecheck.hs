@@ -6,10 +6,9 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
+
 module Typecheck (typecheck, TypeError(..), dbgTypecheck, dbgPrintConstraints, ftv) where
 
 import Typecheck.Types
@@ -34,10 +33,9 @@ import qualified Control.Monad.Trans.Writer as Writer
 import Data.Tuple (swap)
 import Data.Bifunctor (bimap, Bifunctor)
 import Data.Maybe (mapMaybe, fromMaybe)
-import Data.List (find)
+import Data.List ( find, intercalate )
 import Data.Bifoldable (bifoldMap)
 import qualified Data.List.NonEmpty as NonEmpty
-import Data.List (intercalate)
 import qualified Data.Either as Either
 
 
@@ -50,7 +48,7 @@ import qualified Data.Either as Either
 
 typecheck :: Maybe Prelude -> Module Resolved -> Either (NonEmpty TypeError) (Module Typed)
 typecheck mprelude rStmts =
-    let env = makeEnv mprelude
+    let env = topLevelEnv mprelude
         senv = makeSEnv mprelude
         -- Three phases
         (tyStmts, constraints) = generateConstraints env senv rStmts
@@ -58,7 +56,7 @@ typecheck mprelude rStmts =
         ambiguousTyVars = Set.toList $ ftv tyStmts \\ Map.keysSet su
     in case ambiguousTyVars of
         (amb:ambs) ->
-            let ambiguousTyVarsErrors = fmap AmbiguousType $ (amb :| ambs)
+            let ambiguousTyVarsErrors = AmbiguousType <$> (amb :| ambs)
             in Left $ NonEmpty.prependList errors ambiguousTyVarsErrors
         _ -> case errors of
             (e:es) -> Left (e :| es)
@@ -72,14 +70,24 @@ typecheck mprelude rStmts =
 -- ENVIRONMENT PREPARATION --
 -----------------------------
 
-makeEnv :: Maybe Prelude -> Env
-makeEnv mprelude = Env { preludeDefines = fmap dataTypes mprelude }
+topLevelEnv :: Maybe Prelude -> Env
+topLevelEnv mprelude = case mprelude of
+  Nothing -> Env { preludeDefines = Nothing, returnType = Nothing }
+  Just prelude ->
+    let
+        defines = dataTypes prelude
+
+        defaultReturnTypeName = "Int"
+        defaultReturnType = case Map.lookup defaultReturnTypeName defines of
+          Nothing -> error $ "Could not find the default return type '" <> show defaultReturnTypeName <> " in Prelude."
+          Just t -> t2ty t
+    in Env { preludeDefines = Just defines, returnType = Just defaultReturnType }
   where
     dataTypes :: Prelude -> Map Text (Type Typed)
-    dataTypes 
-      = Map.fromList 
+    dataTypes
+      = Map.fromList
       . mapMaybe
-        (\case 
+        (\case
           Fix (AnnStmt _ (DataDefinition (DD tid tvars _))) -> Just (tid.typeName,  dataType tid tvars)
           _ -> Nothing
         )
@@ -93,7 +101,7 @@ makeSEnv (Just prelude) = StatefulEnv
   , types = ts
   } where
     cons = Map.fromList $ foldMap manyCons $ mapMaybe (\case { Fix (AnnStmt _ (DataDefinition dd)) -> Just dd; _ -> Nothing }) prelude
-    manyCons dd@(DD tid tvars cons) =
+    manyCons (DD tid tvars cons) =
       let dt = t2ty $ dataType tid tvars
       in fmap
         (\(DC ci ts _) ->
@@ -103,7 +111,7 @@ makeSEnv (Just prelude) = StatefulEnv
           in (ci, Forall (Set.fromList tvars) cont)
         ) cons
 
-    ts = Map.fromList $ fmap oneType $ mapMaybe (\case { Fix (AnnStmt _ (DataDefinition dd)) -> Just dd; _ -> Nothing }) prelude
+    ts = Map.fromList $ oneType <$> mapMaybe (\case { Fix (AnnStmt _ (DataDefinition dd)) -> Just dd; _ -> Nothing }) prelude
     oneType (DD tid tvars _) = (tid, t2ty $ dataType tid tvars)
 
 
@@ -125,15 +133,11 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
   where
     -- go through each statement
     conStmtScaffolding :: AnnStmt Resolved -> Infer (AnnStmt TyVared)
-    conStmtScaffolding = transverse inferAnnStmt  -- i think it's possible to only map expressions and selectively typecheck this stuff. because you can control the order of evaluation, so, for a function, we can add the fujction name type, then evaluate the statement part.
+    conStmtScaffolding = cata (fmap embed . inferAnnStmt)  -- i think it's possible to only map expressions and selectively typecheck this stuff. because you can control the order of evaluation, so, for a function, we can add the fujction name type, then evaluate the statement part.
 
     -- go through additional layers (in the future also position information)
-    inferAnnStmt :: Base (AnnStmt Resolved) (Infer a) -> Infer (Base (AnnStmt TyVared) a)
-    inferAnnStmt (AnnStmt anns rStmt) = do
-      tStmt <- inferBigStmt rStmt
-      pure $ AnnStmt anns tStmt
-
-    inferBigStmt = \case
+    inferAnnStmt :: Substitutable a => Base (AnnStmt Resolved) (Infer a) -> Infer (Base (AnnStmt TyVared) a)
+    inferAnnStmt (AnnStmt anns rStmt) = case rStmt of
       NormalStmt (Assignment v rexpr) -> do
         texpr@(Fix (ExprType texprt _)) <- subSolve $ inferExpr rexpr
         -- substitution done in subSolve
@@ -144,11 +148,11 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
         let schemeTyVars = texprtFtv \\ envFtv
         -- Do amibguous check at the end. 
 
-        let (scheme, schemeExpr) = makeScheme schemeTyVars texpr -- Replace Left -> Right
+        let (scheme, schemeExpr) = closeOverExpr schemeTyVars texpr -- Replace Left -> Right
 
         newVar v scheme
 
-        pure $ NormalStmt $ Assignment v schemeExpr
+        pure $ AnnStmt anns $ NormalStmt $ Assignment v schemeExpr
 
       NormalStmt rstmt -> do
         tstmt <- bitraverse inferExpr id rstmt
@@ -156,10 +160,46 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
         -- Map expr -> type for unification
         let ttstmt = first (\(Fix (ExprType t _)) -> t) tstmt
         inferStmt ttstmt  -- Then 
-        pure $ NormalStmt tstmt
+        pure $ AnnStmt anns $ NormalStmt tstmt
 
       FunctionDefinition (FD name params ret) rbody -> do
-        undefined
+        (fnt, fdec, fbody) <- subSolve $ do
+
+          -- RECURSION: Add the (monotype) function to the environment
+          f <- fresh
+          newVar name (Forall Set.empty f)  -- Empty scheme will prevent instantiation.
+
+          -- Define parameters
+          tparams <- (lookupVar . fst) `traverse` params
+
+          -- Unify parameters with their types.
+          for_ (zip tparams (fmap snd params)) $ \(v, mt) -> do
+            t <- maybe fresh (pure . t2ty) mt  -- get declared type if any
+            uni v t
+
+          -- Unify return type
+          tret <- maybe fresh (pure . t2ty) ret
+
+          -- Actual function typechecking
+          tbody <- withReturn tret $ sequenceA rbody
+
+
+          let fnt = Fix $ TF' $ Right $ TFun tparams tret
+          let fdec = FD name (zip (fmap fst params) tparams) tret
+          let fbody = tbody
+
+          pure (fnt, fdec, fbody)
+
+        -- generalization
+        envFtv <- foldMap (\(Forall _ e) -> ftv e) . Map.elems <$> RWS.gets variables
+        let fntFtv = ftv fnt
+        let schemeTyVars = fntFtv \\ envFtv  -- Only variables that exist in the "front" type. (front = the type that we will use as a scheme and will be able to generalize)
+
+        let (scheme, (schemeBody, schemeParams)) = closeOver schemeTyVars (fbody, fdec) fnt 
+
+        newVar name scheme
+
+        pure $ AnnStmt anns $ FunctionDefinition schemeParams schemeBody
 
       DataDefinition dd@(DD tid tvars cons) -> do
         let dt = t2ty $ dataType tid tvars
@@ -173,7 +213,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
 
           in newCon c (Forall (Set.fromList tvars) cont)
 
-        pure $ DataDefinition dd
+        pure $ AnnStmt anns $ DataDefinition dd
 
     -- this is the actual logic.
     -- wtf, for some reason \case produces an error here....
@@ -198,6 +238,16 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
 
         for_ elseIfs $ \(t, _) ->
           t `uni` boolt
+
+      Return mret -> do
+        emret <- RWS.asks returnType
+
+        -- Nothing -> Void / ()
+        let opty = maybe (findType "Void") pure  -- TODO: Right now, the default is "Void". Should be an empty tuple or something.
+        eret <- opty emret
+        ret <- opty mret
+
+        ret `uni` eret
 
       _ -> pure ()
 
@@ -257,10 +307,13 @@ inferExpr = cata (fmap embed . inferExprType)
         pure ret
 
       Lam params ret -> do
-        vars <- traverse lookupVar params
+        vars <- traverse lookupVar params  -- creates variables. i have to change the name from lookupVar i guess...
         let t = makeType $ TFun vars ret
         pure t
 
+
+withReturn :: Type TyVared -> Infer a -> Infer a
+withReturn ret = RWS.local $ \e -> e { returnType = Just ret }
 
 uni :: Type TyVared -> Type TyVared -> Infer ()
 uni t1 t2 = RWS.tell [(t1, t2)]
@@ -314,19 +367,22 @@ instantiate (Forall tvars est) = do
 
 -- A scheme turns closed over TyVars into TVars. This requires it to traverse through the expression and replace appropriate vars.
 -- We use Substitutable's subst function for this.
-makeScheme :: Set TyVar -> Expr TyVared -> (Scheme, Expr TyVared)
-makeScheme tyvars e = (Forall tvars est, es)
+closeOver :: Substitutable a => Set TyVar -> a -> Type TyVared -> (Scheme, a)
+closeOver tyvars s t = (Forall tvars st, ss)
   where
-    es@(Fix (ExprType est _)) = subst newSubst e  -- substituted expression
+    (ss, st) = subst newSubst (s, t)  -- substituted expression
     tvars = Set.map (\(TyVar tname) -> TV tname) tyvars  -- change closed over tyvars into tvars
     newSubst = Map.fromList $ map (\tv@(TyVar tname) -> (tv, makeType $ TVar $ TV tname)) $ Set.toList tyvars  -- that substitution
+
+-- utility for expressions
+closeOverExpr :: Set TyVar -> Expr TyVared -> (Scheme, Expr TyVared)
+closeOverExpr tyvars e@(Fix (ExprType t _)) = closeOver tyvars e t
 
 
 -- maybe merge lookupVar and newVar,
 --   because that's what the resolving step should... resolve.
 newVar :: VarInfo -> Scheme -> Infer ()
-newVar v scheme = do
-  RWS.modify $ \s -> s { variables = Map.insert v scheme s.variables }
+newVar v scheme = RWS.modify $ \s -> s { variables = Map.insert v scheme s.variables }
 
 newCon :: ConInfo -> Scheme -> Infer ()
 newCon c scheme = RWS.modify $ \s -> s { constructors = Map.insert c scheme s.constructors }
@@ -374,8 +430,10 @@ findType tname = do
 type Infer a = RWS Env [Constraint] StatefulEnv a
 
 
+-- Actually, all of the member variables are Maybe depending on Prelude. TODO: change it in the future, so It's a sort of Maybe Env.
 data Env = Env
   { preludeDefines :: Maybe PreludeTypes
+  , returnType :: Maybe (Type TyVared)
   }
 
 type PreludeTypes = Map Text (Type Typed)
@@ -445,8 +503,8 @@ subSolve ctx = do
   r <- RWS.ask
   s <- RWS.get
   let (x, _, constraints) = RWS.runRWS ctx r s
-  let (_, sub) = solveConstraints constraints
-  let substituted = subst sub x
+  let (_, sub) = solveConstraints constraints  -- TODO: why am I ignoring errors here???????? Is it because it's subSolve - they will also be reported at the end.
+  let substituted = sub `subst` x
 
   RWS.tell constraints
   pure substituted
@@ -563,22 +621,38 @@ instance Substitutable a => Substitutable [a] where
   ftv = foldMap ftv
   subst su = fmap (subst su)
 
+instance Substitutable a => Substitutable (NonEmpty a) where
+  ftv = foldMap ftv
+  subst su = fmap (subst su)
+
 instance (Substitutable a, Substitutable b) => Substitutable (a, b) where
   ftv = bifoldMap ftv ftv
   subst su = bimap (subst su) (subst su)
 
+instance (Substitutable a, Substitutable b, Substitutable c) => Substitutable (a, b, c) where
+  ftv (x, y, z) = ftv x <> ftv y <> ftv z
+  subst su (x, y, z) = (subst su x, subst su y, subst su z)
+
+-- TODO: I want to off myself...
 instance Substitutable (Fix (ExprType (Fix TypeF') (Fix (TypeF TypeInfo)))) where
   ftv = cata $ \(ExprType t expr) -> ftv t <> fold expr
   subst su = cata $ \(ExprType t expr) -> Fix $ ExprType (subst su t) (fmap (subst su) expr)
 
-instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec ConInfo VarInfo (Fix TypeF')) (StmtF ConInfo VarInfo (Fix (ExprType (Fix TypeF') (Fix (TypeF TypeInfo)))))))) where
 
+instance Substitutable (GFunDec c v (Fix TypeF')) where
+  ftv (FD _ params ret) = ftv ret <> foldMap (ftv . snd) params
+  subst su (FD name params ret) = FD name ((fmap . fmap) (subst su) params) (subst su ret)
+
+instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec ConInfo VarInfo (Fix TypeF')) (StmtF ConInfo VarInfo (Fix (ExprType (Fix TypeF') (Fix (TypeF TypeInfo)))))))) where
   ftv = cata $ \(AnnStmt _ bstmt) -> case bstmt of
     NormalStmt stmt -> bifoldMap ftv id stmt
     DataDefinition _ -> mempty
-    FunctionDefinition _ stmts -> fold stmts
+    FunctionDefinition fd stmts -> ftv fd <> fold stmts
 
-  subst = undefined
+  subst su = hoist $ \(AnnStmt anns bstmt) -> AnnStmt anns $ case bstmt of
+    NormalStmt stmt -> NormalStmt $ first (subst su) stmt
+    DataDefinition dd -> DataDefinition dd
+    FunctionDefinition fd stmts -> FunctionDefinition (subst su fd) stmts
 
 
 t2ty :: Type Typed -> Type TyVared
@@ -597,7 +671,7 @@ findMap kk f = fmap snd . find (\(k, _) -> f k == kk). Map.toList
 
 dbgTypecheck :: Maybe Prelude -> Module Resolved -> ([TypeError], Module Typed)
 dbgTypecheck mprelude rStmts =
-    let env = makeEnv mprelude
+    let env = topLevelEnv mprelude
         senv = makeSEnv mprelude
         -- Three phases
         (tyStmts, constraints) = generateConstraints env senv rStmts
@@ -610,10 +684,10 @@ dbgTypecheck mprelude rStmts =
 
                 addMissing :: Set TyVar -> Subst -> Subst
                 addMissing tyvs su =
-                  let tyvsu = Map.fromList $ fmap (\tyv@(TyVar tyvName) -> (tyv, makeType (TVar (TV tyvName)))) $ Set.toList tyvs
+                  let tyvsu = Map.fromList $ (\tyv@(TyVar tyvName) -> (tyv, makeType (TVar (TV tyvName)))) <$> Set.toList tyvs
                   in tyvsu `compose` su
 
-                su' = addMissing ambiguousTyVars su 
+                su' = addMissing ambiguousTyVars su
                 fsu = Either.fromRight (error "Should not happen") $ finalizeSubst su'
 
                 tstmts = substituteTypes fsu tyStmts

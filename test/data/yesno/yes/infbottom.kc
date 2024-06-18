@@ -1,0 +1,4 @@
+# compile a bottom (infinite loop) function a -> b
+
+bottom (x)
+	return bottom(x)

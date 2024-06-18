@@ -22,6 +22,7 @@ newtype TypeF' a = TF' { fromTF' :: Either TyVar (TypeF TypeInfo a) } deriving (
 $(deriveShow1 ''TypeF')
 $(deriveEq1 ''TypeF')
 
+
 type instance Type TyVared = Fix TypeF'
 
 type instance Expr TyVared = Fix (ExprType (Type TyVared) (Type Typed))

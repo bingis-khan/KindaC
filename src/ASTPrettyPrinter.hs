@@ -64,11 +64,9 @@ tStmt = \case
     Print e -> "print" <+> e
     Assignment v e -> rVar v <+> "=" <+> e
     Pass -> "pass"
-    MutDefinition v me ->  "mut" <+> rVar v <+> rhs
+    MutDefinition v me ->  "mut" <+> rVar v <+?> rhs
       where
-        rhs = case me of
-          Nothing -> ""
-          Just e -> "<=" <+> e
+        rhs = fmap ("<=" <+>) me
     MutAssignment v e -> rVar v <+> "<=" <+> e
     If ifCond ifTrue elseIfs mElse ->
       tBody ("if" <+> ifCond ) ifTrue <>
@@ -76,7 +74,7 @@ tStmt = \case
           tBody ("elif" <+> cond) elseIf) elseIfs <>
       maybe mempty (tBody "else") mElse
     ExprStmt e -> e
-    Return e -> "return" <+> e
+    Return e -> "return" <+?> e
 
   DataDefinition dd -> tDataDef dd
   FunctionDefinition fd body -> tBody (tFunDec fd) body
@@ -140,11 +138,9 @@ rStmt = \case
     Print e -> "print" <+> e
     Assignment v e -> rVar v <+> "=" <+> e
     Pass -> "pass"
-    MutDefinition v me ->  "mut" <+> rVar v <+> rhs
+    MutDefinition v me ->  "mut" <+> rVar v <+?> rhs
       where
-        rhs = case me of
-          Nothing -> ""
-          Just e -> "<=" <+> e
+        rhs = fmap ("<=" <+>) me
     MutAssignment v e -> rVar v <+> "<=" <+> e
     If ifCond ifTrue elseIfs mElse ->
       rBody ("if" <+> ifCond ) ifTrue <>
@@ -152,7 +148,7 @@ rStmt = \case
           rBody ("elif" <+> cond) elseIf) elseIfs <>
       maybe mempty (rBody "else") mElse
     ExprStmt e -> e
-    Return e -> "return" <+> e
+    Return e -> "return" <+?> e
 
   DataDefinition dd -> rDataDef dd
   FunctionDefinition fd body -> rBody (rFunDec fd) body
@@ -240,11 +236,9 @@ utStmt = \case
     Print e -> "print" <+> e
     Assignment name e -> pretty name <+> "=" <+> e
     Pass -> "pass"
-    MutDefinition name me -> "mut" <+> pretty name <+> rhs
+    MutDefinition name me -> "mut" <+> pretty name <+?> rhs
       where
-        rhs = case me of
-          Nothing -> ""
-          Just e -> "<=" <+> e
+        rhs = fmap ("<=" <+>) me
     MutAssignment name e -> pretty name <+> "<=" <+> e
     If ifCond ifTrue elseIfs mElse ->
       utBody ("if" <+> ifCond ) ifTrue <>
@@ -253,7 +247,7 @@ utStmt = \case
       maybe mempty (utBody "else") mElse
 
     ExprStmt e -> e
-    Return e -> "return" <+> e
+    Return e -> "return" <+?> e
 
   -- Newlines are added to make the special "structures" more visible.
   DataDefinition dd -> utDataDef dd <> "\n"
@@ -351,6 +345,11 @@ ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
 infixr 6 <+>
 (<+>) :: Context -> Context -> Context
 x <+> y = liftA2 (PP.<+>) x y
+
+infixr 6 <+?>
+(<+?>) :: Context -> Maybe Context -> Context
+x <+?> Nothing = x
+x <+?> Just y = x <+> y
 
 infixr 5 <\>
 (<\>) :: Context -> Context -> Context

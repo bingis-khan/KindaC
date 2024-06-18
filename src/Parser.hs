@@ -105,7 +105,7 @@ sMutAssignment = do
 sReturn :: Parser (Stmt Untyped)
 sReturn = do
   keyword "return"
-  expr <- expression
+  expr <- optional expression
   rets $ Return expr
 
 sExpression :: Parser (Stmt Untyped)
@@ -130,7 +130,7 @@ sFunctionOrCall = recoverableIndentBlock $ do
   -- If it's a single expression function (has the ':'), we know it's not a call.
   ret $ case mExpr of
     Just expr ->
-      let expr2stmt = Fix . AnnStmt [] . NormalStmt . Return
+      let expr2stmt = Fix . AnnStmt [] . NormalStmt . Return . Just
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
       in L.IndentNone $ FunctionDefinition header body

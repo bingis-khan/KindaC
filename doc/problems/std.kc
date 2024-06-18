@@ -3,3 +3,8 @@
 # Let's do this dir structure:
 kcsrc/prelude/ <-- this will be the prelude. oh. the inclusion rules will be a bit different. each module in /prelude/ will be invisibly included separately I guess. But I still want the option to hide the prelude, so I guess I would autogenerate a prelude module (all these modules in /prelude/ would act like reexports in the new prelude module)
 kcsrc/std/ <-- this will be the std
+
+Actually no
+
+prelude will be a single file for now.
+It will reexport some stuff... maybe?

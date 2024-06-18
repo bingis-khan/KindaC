@@ -16,7 +16,6 @@ import Data.Bifunctor.TH
 import Data.Bifoldable
 import Data.Text (Text)
 import Data.Unique (Unique, hashUnique)
-import Data.Functor.Foldable (Base)
 
 
 -- File structure:
@@ -93,7 +92,7 @@ data StmtF c v expr a
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
   | ExprStmt expr
-  | Return expr
+  | Return (Maybe expr)
   deriving (Show, Eq, Functor, Foldable, Traversable)
 $(deriveShow1 ''StmtF)
 
@@ -399,7 +398,7 @@ instance Bifunctor (StmtF l g) where
     MutAssignment name e -> MutAssignment name (f e)
     If e ifTrue elifs ifFalse -> If (f e) ifTrue ((map . first) f elifs) ifFalse
     ExprStmt e -> ExprStmt (f e)
-    Return e -> Return (f e)
+    Return e -> Return (fmap f e)
   second = fmap
 
 instance Bifoldable (StmtF l g) where
@@ -410,7 +409,7 @@ instance Bifoldable (StmtF l g) where
     Assignment _ a -> f a b
     MutDefinition _ ma -> maybe b (\a -> f a b) ma
     MutAssignment _ a -> f a b
-    Return a -> f a b
+    Return ma -> maybe b (\a -> f a b) ma
     If cond ifTrue elifs ifFalse
       -> f cond
       $ body ifTrue
