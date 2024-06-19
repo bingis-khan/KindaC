@@ -1,0 +1,8 @@
+# tvargen does not get reset (i had a bug like this, don't judge. look at the date)
+
+id' (x n) -> n
+	return x
+
+id (x n) -> Maybe Int
+	return Just(1)
+

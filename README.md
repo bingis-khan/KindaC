@@ -8,7 +8,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 # todo
 - parse pattern matching
-- change VarID, ConID, TypeID to their "typeinfo" datatypes: I think it's more haskell-ish and they are immutable anyway. V
+- [V] change VarID, ConID, TypeID to their "typeinfo" datatypes: I think it's more haskell-ish and they are immutable anyway.
 - add types to the ASTPrettyPrinter module so that
   type Context a = a -> Context'
     - I may not end up needing the extra context, as VarInfo, TypeInfo, ConInfo, etc. embed information in them anyway. So no extra context is needed!
@@ -30,6 +30,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - shitty names for functions newVar and lookupVar in Typecheck.hs
 - better errors for extraenous symbols (try writing `print x y`)
 - scoping - make redefining a datatype an error? or only in the same scope
+- clean Typecheck module (it's gotten bad again, especially the generalization/subSolve part - think about where do FTVs come from, should env ftvs come from data definitions and types? I should put the future `generalize` function near the `subSolve`, because they deal with similar things)
 
 # thoughts???
 - should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?

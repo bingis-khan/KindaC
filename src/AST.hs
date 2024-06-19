@@ -16,6 +16,7 @@ import Data.Bifunctor.TH
 import Data.Bifoldable
 import Data.Text (Text)
 import Data.Unique (Unique, hashUnique)
+import qualified Data.Text as Text
 
 
 -- File structure:
@@ -230,7 +231,7 @@ data TypeInfo = TI
   , typeName :: Text
   }
 
-data VarType = Immutable | Mutable
+data VarType = Immutable | Mutable deriving Show
 
 
 -- type instances for the small datatypes
@@ -240,6 +241,10 @@ instance Eq VarInfo where
 
 instance Ord VarInfo where
   VI { varID = l } `compare` VI { varID = r } = l `compare` r
+
+-- temporary instance
+instance Show VarInfo where
+  show (VI { varID = vid, varName = vname, varType = vt }) = "v" <> show (hashUnique vid) <> Text.unpack vname <> show vt
 
 
 instance Eq ConInfo where

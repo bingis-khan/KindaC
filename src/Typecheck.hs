@@ -9,7 +9,7 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
-module Typecheck (typecheck, TypeError(..), dbgTypecheck, dbgPrintConstraints, ftv) where
+module Typecheck (typecheck, TypeError(..), dbgTypecheck, dbgPrintConstraints, ftv, unSolve) where
 
 import Typecheck.Types
 import AST
@@ -456,7 +456,7 @@ emptySEnv = StatefulEnv
   }
 
 
-data Scheme = Forall (Set TVar) (Type TyVared)
+data Scheme = Forall (Set TVar) (Type TyVared) deriving Show
 
 
 newtype TVarGen = TVG Int
@@ -500,13 +500,11 @@ eitherize (SRight a) = Right a
 
 subSolve :: Substitutable a => Infer a -> Infer a
 subSolve ctx = do
-  r <- RWS.ask
-  s <- RWS.get
-  let (x, _, constraints) = RWS.runRWS ctx r s
+  ogvars <- RWS.gets variables  -- variables are used to generalize - these will represent the new env. TODO: maybe I should get ftvs from constructors???? From defined types???? Examples???
+  (x, constraints) <-  RWS.mapRWS (\(x, s, constraints) -> ((x, constraints), s { variables = ogvars }, constraints)) ctx
   let (_, sub) = solveConstraints constraints  -- TODO: why am I ignoring errors here???????? Is it because it's subSolve - they will also be reported at the end.
   let substituted = sub `subst` x
 
-  RWS.tell constraints
   pure substituted
 
 
@@ -679,7 +677,7 @@ dbgTypecheck mprelude rStmts =
         ambiguousTyVars = ftv tyStmts \\ Map.keysSet su
     in if (not . null) ambiguousTyVars
           then
-            let ambiguousTyvarsErrors = fmap AmbiguousType $ Set.toList ambiguousTyVars
+            let ambiguousTyvarsErrors = AmbiguousType <$> Set.toList ambiguousTyVars
                 errs = errors ++ ambiguousTyvarsErrors
 
                 addMissing :: Set TyVar -> Subst -> Subst
