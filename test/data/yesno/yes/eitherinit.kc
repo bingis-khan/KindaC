@@ -1,0 +1,6 @@
+# tests the new datatype 'Either'
+
+err = Left(69)
+right = Right(1)
+
+
