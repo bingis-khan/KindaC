@@ -31,6 +31,10 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - better errors for extraenous symbols (try writing `print x y`)
 - scoping - make redefining a datatype an error? or only in the same scope
 - clean Typecheck module (it's gotten bad again, especially the generalization/subSolve part - think about where do FTVs come from, should env ftvs come from data definitions and types? I should put the future `generalize` function near the `subSolve`, because they deal with similar things)
+- Environment should be a Set / Set of Sets, but right now it's a list, because we can't put 'Ord' constraints in fmap.
+- I had to replace `transverse` with their implementation due to the "forall" type of `transverse`. I wonder if there is a dedicated function instead of `transverse` - I can probably grep through the source by the implementation `cata (fmap embed . n)`.
+- `noFunEnv` and the whole imlementation of the algorithm is shaky at best, utterly disgusting at worst. just... fix this. `noFunEnv` is like the worst. incorrect state possible... it's fucked.
+- why are parameters being unified???
 
 # thoughts???
 - should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?

@@ -137,7 +137,7 @@ sFunctionOrCall = recoverableIndentBlock $ do
 
     Nothing ->
       -- If that's a normal function, we check if any types were defined
-      let (FD name params rett) = header
+      let (FD name params _ rett) = header
           types = rett : map snd params
       in if any isJust types
         then L.IndentSome Nothing (fmap (FunctionDefinition header . NonEmpty.fromList) . annotateStatements) $ recoverStmt (annotationOr statement)
@@ -158,9 +158,11 @@ functionHeader = do
     , Right <$> optional (symbol "->" >> pType)
     ]
 
+  let env = NoEnv ()
+
   return $ case ret of
-    Left expr -> (FD name params Nothing, Just expr)
-    Right mType -> (FD name params mType, Nothing)
+    Left expr -> (FD name params env Nothing, Just expr)
+    Right mType -> (FD name params env mType, Nothing)
 
 
 -- Data definitions
@@ -275,7 +277,7 @@ as = Postfix $ do
 lambda :: Operator Parser (Expr Untyped)
 lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
   params <- try $ (identifier `sepBy` symbol ",") <* symbol ":"
-  return $ Fix . Lam params
+  return $ Fix . Lam (NoEnv ()) params
 
 
 -----------
@@ -323,7 +325,7 @@ pType = do
     Nothing -> case term of
       [t] -> return t
       ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> show ts <> ")"  -- this would later mean that we're returning a tuple
-    Just ret -> return $ Fix $ TFun term ret
+    Just ret -> return $ Fix $ TFun (NoEnv ()) term ret
 
   where
     concrete = do

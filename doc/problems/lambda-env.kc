@@ -1,0 +1,16 @@
+Okay, this is kinda fucked. It's a fairly rare use case, yet it causes a lot of pain.
+
+y = 420
+z = 69
+x = x: x + y if rand() else x: x * z
+
+Two different environments.
+
+My idea for solving it rn is this:
+
+f = x: x + y  # generalize -> { { yt } } yt -> yt (scheme: {} )  <---- A set of sets for the environment. 'yt' is a type of y (because it's not yet known)
+id = x: x  # generalize -> { {} } a -> a (scheme: { a })
+
+g = f if rand() else id
+	# unify f and id
+	# instantiate stuff: a from id gets instantiated, yt stays the same, because it's not part of the scheme

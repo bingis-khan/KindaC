@@ -1,0 +1,7 @@
+
+woah (wantenv Bool)
+	env = 420
+	if wantenv
+		return :env
+	else
+		return :69

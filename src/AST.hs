@@ -19,6 +19,8 @@ import Data.Unique (Unique, hashUnique)
 import qualified Data.Text as Text
 
 
+
+
 -- File structure:
 --  - AST datatypes
 --     - Expression
@@ -61,7 +63,7 @@ data LitType
   deriving (Eq, Ord, Show)
 
 
-data ExprF t c v a
+data ExprF fenv t c v a
   = Lit LitType
   | Var v
   | Con c
@@ -69,7 +71,7 @@ data ExprF t c v a
   | Op a Op a
   | Call a [a]
   | As a t
-  | Lam [v] a
+  | Lam (fenv v) [v] a
   deriving (Show, Eq, Functor, Foldable, Traversable)
 $(deriveShow1 ''ExprF)
 $(deriveEq1 ''ExprF)
@@ -122,10 +124,11 @@ type family Type phase
 
 newtype TVar = TV Text deriving (Show, Eq, Ord)
 
-data TypeF t a
+-- Environment for functions
+data TypeF fenv t a
   = TCon t [a]
   | TVar TVar
-  | TFun [a] a
+  | TFun (fenv a) [a] a
   deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 data MonoTypeF t a
@@ -139,16 +142,15 @@ $(deriveEq1 ''TypeF)
 $(deriveOrd1 ''TypeF)
 
 
-
 --------------
 -- Function --
 --------------
 
 type family FunDec phase
 
-data GFunDec c v t = FD v [(v, t)] t deriving (Show, Functor, Eq)
+data GFunDec fenv c v t = FD v [(v, t)] (fenv v) t deriving (Show, Functor, Eq)
 
--- We only take names into account when seearching for a function
+-- We only take names into account when searching for a function
 -- so instances should reflect this.
 
 
@@ -189,12 +191,20 @@ type instance Module phase = [AnnStmt phase]  -- right now, we don't need specia
 -- Untyped --
 -------------
 data Untyped
-type instance Type Untyped = Fix (TypeF Text)
-type instance Expr Untyped  = Fix (ExprF (Type Untyped) Text Text)   -- Was: Fix (ExprF Text). It's for resolving, because Resolvable needs an instance with either. Should be temporary.
+
+newtype NoEnv a = NoEnv () deriving (Functor)
+instance Show (NoEnv a) where
+  show (NoEnv ()) = "<env ph>"
+
+$(deriveShow1 ''NoEnv)
+
+
+type instance Type Untyped = Fix (TypeF NoEnv Text)
+type instance Expr Untyped  = Fix (ExprF NoEnv (Type Untyped) Text Text)   -- Was: Fix (ExprF Text). It's for resolving, because Resolvable needs an instance with either. Should be temporary.
                                 -- I can use this https://web.archive.org/web/20070702202021/https://www.cs.vu.nl/boilerplate/. to quickly map those things.
 type instance DataCon Untyped = GDataCon Text (Type Untyped)
 type instance DataDef Untyped = GDataDef Text (DataCon Untyped)
-type instance FunDec Untyped = GFunDec Text Text (Maybe (Type Untyped))
+type instance FunDec Untyped = GFunDec NoEnv Text Text (Maybe (Type Untyped))
 type instance AnnStmt Untyped = Fix (AnnStmtF (BigStmtF (DataDef Untyped) (FunDec Untyped) (StmtF Text Text (Expr Untyped))))
 type instance Stmt Untyped = BigStmtF (DataDef Untyped) (FunDec Untyped) (StmtF Text Text (Expr Untyped)) (AnnStmt Untyped)
 
@@ -204,14 +214,17 @@ type instance Stmt Untyped = BigStmtF (DataDef Untyped) (FunDec Untyped) (StmtF 
 
 data Resolved
 
-type instance Type Resolved = Fix (TypeF TypeInfo)
-type instance Expr Resolved = Fix (ExprF (Type Resolved) ConInfo VarInfo)
+
+type instance Type Resolved = Fix (TypeF NoEnv TypeInfo)
+
+newtype VarEnv v = VarEnv [v] deriving Functor  -- actually, the type is supposed to be 'Set', but this requires an Ord instance in functor.
+type instance Expr Resolved = Fix (ExprF VarEnv (Type Resolved) ConInfo VarInfo)
 type instance AnnStmt Resolved = Fix (AnnStmtF (BigStmtF (DataDef Resolved) (FunDec Resolved) (StmtF ConInfo VarInfo (Expr Resolved))))
 type instance Stmt Resolved = BigStmtF (DataDef Resolved) (FunDec Resolved) (StmtF ConInfo VarInfo (Expr Resolved)) (AnnStmt Resolved)
 
 type instance DataCon Resolved = GDataCon ConInfo (Type Resolved)
 type instance DataDef Resolved = GDataDef TypeInfo (DataCon Resolved)
-type instance FunDec Resolved = GFunDec ConInfo VarInfo (Maybe (Type Resolved))
+type instance FunDec Resolved = GFunDec VarEnv ConInfo VarInfo (Maybe (Type Resolved))
 
 
 data VarInfo = VI
@@ -221,7 +234,7 @@ data VarInfo = VI
   }
 
 
-data ConInfo = CI 
+data ConInfo = CI
   { conID :: Unique
   , conName :: Text
   }
@@ -270,17 +283,22 @@ instance Ord TypeInfo where
 
 data Typed
 
-type instance Type Typed = Fix (TypeF TypeInfo)
+newtype FunEnv t = FunEnv [[(VarInfo, t)]] deriving (Show, Eq, Ord, Functor, Foldable, Traversable)  -- TODO: This is a spiritual 'Set'. fmap does not let me add the 'Ord' constraint.
+$(deriveShow1 ''FunEnv)
+$(deriveEq1 ''FunEnv)
+$(deriveOrd1 ''FunEnv)
+
+type instance Type Typed = Fix (TypeF FunEnv TypeInfo)
 type instance Expr Typed = Fix (ExprType (Type Typed) (Type Typed))
 
 type instance DataCon Typed = GDataCon ConInfo (Type Typed)
 type instance DataDef Typed = GDataDef TypeInfo (DataCon Typed)
-type instance FunDec Typed = GFunDec ConInfo VarInfo (Type Typed)
+type instance FunDec Typed = GFunDec VarEnv ConInfo VarInfo (Type Typed)
 type instance AnnStmt Typed = Fix (AnnStmtF (BigStmtF (DataDef Typed) (FunDec Typed) (StmtF ConInfo VarInfo (Expr Typed))))
 type instance Stmt Typed = BigStmtF (DataDef Typed) (FunDec Typed) (StmtF ConInfo VarInfo (Expr Typed)) (AnnStmt Typed)
 
 
-data ExprType t texpr a = ExprType t (ExprF texpr ConInfo VarInfo a) deriving (Functor)
+data ExprType t texpr a = ExprType t (ExprF VarEnv texpr ConInfo VarInfo a) deriving (Functor)
 
 
 -- -- A bit of duplication...
@@ -430,4 +448,25 @@ $(deriveBitraversable ''StmtF)
 $(deriveBifoldable ''GFunDec)
 $(deriveBifunctor ''GFunDec)
 $(deriveBitraversable ''GFunDec)
+
+
+-- sad function for switching environment
+mapInnerExprType :: (t -> t') -> ExprF fenv t c v a -> ExprF fenv t' c v a
+mapInnerExprType f = \case
+  -- real one
+  As e t -> As e (f t)
+
+  -- grunt work
+  Lit lt -> Lit lt
+  Var v -> Var v
+  Con c -> Con c
+  Op l op r -> Op l op r
+  Call e args -> Call e args
+  Lam env v e -> Lam env v e
+
+mapTypeEnv :: (fenv a -> genv a) -> TypeF fenv t a -> TypeF genv t a
+mapTypeEnv f = \case
+  TCon t ts -> TCon t ts
+  TVar tv -> TVar tv
+  TFun fenv ts r -> TFun (f fenv) ts r
 

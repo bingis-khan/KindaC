@@ -1,0 +1,4 @@
+# compiles an ultra lambda with an environmental variable
+
+x = 69
+wtf = :::::::::::: x

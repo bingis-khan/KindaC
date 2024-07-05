@@ -1,0 +1,7 @@
+# compiles functions with environment
+
+add = x: y: x + y
+add1 = add(1)
+
+print add(1)(2)
+print add1(69)

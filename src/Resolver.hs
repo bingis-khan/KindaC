@@ -6,18 +6,23 @@ module Resolver (resolve, ResolveError) where
 import AST
 import Data.Unique (newUnique)
 import Control.Monad.IO.Class (liftIO)
-import Data.Functor.Foldable (transverse)
+import Data.Functor.Foldable (transverse, cata, embed)
+import Data.Foldable (fold)
 import Data.Text (Text)
 import Control.Monad.Trans.RWS (RWST)
 import Data.Map (Map)
 import qualified Control.Monad.Trans.RWS as RWST
 import qualified Data.Map as Map
+
 import Data.Maybe (mapMaybe)
 import Data.Fix (Fix(Fix))
 import Data.List.NonEmpty (NonEmpty ((:|)), (<|))
 import qualified Data.List.NonEmpty as NonEmpty
 import Control.Applicative ((<|>))
 import Control.Monad (when)
+import Data.Set (Set)
+import Data.Bifoldable (bifoldMap)
+import qualified Data.Set as Set
 
 
 
@@ -31,7 +36,7 @@ resolve mPrelude uStmts = do
 
 rStmts :: [AnnStmt Untyped] -> Ctx [AnnStmt Resolved]
 rStmts = traverse -- traverse through the list with Ctx
-  $ transverse (\(AnnStmt anns utStmt) -> AnnStmt anns <$> rStmt utStmt) -- go through Stmt recursively with Ctx
+  $ cata (fmap embed . (\(AnnStmt anns utStmt) -> AnnStmt anns <$> rStmt utStmt)) -- go through Stmt recursively with Ctx. cata (fmap embed . ...) is transverse without the forall type.
   where
     -- actual logic
     -- maybe try to generalize it if possible using traverse n shit
@@ -75,33 +80,45 @@ rStmts = traverse -- traverse through the list with Ctx
           rConTys <- traverse rType ctys
           pure $ DC cid rConTys anns) cons
         pure $ DataDefinition $ DD tid tyParams rCons
-      FunctionDefinition (FD name params ret) body -> do
+      FunctionDefinition (FD name params _ ret) body -> do
         vid <- newVar Immutable name
-        closure $ do
+        (rparams, rret, rbody) <- closure $ do
           rparams <- traverse (\(n, t) -> do
             rn <- newVar Immutable n
             rt <- traverse rType t
             return (rn, rt)) params
           rret <- traverse rType ret
           rbody <- rBody body
-          pure $ FunctionDefinition (FD vid rparams rret) rbody
+          pure (rparams, rret, rbody)
+
+        -- set the environment
+        -- TODO: maybe just make it a part of 'closure'?
+        let innerEnv = gatherVariables rbody
+        env <- mkEnv innerEnv
+
+        pure $ FunctionDefinition (FD vid rparams env rret) rbody
 
     rBody :: Traversable t => t (Ctx a) -> Ctx (t a)
     rBody = scope . sequenceA
 
 
 rExpr :: Expr Untyped -> Ctx (Expr Resolved)
-rExpr = transverse $ \case
+rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
   Lit x -> pure $ Lit x
   Var v -> Var <$> resolveVar v
   Con c -> Con <$> resolveCon c
   Op l op r -> Op <$> l <*> pure op <*> r
   Call c args -> Call <$> c <*> sequenceA args
   As e t -> As <$> e <*> rType t
-  Lam params body -> closure $ do
-    rParams <- traverse (newVar Immutable) params
-    rBody <- scope body
-    pure $ Lam rParams rBody
+  Lam _ params body -> do
+    (rParams, rBody) <- closure $ do
+      rParams <- traverse (newVar Immutable) params
+      rBody <- scope body
+      pure (rParams, rBody)
+
+    let innerEnv = gatherVariablesFromExpr rBody  -- TODO: environment making in 'closure' function.
+    env <- mkEnv innerEnv
+    pure $ Lam env rParams rBody
 
 
 rType :: Type Untyped -> Ctx (Type Resolved)
@@ -111,10 +128,10 @@ rType = transverse $ \case
     rtApps <- sequenceA tapps
     pure $ TCon rt rtApps
   TVar v -> pure $ TVar v
-  TFun args ret -> do
+  TFun _ args ret -> do
     rArgs <- sequence args
     rret <- ret
-    pure $ TFun rArgs rret
+    pure $ TFun (NoEnv ()) rArgs rret
 
 
 ------------
@@ -258,3 +275,26 @@ data ResolveError
   | UndefinedType Text
   | TypeRedeclaration Text
   deriving Show
+
+
+-- environment stuff
+mkEnv :: Set VarInfo -> Ctx (VarEnv VarInfo)
+mkEnv innerEnv = do
+  scope <- RWST.get
+
+  -- gather elements in current scope (we assume we are just "outside" of the env we compare it with)
+  let outerEnv = foldMap (Set.fromList . Map.elems. varScope) scope
+  pure $ VarEnv $ Set.toList $ outerEnv `Set.intersection` innerEnv
+
+-- used for function definitions
+gatherVariables :: NonEmpty (AnnStmt Resolved) -> Set VarInfo
+gatherVariables = foldMap $ cata $ \(AnnStmt _ bstmt) -> case bstmt of
+  DataDefinition _ -> mempty
+  FunctionDefinition _ vars -> fold vars
+  NormalStmt stmt -> bifoldMap gatherVariablesFromExpr id stmt
+
+-- used for lambdas
+gatherVariablesFromExpr :: Expr Resolved -> Set VarInfo
+gatherVariablesFromExpr = cata $ \case
+  Var v -> Set.singleton v
+  expr -> fold expr

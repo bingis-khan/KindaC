@@ -73,3 +73,6 @@ use hash *
 use hash (..)  # but this looks kinda nice also
 
 # I'll sleep on it. I don't need it yet anyway
+
+use hash
+

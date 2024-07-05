@@ -42,7 +42,7 @@ import Data.Unique (hashUnique)
 
 -- Context that stores the pretty printer Doc + data + help with, for example, names.
 type Context = Reader CtxData (Doc ())  -- I guess I can add syntax coloring or something with the annotation (the () in Doc)
-data CtxData = CtxData
+data CtxData = CtxData  -- basically stuff like printing options or something (eg. don't print types)
 
 
 -----------
@@ -91,7 +91,7 @@ tExpr = cata $ \(ExprType t expr) ->
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
   As x at -> x <+> "as" <+> tType at
-  Lam params e -> sepBy " " (map rVar params) <> ":" <+> e
+  Lam env params e -> ppVarEnv env <+> sepBy " " (map rVar params) <> ":" <+> e
   where
     ppOp op = case op of
       Plus -> "+"
@@ -103,14 +103,28 @@ tExpr = cata $ \(ExprType t expr) ->
 
 
 tDataDef :: DataDef Typed -> Context
-tDataDef = rDataDef
+tDataDef (DD tid tvs cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (rTypeInfo tid) tvs) $ ppLines tConDef cons
+
+tConDef :: DataCon Typed -> Context
+tConDef (DC g t ann) = annotate ann $ foldl' (<+>) (rCon g) $ tTypes t
 
 tFunDec :: FunDec Typed -> Context
-tFunDec (FD v params retType) = comment "Function definition" $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType
+tFunDec (FD v params env retType) = comment (ppVarEnv env) $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType
 
+
+tTypes :: Functor t => t (Type Typed) -> t Context
+tTypes = fmap $ \t@(Fix t') -> case t' of
+  TCon _ (_:_) -> enclose t
+  TFun {} -> enclose t
+  _ -> tType t
+  where
+    enclose x = "(" <> tType x <> ")"
 
 tType :: Type Typed -> Context
-tType = rType
+tType = cata $ \case
+  TCon con params -> foldl' (<+>) (rTypeInfo con) params
+  TVar (TV tv) -> pretty tv
+  TFun env args ret -> ppFunEnv env <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
 
 
 tBody :: Foldable f => Context -> f (AnnStmt Typed) -> Context
@@ -163,7 +177,7 @@ rExpr = cata $ \case
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
   As x t -> x <+> "as" <+> rType t
-  Lam params e -> sepBy " " (map rVar params) <> ":" <+> e
+  Lam env params e -> ppVarEnv env <+> sepBy " " (map rVar params) <> ":" <+> e
   where
     ppOp op = case op of
       Plus -> "+"
@@ -181,13 +195,13 @@ rConDef :: DataCon Resolved -> Context
 rConDef (DC g t ann) = annotate ann $ foldl' (<+>) (rCon g) $ rTypes t
 
 rFunDec :: FunDec Resolved -> Context
-rFunDec (FD v params retType) = comment "Function definition" $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> maybe "" ((" "<>) . rType) pType) params) <> maybe "" ((" "<>) . rType) retType
+rFunDec (FD v params env retType) = comment (ppVarEnv env) $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> maybe "" ((" "<>) . rType) pType) params) <> maybe "" ((" "<>) . rType) retType
 
 
 rTypes :: Functor t => t (Type Resolved) -> t Context
 rTypes = fmap $ \t@(Fix t') -> case t' of
   TCon _ (_:_) -> enclose t
-  TFun _ _ -> enclose t
+  TFun {} -> enclose t
   _ -> rType t
   where
     enclose x = "(" <> rType x <> ")"
@@ -196,7 +210,7 @@ rType :: Type Resolved -> Context
 rType = cata $ \case
   TCon con params -> foldl' (<+>) (rTypeInfo con) params
   TVar (TV tv) -> pretty tv
-  TFun args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+  TFun _ args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
 
 
 rVar :: VarInfo -> Context
@@ -263,7 +277,7 @@ utExpr = cata $ \case
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
   As x t -> x <+> "as" <+> utType t
-  Lam params e -> pretty (sepBy " " params) <> ":" <+> e
+  Lam _ params e -> pretty (sepBy " " params) <> ":" <+> e
   where
     ppOp op = case op of
       Plus -> "+"
@@ -277,13 +291,13 @@ utType :: Type Untyped -> Context
 utType = cata $ \case
   TCon con params -> foldl' (<+>) (pretty con) params
   TVar (TV tv) -> pretty tv
-  TFun args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+  TFun _ args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
 
 -- For printing types in a sequence (in this case, TCons and Functions need parenthesis to distinguish them, that's why)
 utTypes :: Functor t => t (Type Untyped) -> t Context
 utTypes = fmap $ \t@(Fix t') -> case t' of
   TCon _ (_:_) -> enclose t
-  TFun _ _ -> enclose t
+  TFun {} -> enclose t
   _ -> utType t
   where
     enclose x = "(" <> utType x <> ")"
@@ -296,7 +310,7 @@ utConDef :: DataCon Untyped -> Context
 utConDef (DC g t anns) = annotate anns $ foldl' (<+>) (pretty g) $ utTypes t
 
 utFunDec :: FunDec Untyped -> Context
-utFunDec (FD name params retType) = comment "Function definition" $ pretty name <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> pretty pName <> maybe "" ((" "<>) . utType) pType) params) <> maybe "" ((" "<>) . utType) retType
+utFunDec (FD name params _ retType) = pretty name <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> pretty pName <> maybe "" ((" "<>) . utType) pType) params) <> maybe "" ((" "<>) . utType) retType
 
 
 
@@ -328,6 +342,15 @@ indent header = (header <>) . fmap (PP.nest 2) . ("\n" <>)
 ppLines :: Foldable t => (a -> Context) -> t a -> Context
 ppLines f = foldMap ((<>"\n") . f)
 
+ppFunEnv :: FunEnv Context -> Context
+ppFunEnv (FunEnv vts) = encloseSepBy "[" "]" " " (fmap (encloseSepBy "[" "]" ", " . fmap (\(v, t) -> rVar v <+> t)) vts)
+
+ppVarEnv :: VarEnv VarInfo -> Context
+ppVarEnv (VarEnv vs) = encloseSepBy "[" "]" " " (fmap rVar vs)
+
+-- ppNoEnv :: NoEnv a -> Context
+-- ppNoEnv _ = "[<no env>]"
+
 
 ppAnn :: [Ann] -> Context
 ppAnn [] = mempty
@@ -340,7 +363,7 @@ ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
       ACLit s -> "clit" <+> quote s
 
     quote = pure . PP.squotes . PP.pretty
-      
+
 
 infixr 6 <+>
 (<+>) :: Context -> Context -> Context

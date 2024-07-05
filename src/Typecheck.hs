@@ -37,6 +37,8 @@ import Data.List ( find, intercalate )
 import Data.Bifoldable (bifoldMap)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Either as Either
+import Data.Traversable (for)
+import Debug.Trace (traceWith)
 
 
 -- I have some goals alongside rewriting typechecking:
@@ -52,8 +54,8 @@ typecheck mprelude rStmts =
         senv = makeSEnv mprelude
         -- Three phases
         (tyStmts, constraints) = generateConstraints env senv rStmts
-        (errors, su) = solveConstraints constraints
-        ambiguousTyVars = Set.toList $ ftv tyStmts \\ Map.keysSet su
+        (errors, su@(Subst _ tysu)) = solveConstraints constraints
+        ambiguousTyVars = Set.toList $ ftv tyStmts \\ Map.keysSet tysu
     in case ambiguousTyVars of
         (amb:ambs) ->
             let ambiguousTyVarsErrors = AmbiguousType <$> (amb :| ambs)
@@ -92,6 +94,7 @@ topLevelEnv mprelude = case mprelude of
           _ -> Nothing
         )
 
+-- TODO: explain what makeSEnv is for (after coming back to this function after some time, I have no idea what it does)
 makeSEnv :: Maybe Prelude -> StatefulEnv
 makeSEnv Nothing = emptySEnv
 makeSEnv (Just prelude) = StatefulEnv
@@ -107,7 +110,7 @@ makeSEnv (Just prelude) = StatefulEnv
         (\(DC ci ts _) ->
           let cont = case fmap t2ty ts of
                 [] -> dt
-                tys -> makeType $ TFun tys dt
+                tys -> makeType $ TFun (mkFunEnv []) tys dt
           in (ci, Forall (Set.fromList tvars) cont)
         ) cons
 
@@ -162,8 +165,8 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
         inferStmt ttstmt  -- Then 
         pure $ AnnStmt anns $ NormalStmt tstmt
 
-      FunctionDefinition (FD name params ret) rbody -> do
-        (fnt, fdec, fbody) <- subSolve $ do
+      FunctionDefinition (FD name params varenv@(VarEnv env) ret) rbody -> do
+        (fnt, fdec, fbody) <- subSolve $ do  -- (fnt, fdec, fbody)
 
           -- RECURSION: Add the (monotype) function to the environment
           f <- fresh
@@ -174,18 +177,23 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
 
           -- Unify parameters with their types.
           for_ (zip tparams (fmap snd params)) $ \(v, mt) -> do
-            t <- maybe fresh (pure . t2ty) mt  -- get declared type if any
+            t <- maybe fresh (pure . rt2ty) mt  -- get declared type if any
             uni v t
 
           -- Unify return type
-          tret <- maybe fresh (pure . t2ty) ret
+          tret <- maybe fresh (pure . rt2ty) ret
 
           -- Actual function typechecking
           tbody <- withReturn tret $ sequenceA rbody
 
+          -- Create env for the function
+          envid <- freshTyvar
+          envparams <- (\v -> (,) v <$> lookupVar v) `traverse` env
+          let tyfunenv = TyFunEnv envid $ mkFunEnv envparams
 
-          let fnt = Fix $ TF' $ Right $ TFun tparams tret
-          let fdec = FD name (zip (fmap fst params) tparams) tret
+
+          let fnt = Fix $ TF' $ Right $ TFun tyfunenv tparams tret
+          let fdec = FD name (zip (fmap fst params) tparams) varenv tret
           let fbody = tbody
 
           pure (fnt, fdec, fbody)
@@ -195,25 +203,28 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
         let fntFtv = ftv fnt
         let schemeTyVars = fntFtv \\ envFtv  -- Only variables that exist in the "front" type. (front = the type that we will use as a scheme and will be able to generalize)
 
-        let (scheme, (schemeBody, schemeParams)) = closeOver schemeTyVars (fbody, fdec) fnt 
+        let (scheme, (schemeBody, schemeParams)) = closeOver schemeTyVars (fbody, fdec) fnt
 
         newVar name scheme
 
         pure $ AnnStmt anns $ FunctionDefinition schemeParams schemeBody
 
-      DataDefinition dd@(DD tid tvars cons) -> do
+      DataDefinition (DD tid tvars cons) -> do
         let dt = t2ty $ dataType tid tvars
         newType tid dt
 
-        for_ cons $ \(DC c ts _) ->
+        for_ cons $ \(DC c ts _) -> do
+          let tyts = fmap rt2ty ts
           let cont =
-                case fmap t2ty ts of
+                case tyts of
                   [] -> dt
-                  tys -> makeType $ TFun tys dt
+                  tys -> makeType $ TFun (mkFunEnv []) tys dt
 
-          in newCon c (Forall (Set.fromList tvars) cont)
+          newCon c (Forall (Set.fromList tvars) cont)
 
-        pure $ AnnStmt anns $ DataDefinition dd
+        let nucons = fmap (\(DC c ts ann) -> DC c (fmap rt2t ts) ann) cons
+        let nudd = DD tid tvars nucons
+        pure $ AnnStmt anns $ DataDefinition nudd -- DataDefinition dd
 
     -- this is the actual logic.
     -- wtf, for some reason \case produces an error here....
@@ -271,8 +282,9 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
 inferExpr :: Expr Resolved -> Infer (Expr TyVared)
 inferExpr = cata (fmap embed . inferExprType)
   where
+    inferExprType :: Base (Expr Resolved) (Infer (Expr TyVared)) -> Infer (Base (Expr TyVared) (Expr TyVared))
     inferExprType e = do
-      e' <- sequenceA e
+      e' <- sequenceA $ mapInnerExprType rt2t e
       t <- inferExprLayer $ fmap (\(Fix (ExprType t _)) -> t) e'
       pure $ ExprType t e'
 
@@ -301,14 +313,18 @@ inferExpr = cata (fmap embed . inferExprType)
 
       Call f args -> do
         ret <- fresh
-        let ft = makeType $ TFun args ret
+        let ft = makeType $ TFun noFunEnv args ret  -- TODO: very dangerous. only because we know there's going to be a unification later. dangerous like the `restrict` thing ig
 
         f `uni` ft
         pure ret
 
-      Lam params ret -> do
+      Lam (VarEnv env) params ret -> do
         vars <- traverse lookupVar params  -- creates variables. i have to change the name from lookupVar i guess...
-        let t = makeType $ TFun vars ret
+        envvars <- traverse (\v -> (,) v <$> lookupVar v) env
+        envid <- freshTyvar  -- TODO: this should be in a function most likely -> all of the env stuff
+
+        let funenv = mkFunEnv envvars
+        let t = makeType $ TFun funenv vars ret
         pure t
 
 
@@ -355,12 +371,23 @@ instantiate (Forall tvars est) = do
   freshlyMade <- traverse (const freshTyvar) tvarsList  -- make new tyvars (unpacked, used later)
   let tvMapping = Map.fromList $ zip tvarsList freshlyMade  -- Make a TVar -> TyVar mapping
 
+  -- prepare env mapping
+  let envftvs = flip cata est $ \case
+        TF' (Right (TFun (TyFunEnv tid envtvs) args ret)) -> Set.singleton tid <> fold envtvs <> fold args <> ret  -- (not anymore -> this fixed the bug) i ignore the env tyvars on purpose - my theory is that they are can be ignored
+        t -> fold t
+
+  envmap <- Map.fromList <$> traverse (\tyv -> (,) tyv <$> freshTyvar) (Set.toList envftvs)
+
   -- Replace each tvar from the scheme with a customized tyvar.
+  -- TODO: shouldn't all of this be a part of `subst`?
   let mapTvs :: Base (Type TyVared) a -> Base (Type TyVared) a
       mapTvs = \case
         t@(TF' (Right (TVar tv))) -> case Map.lookup tv tvMapping of
           Just tyv -> TF' $ Left tyv
           Nothing -> t
+        (TF' (Right (TFun (TyFunEnv envid fe) args ret))) -> case Map.lookup envid envmap of
+          Nothing -> error $ "Should not happen. (" <> show envid <> ") " <> dbgt est
+          Just tyv -> TF' $ Right $ TFun (TyFunEnv tyv fe) args ret
         t -> t
 
   pure $ hoist mapTvs est
@@ -372,7 +399,7 @@ closeOver tyvars s t = (Forall tvars st, ss)
   where
     (ss, st) = subst newSubst (s, t)  -- substituted expression
     tvars = Set.map (\(TyVar tname) -> TV tname) tyvars  -- change closed over tyvars into tvars
-    newSubst = Map.fromList $ map (\tv@(TyVar tname) -> (tv, makeType $ TVar $ TV tname)) $ Set.toList tyvars  -- that substitution
+    newSubst = Subst Map.empty $ Map.fromList $ map (\tv@(TyVar tname) -> (tv, makeType $ TVar $ TV tname)) $ Set.toList tyvars  -- that substitution
 
 -- utility for expressions
 closeOverExpr :: Set TyVar -> Expr TyVared -> (Scheme, Expr TyVared)
@@ -465,15 +492,15 @@ newTVarGen :: TVarGen
 newTVarGen = TVG 0
 
 
-type Subst = Map TyVar (Type TyVared)
+data Subst = Subst (Map TyFunEnv TyFunEnv) (Map TyVar (Type TyVared))
 type FullSubst = Map TyVar (Type Typed)  -- The last substitution after substituting all the types
 
 finalizeSubst :: Subst -> Either (NonEmpty TyVar) FullSubst
-finalizeSubst = eitherize . sesu
+finalizeSubst (Subst _ su) = eitherize $ sesu su
   where
     sesu = traverse $ transverse $ \case
       TF' (Left tyv) -> SLeft (NonEmpty.singleton tyv)
-      TF' (Right t) -> sequenceA t
+      TF' (Right t) -> mapTypeEnv (\(TyFunEnv _ fe) -> fe) <$> sequenceA t
 
 -- Special, semigrouped Either
 data SEither e a
@@ -532,10 +559,12 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
         (l, r) | l == r -> pure emptySubst
         (Left tyv, _) -> tyv `bind` tr
         (_, Left tyv) -> tyv `bind` tl
-        (Right (TFun lps lr), Right (TFun rps rr)) -> do
+        (Right (TFun lenv lps lr), Right (TFun renv rps rr)) -> do
           su1 <- unifyMany lps rps
           su2 <- unify (subst su1 lr) (subst su1 rr)
-          pure $ su2 `compose` su1
+          let su3 = lenv `unifyFunEnv` renv
+
+          pure $ compose su3 $ compose su2 su1
 
         (_, _) -> report $ TypeMismatch tl tr
 
@@ -552,7 +581,24 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
     bind tyv t | t == tyvar tyv = pure emptySubst
                | occursCheck tyv t =
                   report $ InfiniteType tyv t
-                | otherwise = pure $ Map.singleton tyv t
+               | otherwise = pure $ Subst Map.empty $ Map.singleton tyv t
+
+    unifyFunEnv :: TyFunEnv -> TyFunEnv -> Subst
+    unifyFunEnv lenv@(TyFunEnv lid _) renv@(TyFunEnv rid _) =
+      Subst (Map.fromList [(lenv, env), (renv, env)]) Map.empty -- i don't think we need an occurs check
+      where
+        newTyVar = joinTyVars lid rid
+        env = TyFunEnv newTyVar funEnv
+
+        fe2s = Set.fromList . (\case (TyFunEnv _ (FunEnv ne)) -> ne)
+        s2fe = FunEnv . Set.toList
+        funEnv = s2fe  $ fe2s lenv <> fe2s renv
+
+    -- small hack to generate unique tyvars from existing ones. now we only need to compare tyvars
+    -- TODO: probably find a better way later. also, because theoretically, this string can grow forever...
+    joinTyVars :: TyVar -> TyVar -> TyVar
+    joinTyVars (TyVar l) (TyVar r) = TyVar $ l <> "_" <> r
+
 
     occursCheck :: Substitutable a => TyVar -> a -> Bool
     occursCheck tyv t = tyv `Set.member` ftv t
@@ -562,10 +608,10 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
       Solve $ Writer.tell [te]
       pure emptySubst
 
-    emptySubst = Map.empty :: Subst
+    emptySubst = Subst Map.empty Map.empty :: Subst
 
 compose :: Subst -> Subst -> Subst
-compose sl sr = Map.map (subst sl) sr `Map.union` sl
+compose sl@(Subst envsl tysl) (Subst envsr tysr) = Subst (Map.map (subst sl) envsr `Map.union` envsl) (Map.map (subst sl) tysr `Map.union` tysl)
 
 
 substituteTypes :: FullSubst -> Module TyVared -> Module Typed
@@ -587,14 +633,18 @@ substituteTypes fsu tmod = fmap subAnnStmt tmod
         Nothing ->
           error $ "Failed finding tyvar '" <> show tyv <> "' in Full Subst, which should not happen." <> show (fsu, length tmod)
 
-      TF' (Right t) -> Fix t
+      TF' (Right t) -> Fix $ mapTypeEnv (\(TyFunEnv _ fe) -> fe) t
 
 
 tyvar :: TyVar -> Type TyVared
 tyvar = Fix . TF' . Left
 
-makeType :: TypeF TypeInfo (Type TyVared) -> Type TyVared
-makeType = Fix . TF' . Right
+makeType :: TypeF FunEnv TypeInfo (Type TyVared) -> Type TyVared
+makeType = Fix . TF' . Right . mapTypeEnv (TyFunEnv reserved) -- TODO: this is a disgusting hack
+
+reserved :: TyVar
+reserved = TyVar $ "''reserved"
+
 
 dataType :: TypeInfo -> [TVar] -> Type Typed
 dataType tid tvars = Fix $ TCon tid $ fmap (Fix . TVar) tvars
@@ -611,9 +661,14 @@ instance Substitutable (Fix TypeF') where
     TF' (Left ty) -> Set.singleton ty
     t -> fold t
 
-  subst su = cata $ \case
-    TF' (Left ty) -> fromMaybe (tyvar ty) $ Map.lookup ty su
+  subst su@(Subst envsu tysu) = cata $ \case
+    TF' (Left ty) -> fromMaybe (tyvar ty) $ Map.lookup ty tysu
+    TF' (Right (TFun env params ret)) -> Fix $ TF' $ Right $ TFun (subst su env) params ret
     t -> Fix t
+
+instance Substitutable (TyFunEnv' (Fix TypeF')) where
+  ftv (TyFunEnv _ (FunEnv ne)) = (foldMap . foldMap) (ftv . snd) ne -- the big question - is envid an ftv? my answer: no
+  subst (Subst envsu _) env = fromMaybe env $ Map.lookup env envsu -- i almost forgot: i added an another field in subst... so yeah, we should substitute.
 
 instance Substitutable a => Substitutable [a] where
   ftv = foldMap ftv
@@ -632,16 +687,16 @@ instance (Substitutable a, Substitutable b, Substitutable c) => Substitutable (a
   subst su (x, y, z) = (subst su x, subst su y, subst su z)
 
 -- TODO: I want to off myself...
-instance Substitutable (Fix (ExprType (Fix TypeF') (Fix (TypeF TypeInfo)))) where
+instance Substitutable (Fix (ExprType (Fix TypeF') (Fix (TypeF env TypeInfo)))) where
   ftv = cata $ \(ExprType t expr) -> ftv t <> fold expr
   subst su = cata $ \(ExprType t expr) -> Fix $ ExprType (subst su t) (fmap (subst su) expr)
 
 
-instance Substitutable (GFunDec c v (Fix TypeF')) where
-  ftv (FD _ params ret) = ftv ret <> foldMap (ftv . snd) params
-  subst su (FD name params ret) = FD name ((fmap . fmap) (subst su) params) (subst su ret)
+instance Substitutable (GFunDec fenv c v (Fix TypeF')) where
+  ftv (FD _ params _ ret) = ftv ret <> foldMap (ftv . snd) params
+  subst su (FD name params env ret) = FD name ((fmap . fmap) (subst su) params) env (subst su ret)
 
-instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec ConInfo VarInfo (Fix TypeF')) (StmtF ConInfo VarInfo (Fix (ExprType (Fix TypeF') (Fix (TypeF TypeInfo)))))))) where
+instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec fenv ConInfo VarInfo (Fix TypeF')) (StmtF ConInfo VarInfo (Fix (ExprType (Fix TypeF') (Fix (TypeF env TypeInfo)))))))) where
   ftv = cata $ \(AnnStmt _ bstmt) -> case bstmt of
     NormalStmt stmt -> bifoldMap ftv id stmt
     DataDefinition _ -> mempty
@@ -654,7 +709,20 @@ instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec ConInfo VarInfo
 
 
 t2ty :: Type Typed -> Type TyVared
-t2ty = hoist (TF' . Right)
+t2ty = hoist (TF' . Right . mapTypeEnv (TyFunEnv reserved))
+
+rt2ty :: Type Resolved -> Type TyVared
+rt2ty = hoist $ TF' . Right . mapTypeEnv (const $ TyFunEnv reserved noFunEnv)  -- noFunEnv -> probably bad design
+
+rt2t :: Type Resolved -> Type Typed
+rt2t = hoist $ mapTypeEnv $ const noFunEnv  -- noFunEnv -> probably bad design
+
+
+mkFunEnv :: [(VarInfo, a)] -> FunEnv a
+mkFunEnv xs = FunEnv [xs]
+
+noFunEnv :: FunEnv a
+noFunEnv = FunEnv []
 
 bidmap :: Bifunctor p => (c -> d) -> p c c -> p d d
 bidmap f = bimap f f
@@ -673,8 +741,10 @@ dbgTypecheck mprelude rStmts =
         senv = makeSEnv mprelude
         -- Three phases
         (tyStmts, constraints) = generateConstraints env senv rStmts
-        (errors, su) = solveConstraints constraints
-        ambiguousTyVars = ftv tyStmts \\ Map.keysSet su
+        (errors, su@(Subst _ tysu)) = solveConstraints 
+          $ (traceWith dbgPrintConstraints) 
+          constraints
+        ambiguousTyVars = ftv tyStmts \\ Map.keysSet tysu
     in if (not . null) ambiguousTyVars
           then
             let ambiguousTyvarsErrors = AmbiguousType <$> Set.toList ambiguousTyVars
@@ -683,7 +753,8 @@ dbgTypecheck mprelude rStmts =
                 addMissing :: Set TyVar -> Subst -> Subst
                 addMissing tyvs su =
                   let tyvsu = Map.fromList $ (\tyv@(TyVar tyvName) -> (tyv, makeType (TVar (TV tyvName)))) <$> Set.toList tyvs
-                  in tyvsu `compose` su
+                      tyvarSubst = Subst Map.empty
+                  in tyvarSubst tyvsu `compose` su
 
                 su' = addMissing ambiguousTyVars su
                 fsu = Either.fromRight (error "Should not happen") $ finalizeSubst su'
@@ -700,10 +771,16 @@ dbgTypecheck mprelude rStmts =
 dbgPrintConstraints :: [Constraint] -> String
 dbgPrintConstraints = unlines . fmap pc
   where
-    pc (tl, tr) = pt tl <> " <=> " <> pt tr
-    pt = cata $ \(TF' t) -> case t of
-      Left tyv -> "#" <> show tyv
-      Right rt -> case rt of
-        TCon ti apps -> "(" <> show ti <> unwords apps <> ")"
-        TFun args ret -> "(" <> intercalate ", " args <> ") -> " <> ret
-        TVar tv -> show tv
+    pc (tl, tr) = dbgt tl <> " <=> " <> dbgt tr
+
+dbgt :: Type TyVared -> String
+dbgt = cata $ \(TF' t) -> case t of
+  Left tyv -> "#" <> show tyv
+  Right rt -> case rt of
+    TCon ti apps -> "(" <> show ti <> unwords apps <> ")"
+    TFun env args ret -> dbgenv env <> "(" <> intercalate ", " args <> ") -> " <> ret
+    TVar tv -> show tv
+
+dbgenv :: TyFunEnv' String -> String
+dbgenv (TyFunEnv envid (FunEnv fe)) = "#" <> show envid <> "[" <> unwords (fmap (\env -> "[" <> intercalate ", " (fmap (\(v, t) -> show v <> " " <> t) env) <> "]") fe) <> "]"
+
