@@ -35,6 +35,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - I had to replace `transverse` with their implementation due to the "forall" type of `transverse`. I wonder if there is a dedicated function instead of `transverse` - I can probably grep through the source by the implementation `cata (fmap embed . n)`.
 - `noFunEnv` and the whole imlementation of the algorithm is shaky at best, utterly disgusting at worst. just... fix this. `noFunEnv` is like the worst. incorrect state possible... it's fucked.
 - why are parameters being unified???
+- super slow on nested functions: `::::::::::::::::1`
 
 # thoughts???
 - should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?

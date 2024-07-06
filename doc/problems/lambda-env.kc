@@ -14,3 +14,13 @@ id = x: x  # generalize -> { {} } a -> a (scheme: { a })
 g = f if rand() else id
 	# unify f and id
 	# instantiate stuff: a from id gets instantiated, yt stays the same, because it's not part of the scheme
+
+
+
+--------------------------
+-- WHAT ABOUT ARGUMENTS --
+--------------------------
+
+basically:
+
+someShit (f)

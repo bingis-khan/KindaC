@@ -9,7 +9,7 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
-module Typecheck (typecheck, TypeError(..), dbgTypecheck, dbgPrintConstraints, ftv, unSolve) where
+module Typecheck (typecheck, TypeError(..), dbgTypecheck, dbgPrintConstraints, ftv, unSolve, Subst(..)) where
 
 import Typecheck.Types
 import AST
@@ -38,7 +38,8 @@ import Data.Bifoldable (bifoldMap)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Either as Either
 import Data.Traversable (for)
-import Debug.Trace (traceWith)
+import Debug.Trace (traceWith, traceShowId)
+import ASTPrettyPrinter (tyModule)
 
 
 -- I have some goals alongside rewriting typechecking:
@@ -63,7 +64,7 @@ typecheck mprelude rStmts =
         _ -> case errors of
             (e:es) -> Left (e :| es)
             [] ->
-              let tstmts = substituteTypes (Either.fromRight (error "should not happen") $ finalizeSubst su) tyStmts
+              let tstmts = substituteTypes (finalizeSubst su) tyStmts
               in Right tstmts
 
 
@@ -495,12 +496,20 @@ newTVarGen = TVG 0
 data Subst = Subst (Map TyFunEnv TyFunEnv) (Map TyVar (Type TyVared))
 type FullSubst = Map TyVar (Type Typed)  -- The last substitution after substituting all the types
 
-finalizeSubst :: Subst -> Either (NonEmpty TyVar) FullSubst
-finalizeSubst (Subst _ su) = eitherize $ sesu su
-  where
-    sesu = traverse $ transverse $ \case
-      TF' (Left tyv) -> SLeft (NonEmpty.singleton tyv)
-      TF' (Right t) -> mapTypeEnv (\(TyFunEnv _ fe) -> fe) <$> sequenceA t
+
+-- Before, this function had a return type Either (NonEmpty TyVar) FullSubst
+-- however, it's actually not needed.
+-- during generalization, we substitute variables, but we don't add any constraints.
+--   for example, in the function, if an argument is unused, two fresh vars are added unified.
+--    this unification generates a constraint. substitutions are generated per generalization and during the last substitution. because this constraint exists, on the last substitution it generates a mapping 'a -> 'b, despite none of the tyvars being in the function... which generated the error.
+finalizeSubst :: Subst -> FullSubst
+finalizeSubst (Subst _ su) = flip Map.mapMaybe su $ transverse $ \case
+  TF' (Left _) -> Nothing
+  TF' (Right t) -> mapTypeEnv (\(TyFunEnv _ fe) -> fe) <$> sequenceA t
+  -- where
+    -- sesu = traverse $ transverse $ \case
+    --   TF' (Left tyv) -> undefined
+    --   TF' (Right t) -> mapTypeEnv (\(TyFunEnv _ fe) -> fe) <$> sequenceA t
 
 -- Special, semigrouped Either
 data SEither e a
@@ -740,7 +749,10 @@ dbgTypecheck mprelude rStmts =
     let env = topLevelEnv mprelude
         senv = makeSEnv mprelude
         -- Three phases
-        (tyStmts, constraints) = generateConstraints env senv rStmts
+        (tyStmts', constraints) = generateConstraints env senv rStmts
+        tyStmts =
+          traceWith tyModule
+          tyStmts'
         (errors, su@(Subst _ tysu)) = solveConstraints 
           $ (traceWith dbgPrintConstraints) 
           constraints
@@ -757,12 +769,11 @@ dbgTypecheck mprelude rStmts =
                   in tyvarSubst tyvsu `compose` su
 
                 su' = addMissing ambiguousTyVars su
-                fsu = Either.fromRight (error "Should not happen") $ finalizeSubst su'
-
+                fsu = finalizeSubst su'
                 tstmts = substituteTypes fsu tyStmts
             in (errs, tstmts)
           else
-            let fsu = Either.fromRight (error "Should not happen") $ finalizeSubst su
+            let fsu = finalizeSubst su
                 tstmts = substituteTypes fsu tyStmts
             in (errors, tstmts)
 

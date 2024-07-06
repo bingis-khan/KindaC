@@ -5,3 +5,9 @@ woah (wantenv Bool)
 		return :env
 	else
 		return :69
+
+x = woah (True)
+print x
+
+y = x()
+print y

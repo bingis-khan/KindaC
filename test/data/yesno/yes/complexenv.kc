@@ -1,3 +1,4 @@
+# some complex functions with environment i had problems with
 
 y = 420
 z = 69
@@ -7,19 +8,9 @@ f ()
 	else
 		return x: x * z
 
-g = f
-x = f()(1)
-
-print x
-
-
-dupa (x)
+dupsko (x)
 	if True
 		return x
 	else
 		return f()
-
-iddd = x: x
-
-dupa(iddd)  # this crashes it...
 

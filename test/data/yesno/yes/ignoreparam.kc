@@ -1,0 +1,6 @@
+# function parameter remains uninitialized
+
+dupa (x)
+	return 1
+
+dupa(69)

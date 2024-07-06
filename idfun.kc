@@ -1,6 +1,0 @@
-# can pass a function to polymorphic functions
-
-id = x: x
-add1 = x: x + 1
-
-id(add1)

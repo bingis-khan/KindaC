@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE LambdaCase #-}
 
-module ASTPrettyPrinter (utModule, rModule, tModule) where
+module ASTPrettyPrinter (utModule, rModule, tyModule, tModule) where
 
 import Prettyprinter (Doc)
 import qualified Prettyprinter as PP
@@ -17,6 +17,7 @@ import Data.String (IsString, fromString)
 import Data.Foldable (fold, foldl')
 import Data.List (intersperse)
 import Data.Unique (hashUnique)
+import Typecheck.Types (TyVared, TypeF' (..), TyVar (..), TyFunEnv, TyFunEnv' (..))
 
 
 -- Notes: I have changed my strategy to this.
@@ -129,6 +130,102 @@ tType = cata $ \case
 
 tBody :: Foldable f => Context -> f (AnnStmt Typed) -> Context
 tBody = ppBody tAnnStmt
+
+
+-----------
+-- Typed Vared --
+-----------
+
+tyModule :: Module TyVared -> String
+tyModule = show . flip runReader CtxData . tyStmts
+
+tyStmts :: [AnnStmt TyVared] -> Context
+tyStmts = ppLines tyAnnStmt
+
+tyAnnStmt :: AnnStmt TyVared -> Context
+tyAnnStmt (Fix (AnnStmt ann stmt)) = annotate ann $ tyStmt stmt
+
+tyStmt :: Stmt TyVared -> Context
+tyStmt = \case
+  NormalStmt s -> case first tyExpr s of
+    Print e -> "print" <+> e
+    Assignment v e -> rVar v <+> "=" <+> e
+    Pass -> "pass"
+    MutDefinition v me ->  "mut" <+> rVar v <+?> rhs
+      where
+        rhs = fmap ("<=" <+>) me
+    MutAssignment v e -> rVar v <+> "<=" <+> e
+    If ifCond ifTrue elseIfs mElse ->
+      tyBody ("if" <+> ifCond ) ifTrue <>
+      foldMap (\(cond, elseIf) ->
+          tyBody ("elif" <+> cond) elseIf) elseIfs <>
+      maybe mempty (tyBody "else") mElse
+    ExprStmt e -> e
+    Return e -> "return" <+?> e
+
+  DataDefinition dd -> tyDataDef dd
+  FunctionDefinition fd body -> tyBody (tyFunDec fd) body
+
+
+tyExpr :: Expr TyVared -> Context
+tyExpr = cata $ \(ExprType t expr) ->
+  let encloseInType c = "(" <> c <+> "::" <+> tyType t <> ")"
+  in encloseInType $ case expr of
+  Lit (LInt x) -> pretty x
+  Var v -> rVar v
+  Con c -> rCon c
+
+  Op l op r -> l <+> ppOp op <+> r
+  Call f args -> f <> encloseSepBy "(" ")" ", " args
+  As x at -> x <+> "as" <+> tType at
+  Lam env params e -> ppVarEnv env <+> sepBy " " (map rVar params) <> ":" <+> e
+  where
+    ppOp op = case op of
+      Plus -> "+"
+      Minus -> "-"
+      Times -> "*"
+      Divide -> "/"
+      Equals -> "=="
+      NotEquals -> "/="
+
+
+tyDataDef :: DataDef TyVared -> Context
+tyDataDef (DD tid tvs cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (rTypeInfo tid) tvs) $ ppLines tConDef cons
+
+tyConDef :: DataCon TyVared -> Context
+tyConDef (DC g t ann) = annotate ann $ foldl' (<+>) (rCon g) $ tTypes t
+
+tyFunDec :: FunDec TyVared -> Context
+tyFunDec (FD v params env retType) = comment (ppVarEnv env) $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> ((" "<>) . tyType) pType) params) <> ((" "<>) . tyType) retType
+
+
+tyTypes :: Functor t => t (Type TyVared) -> t Context
+tyTypes = fmap $ \t@(Fix t') -> case t' of
+  TF' (Left _) -> tyType t
+  TF' (Right x) -> case x of
+        TCon _ (_:_) -> enclose t
+        TFun {} -> enclose t
+        _ -> tyType t
+  where
+    enclose x = "(" <> tyType x <> ")"
+
+tyType :: Type TyVared -> Context
+tyType = cata $ \case
+  TF' (Left tv) -> ppTyVar tv
+  TF' (Right x) -> case x of
+      TCon con params -> foldl' (<+>) (rTypeInfo con) params
+      TVar (TV tv) -> pretty tv
+      TFun env args ret -> ppTyFunEnv env <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+
+ppTyFunEnv :: TyFunEnv' Context -> Context
+ppTyFunEnv (TyFunEnv envid funenv) = ppTyVar envid <> ppFunEnv funenv
+
+ppTyVar :: TyVar -> Context
+ppTyVar (TyVar tv) = "#" <> pretty tv
+
+tyBody :: Foldable f => Context -> f (AnnStmt TyVared) -> Context
+tyBody = ppBody tyAnnStmt
+
 
 --------------
 -- Resolved --
@@ -346,7 +443,7 @@ ppFunEnv :: FunEnv Context -> Context
 ppFunEnv (FunEnv vts) = encloseSepBy "[" "]" " " (fmap (encloseSepBy "[" "]" ", " . fmap (\(v, t) -> rVar v <+> t)) vts)
 
 ppVarEnv :: VarEnv VarInfo -> Context
-ppVarEnv (VarEnv vs) = encloseSepBy "[" "]" " " (fmap rVar vs)
+ppVarEnv (VarEnv vs) = encloseSepBy "$[" "]" " " (fmap rVar vs)
 
 -- ppNoEnv :: NoEnv a -> Context
 -- ppNoEnv _ = "[<no env>]"
