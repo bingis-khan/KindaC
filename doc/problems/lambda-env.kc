@@ -24,3 +24,8 @@ g = f if rand() else id
 basically:
 
 someShit (f)
+
+-------------------------
+i think i kinda figured stuff out (more in mono.kc)
+
+

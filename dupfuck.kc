@@ -1,0 +1,9 @@
+
+n = 69
+a ()
+	b (x)
+		return x + n
+
+	return b
+
+print a

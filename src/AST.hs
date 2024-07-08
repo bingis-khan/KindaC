@@ -131,10 +131,6 @@ data TypeF fenv t a
   | TFun (fenv a) [a] a
   deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
-data MonoTypeF t a
-  = TType t
-  | TMonoFun [a] [a]
-  deriving (Show, Eq, Ord, Functor, Foldable)
 
 
 $(deriveShow1 ''TypeF)
@@ -237,11 +233,13 @@ data VarInfo = VI
 data ConInfo = CI
   { conID :: Unique
   , conName :: Text
+  -- add info about constructor for later compilation
   }
 
 data TypeInfo = TI
   { typeID :: Unique
   , typeName :: Text
+  -- add info about structure for later compilation
   }
 
 data VarType = Immutable | Mutable deriving Show
@@ -283,7 +281,7 @@ instance Ord TypeInfo where
 
 data Typed
 
-newtype FunEnv t = FunEnv [[(VarInfo, t)]] deriving (Show, Eq, Ord, Functor, Foldable, Traversable)  -- TODO: This is a spiritual 'Set'. fmap does not let me add the 'Ord' constraint.
+newtype FunEnv t = FunEnv [[(VarInfo, [t])]] deriving (Show, Eq, Ord, Functor, Foldable, Traversable)  -- TODO: This is a spiritual 'Set'. fmap does not let me add the 'Ord' constraint. Also, shitty types ong. TODO: this needs a serious refactor. but i'm kinda exploring rn
 $(deriveShow1 ''FunEnv)
 $(deriveEq1 ''FunEnv)
 $(deriveOrd1 ''FunEnv)
@@ -305,10 +303,21 @@ data ExprType t texpr a = ExprType t (ExprF VarEnv texpr ConInfo VarInfo a) deri
 -- data instance Module Typed = TModule (Set (FunDef Typed)) (Set (DataDef Typed)) [Stmt Typed] deriving Show
 
 
--- -----------------
--- -- Monomorphic --
--- -----------------
--- data Mono
+-----------------
+-- Monomorphic --
+-----------------
+data Mono
+
+-- data MonoTypeF fenv t a
+--   = TCon t [a]
+--   | TVar TVar
+--   | TFun (fenv a) [a] a
+--   deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+
+data MonoTypeF a
+  = TType TypeInfo  -- change TypeInfo to something like MonoTypeInfo, which would encode transitions and such.
+  | TMonoFun [a] a
+  deriving (Show, Eq, Ord, Functor, Foldable)
 
 -- type instance Type Mono = Fix (TypeF TypeID)
 -- type instance Expr Mono = Fix (TExpr (Type Mono))

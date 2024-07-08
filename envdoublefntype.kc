@@ -1,0 +1,11 @@
+
+
+justid (x)
+	return x
+
+fuckyouid ()
+	print justid(True)
+	return justid
+
+print fuckyouid as () -> Int -> Int  # the two environments of the function should have the same type
+print fuckyouid

@@ -23,6 +23,7 @@ library
   exposed-modules:
       AST
       ASTPrettyPrinter
+      Mono
       Parser
       Pipeline
       Resolver

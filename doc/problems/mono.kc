@@ -1,0 +1,125 @@
+Monomorphising our typed representation.
+
+What do we do with this?
+
+f ()
+	id = x: x  # this is never used, so it will never be monomorphised. but it might have side effects
+	return 1
+
+# with side effects
+fuckid ()
+	print x
+	return x: x
+
+f ()
+	id = fuckid()  # magic fuckid
+	return 1
+
+Maybe, after monomorphization, we can replace everything with TVars to ()?
+
+Yeah, we can make a type called "Placeholder or something with a single constructor.
+
+
+-----
+how should it work?
+
+
+x = 1
+id = x: x  # this expression should return a tuple
+
+# mono: (idInt, idTrue) = (lamInt, lamTrue)
+
+# but we have to make sure that any functions execute only once
+# see next example
+
+z = id(1)
+y = id(True)
+
+print x
+
+
+Buit there's a problem - we have to use multiple versions of a function while only one is visible to the user.
+
+fuckyouid ()
+	print 'fuck you'
+	return x: x
+
+id = fuckyouid()
+
+# mono
+(idInt, idBool) = fuckyouid() ??
+fuckyouid ()
+	print 'fuck you'
+	return (lamInt, lamBool)  # so... changes propagate into callees
+
+	# i guess, like environments, we should represent it as part of the type
+	# so we should preserve the environment identifiers.
+
+# end mono
+
+z = id(1)
+y = id(True)
+
+
+
+----------------------
+-- There's this fucking function which returns errors n shiet. also i wasn't sure what to do with it
+
+justid (x)
+	return x
+
+fuckyouid ()
+	print justid
+	print justid(True)
+	return justid
+
+print fuckyouid
+
+
+--- after typechecking it looks like this:
+# $[]
+justid$11 (x$12 'd) 'd
+  return (x$12 :: 'd)
+
+# $[justid$11]
+fuckyouid$13 () [[]]('m) -> 'm
+  print (justid$11 :: [[]]('h) -> 'h)
+  print ((justid$11 :: [[]](Bool$1) -> Bool$1)((@True$3 :: Bool$1)) :: Bool$1)
+  return (justid$11 :: [[]]('m) -> 'm)
+
+print (fuckyouid$13 :: [[justid$11 [[]]('s) -> 's]]() -> [[]]('r) -> 'r)
+
+----
+
+AmbiguousType 'h
+AmbiguousType 'r
+AmbiguousType 's
+
+'h is rightfully an ambiguous type
+
+however, there's also an error for 'r (last type of the function in last line)...
+so, beginning from last line, what should be the type of the function (including the environment?)
+
+I think it should be all types the function uses. But, should this be done in Typechecking or in Monomorphization?
+
+ie.
+
+Option 1:
+Typecheck: [[justid [[]]('s -> 's)]]() -> [[]]('r -> 'r)
+Monomorphized: [[justid [[]][('r -> 'r) (Bool -> Bool)]]]() -> [[]]('r -> 'r)
+
+Option 2:
+Same thing, but already in typecheck.
+I think it being in typecheck makes more sense.
+
+
+-----
+
+oh shid, what about this:
+
+n = 69
+a ()
+	b (x)
+		return x + n
+
+	return b

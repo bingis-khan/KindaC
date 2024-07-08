@@ -440,7 +440,7 @@ ppLines :: Foldable t => (a -> Context) -> t a -> Context
 ppLines f = foldMap ((<>"\n") . f)
 
 ppFunEnv :: FunEnv Context -> Context
-ppFunEnv (FunEnv vts) = encloseSepBy "[" "]" " " (fmap (encloseSepBy "[" "]" ", " . fmap (\(v, t) -> rVar v <+> t)) vts)
+ppFunEnv (FunEnv vts) = encloseSepBy "[" "]" " " (fmap (encloseSepBy "[" "]" ", " . fmap (\(v, t) -> rVar v <+> encloseSepBy "[" "]" " " t)) vts)
 
 ppVarEnv :: VarEnv VarInfo -> Context
 ppVarEnv (VarEnv vs) = encloseSepBy "$[" "]" " " (fmap rVar vs)

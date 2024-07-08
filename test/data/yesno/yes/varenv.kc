@@ -1,3 +1,4 @@
+# inner function environment that "goes outside"
 
 woah (wantenv Bool)
 	env = 420

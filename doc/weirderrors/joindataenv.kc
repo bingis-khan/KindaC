@@ -1,0 +1,12 @@
+# joint environment for datatypes with functions
+
+Fun
+	Fun (Int -> Int)
+
+fn ohshid()
+	n = 69
+	if True
+		return Fun(x:n)
+	else
+		m = 420
+		return Fun(x:m)

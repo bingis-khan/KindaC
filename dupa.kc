@@ -1,0 +1,9 @@
+
+x = 1
+
+g ()
+	return 1
+	
+f ()
+	return g()
+

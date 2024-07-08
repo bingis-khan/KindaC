@@ -1,0 +1,14 @@
+#! mb r
+# datatypes with lambdas!
+
+Func
+	Func (Int -> Int)
+
+
+x = Func(x:x)
+y = Func(x:1)
+
+n = 69
+z = Func(x:x+n)
+
+

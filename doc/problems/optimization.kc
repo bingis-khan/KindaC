@@ -1,0 +1,30 @@
+
+Okay, I didn't plan on doing this, but there's one thing we can make to make C code be more readable.
+
+
+n = 69
+
+addn (x) # env [n]
+	return x + n
+
+dosthimportant (x) # env [addn [n]]; ideal [n]
+	m = x * 2
+	return add(m)
+
+main ()
+	print dosthimportant(69)  # env [dosthimportant [addn [n]]]; ideal [n]
+
+
+Although, we're not using any environment except the last function, we have to add the function to our environment.
+This means, the environment grows with each function used.
+Why am I putting the function in the env? Consider this:
+
+addn = (x: n) if rand() else (x: x)
+
+Sometimes we have to save the current function with the environment.
+What we can do is detect if the function that's created from the expression can be put into "top scope" in C or sum shiet.
+Although we can go in and mark functions as those that create functions conditionally, a way to address this is to just go through the expression and break on: function calls and conditional operator.
+
+I think this will be enough...
+
+

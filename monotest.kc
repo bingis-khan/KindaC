@@ -1,0 +1,12 @@
+
+
+justid (x)
+	return x
+fuckyouid ()
+	print 420
+	return justid
+
+print fuckyouid
+id = fuckyouid()
+y = id(1)
+z = id(True)
