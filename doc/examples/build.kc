@@ -1,0 +1,25 @@
+#! ~/.local/bin/kc run
+use Build
+	srcTree
+	build
+	defaultOptions
+	BuildType(Release)
+
+
+srcs = srcTree('src/')  # source files
+out = 'out/'  # build artifacts (eg. *.c files)
+bin = 'bin/'  # where the executable will go 
+options = defaultOptions {
+	buildType: Release
+}
+
+# all directories automatically created
+
+
+result = build(src, out, bin, defaultOptions)
+
+case result
+	Ok(())
+		print 'Compiled successfully!'
+	Err(errs)
+		errs each(err: print(err))

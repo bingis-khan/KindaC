@@ -123,3 +123,53 @@ a ()
 		return x + n
 
 	return b
+
+
+----------------------
+monomorphization - how do I do it?
+
+id = x: x  # we want this to be something like (idInt, idBool). so, we have to unify id ~ type
+print id(1)
+print id(True)
+
+but how do we reach this kinda shit
+
+id = \
+	x: x  <-- this ends one part of the "traversal"
+		(then)  <-- here we compile the whole function
+			x
+
+f = : x: x  # returns a polymorphic function
+id = f()   <--- this is fucked up - how do we go through calls?
+id = \
+	/ \  <- call expr...
+	f  ()
+
+g = :: x: x
+id =    \
+        /\  <- call
+	  /\  ()   <- (1) call
+	 g ()
+
+
+what should g/id compile to (roughly):
+
+idBool (x Bool) -> Bool
+	return x
+
+idInt (x Int) -> Int
+	return x
+
+g' (Env e)
+	return (e.idInt, e.idBool)
+g' = (Env { idInt, idBool }, g' (fun))
+
+
+g (Env e)
+	return e.g'
+
+g = (Env { g' }, g (fun))
+
+
+id' = g.fun(g.env)
+id = id'.fun(id'.env)

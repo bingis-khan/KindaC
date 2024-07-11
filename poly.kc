@@ -1,0 +1,6 @@
+f (x)
+	return x
+
+x = f as Int -> Int
+y = f as Bool -> Bool
+z = f as (Int -> Int) -> (Int -> Int)

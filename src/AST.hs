@@ -319,18 +319,14 @@ data MonoTypeF a
   | TMonoFun [a] a
   deriving (Show, Eq, Ord, Functor, Foldable)
 
--- type instance Type Mono = Fix (TypeF TypeID)
--- type instance Expr Mono = Fix (TExpr (Type Mono))
--- type instance Stmt Mono = Fix (StmtF Local Global (Expr Mono))
+type instance Type Mono = Fix MonoTypeF
+type instance Expr Mono = Fix (ExprType (Type Mono) (Type Mono))
 
--- type instance FunDef Mono= GFunDef Global Local (Type Mono) (Stmt Mono)
--- type instance DataCon Mono = GDataCon Global (Type Mono)
--- type instance DataDef Mono = GDataDef Global TypeID (DataCon Mono)
--- -- This tells the compiler where to put the C data structure declaration in case of a cyclic datatype dependency.
--- -- data MonoDataDef = MonoDataDef TypeID [TypedType]
-
--- -- This tells the compiler where to put the function declaration in case of mutually recursive functions.
--- data FunDec = FunDec Global (Type Mono) deriving (Show, Eq, Ord)
+type instance DataCon Mono = GDataCon ConInfo (Type Mono)
+type instance DataDef Mono = GDataDef TypeInfo (DataCon Mono)
+type instance FunDec Mono = GFunDec VarEnv ConInfo VarInfo (Type Mono)
+type instance AnnStmt Mono = Fix (AnnStmtF (BigStmtF (DataDef Mono) (FunDec Mono) (StmtF ConInfo VarInfo (Expr Mono))))
+type instance Stmt Mono = BigStmtF (DataDef Mono) (FunDec Mono) (StmtF ConInfo VarInfo (Expr Mono)) (AnnStmt Mono)
 
 -- -- todo: is this supposed to be FunDef Typed or Mono (is it called before or after monomorphization)
 -- declaration  :: FunDef Typed -> FunDec

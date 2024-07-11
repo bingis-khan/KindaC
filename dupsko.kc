@@ -1,0 +1,9 @@
+
+f ()
+	m = 420
+	g ()
+		return m
+
+	return g
+
+print f

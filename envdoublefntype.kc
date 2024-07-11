@@ -8,4 +8,4 @@ fuckyouid ()
 	return justid
 
 print fuckyouid as () -> Int -> Int  # the two environments of the function should have the same type
-print fuckyouid
+print fuckyouid as () -> Bool -> Bool

@@ -104,6 +104,7 @@ makeSEnv (Just prelude) = StatefulEnv
   , tvargen = newTVarGen
   , constructors = cons
   , types = ts
+  , env = []
   } where
     cons = Map.fromList $ foldMap manyCons $ mapMaybe (\case { Fix (AnnStmt _ (DataDefinition dd)) -> Just dd; _ -> Nothing }) prelude
     manyCons (DD tid tvars cons) =
