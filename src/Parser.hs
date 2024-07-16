@@ -144,8 +144,8 @@ sFunctionOrCall = recoverableIndentBlock $ do
         else flip (L.IndentMany Nothing) (recoverStmt (annotationOr statement)) $ \case
           stmts@(_:_) -> FunctionDefinition header . NonEmpty.fromList <$> annotateStatements stmts
           [] ->
-            let args = map (Fix . Var . fst) params
-                funName = Fix $ Var name
+            let args = map (Fix . Var () . fst) params
+                funName = Fix $ Var () name
             in pure $ NormalStmt $ ExprStmt $ Fix $ Call funName args
 
 functionHeader :: Parser (FunDec Untyped, Maybe (Expr Untyped))
@@ -301,7 +301,7 @@ eGrouping = between (symbol "(") (symbol ")") expression
 
 eIdentifier :: Parser (Expr Untyped)
 eIdentifier = do
-  id <- (Var <$> identifier) <|> (Con <$> dataConstructor)
+  id <- (Var () <$> identifier) <|> (Con <$> dataConstructor)
   retf id
 
 
@@ -325,7 +325,7 @@ pType = do
     Nothing -> case term of
       [t] -> return t
       ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> show ts <> ")"  -- this would later mean that we're returning a tuple
-    Just ret -> return $ Fix $ TFun (NoEnv ()) term ret
+    Just ret -> return $ Fix $ TFun (TNoEnv ()) term ret
 
   where
     concrete = do

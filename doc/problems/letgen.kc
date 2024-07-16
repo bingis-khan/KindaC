@@ -1,0 +1,14 @@
+FUTURE THING
+
+Maybe the way i can do let generalization is to, in typecheck, trace values from return statements to parameters and variables.
+
+This is because we should return tuples of functions of different types. So, if we have a function, we should make a tuple of all of the types the function gets applied to. Why? Side effects - we can't return a function multiple times - the value has to go through it once. The values (tuples) are created by means of lambda / functiondefinition (or a typeclass instance variable/function). They get propagated by means of function calls and things like an if-expression... - this complicates things. This means that when a function returns, we should go inside the function and trace how the value got created and we might arrive at two conclusions: the function was instantiated there, or it arrived through its parameter. Or both. So we have to do a sort of tracing of the return value.
+
+So, when tracing:
+ What "expands" tracing:
+ - function call (the traced value )
+ - if-expression
+ What ends tracing:
+ - variable/function/lambda instatiation
+
+So, we can theoretically implement it like we do environments. But, these things also cause problems with more C-like things, like pointers. Since it was easy to rip out let generalization, I think it would be possible to readd it later after I get the hang of what the langauge is about. (i already had doubts about let-generalization before monomorphization)

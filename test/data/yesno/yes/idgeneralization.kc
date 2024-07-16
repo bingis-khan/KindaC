@@ -1,5 +1,0 @@
-# the same id function can be used for multiple types
-id = x: x
-
-if id(True)
-	print id(1)

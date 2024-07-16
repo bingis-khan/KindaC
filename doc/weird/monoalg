@@ -1,0 +1,105 @@
+Per top level - function
+ah, i also need to remember to change the types to static ones.
+also map environments and types to their "static" versions
+   also, maybe if the backend requires it, mark where should the type definitions come from
+
+
+uses : VarInfo -> Set (Type, VarInfo)
+types : VarInfo -> Type  # original function names
+
+when fun
+	map uses[fun.varinfo] \v  # if no uses, just replaces assignments with an empty list
+		env = uni fun.type (strip-env uses[fun.varinfo].type)
+		insert-env-def env
+		add-fun fun v.type    # inserts it for later analysis (and adds it before the analysed "block")
+
+when expr
+	transverse expr
+		var v t
+		| !t.env -> var NoEnv v (map !env t)  # no env in function and in new type - just return the function
+		| t.env == types[v] ->
+			var (SameEnv t.env) v t
+		| t.env /= types[v] ->
+			prevenv = uni types[v] (strip-env t)
+			var (TransformEnv prevenv t.env) v t
+
+
+... what about lambdas?
+when scanning
+
+
+when compiling, just do this
+lam l t
+	fun = from-lambda l
+	v = add-fun fun t
+	var (SameEnv t.env) v
+
+
+
+
+[]
+f (x)
+	print x
+	return 1
+
+[f]
+g (y)
+	return f(y)
+
+g (True)
+
+
+
+----------------------------------
+
+monomorphizing will create a single "data structure" from all libraries used
+
+now we have environment + types
+
+funs = all functions from file
+
+(var -> [(var,t)])
+
+
+lets go through top level statements
+
+...
+
+oh, a function
+
+i need to create an environment here... or multiple
+	how do we know if/which environments to create
+	we have to scan usage for envs first
+	- scan code without going into functions and gather vars first: v -> set t
+	okay, now we know which envs to replace it with
+	but also.. we have to go into the function and do the same thing
+		add function to Writer (before adding our stuff) after doing this - this will create proper call ordering, which will make compilation easier and will also remove unused functions.
+
+okay....
+
+i found a var and it refers to a function
+	how would I know it refers to a function?
+	it has an env... (but also, it can be a variable, so don't be so quick to judge) but we don't know its real env
+	- find v -> env (with real env n shiet) and make a (env, tenv) thing
+		- we can monomorphize env with its current type ignoring the environment
+	okay, done
+	i do wonder, if there could be less "maps" or some shit
+
+	then, we add the env, tenv thing (this will generate a mapping function from one env to the other)
+
+i found a var and it's from the environment
+	then we mark it as being from environment (i can do it in the resolver :o)
+	this will hopefully help compilation
+
+	
+
+i found a lambda
+	add another function to Writer (lambda has an embedded env, so its easy to convert)
+	convert the env and done
+
+what about the types?
+	every time we encounter an unknown type, we have to map it to a unique, applied type
+		this also creates a mapping if we want to use this type for other stuff
+	same with constructors
+		? we can also make an optimization, that if no tconstructor is used (ex. Proxy :: Proxy SuperComplicatedType), we can also compile this type as a noop. but it's not that important, hehe
+	

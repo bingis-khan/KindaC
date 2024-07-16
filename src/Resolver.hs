@@ -1,6 +1,7 @@
-{-# LANGUAGE LambdaCase, OverloadedRecordDot #-}
+{-# LANGUAGE LambdaCase, OverloadedRecordDot, DuplicateRecordFields #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use <$>" #-}
+{-# LANGUAGE TupleSections #-}
 module Resolver (resolve, ResolveError) where
 
 import AST
@@ -55,7 +56,7 @@ rStmts = traverse -- traverse through the list with Ctx
           mre <- traverse rExpr me
           pure $ MutDefinition vid mre
         MutAssignment name e -> do
-          vid <- resolveVar name
+          (_, vid) <- resolveVar name
           re <- rExpr e
           pure $ MutAssignment vid re
         If cond ifTrue elseIfs elseBody -> do
@@ -105,7 +106,9 @@ rStmts = traverse -- traverse through the list with Ctx
 rExpr :: Expr Untyped -> Ctx (Expr Resolved)
 rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
   Lit x -> pure $ Lit x
-  Var v -> Var <$> resolveVar v
+  Var () v -> do
+    (l, vid) <- resolveVar v
+    pure $ Var l vid
   Con c -> Con <$> resolveCon c
   Op l op r -> Op <$> l <*> pure op <*> r
   Call c args -> Call <$> c <*> sequenceA args
@@ -131,7 +134,7 @@ rType = transverse $ \case
   TFun _ args ret -> do
     rArgs <- sequence args
     rret <- ret
-    pure $ TFun (NoEnv ()) rArgs rret
+    pure $ TFun (TNoEnv ()) rArgs rret
 
 
 ------------
@@ -151,7 +154,7 @@ closure :: Ctx a -> Ctx a
 closure x = do
   oldScope <- RWST.get          -- enter scope
   RWST.modify $ \scopes -> emptyScope <| fmap (\scope -> scope -- set all reachable variables as immutable
-    { varScope = fmap (\v -> v { varType = Immutable }) scope.varScope
+    { varScope = fmap (\v -> v { varType = Immutable } :: VarInfo) scope.varScope
     }) scopes
   x' <- x                       -- evaluate body
   RWST.put oldScope             -- exit scope
@@ -176,14 +179,14 @@ mkScope prelude = Scope
   , conScope = cons
   , tyScope = types
   } where
-    cons = Map.fromList $ fmap (\ci -> (conName ci, ci)) $ foldMap extractCons prelude
+    cons = Map.fromList $ fmap (\ci -> (ci.conName, ci)) $ foldMap extractCons prelude
     extractCons = \case
       Fix (AnnStmt _ (DataDefinition (DD _ _ dcons))) -> fmap (\(DC con _ _) -> con) dcons
       _ -> []
 
     types = Map.fromList $ mapMaybe extractTypes prelude
     extractTypes = \case
-      Fix (AnnStmt _ (DataDefinition (DD tid _ _))) -> Just (typeName tid, tid)
+      Fix (AnnStmt _ (DataDefinition (DD tid _ _))) -> Just (tid.typeName, tid)
       _ -> Nothing
 
 
@@ -194,14 +197,14 @@ newVar mut name = do
   RWST.modify $ mapFirst $ \sc -> sc { varScope = Map.insert name var sc.varScope }
   return var
 
-resolveVar :: Text -> Ctx VarInfo
+resolveVar :: Text -> Ctx (Locality, VarInfo)
 resolveVar name = do
   scopes <- RWST.get
   case lookupScope name (fmap varScope scopes) of
     Just v -> pure v
     Nothing -> do
       err $ UndefinedVariable name
-      placeholderVar name
+      (Local,) <$> placeholderVar name
 
 placeholderVar :: Text -> Ctx VarInfo
 placeholderVar name = do
@@ -220,7 +223,7 @@ resolveCon :: Text -> Ctx ConInfo
 resolveCon name = do
   scopes <- RWST.get
   case lookupScope name (fmap conScope scopes) of
-    Just c -> pure c
+    Just (_, c) -> pure c  -- rn we will ignore the scope
     Nothing -> do
       err $ UndefinedConstructor name
       placeholderCon name
@@ -249,7 +252,7 @@ resolveType :: Text -> Ctx TypeInfo
 resolveType name = do
   scopes <- RWST.get
   case lookupScope name (fmap tyScope scopes) of
-    Just c -> pure c
+    Just (_, c) -> pure c  -- rn we will ignore the scope
     Nothing -> do
       err $ UndefinedType name
       placeholderType name
@@ -262,8 +265,8 @@ placeholderType name = do
 mapFirst :: (a -> a) -> NonEmpty a -> NonEmpty a
 mapFirst f (x :| xs) = f x :| xs
 
-lookupScope :: (Ord b, Foldable f) =>b -> f (Map b c) -> Maybe c
-lookupScope k = foldr (\l r -> Map.lookup k l <|> r) Nothing
+lookupScope :: (Ord b) => b -> NonEmpty (Map b c) -> Maybe (Locality, c)
+lookupScope k = foldr (\(locality, l) r -> (locality,) <$> Map.lookup k l <|> r) Nothing . (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs)
 
 
 err :: ResolveError -> Ctx ()
@@ -278,7 +281,7 @@ data ResolveError
 
 
 -- environment stuff
-mkEnv :: Set VarInfo -> Ctx (VarEnv VarInfo)
+mkEnv :: Set VarInfo -> Ctx (VarEnv VarInfo t)
 mkEnv innerEnv = do
   scope <- RWST.get
 
@@ -296,5 +299,5 @@ gatherVariables = foldMap $ cata $ \(AnnStmt _ bstmt) -> case bstmt of
 -- used for lambdas
 gatherVariablesFromExpr :: Expr Resolved -> Set VarInfo
 gatherVariablesFromExpr = cata $ \case
-  Var v -> Set.singleton v
+  Var _ v -> Set.singleton v  -- TODO: Is this... correct? It's used for making the environment, but now we can just use this variable to know. This is todo for rewrite.
   expr -> fold expr

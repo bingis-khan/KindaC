@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, DeriveTraversable, GeneralisedNewtypeDeriving, TemplateHaskell, TypeFamilies, UndecidableInstances, StandaloneDeriving #-}
+{-# LANGUAGE LambdaCase, DeriveTraversable, GeneralisedNewtypeDeriving, TemplateHaskell, TypeFamilies, UndecidableInstances, StandaloneDeriving, DuplicateRecordFields #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Avoid lambda using `infix`" #-}
@@ -17,6 +17,7 @@ import Data.Bifoldable
 import Data.Text (Text)
 import Data.Unique (Unique, hashUnique)
 import qualified Data.Text as Text
+import Data.Set (Set)
 
 
 
@@ -62,19 +63,21 @@ data LitType
   = LInt Int
   deriving (Eq, Ord, Show)
 
+data Locality
+  = Local
+  | FromEnvironment
+  deriving (Eq, Ord, Show)
 
-data ExprF fenv t c v a
+data ExprF l fenv t c v a
   = Lit LitType
-  | Var v
+  | Var l v
   | Con c
 
   | Op a Op a
   | Call a [a]
   | As a t
-  | Lam (fenv v) [v] a
+  | Lam (fenv v t) [v] a
   deriving (Show, Eq, Functor, Foldable, Traversable)
-$(deriveShow1 ''ExprF)
-$(deriveEq1 ''ExprF)
 
 
 ---------------
@@ -107,12 +110,15 @@ data BigStmtF datadef fundec stmt a
 $(deriveShow1 ''BigStmtF)
 
 -- It's possible to annotate statements
-data AnnStmtF stmt a = AnnStmt [Ann] (stmt a) deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+data Annotated a = Annotated [Ann] a deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+data AnnStmtF stmt a = AnnStmt [Ann] (stmt a) deriving (Show, Eq, Ord, Functor, Foldable, Traversable)  -- so Fix would work
+
 data Ann  -- or should this be a Map or something?
   = ACType Text
   | ACLit Text
   | ACStdInclude Text
   deriving (Show, Eq, Ord)
+$(deriveShow1 ''Annotated)
 $(deriveShow1 ''AnnStmtF)
 
 
@@ -144,7 +150,7 @@ $(deriveOrd1 ''TypeF)
 
 type family FunDec phase
 
-data GFunDec fenv c v t = FD v [(v, t)] (fenv v) t deriving (Show, Functor, Eq)
+data GFunDec fenv c v t = FD v [(v, t)] (fenv v t) t deriving (Show, Functor, Eq)
 
 -- We only take names into account when searching for a function
 -- so instances should reflect this.
@@ -175,7 +181,6 @@ instance Ord tid => Ord (GDataDef tid con) where
 ---------------
 
 type family Module phase
-type instance Module phase = [AnnStmt phase]  -- right now, we don't need specialised instances for Module
 
 
 
@@ -188,21 +193,28 @@ type instance Module phase = [AnnStmt phase]  -- right now, we don't need specia
 -------------
 data Untyped
 
-newtype NoEnv a = NoEnv () deriving (Functor)
-instance Show (NoEnv a) where
+newtype NoEnv v t = NoEnv () deriving (Functor)
+newtype TNoEnv t = TNoEnv () deriving Functor
+instance Show (NoEnv v t) where
   show (NoEnv ()) = "<env ph>"
 
+instance Show (TNoEnv t) where
+  show (TNoEnv ()) = "<tenv ph>"
+
 $(deriveShow1 ''NoEnv)
+$(deriveShow1 ''TNoEnv)
 
 
-type instance Type Untyped = Fix (TypeF NoEnv Text)
-type instance Expr Untyped  = Fix (ExprF NoEnv (Type Untyped) Text Text)   -- Was: Fix (ExprF Text). It's for resolving, because Resolvable needs an instance with either. Should be temporary.
+type instance Type Untyped = Fix (TypeF TNoEnv Text)
+type instance Expr Untyped  = Fix (ExprF () NoEnv (Type Untyped) Text Text)   -- Was: Fix (ExprF Text). It's for resolving, because Resolvable needs an instance with either. Should be temporary.
                                 -- I can use this https://web.archive.org/web/20070702202021/https://www.cs.vu.nl/boilerplate/. to quickly map those things.
 type instance DataCon Untyped = GDataCon Text (Type Untyped)
 type instance DataDef Untyped = GDataDef Text (DataCon Untyped)
 type instance FunDec Untyped = GFunDec NoEnv Text Text (Maybe (Type Untyped))
 type instance AnnStmt Untyped = Fix (AnnStmtF (BigStmtF (DataDef Untyped) (FunDec Untyped) (StmtF Text Text (Expr Untyped))))
 type instance Stmt Untyped = BigStmtF (DataDef Untyped) (FunDec Untyped) (StmtF Text Text (Expr Untyped)) (AnnStmt Untyped)
+
+type instance Module Untyped = [AnnStmt Untyped]
 
 --------------
 -- Resolved --
@@ -211,16 +223,19 @@ type instance Stmt Untyped = BigStmtF (DataDef Untyped) (FunDec Untyped) (StmtF 
 data Resolved
 
 
-type instance Type Resolved = Fix (TypeF NoEnv TypeInfo)
+type instance Type Resolved = Fix (TypeF TNoEnv TypeInfo)
 
-newtype VarEnv v = VarEnv [v] deriving Functor  -- actually, the type is supposed to be 'Set', but this requires an Ord instance in functor.
-type instance Expr Resolved = Fix (ExprF VarEnv (Type Resolved) ConInfo VarInfo)
+newtype VarEnv v t = VarEnv [v] deriving Functor  -- actually, the type is supposed to be 'Set', but this requires an Ord instance in functor.
+type instance Expr Resolved = Fix (ExprF Locality VarEnv (Type Resolved) ConInfo VarInfo)
 type instance AnnStmt Resolved = Fix (AnnStmtF (BigStmtF (DataDef Resolved) (FunDec Resolved) (StmtF ConInfo VarInfo (Expr Resolved))))
 type instance Stmt Resolved = BigStmtF (DataDef Resolved) (FunDec Resolved) (StmtF ConInfo VarInfo (Expr Resolved)) (AnnStmt Resolved)
 
 type instance DataCon Resolved = GDataCon ConInfo (Type Resolved)
 type instance DataDef Resolved = GDataDef TypeInfo (DataCon Resolved)
 type instance FunDec Resolved = GFunDec VarEnv ConInfo VarInfo (Maybe (Type Resolved))
+
+
+type instance Module Resolved = [AnnStmt Resolved]
 
 
 data VarInfo = VI
@@ -287,20 +302,26 @@ $(deriveEq1 ''FunEnv)
 $(deriveOrd1 ''FunEnv)
 
 type instance Type Typed = Fix (TypeF FunEnv TypeInfo)
-type instance Expr Typed = Fix (ExprType (Type Typed) (Type Typed))
+type instance Expr Typed = Fix (ExprType Locality VarInfo (Type Typed) (Type Typed))
 
 type instance DataCon Typed = GDataCon ConInfo (Type Typed)
 type instance DataDef Typed = GDataDef TypeInfo (DataCon Typed)
-type instance FunDec Typed = GFunDec VarEnv ConInfo VarInfo (Type Typed)
+
+newtype TypedEnv v t = TypedEnv [(v, [t])] deriving (Functor, Foldable, Traversable)
+
+type instance FunDec Typed = GFunDec TypedEnv ConInfo VarInfo (Type Typed)
 type instance AnnStmt Typed = Fix (AnnStmtF (BigStmtF (DataDef Typed) (FunDec Typed) (StmtF ConInfo VarInfo (Expr Typed))))
 type instance Stmt Typed = BigStmtF (DataDef Typed) (FunDec Typed) (StmtF ConInfo VarInfo (Expr Typed)) (AnnStmt Typed)
 
 
-data ExprType t texpr a = ExprType t (ExprF VarEnv texpr ConInfo VarInfo a) deriving (Functor)
+data ExprType l v t texpr a = ExprType t (ExprF l TypedEnv texpr ConInfo v a) deriving (Functor)
+
+type instance Module Typed = [AnnStmt Typed]
 
 
--- -- A bit of duplication...
--- data instance Module Typed = TModule (Set (FunDef Typed)) (Set (DataDef Typed)) [Stmt Typed] deriving Show
+$(deriveBifoldable ''TypedEnv)
+$(deriveBifunctor ''TypedEnv)
+$(deriveBitraversable ''TypedEnv)
 
 
 -----------------
@@ -308,31 +329,107 @@ data ExprType t texpr a = ExprType t (ExprF VarEnv texpr ConInfo VarInfo a) deri
 -----------------
 data Mono
 
--- data MonoTypeF fenv t a
---   = TCon t [a]
---   | TVar TVar
---   | TFun (fenv a) [a] a
---   deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+data MonoVarInfo = MVI
+  { varID :: Unique
+  , varName :: Text
+  -- , varType :: VarType
+  }
+
+data MonoEnvInfo = MEI
+  { envID :: Unique
+  }
+
+
+data MonoConInfo = MCI
+  { conID :: Unique
+  , conName :: Text
+  -- add info about constructor for later compilation
+  }
+
+data MonoTypeInfo = MTI
+  { typeID :: Unique
+  , typeName :: Text
+  -- add info about structure for later compilation
+  }
+
+
+instance Eq MonoVarInfo where
+  MVI { varID = l } == MVI { varID = r } = l == r
+
+instance Ord MonoVarInfo where
+  MVI { varID = l } `compare` MVI { varID = r } = l `compare` r
+
+-- temporary instance
+instance Show MonoVarInfo where
+  show (MVI { varID = vid, varName = vname }) = "v" <> show (hashUnique vid) <> Text.unpack vname
+
+
+instance Eq MonoConInfo where
+  MCI { conID = l } == MCI { conID = r } = l == r
+
+instance Ord MonoConInfo where
+  MCI { conID = l } `compare` MCI { conID = r } = l `compare` r
+
+
+instance Show MonoTypeInfo where
+  show (MTI { typeID = tid, typeName = name }) = show name <> "@" <> show (hashUnique tid)
+
+instance Eq MonoTypeInfo where
+  MTI { typeID = l } == MTI { typeID = r } = l == r
+
+instance Ord MonoTypeInfo where
+  MTI { typeID = l } `compare` MTI { typeID = r } = l `compare` r
+
+
+newtype Env a = Env (NonEmpty [a]) deriving (Show, Eq, Ord, Functor, Foldable)  -- this isn't supposed to be an ID - if Envs match, they are the same - equality implies... sameness.o
+$(deriveEq1 ''Env)
+$(deriveOrd1 ''Env)
+
+newtype MonoEnvEnv v t = MonoEnv [(v, t)] deriving (Functor, Foldable)
+$(deriveBifunctor ''MonoEnvEnv)
+type MonoEnv = MonoEnvEnv (Locality, MonoVarInfo) (Type Mono)
+
 
 data MonoTypeF a
-  = TType TypeInfo  -- change TypeInfo to something like MonoTypeInfo, which would encode transitions and such.
-  | TMonoFun [a] a
+  = MTCon MonoTypeInfo -- change TypeInfo to something like MonoTypeInfo, which would encode transitions and such.
+  | MTFun (Env a) [a] a
   deriving (Show, Eq, Ord, Functor, Foldable)
+$(deriveEq1 ''MonoTypeF)
+$(deriveOrd1 ''MonoTypeF)
+
+data MonoEnvStmt stmt a
+  = NormalMonoStmt (stmt a)
+  | EnvStmt MonoEnvInfo MonoEnv  -- disgusting
+
+data EnvTransform
+  = NoEnvs  -- no environment literally
+  | Unchanged  -- it's in the previous variable (ie: f = id; g = f) - in g = f, it should be Unchanged.
+  | SameEnv MonoEnvInfo MonoEnv  -- when instantiating, same env, no operations should be performed.
+  | EnvTransform MonoEnvInfo MonoEnv (Env (Type Mono))  -- when env differs at callsite. FunEnv should also include locality i think.
 
 type instance Type Mono = Fix MonoTypeF
-type instance Expr Mono = Fix (ExprType (Type Mono) (Type Mono))
+type instance Expr Mono = Fix (ExprType (Locality, EnvTransform) MonoVarInfo (Type Mono) (Type Mono))
 
-type instance DataCon Mono = GDataCon ConInfo (Type Mono)
-type instance DataDef Mono = GDataDef TypeInfo (DataCon Mono)
-type instance FunDec Mono = GFunDec VarEnv ConInfo VarInfo (Type Mono)
-type instance AnnStmt Mono = Fix (AnnStmtF (BigStmtF (DataDef Mono) (FunDec Mono) (StmtF ConInfo VarInfo (Expr Mono))))
-type instance Stmt Mono = BigStmtF (DataDef Mono) (FunDec Mono) (StmtF ConInfo VarInfo (Expr Mono)) (AnnStmt Mono)
+type instance DataCon Mono = GDataCon MonoConInfo (Type Mono)
+type instance DataDef Mono = GDataDef MonoTypeInfo (DataCon Mono)
+type instance FunDec Mono = GFunDec MonoEnvEnv MonoConInfo MonoVarInfo (Type Mono)
+type instance AnnStmt Mono = Fix (AnnStmtF (MonoEnvStmt (StmtF MonoConInfo MonoVarInfo (Expr Mono))))
+type instance Stmt Mono = StmtF MonoConInfo MonoVarInfo (Expr Mono) (AnnStmt Mono)
 
 -- -- todo: is this supposed to be FunDef Typed or Mono (is it called before or after monomorphization)
 -- declaration  :: FunDef Typed -> FunDec
 -- declaration (FD name params ret _) = FunDec name $ Fix (TFun (map snd params) ret)
 
 -- data MModule = MModule [DataDef Mono] [Either FunDec (FunDef Mono)] [Stmt Mono] deriving Show
+
+
+data MonoModule = MonoModule
+  { functions :: [Annotated (FunDec Mono, NonEmpty (AnnStmt Mono))]
+  , dataTypes :: [Annotated (DataDef Mono)]
+  , main :: [AnnStmt Mono]
+  }
+
+type instance Module Mono = MonoModule
 
 
 -------------
@@ -456,18 +553,18 @@ $(deriveBitraversable ''GFunDec)
 
 
 -- sad function for switching environment
-mapInnerExprType :: (t -> t') -> ExprF fenv t c v a -> ExprF fenv t' c v a
+mapInnerExprType :: Functor (fenv v) => (t -> t') -> ExprF l fenv t c v a -> ExprF l fenv t' c v a
 mapInnerExprType f = \case
   -- real one
   As e t -> As e (f t)
 
   -- grunt work
   Lit lt -> Lit lt
-  Var v -> Var v
+  Var l v -> Var l v
   Con c -> Con c
   Op l op r -> Op l op r
   Call e args -> Call e args
-  Lam env v e -> Lam env v e
+  Lam env v e -> Lam (fmap f env) v e
 
 mapTypeEnv :: (fenv a -> genv a) -> TypeF fenv t a -> TypeF genv t a
 mapTypeEnv f = \case

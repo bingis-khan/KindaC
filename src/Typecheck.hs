@@ -8,11 +8,12 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TupleSections #-}
 
 module Typecheck (typecheck, TypeError(..), dbgTypecheck, dbgPrintConstraints, ftv, unSolve, Subst(..)) where
 
 import Typecheck.Types
-import AST
+import AST hiding (Env)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Biapplicative (first)
@@ -144,21 +145,22 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
     -- go through additional layers (in the future also position information)
     inferAnnStmt :: Substitutable a => Base (AnnStmt Resolved) (Infer a) -> Infer (Base (AnnStmt TyVared) a)
     inferAnnStmt (AnnStmt anns rStmt) = case rStmt of
-      NormalStmt (Assignment v rexpr) -> do
-        texpr@(Fix (ExprType texprt _)) <- subSolve $ inferExpr rexpr
-        -- substitution done in subSolve
+      -- Old let generalization
+      -- NormalStmt (Assignment v rexpr) -> do
+      --   texpr@(Fix (ExprType texprt _)) <- subSolve $ inferExpr rexpr
+      --   -- substitution done in subSolve
 
-        -- generalization
-        envFtv <- foldMap (\(Forall _ e) -> ftv e) . Map.elems <$> RWS.gets variables  -- 
-        let texprtFtv = ftv texprt
-        let schemeTyVars = texprtFtv \\ envFtv
-        -- Do amibguous check at the end. 
+      --   -- generalization
+      --   envFtv <- foldMap (\(Forall _ e) -> ftv e) . Map.elems <$> RWS.gets variables  -- 
+      --   let texprtFtv = ftv texprt
+      --   let schemeTyVars = texprtFtv \\ envFtv
+      --   -- Do amibguous check at the end. 
 
-        let (scheme, schemeExpr) = closeOverExpr schemeTyVars texpr -- Replace Left -> Right
+      --   let (scheme, schemeExpr) = closeOverExpr schemeTyVars texpr -- Replace Left -> Right
 
-        newVar v scheme
+      --   newVar v scheme
 
-        pure $ AnnStmt anns $ NormalStmt $ Assignment v schemeExpr
+      --   pure $ AnnStmt anns $ NormalStmt $ Assignment v schemeExpr
 
       NormalStmt rstmt -> do
         tstmt <- bitraverse inferExpr id rstmt
@@ -197,15 +199,17 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
 
 
             let fnt tyfunenv = Fix $ TF' $ Right $ TFun tyfunenv tparams tret
-            let fdec = FD name (zip (fmap fst params) tparams) varenv tret
+            let fdec tenv = FD name (zip (fmap fst params) tparams) tenv tret
             let fbody = tbody
 
             pure (fnt, fdec, fbody)
 
           -- add environment here.
           envid <- freshTyvar
+
+          let tenv = fenv2tenv fenv
           let tyfunenv = TyFunEnv envid fenv
-          pure (fnt tyfunenv, fdec, fbody)
+          pure (fnt tyfunenv, fdec tenv, fbody)
 
         -- generalization
         envFtv <- foldMap (\(Forall _ e) -> ftv e) . Map.elems <$> RWS.gets variables
@@ -238,8 +242,11 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
     -- this is the actual logic.
     -- wtf, for some reason \case produces an error here....
     inferStmt stmt = case stmt of
-      Assignment _ _ ->
-        error "Assignment should not be handled here."
+
+      -- new, no let-generalization assignment
+      Assignment v rexpr ->
+        let scheme = Forall Set.empty rexpr
+        in newVar v scheme
 
       MutDefinition v met -> do
         f <- fresh
@@ -293,14 +300,35 @@ inferExpr = cata (fmap embed . inferExprType)
   where
     inferExprType :: Base (Expr Resolved) (Infer (Expr TyVared)) -> Infer (Base (Expr TyVared) (Expr TyVared))
     inferExprType e = do
-      e' <- sequenceA $ mapInnerExprType rt2t e
+      -- map env
+      e' <- case mapInnerExprType rt2ty e of
+        (Lam env args body) -> do
+          (fenv, body') <- withEnv env body
+          let tenv = fenv2tenv fenv
+          pure $ Lam tenv args body'
+
+        As e t -> do
+          e' <- e
+          pure $ As e' t
+
+        Lit lt -> pure $ Lit lt
+        Var l v -> pure $ Var l v
+        Con c -> pure $ Con c
+        Op l op r -> do
+          l' <- l
+          r' <- r
+          pure $ Op l' op r'
+        Call e args -> do
+          liftA2 Call e (sequenceA args)
+
+
       t <- inferExprLayer $ fmap (\(Fix (ExprType t _)) -> t) e'
       pure $ ExprType t e'
 
     inferExprLayer = \case
       Lit (LInt _ ) -> findType "Int"
 
-      Var v -> lookupVar v
+      Var _ v -> lookupVar v
       Con c -> lookupCon c
 
       Op l op r | op == NotEquals || op == Equals -> do
@@ -316,9 +344,8 @@ inferExpr = cata (fmap embed . inferExprType)
         pure intt
 
       As x t -> do
-        let ty = t2ty t
-        x `uni` ty
-        pure ty
+        x `uni` t
+        pure t
 
       Call f args -> do
         ret <- fresh
@@ -327,7 +354,8 @@ inferExpr = cata (fmap embed . inferExprType)
         f `uni` ft
         pure ret
 
-      Lam (VarEnv env) params ret -> do
+      Lam _ params ret -> do
+        let env = undefined
         vars <- traverse lookupVar params  -- creates variables. i have to change the name from lookupVar i guess...
         envvars <- traverse (\v -> (,) v <$> lookupVar v) env
         --envid <- freshTyvar  -- TODO: this should be in a function most likely -> all of the env stuff
@@ -388,7 +416,7 @@ addEnv v ty = RWS.modify $ \s -> s { env = fmap mapFunEnv s.env }
       else
         (cv, ts)
 
-withEnv :: VarEnv VarInfo -> Infer a -> Infer (FunEnv (Type TyVared), a)
+withEnv :: VarEnv VarInfo t -> Infer a -> Infer (FunEnv (Type TyVared), a)
 withEnv (VarEnv vars) x = do
   RWS.modify $ \s -> s { env = funenv : s.env }
   (e, x') <- RWS.mapRWS (\(x, s@StatefulEnv { env = (e:ogenvs) }, cs) -> ((e, x), s { env = ogenvs }, cs)) x  -- we're using tail, because we want an error if something happens.
@@ -591,6 +619,10 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
 
           pure $ compose su3 $ compose su2 su1
 
+        (Right (TCon t ta), Right (TCon t' ta')) | t == t' -> do
+          su <- unifyMany ta ta'
+          pure su
+
         (_, _) -> report $ TypeMismatch tl tr
 
     unifyMany :: [Type TyVared] -> [Type TyVared] -> Solve Subst
@@ -649,7 +681,7 @@ substituteTypes fsu tmod = fmap subAnnStmt tmod
       FunctionDefinition dec body -> FunctionDefinition (fmap subType dec) body
 
     subExpr :: Expr TyVared -> Expr Typed
-    subExpr = hoist $ \(ExprType t expr) -> ExprType (subType t) expr
+    subExpr = hoist $ \(ExprType t expr) -> ExprType (subType t) $ mapInnerExprType subType expr
 
     subType :: Type TyVared -> Type Typed
     subType = cata $ \case
@@ -712,16 +744,19 @@ instance (Substitutable a, Substitutable b, Substitutable c) => Substitutable (a
   subst su (x, y, z) = (subst su x, subst su y, subst su z)
 
 -- TODO: I want to off myself...
-instance Substitutable (Fix (ExprType (Fix TypeF') (Fix (TypeF env TypeInfo)))) where
+instance Substitutable (Fix (ExprType l v (Fix TypeF') (Fix TypeF'))) where
   ftv = cata $ \(ExprType t expr) -> ftv t <> fold expr
   subst su = cata $ \(ExprType t expr) -> Fix $ ExprType (subst su t) (fmap (subst su) expr)
 
+instance Substitutable (TypedEnv v (Fix TypeF')) where
+  ftv (TypedEnv vts) = foldMap (foldMap ftv . snd) vts
+  subst su = fmap (subst su)
 
-instance Substitutable (GFunDec fenv c v (Fix TypeF')) where
+instance Substitutable (GFunDec TypedEnv c v (Fix TypeF')) where
   ftv (FD _ params _ ret) = ftv ret <> foldMap (ftv . snd) params
-  subst su (FD name params env ret) = FD name ((fmap . fmap) (subst su) params) env (subst su ret)
+  subst su (FD name params env ret) = FD name ((fmap . fmap) (subst su) params) (subst su env) (subst su ret)
 
-instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec fenv ConInfo VarInfo (Fix TypeF')) (StmtF ConInfo VarInfo (Fix (ExprType (Fix TypeF') (Fix (TypeF env TypeInfo)))))))) where
+instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec TypedEnv ConInfo VarInfo (Fix TypeF')) (StmtF ConInfo VarInfo (Fix (ExprType l v (Fix TypeF') (Fix TypeF'))))))) where
   ftv = cata $ \(AnnStmt _ bstmt) -> case bstmt of
     NormalStmt stmt -> bifoldMap ftv id stmt
     DataDefinition _ -> mempty
@@ -757,6 +792,11 @@ bidmap f = bimap f f
 
 findMap :: Eq a => a -> (b -> a) -> Map b c -> Maybe c
 findMap kk f = fmap snd . find (\(k, _) -> f k == kk). Map.toList
+
+-- TODO: this is ugly and types are funny
+fenv2tenv :: FunEnv (Type TyVared) -> TypedEnv VarInfo (Type TyVared)
+fenv2tenv (FunEnv [env])= TypedEnv env
+fenv2tenv (FunEnv _) = error "Function environment at function definition should have only one 'version'"
 
 
 -----

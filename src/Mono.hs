@@ -1,56 +1,418 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, DuplicateRecordFields, OverloadedRecordDot, OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveFoldable #-}
 module Mono (monoModule) where
 
 import AST
-import Data.Map (Map)
+import Data.Map (Map, (!?), unionWith)
 import Data.Set (Set)
 import Control.Monad.Trans.State (State, runState, evalState)
-import Data.Functor.Foldable (transverse, Base)
+import Data.Functor.Foldable (transverse, Base, cata, embed, ListF (Nil), project, para)
+import Control.Monad.Trans.RWS (RWS, evalRWS, listen, censor, RWST, evalRWST)
+import Data.Either (partitionEithers)
+import Data.Traversable (for)
+import Data.List.NonEmpty (NonEmpty ((:|)))
+import Data.Maybe (fromMaybe, catMaybes)
+import Data.Fix (Fix(..))
+import Data.Bitraversable (bitraverse)
+import qualified Data.Set as Set
+import Data.Biapplicative (first)
+import qualified Control.Monad.Trans.RWS as RWS
+import Data.Unique (newUnique)
+import Control.Monad.IO.Class (liftIO)
+import qualified Data.Map as Map
+import qualified Control.Monad.Trans.RWS as RWST
+import qualified Data.List.NonEmpty as NonEmpty
+import Data.Foldable (for_, fold)
+import Data.Text (Text)
+import Data.Bifoldable (bifoldMap)
 
 
--- this is more complicated than i thought
---  - unfortunately, right now, i have to compile even unused functions, because I don't know if they are executed.
---  - i can optimize it later, because this is more of an unusual case...
---    - where we check which functions get executed.
---    - ie trace the expression n shit and see if it's just a normal function
--- TODO: finish excuses
 
--- okay, so how should i do it?
--- 1. go through top level functions... IN REVERSE
---    1.5 there's a context
--- 2. gather variables and their types
---    2.1 scan for identifiers n shit
---    2.2 when reaching the variable that was used, replace the type with a tuple of types. ????
---    2.3 let's see what happens
+-- technically, I can split it into first getting the function definitions / datatypes and then applying them - this would be order independent.
+-- -- todo do it like this, i think it will be clearer. i don't feel like doing it right now, because I would need to make another datatype.
+data ReaderShitContext = RSC
+  { usage :: Map VarInfo (Set (Type Typed))
+  , genapps :: Map TVar (Type Mono)
+  }
+
+data Applications = Apps
+
+  -- this one monomorphizes and deduplicates types
+  { typeApps :: Map (TypeInfo, [Type Mono]) (Type Mono)  -- make sure to ignore environment - we will be mapping the environment per call.
+
+  -- used for finding variables
+  , varApps :: Map (VarInfo, Type Mono) (Locality, MonoVarInfo)
+
+  -- ????
+  , conApps :: Map (ConInfo, Type Typed) (MonoConInfo, MonoTypeInfo)
+
+  -- nice, qt environments
+  , funEnv :: Map (VarInfo, Type Mono) (Maybe MonoEnvInfo, MonoEnv)
+  }
+
+type MonoCtx = RWST ReaderShitContext ([Either (Annotated (DataDef Mono)) (Annotated (FunDec Mono, NonEmpty (AnnStmt Mono)))], [AnnStmt Mono]) Applications IO  -- not very good - there should be a separate context for single statements. but idc rn
 
 
-monoModule :: Module Typed -> Module Mono
-monoModule m = evalState (monoStmts m) mempty
+monoModule :: Module Typed -> IO (Module Mono)
+monoModule m = do
+  let topUsage = getUsage m
+  (stmts, (datfun, _)) <- evalRWST (monoStmts m) (RSC { usage = topUsage, genapps = mempty }) (Apps { funEnv = mempty, typeApps = mempty, varApps = mempty, conApps = mempty })
+  let (dats, funs) = partitionEithers datfun
+  pure $ MonoModule { functions = funs, dataTypes = dats, main = stmts }
 
-
-type MonoCtx = State (Map VarInfo (Set (Type Mono)))
-
-
-monoStmts :: Module Typed -> MonoCtx (Module Mono)
-monoStmts = traverse (transverse monoAnnStmt) . reverse
+monoStmts :: [AnnStmt Typed] -> MonoCtx [AnnStmt Mono]
+monoStmts tstmts = mstmts
   where
-    monoAnnStmt :: Base (AnnStmt Typed) (MonoCtx a) -> MonoCtx (Base (AnnStmt Mono) a)
-    monoAnnStmt (AnnStmt anns bigStmt) = AnnStmt anns <$> case bigStmt of
-      NormalStmt stmt -> NormalStmt <$> case stmt of
-        Print expr -> Print <$> monoExpr expr
+      flatTransverse n = para $ fmap embed . n
+
+      -- magic -> basically i want to do the traverse . transverse combo, but I want it to have a concat thing.
+      -- TODO: choose better functions and names
+      mstmts = fmap concat $ sequenceA $ flip fmap tstmts $ flatTransverse $ \(AnnStmt anns tbigstmt) -> case tbigstmt of -- change transverse / traverse to something with flatmap
+        DataDefinition _ -> undefined
+
+        FunctionDefinition fundec@(FD v _ env _) body -> do
+          usage' <- RWS.asks usage
+          case usage' !? v of
+            Just uses -> do
+              let funtls = fmap fst body
+              let topUsage = getUsage $ NonEmpty.toList funtls
+              fmap (project . catMaybes) $ for (Set.toList uses) $ \t -> do
+                tvars <- traverse monoType $ t `mapTVarsOf` funDecType fundec
+                withFunctionScope tvars topUsage $ do
+                  t' <- addFun anns fundec body
+                  addEnv v t' env
+
+            -- function wasn't used, so we ignore
+            Nothing ->
+              pure $ project $ (:[]) $ Fix $ AnnStmt [] $ NormalMonoStmt Pass
+
+        NormalStmt stmt -> do
+          -- weird type stuff...
+          mstmt <- monoStmt anns $ first monoExpr $ fmap snd stmt -- i would want to add special context here later ig
+          pure $ project mstmt
+
+      -- TODO: after implementing this method, i realized that the default order is okay (instead of first monoExpr, just use bitraverse monoExpr id)
+      monoStmt :: [Ann] -> StmtF ConInfo VarInfo (MonoCtx (Expr Mono)) (MonoCtx [AnnStmt Mono]) -> MonoCtx [AnnStmt Mono]
+      monoStmt anns stmt = do
+        (a, (_, stmts)) <- censor (\(fundec, _) -> (fundec, [])) $ listen $ case stmt of
+          Pass -> pure Pass
+          Assignment v e -> do
+            e'@(Fix (ExprType t' _)) <- e
+            v' <- addVar v t'
+            pure $ Assignment v' e'
+
+          Print e -> Print <$> e
+          MutDefinition v (Just e) -> do
+            e'@(Fix (ExprType t' _)) <- e
+            v' <- addVar v t'
+            pure $ MutDefinition v' $ Just e'
+          MutDefinition v Nothing -> do  -- TODO: this doesn't work - there should be a type annotation here. Another reason to switch to different ASTs.
+            undefined
+
+          MutAssignment v e -> do
+            e'@(Fix (ExprType t' _)) <- e
+            v' <- addVar v t'
+            pure $ MutAssignment v' e'
 
 
-monoExpr :: Expr Typed -> MonoCtx (Expr Mono)
-monoExpr = transverse $ \(ExprType t expr) -> case expr of
-  Lit (LInt x) -> do
-    t' <- monoType t
-    pure $ ExprType t' $ Lit $ LInt x
-  Var v -> undefined
+          If eif iftrue elifs melse -> do
+            eif' <- eif
+            iftrue' <- flattenNonEmpty <$> sequenceA iftrue
+            elifs' <- traverse (bitraverse id (fmap flattenNonEmpty . sequenceA)) elifs
+            melse' <- traverse (fmap flattenNonEmpty . sequenceA) melse
+            pure $ If eif' iftrue' elifs' melse'
 
+          ExprStmt e -> ExprStmt <$> e
+          Return me -> Return <$> sequenceA me
+
+
+        let ogStmt = Fix $ AnnStmt anns $ NormalMonoStmt a
+        pure $ stmts ++ [ogStmt]
+
+      monoExpr :: Expr Typed -> MonoCtx (Expr Mono)
+      monoExpr = cata $ fmap embed . \(ExprType t e) -> do
+        t' <- monoType t
+        ExprType t' <$> case e of
+          Var l v -> do
+            env <- tryGetEnv v t'
+            v' <- snd <$> findVar (v, t')
+            case env of  -- also add function monotype + type
+              Just (Nothing, _) -> do  -- function and no env
+                pure $ Var (l, NoEnvs) v'
+                -- function instantiation here. [state to collect generated environments of functions] [state to collect variable + type -> monotype]
+              Just (Just envid, oldenv) -> do
+                let (Fix (MTFun env _ _)) = t'  -- this must happen
+                if isSameEnv oldenv env
+                  then pure $ Var (l, SameEnv envid oldenv) v'
+                  else pure $ Var (l, EnvTransform envid oldenv env) v'
+              Nothing -> do
+                -- a normal variable.
+                pure $ Var (l, Unchanged) v'
+          Lam env args lambod -> do
+            (menvid, oldenv) <- makeEnv env  -- this should not fail
+            v <- addLam oldenv t args lambod
+
+            let envtransform = case menvid of
+                  Just envid -> SameEnv envid oldenv
+                  Nothing -> NoEnvs
+            pure $ Var (Local, envtransform) v -- [additional writer context for adding additional statements before it (executed before expression)]
+
+          Lit lt -> pure $ Lit lt
+          Con _ -> undefined
+
+          Op l op r -> do
+            l' <- l
+            r' <- r
+            pure $ Op l' op r'
+          Call c args -> do
+            c' <- c
+            args' <- sequenceA args
+            pure $ Call c' args'
+          As e t -> do
+            e' <- e
+            t'' <- monoType t
+            pure $ As e' t''
+
+findVar :: (VarInfo, Type Mono) -> MonoCtx (Locality, MonoVarInfo)
+findVar (v, t) = do
+  vars <- RWS.gets varApps
+  pure $ case vars !? (v, t) of
+    Just v -> v
+    Nothing -> error "Should not happen. There should be a variable here."
+
+addVar :: VarInfo -> Type Mono -> MonoCtx MonoVarInfo
+addVar v t = do
+  -- make monovar
+  mviid <- liftIO newUnique
+  let mvi = MVI {  varID = mviid, varName = v.varName }
+
+  RWS.modify $ \s -> s { varApps = Map.insert (v, t) (Local, mvi) s.varApps }
+  pure mvi
+
+newVar :: Text -> MonoCtx MonoVarInfo
+newVar name = do
+  mviid <- liftIO newUnique
+  let mvi = MVI { varID = mviid, varName = name }
+  pure mvi
 
 monoType :: Type Typed -> MonoCtx (Type Mono)
-monoType = undefined
+monoType = cata $ fmap embed . \case
+  TCon ti tapps -> do
+    tapps' <- sequenceA tapps
+
+    generatedTypes <- RWST.gets typeApps
+    case generatedTypes !? (ti, tapps') of
+      -- this type already exists
+      Just (Fix t) -> pure t
+
+      Nothing -> do
+        uniq <- liftIO newUnique
+
+        let mti = MTI { typeID = uniq, typeName = ti.typeName }
+        let t = Fix $ MTCon mti
+        RWS.modify $ \s -> s { typeApps = Map.insert (ti, tapps') t s.typeApps }
+
+        pure $ MTCon mti
+
+  TFun env args ret -> do
+    args' <- sequenceA args
+    ret' <- ret
+    env' <- env2env <$> sequenceA env
+    pure $ MTFun env' args' ret'
 
 
-findVarType :: VarInfo -> MonoCtx (Type Mono)
-findVarType = undefined
+  TVar tv -> do
+    tvmap <- RWS.asks genapps
+    pure $ case tvmap !? tv of
+      Just (Fix t) -> t
+      Nothing -> error $ "Should not happen :^) [boomer emoticon]; tv that was not found -> (" <> show tv <> ")"
+
+
+addFun :: [Ann] -> FunDec Typed -> NonEmpty (AnnStmt Typed, MonoCtx [AnnStmt Mono]) -> MonoCtx (Type Mono)
+addFun anns fundec body = do
+    ((funt, fundec'), body') <- bitraverse monoFunDec (fmap flattenNonEmpty . traverse snd) (fundec, body)
+
+    -- add function
+    RWS.tell ([Right (Annotated anns (fundec', body'))], [])
+
+    pure funt
+
+-- also, should add a function to Writer
+-- at the end, should call addVar 
+
+monoFunDec :: FunDec Typed -> MonoCtx (Type Mono, FunDec Mono)
+monoFunDec (FD v params env ret) = do
+  params' <- for params $ \(pv, pt) -> do
+    pt' <- monoType pt
+    pv' <- addVar pv pt'
+    pure (pv', pt')
+  env'@(MonoEnv env'') <- first snd <$> constructEnv env
+  ret' <- monoType ret
+
+  let envt = Env $ NonEmpty.singleton $ fmap snd env''
+  let funt = Fix $ MTFun envt (fmap snd params') ret'  -- that's a bit iffy, i should unify the whole MonoEnv -> Env thing. I'll see how addEnvs will look like.
+
+  v' <- addVar v funt
+  pure $ (funt, FD v' params' env' ret')
+
+
+addLam :: MonoEnvEnv (Locality, MonoVarInfo) (Type Mono) -> Type Typed -> [VarInfo] -> MonoCtx (Expr Mono) -> MonoCtx MonoVarInfo
+addLam env t args body = do
+  (Fix (MTFun _ argts ret)) <- monoType t  -- very iffy, it depends on environment variables from lists having the same order
+  mvi <- newVar "<lambda>"
+  args' <- traverse (\(v, t) -> (,t) <$> addVar v t) $ zip args argts
+  let env' = first snd env
+
+  let fundec = FD mvi args' env' ret
+  body' <- do
+    expr <- body
+
+    let stmt = Fix $ AnnStmt [] $ NormalMonoStmt $ Return $ Just expr
+    let funbody = NonEmpty.singleton stmt
+    pure funbody
+
+
+  RWS.tell ([Right (Annotated [] (fundec, body'))], [])
+  pure mvi
+
+
+addEnv :: VarInfo -> Type Mono -> TypedEnv VarInfo (Type Typed) -> MonoCtx (Maybe (AnnStmt Mono))  -- btw, must ignore envs in Set (Type Typed) - we'll do conversion at callsite. this is to minimize generated code.
+addEnv v t ogt = do
+  (menvid, env) <- makeEnv ogt
+
+  -- add env to state
+  RWS.modify $ \s -> s { funEnv = Map.insert (v, t) (menvid, env) s.funEnv }
+
+  pure $ case menvid of
+    Nothing -> Nothing
+    Just envid -> Just $ Fix $ AnnStmt [] $ EnvStmt envid env
+
+withFunctionScope :: Map TVar (Type Mono) -> Map VarInfo (Set (Type Typed)) -> MonoCtx a -> MonoCtx a
+withFunctionScope vars topUsage = RWS.withRWST (\r s -> (r { usage = Map.union topUsage r.usage, genapps = Map.union vars r.genapps }, s))
+
+
+makeEnv :: TypedEnv VarInfo (Type Typed) -> MonoCtx (Maybe MonoEnvInfo, MonoEnv)
+makeEnv env = do
+  env' <- constructEnv env
+  if null env
+    then pure (Nothing, env')
+    else do
+      uniq <- liftIO newUnique
+      let mei = MEI { envID = uniq }
+
+      pure (Just mei, env')
+
+constructEnv :: TypedEnv VarInfo (Type Typed) -> MonoCtx MonoEnv  -- TODO: i have to better divide these functions (but actually, rethink the datastructures: why does the referenced function not contain the environment id? just the env's structure? because of these weird thinks it's all fragmented)
+constructEnv (TypedEnv env) =
+    fmap (MonoEnv . concat) $ for env $ \(v, t) -> do
+      t' <- traverse monoType t
+      vt <- traverse (\t -> (, t) <$> findVar (v, t)) t'
+      pure vt
+
+
+
+tryGetEnv :: VarInfo -> Type Mono -> MonoCtx (Maybe (Maybe MonoEnvInfo, MonoEnv))
+tryGetEnv v t = do
+  funs <- RWS.gets funEnv
+  pure $ funs !? (v, t)
+
+
+isSameEnv :: MonoEnv -> Env (Type Mono) -> Bool
+isSameEnv _ (Env (_ :| [])) = True -- this is a bit of a cheat - we know that the environments should match at least one, so if there is only one, it's the same env.
+isSameEnv _ _ = False
+
+
+newtype VarUsage = VarUsage { fromVarUsage :: Map VarInfo (Set (Type Typed)) }
+instance Semigroup VarUsage where
+  (VarUsage lm) <> (VarUsage rm) = VarUsage $ unionWith (<>) lm rm
+
+instance Monoid VarUsage where
+  mempty = VarUsage mempty
+
+type VarConnections = Map VarInfo (Type Typed, Set (VarInfo, Type Typed))
+
+
+getUsage :: [AnnStmt Typed] -> Map VarInfo (Set (Type Typed))
+getUsage stmts = usage where
+    -- calculate usage
+    topUsage = fromVarUsage $ foldMap (cata tufold) stmts -- :: Map VarInfo (Set (Type Typed))
+
+    tufold :: Base (AnnStmt Typed) VarUsage -> VarUsage
+    tufold (AnnStmt ann bstmt) = case bstmt of
+      NormalStmt stmt -> bifoldMap exprFold id stmt
+      FunctionDefinition _ _ -> mempty
+      DataDefinition _ -> mempty
+
+    exprFold :: Expr Typed -> VarUsage
+    exprFold = cata $ \(ExprType ty expr) -> case expr of
+      Var _ v -> VarUsage $ Map.singleton v $ Set.singleton ty
+      e -> fold e
+
+
+    -- look how functions use other functions
+    connections = foldMap (cata conFold) stmts :: VarConnections
+    conFold :: Base (AnnStmt Typed) VarConnections -> VarConnections
+    conFold (AnnStmt _ bstmt) = case bstmt of
+      FunctionDefinition fundec@(FD v _ env _) _ ->
+        let t = funDecType fundec
+        in Map.singleton v (t, env2conns env)
+
+      NormalStmt stmt -> fold stmt
+      DataDefinition _ -> mempty
+
+    env2conns :: TypedEnv VarInfo (Type Typed) -> Set (VarInfo, Type Typed)
+    env2conns (TypedEnv env) = Set.fromList $ concatMap (\(v, ts) -> fmap (v,) ts) env
+
+    applyTVars :: Map TVar (Type Typed) -> Type Typed -> Type Typed
+    applyTVars vars (Fix t) = case t of
+      TVar tv -> case vars !? tv of
+        Just t' -> t'
+        Nothing -> Fix (TVar tv)
+
+      TFun env args ret -> Fix $ TFun env (fmap (applyTVars vars) args) (applyTVars vars ret)
+      TCon ti apps -> Fix $ TCon ti $ fmap (applyTVars vars) apps
+
+    go :: Map TVar (Type Typed) -> VarInfo -> Type Typed -> VarUsage
+    go vars v t =
+      case connections !? v of
+        Nothing -> mempty
+        Just (t', env) ->
+          let vars' = vars <> (t `mapTVarsOf` t')
+          in VarUsage (Map.singleton v (Set.singleton t)) <> foldMap (\(v, t) -> go vars' v (applyTVars vars' t)) env
+
+    -- use both of them to get total usage. apply recursively.
+    usage = fromVarUsage (foldMap (foldMap (uncurry $ go mempty) . (\(v, ts) -> (v,) <$> Set.toList ts)) (Map.toList topUsage)) :: Map VarInfo (Set (Type Typed))  -- scan all var usage (might not be a function, whatever). this will require funny stuf
+
+
+-- Left -> monomorphic, Right -> has tvars
+-- this should fail, as we have already typechecked it before... TODO: maybe i should somehow preserve this info..?
+mapTVarsOf :: Type Typed -> Type Typed -> Map TVar (Type Typed)
+mapTVarsOf t (Fix (TVar tv)) = Map.singleton tv t
+mapTVarsOf (Fix (TCon ti apps)) (Fix (TCon ti' apps')) | ti == ti' = fold $ zipWith mapTVarsOf apps apps'
+mapTVarsOf (Fix (TFun _ params ret)) (Fix (TFun _ params' ret')) = fold $ mapTVarsOf ret ret' : zipWith mapTVarsOf params params'  -- ignore env
+mapTVarsOf t t' = error "FUCK I HATE THIS. SHIT PROGRAM"
+
+
+funDecType :: FunDec Typed -> Type Typed
+funDecType (FD _ params (TypedEnv env) ret) =
+  let env' = FunEnv [env]
+      params' = fmap snd params
+  in Fix $ TFun env' params' ret
+
+flattenNonEmpty :: NonEmpty [a] -> NonEmpty a
+flattenNonEmpty (x:|xs) =
+  let xs' = x ++ concat xs
+  in case xs' of
+    (x:xs) -> x :| xs
+    [] -> error "should not happen... or, actually, imagine a file with only one function... it can happen! but let's handle it later."
+
+-- again, another function that would not be partial if I had better datatypes.
+env2env :: FunEnv (Type Mono) -> Env (Type Mono)
+env2env (FunEnv (x:xs)) = 
+  let x' = concatMap snd x
+      xs' = fmap (concatMap snd) xs
+  in Env $ x' :| xs'
+env2env (FunEnv []) = error "no envs (absence of even an empty env) should be impossible at this point"
+

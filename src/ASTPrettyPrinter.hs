@@ -63,12 +63,12 @@ tStmt :: Stmt Typed -> Context
 tStmt = \case
   NormalStmt s -> case first tExpr s of
     Print e -> "print" <+> e
-    Assignment v e -> rVar v <+> "=" <+> e
+    Assignment v e -> rVar Local v <+> "=" <+> e
     Pass -> "pass"
-    MutDefinition v me ->  "mut" <+> rVar v <+?> rhs
+    MutDefinition v me ->  "mut" <+> rVar Local v <+?> rhs
       where
         rhs = fmap ("<=" <+>) me
-    MutAssignment v e -> rVar v <+> "<=" <+> e
+    MutAssignment v e -> rVar Local v <+> "<=" <+> e
     If ifCond ifTrue elseIfs mElse ->
       tBody ("if" <+> ifCond ) ifTrue <>
       foldMap (\(cond, elseIf) ->
@@ -86,13 +86,13 @@ tExpr = cata $ \(ExprType t expr) ->
   let encloseInType c = "(" <> c <+> "::" <+> tType t <> ")"
   in encloseInType $ case expr of
   Lit (LInt x) -> pretty x
-  Var v -> rVar v
+  Var l v -> rVar l v
   Con c -> rCon c
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
   As x at -> x <+> "as" <+> tType at
-  Lam env params e -> ppVarEnv env <+> sepBy " " (map rVar params) <> ":" <+> e
+  Lam env params e -> ppTypedEnv tType env <+> sepBy " " (map (rVar Local) params) <> ":" <+> e
   where
     ppOp op = case op of
       Plus -> "+"
@@ -110,7 +110,7 @@ tConDef :: DataCon Typed -> Context
 tConDef (DC g t ann) = annotate ann $ foldl' (<+>) (rCon g) $ tTypes t
 
 tFunDec :: FunDec Typed -> Context
-tFunDec (FD v params env retType) = comment (ppVarEnv env) $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType
+tFunDec (FD v params env retType) = comment (ppTypedEnv tType env) $ rVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar Local pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType
 
 
 tTypes :: Functor t => t (Type Typed) -> t Context
@@ -149,12 +149,12 @@ tyStmt :: Stmt TyVared -> Context
 tyStmt = \case
   NormalStmt s -> case first tyExpr s of
     Print e -> "print" <+> e
-    Assignment v e -> rVar v <+> "=" <+> e
+    Assignment v e -> rVar Local v <+> "=" <+> e
     Pass -> "pass"
-    MutDefinition v me ->  "mut" <+> rVar v <+?> rhs
+    MutDefinition v me ->  "mut" <+> rVar Local v <+?> rhs
       where
         rhs = fmap ("<=" <+>) me
-    MutAssignment v e -> rVar v <+> "<=" <+> e
+    MutAssignment v e -> rVar Local v <+> "<=" <+> e
     If ifCond ifTrue elseIfs mElse ->
       tyBody ("if" <+> ifCond ) ifTrue <>
       foldMap (\(cond, elseIf) ->
@@ -172,13 +172,13 @@ tyExpr = cata $ \(ExprType t expr) ->
   let encloseInType c = "(" <> c <+> "::" <+> tyType t <> ")"
   in encloseInType $ case expr of
   Lit (LInt x) -> pretty x
-  Var v -> rVar v
+  Var l v -> rVar l v
   Con c -> rCon c
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
-  As x at -> x <+> "as" <+> tType at
-  Lam env params e -> ppVarEnv env <+> sepBy " " (map rVar params) <> ":" <+> e
+  As x at -> x <+> "as" <+> tyType at
+  Lam env params e -> ppTypedEnv tyType env <+> sepBy " " (map (rVar Local) params) <> ":" <+> e
   where
     ppOp op = case op of
       Plus -> "+"
@@ -196,7 +196,7 @@ tyConDef :: DataCon TyVared -> Context
 tyConDef (DC g t ann) = annotate ann $ foldl' (<+>) (rCon g) $ tTypes t
 
 tyFunDec :: FunDec TyVared -> Context
-tyFunDec (FD v params env retType) = comment (ppVarEnv env) $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> ((" "<>) . tyType) pType) params) <> ((" "<>) . tyType) retType
+tyFunDec (FD v params env retType) = comment (ppTypedEnv tyType env) $ rVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar Local pName <> ((" "<>) . tyType) pType) params) <> ((" "<>) . tyType) retType
 
 
 tyTypes :: Functor t => t (Type TyVared) -> t Context
@@ -247,12 +247,12 @@ rStmt :: Stmt Resolved -> Context
 rStmt = \case
   NormalStmt s -> case first rExpr s of
     Print e -> "print" <+> e
-    Assignment v e -> rVar v <+> "=" <+> e
+    Assignment v e -> rVar Local v <+> "=" <+> e
     Pass -> "pass"
-    MutDefinition v me ->  "mut" <+> rVar v <+?> rhs
+    MutDefinition v me ->  "mut" <+> rVar Local v <+?> rhs
       where
         rhs = fmap ("<=" <+>) me
-    MutAssignment v e -> rVar v <+> "<=" <+> e
+    MutAssignment v e -> rVar Local v <+> "<=" <+> e
     If ifCond ifTrue elseIfs mElse ->
       rBody ("if" <+> ifCond ) ifTrue <>
       foldMap (\(cond, elseIf) ->
@@ -268,13 +268,13 @@ rStmt = \case
 rExpr :: Expr Resolved -> Context
 rExpr = cata $ \case
   Lit (LInt x) -> pretty x
-  Var v -> rVar v
+  Var l v -> rVar l v
   Con c -> rCon c
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
   As x t -> x <+> "as" <+> rType t
-  Lam env params e -> ppVarEnv env <+> sepBy " " (map rVar params) <> ":" <+> e
+  Lam env params e -> ppVarEnv env <+> sepBy " " (map (rVar Local) params) <> ":" <+> e
   where
     ppOp op = case op of
       Plus -> "+"
@@ -292,7 +292,7 @@ rConDef :: DataCon Resolved -> Context
 rConDef (DC g t ann) = annotate ann $ foldl' (<+>) (rCon g) $ rTypes t
 
 rFunDec :: FunDec Resolved -> Context
-rFunDec (FD v params env retType) = comment (ppVarEnv env) $ rVar v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar pName <> maybe "" ((" "<>) . rType) pType) params) <> maybe "" ((" "<>) . rType) retType
+rFunDec (FD v params env retType) = comment (ppVarEnv env) $ rVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> rVar Local pName <> maybe "" ((" "<>) . rType) pType) params) <> maybe "" ((" "<>) . rType) retType
 
 
 rTypes :: Functor t => t (Type Resolved) -> t Context
@@ -310,8 +310,8 @@ rType = cata $ \case
   TFun _ args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
 
 
-rVar :: VarInfo -> Context
-rVar v = vt <> pretty v.varName <> "$" <> pretty (hashUnique v.varID)
+rVar :: Locality -> VarInfo -> Context
+rVar l v = vt <> pretty v.varName <> "$" <> pretty (hashUnique v.varID)
   where
     vt = case v.varType of
       Immutable -> ""
@@ -368,7 +368,7 @@ utStmt = \case
 utExpr :: Expr Untyped -> Context
 utExpr = cata $ \case
   Lit (LInt x) -> pretty x
-  Var v -> pretty v
+  Var () v -> pretty v
   Con c -> pretty c
 
   Op l op r -> l <+> ppOp op <+> r
@@ -440,10 +440,15 @@ ppLines :: Foldable t => (a -> Context) -> t a -> Context
 ppLines f = foldMap ((<>"\n") . f)
 
 ppFunEnv :: FunEnv Context -> Context
-ppFunEnv (FunEnv vts) = encloseSepBy "[" "]" " " (fmap (encloseSepBy "[" "]" ", " . fmap (\(v, t) -> rVar v <+> encloseSepBy "[" "]" " " t)) vts)
+ppFunEnv (FunEnv vts) = encloseSepBy "[" "]" " " (fmap (encloseSepBy "[" "]" ", " . fmap (\(v, t) -> rVar Local v <+> encloseSepBy "[" "]" " " t)) vts)
 
-ppVarEnv :: VarEnv VarInfo -> Context
-ppVarEnv (VarEnv vs) = encloseSepBy "$[" "]" " " (fmap rVar vs)
+ppTypedEnv :: (t -> Context) -> TypedEnv VarInfo t -> Context
+ppTypedEnv ft env =
+  let (TypedEnv vts) = fmap ft env
+  in encloseSepBy "$#[" "]" " " $ fmap (\(v, ts) -> rVar Local v <+> encloseSepBy "[" "]" " " ts) vts
+
+ppVarEnv :: VarEnv VarInfo t -> Context
+ppVarEnv (VarEnv vs) = encloseSepBy "$[" "]" " " (fmap (rVar Local) vs)
 
 -- ppNoEnv :: NoEnv a -> Context
 -- ppNoEnv _ = "[<no env>]"

@@ -1,0 +1,17 @@
+
+LET GENERALIZATION AND MONOMORPHISM
+
+-- this is more complicated than i thought
+--  - unfortunately, right now, i have to compile even unused functions, because I don't know if they are executed.
+--  - i can optimize it later, because this is more of an unusual case...
+--    - where we check which functions get executed.
+--    - ie trace the expression n shit and see if it's just a normal function
+-- TODO: finish excuses
+
+-- okay, so how should i do it?
+-- 1. go through top level functions... IN REVERSE
+--    1.5 there's a context
+-- 2. gather variables and their types
+--    2.1 scan for identifiers n shit
+--    2.2 when reaching the variable that was used, replace the type with a tuple of types. ????
+--    2.3 let's see what happens

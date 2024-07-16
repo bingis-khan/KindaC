@@ -41,6 +41,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - do branching analysis to check if a code path does not return a value.
   - also add a `#[noreturn]` to mark a function that does not return (eg. `exit()`)
 - environments for datatypes (I'll do it after monomorphization/codegen, because I want to know what I'm getting myself into)
+- add unit type as default is there are no return statements.
 
 # thoughts???
 - should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?

@@ -1,0 +1,9 @@
+
+id (x)
+	return x
+
+g ()
+	print id(True)
+	print id(1)
+
+print g
