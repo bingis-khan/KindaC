@@ -1,0 +1,57 @@
+
+I have problems visualizing how to compile the environment. So...
+
+m = 420
+f (x): m + x
+
+turns to
+
+m = 420
+f-env = FEnv { fenv.m = m }  # it will always be a "single value env" - i can define a new environment here
+
+
+####
+# !! I think I don't want to deduplicate environments during monomorphization. We can deduplicate them while CPrinting.
+####
+
+
+(continuing)
+
+i = 1
+j = 2
+g (x): x + i + j
+
+turns to
+
+i = 1
+j = 2
+g_env = GEnv { genv.i = i, genv.j = j }
+
+
+(continuing)
+
+
+h = f or g  # imaginary `or` operator, which randomly selects one of two options
+
+
+turns to
+
+HFun {
+	...
+}
+fenv2henv (f): HFun { f = f, env = FEnv { ... } }
+genv2henv (g): HFun { f = g, env = GEnv {} }
+h_env = random() ? fenv2henv(f) : genv2henv(g)
+
+(continuing)
+
+h(1)
+
+turns to
+
+h_env.f(&h_env.env, 1)
+
+
+
+###############################
+## Okay... but what about types?

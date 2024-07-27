@@ -296,13 +296,27 @@ instance Ord TypeInfo where
 
 data Typed
 
-newtype FunEnv t = FunEnv [[(VarInfo, [t])]] deriving (Show, Eq, Ord, Functor, Foldable, Traversable)  -- TODO: This is a spiritual 'Set'. fmap does not let me add the 'Ord' constraint. Also, shitty types ong. TODO: this needs a serious refactor. but i'm kinda exploring rn
+data EnvInfo = EI
+  { envID :: Unique
+  }
+
+instance Show EnvInfo where
+  show (EI { envID = tid }) = "%" <> show (hashUnique tid)
+
+instance Eq EnvInfo where
+  EI { envID = l } == EI { envID = r } = l == r
+
+instance Ord EnvInfo where
+  EI { envID = l } `compare` EI { envID = r } = l `compare` r
+
+
+data FunEnv t = FunEnv EnvInfo [[(VarInfo, [t])]] deriving (Show, Eq, Ord, Functor, Foldable, Traversable)  -- TODO: This is a spiritual 'Set'. fmap does not let me add the 'Ord' constraint. Also, shitty types ong. TODO: this needs a serious refactor. but i'm kinda exploring rn
 $(deriveShow1 ''FunEnv)
 $(deriveEq1 ''FunEnv)
 $(deriveOrd1 ''FunEnv)
 
 type instance Type Typed = Fix (TypeF FunEnv TypeInfo)
-type instance Expr Typed = Fix (ExprType Locality VarInfo (Type Typed) (Type Typed))
+type instance Expr Typed = Fix (ExprType Locality VarInfo ConInfo (Type Typed) (Type Typed))
 
 type instance DataCon Typed = GDataCon ConInfo (Type Typed)
 type instance DataDef Typed = GDataDef TypeInfo (DataCon Typed)
@@ -314,7 +328,7 @@ type instance AnnStmt Typed = Fix (AnnStmtF (BigStmtF (DataDef Typed) (FunDec Ty
 type instance Stmt Typed = BigStmtF (DataDef Typed) (FunDec Typed) (StmtF ConInfo VarInfo (Expr Typed)) (AnnStmt Typed)
 
 
-data ExprType l v t texpr a = ExprType t (ExprF l TypedEnv texpr ConInfo v a) deriving (Functor)
+data ExprType l v c t texpr a = ExprType t (ExprF l TypedEnv texpr c v a) deriving (Functor)
 
 type instance Module Typed = [AnnStmt Typed]
 
@@ -385,9 +399,9 @@ newtype Env a = Env (NonEmpty [a]) deriving (Show, Eq, Ord, Functor, Foldable)  
 $(deriveEq1 ''Env)
 $(deriveOrd1 ''Env)
 
-newtype MonoEnvEnv v t = MonoEnv [(v, t)] deriving (Functor, Foldable)
+newtype MonoEnvEnv v t = MonoEnv [(v, t)] deriving (Functor, Foldable)  -- can MonoEnv be empty actually? I thought we kind of check for it during monomorphization.
 $(deriveBifunctor ''MonoEnvEnv)
-type MonoEnv = MonoEnvEnv (Locality, MonoVarInfo) (Type Mono)
+type MonoEnv = MonoEnvEnv (Locality, MonoVarInfo) (Maybe MonoEnvInfo, Type Mono)
 
 
 data MonoTypeF a
@@ -400,6 +414,7 @@ $(deriveOrd1 ''MonoTypeF)
 data MonoEnvStmt stmt a
   = NormalMonoStmt (stmt a)
   | EnvStmt MonoEnvInfo MonoEnv  -- disgusting
+  deriving (Functor)
 
 data EnvTransform
   = NoEnvs  -- no environment literally
@@ -408,13 +423,13 @@ data EnvTransform
   | EnvTransform MonoEnvInfo MonoEnv (Env (Type Mono))  -- when env differs at callsite. FunEnv should also include locality i think.
 
 type instance Type Mono = Fix MonoTypeF
-type instance Expr Mono = Fix (ExprType (Locality, EnvTransform) MonoVarInfo (Type Mono) (Type Mono))
+type instance Expr Mono = Fix (ExprType (Locality, EnvTransform) MonoVarInfo MonoConInfo (Type Mono) (Type Mono))
 
 type instance DataCon Mono = GDataCon MonoConInfo (Type Mono)
 type instance DataDef Mono = GDataDef MonoTypeInfo (DataCon Mono)
 type instance FunDec Mono = GFunDec MonoEnvEnv MonoConInfo MonoVarInfo (Type Mono)
 type instance AnnStmt Mono = Fix (AnnStmtF (MonoEnvStmt (StmtF MonoConInfo MonoVarInfo (Expr Mono))))
-type instance Stmt Mono = StmtF MonoConInfo MonoVarInfo (Expr Mono) (AnnStmt Mono)
+type instance Stmt Mono = MonoEnvStmt (StmtF MonoConInfo MonoVarInfo (Expr Mono)) (AnnStmt Mono)
 
 -- -- todo: is this supposed to be FunDef Typed or Mono (is it called before or after monomorphization)
 -- declaration  :: FunDef Typed -> FunDec

@@ -36,7 +36,7 @@ $(deriveOrd1 ''TypeF')
 
 type instance Type TyVared = Fix TypeF'
 
-type instance Expr TyVared = Fix (ExprType Locality VarInfo (Type TyVared) (Type TyVared))
+type instance Expr TyVared = Fix (ExprType Locality VarInfo ConInfo (Type TyVared) (Type TyVared))
 
 type instance DataCon TyVared = GDataCon ConInfo (Type Typed)
 type instance DataDef TyVared = GDataDef TypeInfo (DataCon TyVared)

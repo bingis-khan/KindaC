@@ -17,7 +17,7 @@ import Data.Maybe (fromMaybe, catMaybes)
 import Data.Fix (Fix(..))
 import Data.Bitraversable (bitraverse)
 import qualified Data.Set as Set
-import Data.Biapplicative (first)
+import Data.Biapplicative (first, bimap)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Unique (newUnique)
 import Control.Monad.IO.Class (liftIO)
@@ -27,6 +27,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (for_, fold)
 import Data.Text (Text)
 import Data.Bifoldable (bifoldMap)
+import Control.Monad (join)
 
 
 
@@ -46,7 +47,7 @@ data Applications = Apps
   , varApps :: Map (VarInfo, Type Mono) (Locality, MonoVarInfo)
 
   -- ????
-  , conApps :: Map (ConInfo, Type Typed) (MonoConInfo, MonoTypeInfo)
+  , conApps :: Map (ConInfo, [Type Mono]) MonoConInfo
 
   -- nice, qt environments
   , funEnv :: Map (VarInfo, Type Mono) (Maybe MonoEnvInfo, MonoEnv)
@@ -55,10 +56,11 @@ data Applications = Apps
 type MonoCtx = RWST ReaderShitContext ([Either (Annotated (DataDef Mono)) (Annotated (FunDec Mono, NonEmpty (AnnStmt Mono)))], [AnnStmt Mono]) Applications IO  -- not very good - there should be a separate context for single statements. but idc rn
 
 
-monoModule :: Module Typed -> IO (Module Mono)
-monoModule m = do
-  let topUsage = getUsage m
-  (stmts, (datfun, _)) <- evalRWST (monoStmts m) (RSC { usage = topUsage, genapps = mempty }) (Apps { funEnv = mempty, typeApps = mempty, varApps = mempty, conApps = mempty })
+monoModule :: Prelude -> Module Typed -> IO (Module Mono)
+monoModule prelude m = do
+  let combined = prelude <> m
+  let topUsage = getUsage combined
+  (stmts, (datfun, _)) <- evalRWST (monoStmts combined) (RSC { usage = topUsage, genapps = mempty }) (Apps { funEnv = mempty, typeApps = mempty, varApps = mempty, conApps = mempty })
   let (dats, funs) = partitionEithers datfun
   pure $ MonoModule { functions = funs, dataTypes = dats, main = stmts }
 
@@ -70,7 +72,20 @@ monoStmts tstmts = mstmts
       -- magic -> basically i want to do the traverse . transverse combo, but I want it to have a concat thing.
       -- TODO: choose better functions and names
       mstmts = fmap concat $ sequenceA $ flip fmap tstmts $ flatTransverse $ \(AnnStmt anns tbigstmt) -> case tbigstmt of -- change transverse / traverse to something with flatmap
-        DataDefinition _ -> undefined
+
+        -- temporarily does not handle polymorphic definitions
+          -- right now, just generate the constructors and datatypes.
+        DataDefinition (DD ti [] cons) -> do
+          (Fix (MTCon mti)) <- monoType (Fix (TCon ti []))
+
+          cons' <- for cons $ \(DC ci ts anns) -> do
+            ts' <- traverse monoType ts
+            mci <- addCon ci ts'
+            pure $ DC mci ts' anns
+
+          RWS.tell ([Left (Annotated anns (DD mti [] cons'))], [])
+          pure $ project [Fix $ AnnStmt [] (NormalMonoStmt Pass)]
+        DataDefinition _ -> error "unsupported"
 
         FunctionDefinition fundec@(FD v _ env _) body -> do
           usage' <- RWS.asks usage
@@ -160,7 +175,11 @@ monoStmts tstmts = mstmts
             pure $ Var (Local, envtransform) v -- [additional writer context for adding additional statements before it (executed before expression)]
 
           Lit lt -> pure $ Lit lt
-          Con _ -> undefined
+          Con ci -> do
+            let (Fix (TCon _ apps)) = t  -- TODO: bad
+            tapps <- traverse monoType apps
+            mci <- addCon ci tapps
+            pure $ Con mci
 
           Op l op r -> do
             l' <- l
@@ -196,6 +215,18 @@ newVar name = do
   mviid <- liftIO newUnique
   let mvi = MVI { varID = mviid, varName = name }
   pure mvi
+
+addCon :: ConInfo -> [Type Mono] -> MonoCtx MonoConInfo
+addCon ci apps = do
+  cons <- RWS.gets conApps
+  case cons !? (ci, apps) of
+    Just mci -> pure mci
+    Nothing -> do
+      uniq <- liftIO newUnique
+      let mci = MCI { conID = uniq, conName = ci.conName }
+
+      RWS.modify $ \s -> s { conApps = Map.insert (ci, apps) mci s.conApps }
+      pure mci
 
 monoType :: Type Typed -> MonoCtx (Type Mono)
 monoType = cata $ fmap embed . \case
@@ -248,7 +279,7 @@ monoFunDec (FD v params env ret) = do
     pt' <- monoType pt
     pv' <- addVar pv pt'
     pure (pv', pt')
-  env'@(MonoEnv env'') <- first snd <$> constructEnv env
+  env'@(MonoEnv env'') <- bimap snd snd <$> constructEnv env
   ret' <- monoType ret
 
   let envt = Env $ NonEmpty.singleton $ fmap snd env''
@@ -258,12 +289,12 @@ monoFunDec (FD v params env ret) = do
   pure $ (funt, FD v' params' env' ret')
 
 
-addLam :: MonoEnvEnv (Locality, MonoVarInfo) (Type Mono) -> Type Typed -> [VarInfo] -> MonoCtx (Expr Mono) -> MonoCtx MonoVarInfo
+addLam :: MonoEnvEnv (Locality, MonoVarInfo) (Maybe MonoEnvInfo, Type Mono) -> Type Typed -> [VarInfo] -> MonoCtx (Expr Mono) -> MonoCtx MonoVarInfo
 addLam env t args body = do
   (Fix (MTFun _ argts ret)) <- monoType t  -- very iffy, it depends on environment variables from lists having the same order
   mvi <- newVar "<lambda>"
   args' <- traverse (\(v, t) -> (,t) <$> addVar v t) $ zip args argts
-  let env' = first snd env
+  let env' = bimap snd snd env
 
   let fundec = FD mvi args' env' ret
   body' <- do
@@ -305,11 +336,14 @@ makeEnv env = do
       pure (Just mei, env')
 
 constructEnv :: TypedEnv VarInfo (Type Typed) -> MonoCtx MonoEnv  -- TODO: i have to better divide these functions (but actually, rethink the datastructures: why does the referenced function not contain the environment id? just the env's structure? because of these weird thinks it's all fragmented)
-constructEnv (TypedEnv env) =
+constructEnv (TypedEnv env) = do
+    funEnvs <- RWS.gets funEnv
     fmap (MonoEnv . concat) $ for env $ \(v, t) -> do
-      t' <- traverse monoType t
-      vt <- traverse (\t -> (, t) <$> findVar (v, t)) t'
-      pure vt
+      t' <- for t $ \t -> do
+        mt <- monoType t
+        let me = fst =<< (funEnvs !? (v, mt))
+        pure (me, mt)
+      traverse (\t -> (, t) <$> findVar (v, snd t)) t'
 
 
 
@@ -410,7 +444,7 @@ flattenNonEmpty (x:|xs) =
 
 -- again, another function that would not be partial if I had better datatypes.
 env2env :: FunEnv (Type Mono) -> Env (Type Mono)
-env2env (FunEnv (x:xs)) = 
+env2env (FunEnv (x:xs)) =
   let x' = concatMap snd x
       xs' = fmap (concatMap snd) xs
   in Env $ x' :| xs'

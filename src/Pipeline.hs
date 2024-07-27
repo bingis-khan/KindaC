@@ -8,8 +8,14 @@ import Typecheck (typecheck, dbgTypecheck)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
-import ASTPrettyPrinter (tModule, rModule)
+import ASTPrettyPrinter (tModule, rModule, mModule)
+import Mono (monoModule)
 
+
+
+compile :: Prelude -> Module Typed -> IO Text
+compile prelude mod = do
+  undefined
 
 -- Loads and typechecks a module.
 --   TODO: WRT errors: I should probably make a type aggregating all the different types of errors and put it in AST.hs.
@@ -43,11 +49,23 @@ dbgLoadModule mPrelude filename = do
 
       let (terrs, tmod) = dbgTypecheck mPrelude rmod
       let errors = s2t rerrs ++ s2t terrs
-      pure $ Text.unlines
-        [ Text.unlines errors
-        , Text.empty
-        , Text.pack $ tModule tmod
-        ]
+
+      case errors of
+        [] -> do
+          putStrLn $ tModule tmod
+
+          case mPrelude of
+            Just prelude -> do
+              mmod <- monoModule prelude tmod
+              pure $ Text.pack $ mModule mmod
+
+            Nothing -> pure mempty
+
+        _ -> pure $ Text.unlines
+          [ Text.unlines errors
+          , Text.empty
+          , Text.pack $ tModule tmod
+          ]
 
 
 s2t :: (Functor f, Show a) => f a -> f Text

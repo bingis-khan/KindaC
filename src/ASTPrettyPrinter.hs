@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE LambdaCase #-}
 
-module ASTPrettyPrinter (utModule, rModule, tyModule, tModule) where
+module ASTPrettyPrinter (utModule, rModule, tyModule, tModule, mModule) where
 
 import Prettyprinter (Doc)
 import qualified Prettyprinter as PP
@@ -18,6 +18,8 @@ import Data.Foldable (fold, foldl')
 import Data.List (intersperse)
 import Data.Unique (hashUnique)
 import Typecheck.Types (TyVared, TypeF' (..), TyVar (..), TyFunEnv, TyFunEnv' (..))
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NonEmpty
 
 
 -- Notes: I have changed my strategy to this.
@@ -44,6 +46,137 @@ import Typecheck.Types (TyVared, TypeF' (..), TyVar (..), TyFunEnv, TyFunEnv' (.
 -- Context that stores the pretty printer Doc + data + help with, for example, names.
 type Context = Reader CtxData (Doc ())  -- I guess I can add syntax coloring or something with the annotation (the () in Doc)
 data CtxData = CtxData  -- basically stuff like printing options or something (eg. don't print types)
+
+
+----------
+-- Mono --
+----------
+
+mModule :: Module Mono -> String
+mModule mmod = show $ flip runReader CtxData $ ppLines id
+  [ "Functions:"
+  , mFunctions mmod.functions
+  , ""
+  , "Data Types:"
+  , mDataTypes mmod.dataTypes
+  , ""
+  , "Main:"
+  , mStmts mmod.main
+  ]
+
+mFunctions :: [Annotated (FunDec Mono, NonEmpty (AnnStmt Mono))] -> Context
+mFunctions = ppLines $ \(Annotated ann (fd, stmts)) -> annotate ann $ mBody (mFunDec fd) stmts
+
+mDataTypes :: [Annotated (DataDef Mono)] -> Context
+mDataTypes = ppLines $ \(Annotated ann dd) -> annotate ann $ mDataDef dd
+
+mStmts :: [AnnStmt Mono] -> Context
+mStmts = ppLines mAnnStmt
+
+mAnnStmt :: AnnStmt Mono -> Context
+mAnnStmt (Fix (AnnStmt ann stmt)) = annotate ann $ mStmt stmt
+
+mStmt :: Stmt Mono -> Context
+mStmt = \case
+  NormalMonoStmt s -> case first mExpr s of
+    Print e -> "print" <+> e
+    Assignment v e -> mVarDef v <+> "=" <+> e
+    Pass -> "pass"
+    MutDefinition v me ->  "mut" <+> mVarDef v <+?> rhs
+      where
+        rhs = fmap ("<=" <+>) me
+    MutAssignment v e -> mVarDef v <+> "<=" <+> e
+    If ifCond ifTrue elseIfs mElse ->
+      mBody ("if" <+> ifCond ) ifTrue <>
+      foldMap (\(cond, elseIf) ->
+          mBody ("elif" <+> cond) elseIf) elseIfs <>
+      maybe mempty (mBody "else") mElse
+    ExprStmt e -> e
+    Return e -> "return" <+?> e
+
+  EnvStmt mei me -> mEnvInfo mei <+> "=" <+> mEnv me
+
+mExpr :: Expr Mono -> Context
+mExpr = cata $ \(ExprType t expr) ->
+  let encloseInType c = "(" <> c <+> "::" <+> mType t <> ")"
+  in encloseInType $ case expr of
+  Lit (LInt x) -> pretty x
+  Var l v -> mVar l v
+  Con c -> mCon c
+
+  Op l op r -> l <+> ppOp op <+> r
+  Call f args -> f <> encloseSepBy "(" ")" ", " args
+  As x at -> x <+> "as" <+> mType at
+  Lam env params e -> ppTypedEnv' mVarDef mType env <+> sepBy " " (map mVarDef params) <> ":" <+> e
+  where
+    ppOp op = case op of
+      Plus -> "+"
+      Minus -> "-"
+      Times -> "*"
+      Divide -> "/"
+      Equals -> "=="
+      NotEquals -> "/="
+
+
+mDataDef :: DataDef Mono -> Context
+mDataDef (DD mti [] cons) = indent (mTypeInfo mti) $ ppLines mConDef cons
+
+mConDef :: DataCon Mono -> Context
+mConDef (DC g t ann) = annotate ann $ foldl' (<+>) (mCon g) $ mTypes t
+
+mFunDec :: FunDec Mono -> Context
+mFunDec (FD v params env retType) = comment (mEnvEnv mVarDef mType env) $ mVarDef v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> mVarDef pName <> ((" "<>) . mType) pType) params) <> ((" "<>) . mType) retType
+
+mEnvEnv :: (v -> Context) -> (t -> Context) -> MonoEnvEnv v t -> Context
+mEnvEnv f g env =
+  let (MonoEnv vts) = fmap g env
+  in encloseSepBy "$#[" "]" " " $ fmap (\(v, ts) -> f v <+> ts) vts
+
+
+mTypes :: Functor t => t (Type Mono) -> t Context
+mTypes = fmap $ \t@(Fix t') -> case t' of
+  MTCon _ -> enclose t
+  MTFun {} -> enclose t
+  _ -> mType t
+  where
+    enclose x = "(" <> mType x <> ")"
+
+mType :: Type Mono -> Context
+mType = cata $ \case
+  MTCon con -> mTypeInfo con
+  MTFun env args ret -> ppEnv env <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+
+
+mTypeInfo :: MonoTypeInfo -> Context
+mTypeInfo t = pretty t.typeName <> "$" <> pretty (hashUnique t.typeID)
+
+
+mBody :: Foldable f => Context -> f (AnnStmt Mono) -> Context
+mBody = ppBody mAnnStmt
+
+
+mVarDef :: MonoVarInfo -> Context
+mVarDef = mVar (Local, Unchanged)
+
+mVar :: (Locality, EnvTransform) -> MonoVarInfo -> Context
+mVar (l, et) v = pretty v.varName <> "$" <> pretty (hashUnique v.varID) <> cet
+  where
+    cet = case et of
+      NoEnvs -> ""
+      Unchanged -> ""
+      SameEnv mei me -> "[" <> mEnvInfo mei <+> mEnv me <> "]"
+      EnvTransform mei old new -> "[" <> mEnvInfo mei <+> mEnv old <+> ppEnv (fmap mType new) <> "]"
+
+
+mCon :: MonoConInfo -> Context
+mCon con = "@" <> pretty con.conName <> "$" <> pretty (hashUnique con.conID)
+
+mEnvInfo :: MonoEnvInfo -> Context
+mEnvInfo env = "%" <> pretty (hashUnique env.envID)
+
+mEnv :: MonoEnv -> Context
+mEnv = mEnvEnv (mVarDef . snd) (\(me, t) -> mType t <+?> fmap mEnvInfo me)
+
 
 
 -----------
@@ -442,10 +575,16 @@ ppLines f = foldMap ((<>"\n") . f)
 ppFunEnv :: FunEnv Context -> Context
 ppFunEnv (FunEnv vts) = encloseSepBy "[" "]" " " (fmap (encloseSepBy "[" "]" ", " . fmap (\(v, t) -> rVar Local v <+> encloseSepBy "[" "]" " " t)) vts)
 
+ppEnv :: Env Context -> Context
+ppEnv (Env env) = "%" <> encloseSepBy "$[" "]" " " (NonEmpty.toList $ fmap (encloseSepBy "[" "]" " ") env)
+
 ppTypedEnv :: (t -> Context) -> TypedEnv VarInfo t -> Context
-ppTypedEnv ft env =
+ppTypedEnv = ppTypedEnv' (rVar Local)
+
+ppTypedEnv' :: (v -> Context) -> (t -> Context) -> TypedEnv v t -> Context
+ppTypedEnv' fv ft env =
   let (TypedEnv vts) = fmap ft env
-  in encloseSepBy "$#[" "]" " " $ fmap (\(v, ts) -> rVar Local v <+> encloseSepBy "[" "]" " " ts) vts
+  in encloseSepBy "$#[" "]" " " $ fmap (\(v, ts) -> fv v <+> encloseSepBy "[" "]" " " ts) vts
 
 ppVarEnv :: VarEnv VarInfo t -> Context
 ppVarEnv (VarEnv vs) = encloseSepBy "$[" "]" " " (fmap (rVar Local) vs)

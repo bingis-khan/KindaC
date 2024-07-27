@@ -34,7 +34,7 @@ import Control.Monad.Trans.Writer (runWriter, Writer)
 import qualified Control.Monad.Trans.Writer as Writer
 import Data.Tuple (swap)
 import Data.Bifunctor (bimap, Bifunctor)
-import Data.Maybe (mapMaybe, fromMaybe)
+import Data.Maybe (mapMaybe, fromMaybe, catMaybes)
 import Data.List ( find, intercalate )
 import Data.Bifoldable (bifoldMap)
 import qualified Data.List.NonEmpty as NonEmpty
@@ -54,7 +54,7 @@ import ASTPrettyPrinter (tyModule)
 typecheck :: Maybe Prelude -> Module Resolved -> Either (NonEmpty TypeError) (Module Typed)
 typecheck mprelude rStmts =
     let env = topLevelEnv mprelude
-        senv = makeSEnv mprelude
+        senv = makeSEnv mprelude  -- we should generate senv here....
         -- Three phases
         (tyStmts, constraints) = generateConstraints env senv rStmts
         (errors, su@(Subst _ tysu)) = solveConstraints constraints
@@ -98,15 +98,32 @@ topLevelEnv mprelude = case mprelude of
         )
 
 -- TODO: explain what makeSEnv is for (after coming back to this function after some time, I have no idea what it does)
-makeSEnv :: Maybe Prelude -> StatefulEnv
-makeSEnv Nothing = emptySEnv
-makeSEnv (Just prelude) = StatefulEnv
-  { variables = mempty
-  , tvargen = newTVarGen
-  , constructors = cons
-  , types = ts
-  , env = []
-  } where
+-- TODO: I had to add IO, because I have to regenerate envIDs. The obvious solution is to not lose them - preserve the env IDs.
+makeSEnv :: Maybe Prelude -> Infer StatefulEnv
+makeSEnv Nothing = pure emptySEnv
+makeSEnv (Just prelude) = do
+  -- gather top level variables that should be accessible from prelude
+  vars <- fmap (Map.fromList . catMaybes) . for prelude $ \(Fix (AnnStmt _ bstmt)) -> case bstmt of
+      FunctionDefinition (FD v params (TypedEnv env) ret) _ -> do -- TODO: very hacky - these env "transforms" shouldn't be here or happen at all for that matter.
+        envid <- freshTyvar
+        let
+          funt = Fix $ TF' $ Right $ TFun (TyFunEnv envid (FunEnv [(fmap . fmap . fmap) t2ty env])) (fmap (t2ty . snd) params) (t2ty ret)  -- TODO: Oh no, this is so shit.
+          scheme = Forall (tv ret <> foldMap (tv . snd) params) funt -- it's only top level, so there won't be other type variables.
+        pure $ Just (v, scheme)
+
+      NormalStmt (Assignment v (Fix (ExprType t _))) -> pure $ Just (v, Forall Set.empty (t2ty t))
+
+      _ -> pure Nothing
+
+  pure StatefulEnv
+    { variables = vars
+    , tvargen = newTVarGen
+    , constructors = cons
+    , types = ts
+    , env = []
+    } where
+
+    -- gather all accessible constructors
     cons = Map.fromList $ foldMap manyCons $ mapMaybe (\case { Fix (AnnStmt _ (DataDefinition dd)) -> Just dd; _ -> Nothing }) prelude
     manyCons (DD tid tvars cons) =
       let dt = t2ty $ dataType tid tvars
@@ -118,18 +135,25 @@ makeSEnv (Just prelude) = StatefulEnv
           in (ci, Forall (Set.fromList tvars) cont)
         ) cons
 
+    -- gather types from top level
     ts = Map.fromList $ oneType <$> mapMaybe (\case { Fix (AnnStmt _ (DataDefinition dd)) -> Just dd; _ -> Nothing }) prelude
     oneType (DD tid tvars _) = (tid, t2ty $ dataType tid tvars)
+
+    tv :: Type Typed -> Set TVar
+    tv = cata $ \case
+      TVar tvar -> Set.singleton tvar
+      t -> fold t
 
 
 ---------------------------
 -- CONSTRAINT GENERATION --
 ---------------------------
 
-generateConstraints :: Env -> StatefulEnv -> Module Resolved -> (Module TyVared, [Constraint])
+generateConstraints :: Env -> Infer StatefulEnv -> Module Resolved -> (Module TyVared, [Constraint])
 generateConstraints env senv utModule = (tvModule, constraints)
   where
-    (tvModule, constraints) = evalRWS inferModule env senv
+    (tvModule, constraints) = evalRWS ((RWS.put =<< senv) 
+      >> inferModule) env emptySEnv
     inferModule = inferStmts utModule
 
 
@@ -436,6 +460,7 @@ instantiate (Forall tvars est) = do
         TF' (Right (TFun (TyFunEnv tid envtvs) args ret)) -> Set.singleton tid <> fold envtvs <> fold args <> ret  -- (not anymore -> this fixed the bug) i ignore the env tyvars on purpose - my theory is that they are can be ignored
         t -> fold t
 
+  -- what's this?????
   envmap <- Map.fromList <$> traverse (\tyv -> (,) tyv <$> freshTyvar) (Set.toList envftvs)
 
   -- Replace each tvar from the scheme with a customized tyvar.
@@ -555,7 +580,7 @@ newTVarGen = TVG 0
 
 
 data Subst = Subst (Map TyFunEnv TyFunEnv) (Map TyVar (Type TyVared))
-type FullSubst = Map TyVar (Type Typed)  -- The last substitution after substituting all the types
+type FullSubst = (Map TyVar (Type Typed), Map TyFunEnv EnvInfo)  -- The last substitution after substituting all the types
 
 
 -- Before, this function had a return type Either (NonEmpty TyVar) FullSubst
@@ -566,7 +591,7 @@ type FullSubst = Map TyVar (Type Typed)  -- The last substitution after substitu
 finalizeSubst :: Subst -> FullSubst
 finalizeSubst (Subst _ su) = flip Map.mapMaybe su $ transverse $ \case
   TF' (Left _) -> Nothing
-  TF' (Right t) -> mapTypeEnv (\(TyFunEnv _ fe) -> fe) <$> sequenceA t
+  TF' (Right t) -> mapTypeEnv (\(TyFunEnv envid fe) -> TyFunEnv undefined fe) <$> sequenceA t
   -- where
     -- sesu = traverse $ transverse $ \case
     --   TF' (Left tyv) -> undefined
@@ -649,7 +674,7 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
 
         fe2s = Set.fromList . (\case (TyFunEnv _ (FunEnv ne)) -> ne)
         s2fe = FunEnv . Set.toList
-        funEnv = s2fe  $ fe2s lenv <> fe2s renv
+        funEnv = s2fe $ fe2s lenv <> fe2s renv
 
     -- small hack to generate unique tyvars from existing ones. now we only need to compare tyvars
     -- TODO: probably find a better way later. also, because theoretically, this string can grow forever...
@@ -744,7 +769,7 @@ instance (Substitutable a, Substitutable b, Substitutable c) => Substitutable (a
   subst su (x, y, z) = (subst su x, subst su y, subst su z)
 
 -- TODO: I want to off myself...
-instance Substitutable (Fix (ExprType l v (Fix TypeF') (Fix TypeF'))) where
+instance Substitutable (Fix (ExprType l v c (Fix TypeF') (Fix TypeF'))) where
   ftv = cata $ \(ExprType t expr) -> ftv t <> fold expr
   subst su = cata $ \(ExprType t expr) -> Fix $ ExprType (subst su t) (fmap (subst su) expr)
 
@@ -756,7 +781,7 @@ instance Substitutable (GFunDec TypedEnv c v (Fix TypeF')) where
   ftv (FD _ params _ ret) = ftv ret <> foldMap (ftv . snd) params
   subst su (FD name params env ret) = FD name ((fmap . fmap) (subst su) params) (subst su env) (subst su ret)
 
-instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec TypedEnv ConInfo VarInfo (Fix TypeF')) (StmtF ConInfo VarInfo (Fix (ExprType l v (Fix TypeF') (Fix TypeF'))))))) where
+instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec TypedEnv ConInfo VarInfo (Fix TypeF')) (StmtF ConInfo VarInfo (Fix (ExprType l v c (Fix TypeF') (Fix TypeF'))))))) where
   ftv = cata $ \(AnnStmt _ bstmt) -> case bstmt of
     NormalStmt stmt -> bifoldMap ftv id stmt
     DataDefinition _ -> mempty

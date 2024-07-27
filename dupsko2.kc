@@ -1,0 +1,26 @@
+
+n = 1
+id (x)
+	print n
+	return x
+
+f ()
+	print id(True)
+	print id(2)
+	print n
+	return 1
+
+x = 1
+g ()
+	print x
+	return 1
+
+random(x, y)
+	if True
+		return x
+	else
+		return y
+
+h = random(f, g)
+
+print f()

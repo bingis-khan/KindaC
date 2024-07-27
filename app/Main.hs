@@ -13,5 +13,5 @@ main = do
   putStrLn $ tModule prelude
 
   [filename] <- getArgs
-  tmod <- dbgLoadModule (Just prelude) filename
-  TextIO.putStrLn tmod
+  t <- dbgLoadModule (Just prelude) filename
+  TextIO.putStrLn t

@@ -175,7 +175,7 @@ emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty }
 
 mkScope :: Prelude -> Scope
 mkScope prelude = Scope
-  { varScope = mempty
+  { varScope = vars
   , conScope = cons
   , tyScope = types
   } where
@@ -187,6 +187,13 @@ mkScope prelude = Scope
     types = Map.fromList $ mapMaybe extractTypes prelude
     extractTypes = \case
       Fix (AnnStmt _ (DataDefinition (DD tid _ _))) -> Just (tid.typeName, tid)
+      _ -> Nothing
+
+    -- right now, we're only taking functions and IMMUTABLE variables. not sure if I should include mutable ones
+    vars = Map.fromList $ mapMaybe extractVars prelude
+    extractVars = \case
+      Fix (AnnStmt _ (NormalStmt (Assignment v _))) -> Just (v.varName, v)
+      Fix (AnnStmt _ (FunctionDefinition (FD v _ _ _) _)) -> Just (v.varName, v)
       _ -> Nothing
 
 
