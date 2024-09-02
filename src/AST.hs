@@ -152,6 +152,7 @@ type family FunDec phase
 
 data GFunDec fenv c v t = FD v [(v, t)] (fenv v t) t deriving (Show, Functor, Eq)
 
+
 -- We only take names into account when searching for a function
 -- so instances should reflect this.
 

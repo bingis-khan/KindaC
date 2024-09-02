@@ -4,8 +4,6 @@
 
 module Parser (parse) where
 
-import AST hiding (typeName)
-
 
 import Text.Megaparsec hiding (parse)
 import Text.Megaparsec.Char
@@ -26,6 +24,8 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
+import AST.Common (Stmt, Module, Expr, Ann (..), Type, TVar (..), TCon (..), ConName (..), AnnStmt, VarName (..), Annotated (..), Op (..), LitType (..))
+import AST.Untyped (Untyped, ExprF (..), FunDec (..), DataCon (..), AnnotatedStmt (AnnStmt), TypeF (..), StmtF (..), Mod (Mod), DataDef (..))
 
 
 type Parser = Parsec MyParseError Text
@@ -39,7 +39,7 @@ parse filename = first (Text.pack . errorBundlePretty) . TM.parse (scn >> topLev
 topLevels :: Parser (Module Untyped)
 topLevels = do
   eas <- many $ recoverStmt (L.nonIndented sc  (annotationOr statement)) <* scn
-  annotateStatements eas  
+  Mod <$> annotateStatements eas  
 
 
 
@@ -68,45 +68,45 @@ statement = choice
 sPass :: Parser (Stmt Untyped)
 sPass = do
   keyword "pass"
-  rets Pass
+  undefined Pass
 
 sIf :: Parser (Stmt Untyped)
 sIf = do
   (cond, ifBody) <- scope (,) (keyword "if" >> expression)
   elifs <- many $ scope (,) (keyword "elif" >> expression)
   elseBody <- optional $ scope (const id) (keyword "else")
-  rets $ If cond ifBody elifs elseBody
+  pure $ If cond ifBody elifs elseBody
 
 sPrint :: Parser (Stmt Untyped)
 sPrint = do
   keyword "print"
   expr <- expression
-  rets $ Print expr
+  pure $ Print expr
 
 sDefinition :: Parser (Stmt Untyped)
 sDefinition = do
-  name <- try $ identifier <* symbol "="
+  name <- try $ variable <* symbol "="
   rhs <- expression
-  rets $ Assignment name rhs
+  pure $ Assignment name rhs
 
 sMutDefinition :: Parser (Stmt Untyped)
 sMutDefinition = do
   keyword "mut"
-  name <- identifier
+  name <- variable
   rhs <- optional $ symbol "<=" *> expression  -- I'm not sure if this should be optional (design reason: i want users to use inline if/case/whatever for conditional assignment). Right now we'll allow it, as it's easy to disallow it anyway.
-  rets $ MutDefinition name rhs
+  pure $ MutDefinition name rhs
 
 sMutAssignment :: Parser (Stmt Untyped)
 sMutAssignment = do
-  name <- try $ identifier <* symbol "<="
+  name <- try $ variable <* symbol "<="
   rhs <- expression
-  rets $ MutAssignment name rhs
+  pure $ MutAssignment name rhs
 
 sReturn :: Parser (Stmt Untyped)
 sReturn = do
   keyword "return"
   expr <- optional expression
-  rets $ Return expr
+  pure $ Return expr
 
 sExpression :: Parser (Stmt Untyped)
 sExpression = do
@@ -114,10 +114,10 @@ sExpression = do
   expr@(Fix chkExpr) <- expression
   to <- getOffset
   case chkExpr of
-    Call _ _ -> rets $ ExprStmt expr
+    Call _ _ -> pure $ ExprStmt expr
     _ -> do
       registerCustom $ MyPE (from, to) DisallowedExpressionAsStatement
-      rets $ ExprStmt expr  -- report an error, but return this for AST
+      pure $ ExprStmt expr  -- report an error, but return this for AST
 
 
 checkIfFunction :: Parser ()
@@ -130,39 +130,37 @@ sFunctionOrCall = recoverableIndentBlock $ do
   -- If it's a single expression function (has the ':'), we know it's not a call.
   ret $ case mExpr of
     Just expr ->
-      let expr2stmt = Fix . AnnStmt [] . NormalStmt . Return . Just
+      let expr2stmt = Fix . AnnStmt [] . Return . Just
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
       in L.IndentNone $ FunctionDefinition header body
 
     Nothing ->
       -- If that's a normal function, we check if any types were defined
-      let (FD name params _ rett) = header
+      let (FD name params rett) = header
           types = rett : map snd params
       in if any isJust types
         then L.IndentSome Nothing (fmap (FunctionDefinition header . NonEmpty.fromList) . annotateStatements) $ recoverStmt (annotationOr statement)
         else flip (L.IndentMany Nothing) (recoverStmt (annotationOr statement)) $ \case
           stmts@(_:_) -> FunctionDefinition header . NonEmpty.fromList <$> annotateStatements stmts
           [] ->
-            let args = map (Fix . Var () . fst) params
-                funName = Fix $ Var () name
-            in pure $ NormalStmt $ ExprStmt $ Fix $ Call funName args
+            let args = map (Fix . Var . fst) params
+                funName = Fix $ Var name
+            in pure $ ExprStmt $ Fix $ Call funName args
 
-functionHeader :: Parser (FunDec Untyped, Maybe (Expr Untyped))
+functionHeader :: Parser (FunDec, Maybe (Expr Untyped))
 functionHeader = do
-  let param = liftA2 (,) identifier (optional pType)
-  name <- identifier
+  let param = liftA2 (,) variable (optional pType)
+  name <- variable
   params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
   ret <- choice
     [ Left <$> (symbol ":" >> expression)
     , Right <$> optional (symbol "->" >> pType)
     ]
 
-  let env = NoEnv ()
-
   return $ case ret of
-    Left expr -> (FD name params env Nothing, Just expr)
-    Right mType -> (FD name params env mType, Nothing)
+    Left expr -> (FD name params Nothing, Just expr)
+    Right mType -> (FD name params mType, Nothing)
 
 
 -- Data definitions
@@ -170,16 +168,17 @@ sDataDefinition :: Parser (Stmt Untyped)
 sDataDefinition = recoverableIndentBlock $ do
   tname <- typeName
   polys <- many generic
-  return $ L.IndentMany Nothing (fmap (DataDefinition . DD tname polys) . assignAnnotations (\anns (DC name ts _) -> DC name ts anns)) $ recoverCon conOrAnnotation
+  let dataDefinition = DD tname polys
+  return $ L.IndentMany Nothing (fmap (DataDefinition . dataDefinition) . assignAnnotations (\anns (DC name ts) -> Annotated anns (DC name ts))) $ recoverCon conOrAnnotation
   where
-    conOrAnnotation :: Parser (Either [Ann] (DataCon Untyped))
+    conOrAnnotation :: Parser (Either [Ann] DataCon)
     conOrAnnotation = Left <$> annotation <|> Right <$> dataCon
 
-dataCon :: Parser (DataCon Untyped)
+dataCon :: Parser DataCon
 dataCon = do
-  conName <- typeName
+  conName <- dataConstructor
   types <- many pType
-  return $ DC conName types []  -- annotations will be added during parsing data constructor
+  return $ DC conName types 
 
 
 
@@ -276,8 +275,8 @@ as = Postfix $ do
 
 lambda :: Operator Parser (Expr Untyped)
 lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
-  params <- try $ (identifier `sepBy` symbol ",") <* symbol ":"
-  return $ Fix . Lam (NoEnv ()) params
+  params <- try $ (variable `sepBy` symbol ",") <* symbol ":"
+  return $ Fix . Lam params
 
 
 -----------
@@ -301,7 +300,7 @@ eGrouping = between (symbol "(") (symbol ")") expression
 
 eIdentifier :: Parser (Expr Untyped)
 eIdentifier = do
-  id <- (Var () <$> identifier) <|> (Con <$> dataConstructor)
+  id <- (Var <$> variable) <|> (Con <$> dataConstructor)
   retf id
 
 
@@ -324,8 +323,8 @@ pType = do
   case fun of
     Nothing -> case term of
       [t] -> return t
-      ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> show ts <> ")"  -- this would later mean that we're returning a tuple
-    Just ret -> return $ Fix $ TFun (TNoEnv ()) term ret
+      ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> show ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
+    Just ret -> return $ Fix $ TFun term ret
 
   where
     concrete = do
@@ -363,18 +362,18 @@ poly = Fix . TVar <$> generic
 -- Also, we should throw a custom error if we *know* it's a function, but there's now body.
 
 -- type-level identifiers
-typeName :: Parser Text
+typeName :: Parser TCon
 typeName = do
   lexeme $ do
     x <- upperChar
     xs <- many identifierChar
-    pure $ T.pack (x:xs)
+    pure $ TC $ T.pack (x:xs)
 
 generic :: Parser TVar
-generic = TV <$> varDec
+generic = TV <$> identifier
 
-varDec :: Parser Text
-varDec = identifier
+variable :: Parser VarName
+variable = VN <$> identifier
 
 
 -- term-level identifiers
@@ -385,12 +384,12 @@ identifier = do
     xs <- many identifierChar
     pure $ T.pack (x:xs)
 
-dataConstructor :: Parser Text
+dataConstructor :: Parser ConName
 dataConstructor =
   lexeme $ do
     x <- upperChar
     xs <- many identifierChar
-    pure $ T.pack (x:xs)
+    pure $ CN $ T.pack (x:xs)
 
 
 -- identifiers: common
@@ -450,9 +449,6 @@ retf = return . Fix
 ret :: a -> Parser a
 ret = pure
 
-rets :: stmt a -> Parser (BigStmtF datadec fundec stmt a)
-rets = pure . NormalStmt
-
 
 -- Errors
 
@@ -482,10 +478,10 @@ registerExpect offset found expected = registerParseError $ TrivialError offset 
 
 
 recoverStmt :: Parser (Either [Ann] (Stmt Untyped)) -> Parser (Either [Ann] (Stmt Untyped))
-recoverStmt = recoverLine (Right $ NormalStmt Pass)
+recoverStmt = recoverLine (Right Pass)
 
-recoverCon :: Parser (Either [Ann] (DataCon Untyped)) -> Parser (Either [Ann](DataCon Untyped))
-recoverCon = recoverLine (Right (DC "PLACEHOLDER" [] []))
+recoverCon :: Parser (Either [Ann] DataCon) -> Parser (Either [Ann] DataCon)
+recoverCon = recoverLine (Right (DC (CN "PLACEHOLDER") []))
 
 recoverLine :: a -> Parser a -> Parser a
 recoverLine sentinel = withRecovery (\err -> registerParseError err >> many (anySingleBut '\n') >> char '\n' $> sentinel)

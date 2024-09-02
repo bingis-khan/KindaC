@@ -1,6 +1,5 @@
 module Pipeline (loadModule, dbgLoadModule) where
 
-import AST (Module, Typed, Prelude)
 import qualified Data.Text.IO as TextIO
 import Parser (parse)
 import Resolver (resolve)

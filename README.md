@@ -42,6 +42,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
   - also add a `#[noreturn]` to mark a function that does not return (eg. `exit()`)
 - environments for datatypes (I'll do it after monomorphization/codegen, because I want to know what I'm getting myself into)
 - add unit type as default is there are no return statements.
+- eliminate the pretty printing module for the AST - since I'm switching to separate ASTs, I can just implement everything as an implementation of Show?
 
 # thoughts???
 - should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?

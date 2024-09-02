@@ -22,9 +22,13 @@ data-files:
 library
   exposed-modules:
       AST
-      ASTPrettyPrinter
+      AST.Common
+      AST.Converged
+      AST.Resolved
+      AST.Typed
+      AST.TyVared
+      AST.Untyped
       CPrinter
-      Mono
       Parser
       Pipeline
       Resolver

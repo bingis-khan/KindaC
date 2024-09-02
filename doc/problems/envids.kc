@@ -1,0 +1,36 @@
+
+
+Two types of IDs: `Env ID` and `Union ID`.
+
+Env ID is set when the function is created.
+  - this assumes that we don't do let-generalization... good.
+
+
+
+---------------------
+
+importing modules!
+
+according to my shitty thinking, when importing external variables
+you should only "mark"/"instantiate" the outermost environment.
+
+also, right now, Type Constructors don't have environments.
+so, right now, just create the environment if the type is a function
+
+---------
+
+Fun
+  F (Int -> Int)
+
+n = 1
+ff (x): x + n
+f = F (ff)  # f: { [ff: { [n] }] }
+
+------
+
+module A
+
+m = 420
+gg (x): x + m
+g = F (gg)  # g: { [gg: { [m] }] }
+h = f if rand() else g  # h: { [ff: { [n] }], [gg: { [m] }] }   # okay, only outermost i guess
