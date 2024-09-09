@@ -1,0 +1,8 @@
+
+id (x)
+	return x
+
+f ()
+	id(1)
+	id(2)
+	id(True)

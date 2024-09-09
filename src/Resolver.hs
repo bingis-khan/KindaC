@@ -10,6 +10,7 @@ import Data.Functor.Foldable (transverse, cata, embed)
 import Data.Foldable (fold)
 import Control.Monad.Trans.RWS (RWST)
 import Data.Map (Map)
+import Data.Maybe (mapMaybe)
 import qualified Control.Monad.Trans.RWS as RWST
 import qualified Data.Map as Map
 
@@ -27,6 +28,10 @@ import AST.Untyped (Untyped, StmtF (..), DataDef (..), DataCon (..), FunDec (..)
 import qualified AST.Untyped as U
 import AST.Resolved (Resolved, Env (..))
 import qualified AST.Resolved as R
+import AST.Typed (Typed)
+import qualified AST.Typed as T
+import Data.Fix (Fix(..))
+import Debug.Trace (traceShowId, traceShow, traceShowWith)
 
 
 
@@ -34,7 +39,7 @@ import qualified AST.Resolved as R
 -- Resolves variables, constructors and types and replaces them with unique IDs.
 resolve :: Maybe Prelude -> Module Untyped -> IO ([ResolveError], Module Resolved)
 resolve mPrelude uMod = do
-  let newScope = maybe emptyScope undefined mPrelude
+  let newScope = maybe emptyScope mkScope mPrelude
   (rmod, errs) <- RWST.evalRWST (rMod uMod) () (NonEmpty.singleton newScope)
   return (errs, rmod)
 
@@ -102,7 +107,7 @@ rStmts = traverse -- traverse through the list with Ctx
         -- set the environment
         -- TODO: maybe just make it a part of 'closure'?
         let innerEnv = gatherVariables rbody
-        env <- mkEnv innerEnv
+        env <- traceShowId <$> mkEnv (traceShowWith (\ienv -> show vid <> show " " <> show ienv) innerEnv)
 
         pure $ R.FunctionDefinition (R.FD env vid rparams rret) rbody
 
@@ -181,28 +186,28 @@ emptyScope :: Scope
 emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty }
 
 -- Add later after I do typechecking.
--- mkScope :: Prelude -> Scope
--- mkScope prelude = Scope
---   { varScope = vars
---   , conScope = cons
---   , tyScope = types
---   } where
---     cons = Map.fromList $ fmap (\ci -> (ci.conName, ci)) $ foldMap extractCons prelude
---     extractCons = \case
---       Fix (AnnStmt _ (DataDefinition (DD _ _ dcons))) -> fmap (\(DC con _) -> con) dcons
---       _ -> []
+mkScope :: Prelude -> Scope
+mkScope prelude = Scope
+  { varScope = vars
+  , conScope = cons
+  , tyScope = types
+  } where
+    cons = Map.fromList $ fmap (\ci -> (ci.conName, ci)) $ foldMap extractCons $ T.fromMod prelude
+    extractCons = \case
+      Fix (T.AnnStmt _ (T.DataDefinition (T.DD _ _ dcons))) -> fmap (\(Annotated _ (T.DC con _)) -> con) dcons
+      _ -> []
 
---     types = Map.fromList $ mapMaybe extractTypes prelude
---     extractTypes = \case
---       Fix (AnnStmt _ (DataDefinition (DD tid _ _))) -> Just (tid.typeName, tid)
---       _ -> Nothing
+    types = Map.fromList $ mapMaybe extractTypes $ T.fromMod prelude
+    extractTypes = \case
+      Fix (T.AnnStmt _ (T.DataDefinition (T.DD tid _ _))) -> Just (tid.typeName, tid)
+      _ -> Nothing
 
---     -- right now, we're only taking functions and IMMUTABLE variables. not sure if I should include mutable ones
---     vars = Map.fromList $ mapMaybe extractVars prelude
---     extractVars = \case
---       Fix (AnnStmt _ (Assignment v _)) -> Just (v.varName, v)
---       Fix (AnnStmt _ (FunctionDefinition (FD v _ _) _)) -> Just (v.varName, v)
---       _ -> Nothing
+    -- right now, we're only taking functions and IMMUTABLE variables. not sure if I should include mutable ones
+    vars = Map.fromList $ mapMaybe extractVars $ T.fromMod prelude
+    extractVars = \case
+      Fix (T.AnnStmt _ (T.Assignment v _)) -> Just (v.varName, v)
+      Fix (T.AnnStmt _ (T.FunctionDefinition (T.FD _ v _ _) _)) -> Just (v.varName, v)
+      _ -> Nothing
 
 
 newVar :: Mutability -> VarName -> Ctx UniqueVar
@@ -302,7 +307,7 @@ mkEnv innerEnv = do
 
   -- gather elements in current scope (we assume we are just "outside" of the env we compare it with)
   let outerEnv = foldMap (Set.fromList . Map.elems. varScope) scope
-  pure $ Env $ Set.toList $ outerEnv `Set.intersection` innerEnv
+  pure $ Env $ Set.toList $ (traceShowId outerEnv) `Set.intersection` innerEnv
 
 -- used for function definitions
 gatherVariables :: NonEmpty (AnnStmt Resolved) -> Set UniqueVar

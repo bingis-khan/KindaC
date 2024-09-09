@@ -35,7 +35,7 @@ type instance Type Resolved = Fix TypeF
 -- Expression --
 ----------------
 
-newtype Env = Env [UniqueVar] deriving (Show, Eq, Ord)
+newtype Env = Env { fromEnv :: [UniqueVar]} deriving (Show, Eq, Ord)
 
 data ExprF a
   = Lit LitType
@@ -89,6 +89,7 @@ data StmtF expr a
   deriving (Show, Eq, Functor, Foldable, Traversable)
 
 -- The "big statement" - the distinction here is that the non-normal stmts need special treatment while typechecking. Not required (might remove later), but makes generating constraints slightly less annoying!
+-- TODO: really?
 data BigStmtF expr a
   = NormalStmt (StmtF expr a)
   | DataDefinition DataDef

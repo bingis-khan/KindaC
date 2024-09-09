@@ -1,6 +1,6 @@
 module Std (preparePrelude, preludePath, prepareStd) where
 import Paths_KindaC (getDataFileName)
-import AST (Prelude)
+import AST.Converged (Prelude)
 import Pipeline (loadModule)
 import qualified Data.Text as Text
 

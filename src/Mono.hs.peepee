@@ -4,7 +4,6 @@
 {-# LANGUAGE DeriveFoldable #-}
 module Mono (monoModule) where
 
-import AST
 import Data.Map (Map, (!?), unionWith)
 import Data.Set (Set)
 import Control.Monad.Trans.State (State, runState, evalState)
@@ -29,28 +28,35 @@ import Data.Text (Text)
 import Data.Bifoldable (bifoldMap)
 import Control.Monad (join)
 
+import AST.Common (UniqueVar, TVar, Type, UniqueType, Locality, UniqueCon, Module)
+import AST.Typed (Typed)
+import AST.Mono (Mono)
+import AST.Converged (Prelude)
+import AST.Typed as T
+import AST.Mono as M
+
 
 
 -- technically, I can split it into first getting the function definitions / datatypes and then applying them - this would be order independent.
 -- -- todo do it like this, i think it will be clearer. i don't feel like doing it right now, because I would need to make another datatype.
 data ReaderShitContext = RSC
-  { usage :: Map VarInfo (Set (Type Typed))
+  { usage :: Map UniqueVar (Set (Type Typed))
   , genapps :: Map TVar (Type Mono)
   }
 
 data Applications = Apps
 
   -- this one monomorphizes and deduplicates types
-  { typeApps :: Map (TypeInfo, [Type Mono]) (Type Mono)  -- make sure to ignore environment - we will be mapping the environment per call.
+  { typeApps :: Map (UniqueType, [Type Mono]) (Type Mono)  -- make sure to ignore environment - we will be mapping the environment per call.
 
   -- used for finding variables
-  , varApps :: Map (VarInfo, Type Mono) (Locality, MonoVarInfo)
+  , varApps :: Map (UniqueVar, Type Mono) Locality
 
   -- ????
-  , conApps :: Map (ConInfo, [Type Mono]) MonoConInfo
+  , conApps :: Map (UniqueCon, [Type Mono]) MonoConInfo
 
   -- nice, qt environments
-  , funEnv :: Map (VarInfo, Type Mono) (Maybe MonoEnvInfo, MonoEnv)
+  , funEnv :: Map (UniqueVar, Type Mono) (Maybe MonoEnvInfo, MonoEnv)
   }
 
 type MonoCtx = RWST ReaderShitContext ([Either (Annotated (DataDef Mono)) (Annotated (FunDec Mono, NonEmpty (AnnStmt Mono)))], [AnnStmt Mono]) Applications IO  -- not very good - there should be a separate context for single statements. but idc rn

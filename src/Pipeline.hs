@@ -1,14 +1,18 @@
-module Pipeline (loadModule, dbgLoadModule) where
+module Pipeline (loadModule) where
 
 import qualified Data.Text.IO as TextIO
 import Parser (parse)
 import Resolver (resolve)
-import Typecheck (typecheck, dbgTypecheck)
+import Typecheck (typecheck)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
-import ASTPrettyPrinter (tModule, rModule, mModule)
-import Mono (monoModule)
+
+import AST.Converged (Prelude)
+import AST.Common (Module)
+import AST.Typed (Typed)
+-- import ASTPrettyPrinter (tModule, rModule, mModule)
+-- import Mono (monoModule)
 
 
 
@@ -27,7 +31,7 @@ loadModule mPrelude filename = do
     Right ast -> do
       (errs, rmod) <- resolve mPrelude ast
 
-      let mtmod = typecheck mPrelude rmod
+      mtmod <- typecheck mPrelude rmod
       case mtmod of
         Left tes -> 
           let errors = (s2t errs ++) $ NonEmpty.toList $ s2t tes
@@ -36,35 +40,35 @@ loadModule mPrelude filename = do
         Right _ | (not . null) errs -> pure $ Left $ Text.unlines $ s2t errs
         Right tmod -> pure $ Right tmod
 
-dbgLoadModule :: Maybe Prelude -> FilePath -> IO Text
-dbgLoadModule mPrelude filename = do
-  source <- TextIO.readFile filename
-  case parse filename source of
-    Left err -> pure err
-    Right ast -> do
-      (rerrs, rmod) <- resolve mPrelude ast
-      print rerrs
-      putStrLn $ rModule rmod
+-- dbgLoadModule :: Maybe Prelude -> FilePath -> IO Text
+-- dbgLoadModule mPrelude filename = do
+--   source <- TextIO.readFile filename
+--   case parse filename source of
+--     Left err -> pure err
+--     Right ast -> do
+--       (rerrs, rmod) <- resolve mPrelude ast
+--       print rerrs
+--       putStrLn $ rModule rmod
 
-      let (terrs, tmod) = dbgTypecheck mPrelude rmod
-      let errors = s2t rerrs ++ s2t terrs
+--       let (terrs, tmod) = dbgTypecheck mPrelude rmod
+--       let errors = s2t rerrs ++ s2t terrs
 
-      case errors of
-        [] -> do
-          putStrLn $ tModule tmod
+--       case errors of
+--         [] -> do
+--           putStrLn $ tModule tmod
 
-          case mPrelude of
-            Just prelude -> do
-              mmod <- monoModule prelude tmod
-              pure $ Text.pack $ mModule mmod
+--           case mPrelude of
+--             Just prelude -> do
+--               mmod <- monoModule prelude tmod
+--               pure $ Text.pack $ mModule mmod
 
-            Nothing -> pure mempty
+--             Nothing -> pure mempty
 
-        _ -> pure $ Text.unlines
-          [ Text.unlines errors
-          , Text.empty
-          , Text.pack $ tModule tmod
-          ]
+--         _ -> pure $ Text.unlines
+--           [ Text.unlines errors
+--           , Text.empty
+--           , Text.pack $ tModule tmod
+--           ]
 
 
 s2t :: (Functor f, Show a) => f a -> f Text

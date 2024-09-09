@@ -1,0 +1,12 @@
+i dunno, i'll try to keep my documentation consistent here.
+
+this directory is meant to describe how the compiler was written (because I keep forgetting and I have some ideas which I also forget often)
+	stuff like which data should be preserved in data structures
+	comments on current implementation (eg. what each data structure is supposed to mean/do)
+	possible problems etc.
+	ideas
+	how to implement it in a simpler procedural language
+	etc
+
+
+problems: things to watch out for

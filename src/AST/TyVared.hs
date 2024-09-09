@@ -1,16 +1,22 @@
-{-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies #-}
+{-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, OverloadedStrings, OverloadedRecordDot #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE LambdaCase #-}
 module AST.TyVared (module AST.TyVared) where
 
-import Data.Unique (Unique)
-import AST.Common (VarName, UniqueType, TVar, Type, LitType, Locality, UniqueVar, UniqueCon, Op, Expr, Annotated, Ann, AnnStmt, Stmt, Module, Env, EnvUnion)
+import Data.Unique (Unique, hashUnique)
+import AST.Common (UniqueType, TVar (..), Type, LitType (..), Locality (..), UniqueVar, UniqueCon, Op (..), Expr, Annotated (..), Ann, AnnStmt, Stmt, Module, Env, EnvUnion, Context, ppBody, CtxData (..), ppLines, annotate, (<+>), ppVar, fromEither, pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppUnique, UnionID, EnvID, ppEnvID, ppUnionID)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Functor.Classes (Show1 (liftShowsPrec), Eq1 (liftEq))
 import Text.Show.Deriving
 import Data.Eq.Deriving
 import Data.Bifunctor.TH (deriveBifoldable, deriveBifunctor, deriveBitraversable)
-import Data.Fix (Fix)
+import Data.Fix (Fix (..))
 import Data.Text (Text)
+import Control.Monad.Trans.Reader (runReader)
+import Data.Biapplicative (first, bimap)
+import Data.Functor.Foldable (cata)
+import Data.Foldable (foldl')
+import Data.List (intercalate)
 
 
 data TyVared
@@ -30,12 +36,15 @@ data TyVared
 -- reasons:
 --  - always nice to have additional information?
 data EnvF t = Env  -- right now, make Env local to "Typed" module, because the definition will change with monomorphization.
-  { envID :: Unique
+  { envID :: EnvID
   , env :: [(UniqueVar, t)]  -- t is here, because of recursion schemes.
   } deriving (Functor, Foldable, Traversable)
 
-instance Show (EnvF t) where
-  show = undefined
+instance Show t => Show (EnvF t) where
+  show Env { envID = envID, env = env } = show envID <> "#" <> show (fmap (\(v, t) -> show v <> " " <> show t) env)
+
+$(deriveShow1 ''EnvF)
+
 
 instance Eq (EnvF t) where
   Env { envID = l } == Env { envID = r }  = l == r
@@ -48,15 +57,14 @@ instance Ord (EnvF t) where
 -- reasons:
 --  - always nice to have additional information?
 data EnvUnionF t = EnvUnion
-  { unionID :: Unique
+  { unionID :: UnionID
   , union :: [EnvF t]
   } deriving (Functor, Foldable, Traversable)
 
-instance Show (EnvUnionF t) where
-  show = undefined
+instance Show t => Show (EnvUnionF t) where
+  show EnvUnion { unionID = unionID, union = union } = show unionID <> "{" <> intercalate ", " (fmap show union) <> "}"
 
-instance Show1 EnvUnionF where
-  liftShowsPrec = undefined
+$(deriveShow1 ''EnvUnionF)
 
 instance Eq1 EnvUnionF where
   liftEq = undefined  
@@ -72,7 +80,7 @@ instance Ord (EnvUnionF t) where
 newtype TyVar = TyV Text deriving (Eq, Ord)
 
 instance Show TyVar where
-  show = undefined
+  show (TyV tyv) = "#" <> show tyv
 
 
 data TypeF a
@@ -145,7 +153,7 @@ data StmtF expr a
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
   | ExprStmt expr
-  | Return (Either (Type TyVared) expr)
+  | Return (Either (Type TyVared) expr)  -- TODO: make it only an expression (this requires me to get the () constructor)
 
   -- Big statements
   | DataDefinition DataDef
@@ -167,8 +175,101 @@ type instance AnnStmt TyVared = Fix AnnotatedStmt
 -- Module --
 ---------------
 
-newtype Mod = Mod [AnnStmt TyVared]
+newtype Mod = Mod { fromMod :: [AnnStmt TyVared] }
 
 type instance Module TyVared = Mod
 
 
+
+-----------------------------------------
+
+-- TyVared
+
+tyModule :: Module TyVared -> String
+tyModule = show . flip runReader CtxData . tStmts . fromMod
+
+tStmts :: [AnnStmt TyVared] -> Context
+tStmts = ppLines tAnnStmt
+
+tAnnStmt :: AnnStmt TyVared -> Context
+tAnnStmt (Fix (AnnStmt ann stmt)) = annotate ann $ tStmt stmt
+
+tStmt :: Stmt TyVared -> Context
+tStmt stmt = case first tExpr stmt of
+  Print e -> "print" <+> e
+  Assignment v e -> ppVar Local v <+> "=" <+> e
+  Pass -> "pass"
+  MutDefinition v me ->  "mut" <+> ppVar Local v <+> rhs
+    where
+      rhs = fromEither $ bimap (\t -> "::" <+> tType t) ("<=" <+>) me
+  MutAssignment v e -> ppVar Local v <+> "<=" <+> e
+  If ifCond ifTrue elseIfs mElse ->
+    tBody ("if" <+> ifCond ) ifTrue <>
+    foldMap (\(cond, elseIf) ->
+        tBody ("elif" <+> cond) elseIf) elseIfs <>
+    maybe mempty (tBody "else") mElse
+  ExprStmt e -> e
+  Return e -> "return" <+> fromEither (first (\t -> "::" <+> tType t) e)
+
+  DataDefinition dd -> tDataDef dd
+  FunctionDefinition fd body -> tBody (tFunDec fd) body
+
+
+tExpr :: Expr TyVared -> Context
+tExpr = cata $ \(ExprType t expr) ->
+  let encloseInType c = "(" <> c <+> "::" <+> tType t <> ")"
+  in encloseInType $ case expr of
+  Lit (LInt x) -> pretty x
+  Var l v -> ppVar l v
+  Con c -> ppCon c
+
+  Op l op r -> l <+> ppOp op <+> r
+  Call f args -> f <> encloseSepBy "(" ")" ", " args
+  As x at -> x <+> "as" <+> tType at
+  Lam env params e -> tEnv env <+> sepBy " " (map (\(v, t) -> ppVar Local v <+> tType t) params) <> ":" <+> e
+  where
+    ppOp op = case op of
+      Plus -> "+"
+      Minus -> "-"
+      Times -> "*"
+      Divide -> "/"
+      Equals -> "=="
+      NotEquals -> "/="
+
+
+tDataDef :: DataDef -> Context
+tDataDef (DD tid tvs cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines (\(Annotated ann dc) -> annotate ann (tConDef dc)) cons
+
+tConDef :: DataCon -> Context
+tConDef (DC g t) = foldl' (<+>) (ppCon g) $ tTypes t
+
+tFunDec :: FunDec -> Context
+tFunDec (FD env v params retType) = comment (tEnv env) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType
+
+tTypes :: Functor t => t (Type TyVared) -> t Context
+tTypes = fmap $ \t@(Fix t') -> case t' of
+  TCon _ (_:_) -> enclose t
+  TFun {} -> enclose t
+  _ -> tType t
+  where
+    enclose x = "(" <> tType x <> ")"
+
+tType :: Type TyVared -> Context
+tType = cata $ \case
+  TCon con params -> foldl' (<+>) (ppTypeInfo con) params
+  TVar (TV tv) -> pretty tv
+  TFun env args ret -> tEnvUnion env <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+  TyVar tyv -> pretty $ show tyv
+
+tEnvUnion :: EnvUnionF Context -> Context
+tEnvUnion EnvUnion { unionID = uid, union = us } = ppUnionID uid <> encloseSepBy "{" "}" ", " (fmap tEnv' us)
+
+tEnv :: Env TyVared -> Context
+tEnv = tEnv' . fmap tType
+
+tEnv' :: EnvF Context -> Context
+tEnv' Env { envID = eid, env = vs } = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, t) -> ppVar Local v <+> t) vs)
+
+
+tBody :: Foldable f => Context -> f (AnnStmt TyVared) -> Context
+tBody = ppBody tAnnStmt

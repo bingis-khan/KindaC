@@ -9,13 +9,15 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE EmptyCase #-}
+{-# LANGUAGE InstanceSigs #-}
 
 module Typecheck (typecheck, TypeError(..), ftv, unSolve, Subst(..)) where
 
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Biapplicative (first)
-import Data.Map (Map)
+import Data.Map (Map, (!?))
 import qualified Data.Map as Map
 import Control.Monad.Trans.RWS (RWST, evalRWST)
 import qualified Control.Monad.Trans.RWS as RWS
@@ -25,7 +27,7 @@ import Control.Monad (replicateM)
 import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold)
 import Data.List.NonEmpty (NonEmpty ((:|)))
-import Data.Set (Set, (\\))
+import Data.Set (Set, (\\), member)
 import qualified Data.Set as Set
 import Control.Monad.Trans.Writer (runWriter, Writer)
 import qualified Control.Monad.Trans.Writer as Writer
@@ -33,7 +35,7 @@ import Data.Tuple (swap)
 import Data.Bifunctor (bimap, Bifunctor)
 import Data.Maybe (mapMaybe, catMaybes)
 import Data.List ( find )
-import Data.Bifoldable (bifoldMap)
+import Data.Bifoldable (bifoldMap, bifold)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Traversable (for)
 
@@ -43,13 +45,15 @@ import qualified AST.TyVared as Ty
 import qualified AST.Typed as T
 
 import AST.Converged (Prelude)
-import AST.Common (Module, Type, TVar (TV), AnnStmt, Expr, LitType (LInt), UniqueVar, UniqueCon, UniqueType (typeName), EnvUnion, Env, Annotated (Annotated), Op (..), TCon (fromTC, TC), Locality (..))
+import AST.Common (Module, Type, TVar (TV), AnnStmt, Expr, LitType (LInt), UniqueVar, UniqueCon, UniqueType (typeName), EnvUnion, Env, Annotated (Annotated), Op (..), TCon (fromTC, TC), Locality (..), EnvID (..), UnionID (..))
 import AST.Resolved (Resolved)
 import AST.Typed (Typed)
-import AST.TyVared (TyVared, TyVar, TypeF (..))
+import AST.TyVared (TyVared, TyVar, TypeF (..), tyModule)
 import Control.Monad.IO.Class (liftIO)
-import Data.Unique (newUnique, Unique)
+import Data.Unique (newUnique, Unique, hashUnique)
 import Data.Functor ((<&>))
+import Data.List (nub)
+import Debug.Trace (traceShow, traceShowWith, traceShowId)
 
 
 -- I have some goals alongside rewriting typechecking:
@@ -59,12 +63,24 @@ import Data.Functor ((<&>))
 
 typecheck :: Maybe Prelude -> Module Resolved -> IO (Either (NonEmpty TypeError) (Module Typed))
 typecheck mprelude rStmts = do
-    let env = topLevelEnv mprelude
+    let env = topLevelEnv mprelude  -- extract from Prelude unchanging things about the environment, like predefined types, including the return value.
         senv = makeSEnv mprelude  -- we should generate senv here....
-        -- Three phases
+
     (tyStmts, constraints) <- generateConstraints env senv rStmts
+
+    liftIO $ putStrLn "UNSUBST"
+    liftIO $ putStrLn $ tyModule tyStmts
+
     let (errors, su) = solveConstraints constraints
-    pure $ case finalize (subst su tyStmts) of
+    let finalTyStmts = subst su tyStmts
+
+    -- debug print
+    liftIO $ putStrLn $ (\(Subst su1 su2) -> show su1) su
+
+    liftIO $ putStrLn "\nSUBST"
+    liftIO $ putStrLn $ tyModule finalTyStmts
+    
+    pure $ case finalize finalTyStmts of
         Left ambs ->
             let ambiguousTyVarsErrors = AmbiguousType <$> ambs
             in Left $ NonEmpty.prependList errors ambiguousTyVarsErrors
@@ -155,7 +171,8 @@ makeSEnv (Just (T.Mod prelude)) = do
       T.TVar tvar -> Set.singleton tvar
       t -> fold t
 
-    tenv2tyenv = undefined
+
+
 
 
 ---------------------------
@@ -244,7 +261,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
         let schemeTyVars = fntFtv \\ envFtv  -- Only variables that exist in the "front" type. (front = the type that we will use as a scheme and will be able to generalize)
 
         let (scheme, sfdec, sfbody) = closeOver schemeTyVars fdec fbody
-        newVar name scheme
+        newVar name (traceShowId scheme)
 
         pure $ Ty.AnnStmt anns $ Ty.FunctionDefinition sfdec sfbody
 
@@ -274,48 +291,69 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
         tstmt <- bitraverse inferExpr id rstmt
 
         -- Map expr -> type for unification
-        let ttstmt = first (\(Fix (Ty.ExprType t _)) -> t) tstmt
-        inferStmt ttstmt  -- Then 
-        pure $ Ty.AnnStmt anns $ rstmt2tystmt tstmt
+        let ttstmt = first (\(expr@(Fix (Ty.ExprType t _))) -> (expr, t)) tstmt
+        Ty.AnnStmt anns <$> inferStmt ttstmt
 
 
-    -- this is the actual logic.
-    -- wtf, for some reason \case produces an error here....
+    -- TODO: i think I should split it like so:
+    -- R -> Infer (fresh) Ty  <- add fresh variables + convert
+    -- then Ty -> Infer ()   <- set constraints
+    inferStmt :: R.StmtF (Expr TyVared, Type TyVared) a -> Infer (Ty.StmtF (Expr TyVared) a)
     inferStmt stmt = case stmt of
       -- new, no let-generalization assignment
-      R.Assignment v rexpr ->
-        let scheme = Forall Set.empty $ UTUnchanged rexpr
-        in newVar v scheme
+      R.Assignment v (rexpr, t) -> do
+        let scheme = Forall Set.empty $ UTUnchanged t
+        newVar v scheme
+
+        pure $ Ty.Assignment v rexpr
 
       R.MutDefinition v met -> do
         f <- fresh
         newVar v $ Forall Set.empty $ UTUnchanged f
-        for_ met $ \et ->
-          f `uni` et
 
-      R.MutAssignment v et -> do
+        case met of
+          Nothing ->
+            pure $ Ty.MutDefinition v (Left f)
+          Just (expr, t) -> do
+            f `uni` t
+            pure $ Ty.MutDefinition v (Right expr)
+
+      R.MutAssignment v (expr, t) -> do
         vt <- lookupVar v
-        vt `uni` et
+        vt `uni` t
+        pure $ Ty.MutAssignment v expr
 
-      R.If cond _ elseIfs _ -> do
+      R.If (cond, t) ifTrue elseIfs ifFalse -> do
         boolt <- findType "Bool"
 
-        cond `uni` boolt
+        t `uni` boolt
 
-        for_ elseIfs $ \(t, _) ->
+        for_ elseIfs $ \((_, t), _) ->
           t `uni` boolt
+
+        pure $ Ty.If cond ifTrue ((fmap . first) fst elseIfs) ifFalse
 
       R.Return mret -> do
         emret <- RWS.asks returnType
 
         -- Nothing -> Void / ()
-        let opty = maybe (findType "Void") pure  -- TODO: Right now, the default is "Void". Should be an empty tuple or something.
+        let opty = maybe (findType "Unit") pure  -- TODO: Right now, the default is "Void". Should be an empty tuple or something.
         eret <- opty emret
-        ret <- opty mret
+        case mret of
+          Nothing -> pure $ Ty.Return $ Left eret
+          Just (ret, t) -> do
+            t `uni` eret
+            pure $ Ty.Return $ Right ret
 
-        ret `uni` eret
+      R.Print (expr, _) ->
+        pure $ Ty.Print expr
 
-      _ -> pure ()
+      R.Pass ->
+        pure Ty.Pass
+
+      R.ExprStmt (expr, _) ->
+        pure $ Ty.ExprStmt expr
+
 
 
 inferExpr :: Expr Resolved -> Infer (Expr TyVared)
@@ -360,7 +398,7 @@ inferExpr = cata (fmap embed . inferExprType)
     inferExprLayer = \case
       Ty.Lit (LInt _ ) -> findType "Int"
 
-      Ty.Var External v -> undefined
+      Ty.Var External v -> error "Don't use external variables... yet!"
       Ty.Var _ v -> lookupVar v
       Ty.Con c -> lookupCon c
 
@@ -395,14 +433,10 @@ inferExpr = cata (fmap embed . inferExprType)
         let t = Fix $ TFun union vars ret
         pure t
 
-rstmt2tystmt :: R.StmtF (Expr TyVared) a -> Ty.StmtF (Expr TyVared) a
-rstmt2tystmt = undefined
-
 env2union :: Env TyVared -> Infer (EnvUnion TyVared)
 env2union env = do
-  unionID <- liftIO newUnique
+  unionID <- newUnionID
   pure $ Ty.EnvUnion { Ty.unionID = unionID, Ty.union = [env] }
-
 
 
 withReturn :: Type TyVared -> Infer a -> Infer a
@@ -484,19 +518,41 @@ instantiateType = \case
   UTExternalVariable t -> pure $ t2ty t
 
 
+-- Creates a new env union from an already typed module.
 reunion :: EnvUnion Typed -> Infer (EnvUnion TyVared)
-reunion (T.EnvUnion _ _) = undefined
+reunion union = pure $ t2ty <$> reunion' union -- Should I create a new ID?
+
+reunion' :: T.EnvUnionF a -> Ty.EnvUnionF a
+reunion' (T.EnvUnion uid envs) = Ty.EnvUnion uid $ fmap tenv2tyenv' envs
+
+tenv2tyenv :: Env Typed -> Env TyVared
+tenv2tyenv = fmap t2ty . tenv2tyenv'
+
+tenv2tyenv' :: T.EnvF a -> Ty.EnvF a
+tenv2tyenv' (T.Env eid vars) = Ty.Env eid vars
+
 
 -- A scheme turns closed over TyVars into TVars. This requires it to traverse through the expression and replace appropriate vars.
 -- We use Substitutable's subst function for this.
 closeOver :: Substitutable a => Set TyVar -> Ty.FunDec -> NonEmpty a -> (Scheme, Ty.FunDec, NonEmpty a)
-closeOver tyvars fd body  = (Forall tvars (UTFun senv sparams sret), sfd, sbody)
+closeOver tyvars fd body  = (scheme, sfd, sbody)
   where
+    scheme = Forall tvars (UTFun senv sparams sret)
+    tvars 
+      =  fdTVars fd 
+      <> Set.map (\(Ty.TyV tname) -> TV tname) tyvars  -- change closed over tyvars into tvars
     sparams = fmap snd svparams
     sbody = subst newSubst body
     sfd@(Ty.FD senv _ svparams sret) = subst newSubst fd  -- substituted expression
-    tvars = Set.map (\(Ty.TyV tname) -> TV tname) tyvars  -- change closed over tyvars into tvars
     newSubst = Subst Map.empty $ Map.fromList $ map (\tv@(Ty.TyV tname) -> (tv, Fix $ TVar $ TV tname)) $ Set.toList tyvars  -- that substitution
+
+    fdTVars :: Ty.FunDec -> Set TVar
+    fdTVars (Ty.FD _ _ params ret) = mconcat $ fmap fdType $ ret : fmap snd params
+      where
+        fdType :: Type TyVared -> Set TVar
+        fdType = cata $ \case
+          Ty.TVar tv -> Set.singleton tv
+          t -> fold t
 
 
 -- maybe merge lookupVar and newVar,
@@ -509,9 +565,15 @@ newCon c scheme = RWS.modify $ \s -> s { constructors = Map.insert c scheme s.co
 
 newType :: UniqueType -> [TVar] -> Infer ()
 newType ti tvars =
-  let t = undefined
+  let t = Fix $ Ty.TCon ti $ fmap (Fix . Ty.TVar) tvars
+
   in RWS.modify $ \s -> s { types = Map.insert ti t s.types }
 
+newEnvID :: Infer EnvID
+newEnvID = EnvID <$> liftIO newUnique
+
+newUnionID :: Infer UnionID
+newUnionID = UnionID <$> liftIO newUnique
 
 
 -- Returns a fresh new tyvare
@@ -530,7 +592,6 @@ freshTyvar = do
 
 letters :: [Text]
 letters = map (Text.pack . ('\'':)) $ [1..] >>= flip replicateM ['a'..'z']
-
 
 
 findType :: Text -> Infer (Type TyVared)
@@ -585,6 +646,8 @@ emptySEnv = StatefulEnv
 
 -- FUNNY!
 -- Closes over tyvars - but this requires the env union to not be instantiated. So we can't put a normal type. How do we do it?
+-- The thing is, for functions, we need to be able to modify definitions from imported files...
+-- so, we might need to keep everything in tyvared state or to be able to update the EnvUnion
 data Scheme = Forall (Set TVar) (Type Unstantiated)
 
 -- THIS. A very funny type meants to be mapped to the normal TyVared variation after
@@ -593,14 +656,15 @@ type instance Type Unstantiated = UnstantiatedType
 data UnstantiatedType
   = UTCon UniqueType [Type TyVared]
   -- | UTVar TVar
-  | UTFun (Env TyVared) [Type TyVared] (Type TyVared)
+  | UTFun (Env TyVared) [Type TyVared] (Type TyVared)  -- this might be incorrect tho...
   | UTyVar TyVar
   | UTUnchanged (Type TyVared)  -- assignment etc. where the type is already "complete". kind of redundant, because it implies empty TVars...
   | UTExternalVariable (Type Typed)  -- oh shid, we comin outta circus with this one. used for types outside of the module. why? imagine `x` in a base module with some environment. module A imports it and does this: `y = x if rand() else x: x + n` and module B does this: `z = x if rand() else x: x - m`. ------ two different environments. since we parse everything per-module, we have to keep track of the mapping.
+  deriving Show
 
 
 instance Show Scheme where
-  show = undefined
+  show (Forall tvs ts) = show tvs <> ": " <> show ts
 
 
 newtype TVarGen = TVG Int
@@ -609,7 +673,7 @@ newTVarGen :: TVarGen
 newTVarGen = TVG 0
 
 
-data Subst = Subst (Map Unique (EnvUnion TyVared)) (Map TyVar (Type TyVared))
+data Subst = Subst (Map UnionID (EnvUnion TyVared)) (Map TyVar (Type TyVared))
 type FullSubst = (Map TyVar (Type Typed), Map (Env TyVared) (Env Typed))  -- The last substitution after substituting all the types
 
 
@@ -651,23 +715,29 @@ subSolve ctx = do
 
 withEnv :: R.Env -> Infer a -> Infer (Env TyVared, a)
 withEnv renv x = do
-  env <- renv2tyenv renv
+  env <- emptyEnv
   RWS.modify $ \s -> s { env = env : s.env }
   (e, x') <- RWS.mapRWST (fmap (\(x, s@StatefulEnv { env = (e:ogenvs) }, cs) -> ((e, x), s { env = ogenvs }, cs))) x  -- we're using tail, because we want an error if something happens.
-  pure (e, x')
+
+  -- remove things that are part of the inner environment (right now, just an intersection, because renv is already done in Resolver)
+  let renvVarSet = Set.fromList $ R.fromEnv renv
+  let outerEnv = e { Ty.env = filter ((`member` renvVarSet) . fst) e.env }
+  
+  pure (outerEnv, x')
 
 -- TODO: should probably change the name
-renv2tyenv :: R.Env -> Infer (Env TyVared)
-renv2tyenv (R.Env vars) = do
-  envID <- liftIO newUnique
-  envts <- traverse (\v -> (v,) <$> fresh) vars
-  pure $ Ty.Env { Ty.envID = envID, Ty.env = envts }
+-- renv2tyenv :: R.Env -> Infer (Env TyVared)
+-- renv2tyenv (R.Env vars) = do
+--   envID <- liftIO newUnique
+--   envts <- traverse (\v -> (v,) <$> fresh) vars  -- TODO: i guess we don't need environemnts, since we have addEnv?
+--   pure $ Ty.Env { Ty.envID = envID, Ty.env = envts }
 
 
 newtype Solve a = Solve { unSolve :: Writer [TypeError] a } deriving (Functor, Applicative, Monad)
 data TypeError
   = InfiniteType TyVar (Type TyVared)
   | TypeMismatch (Type TyVared) (Type TyVared)
+  | MismatchingNumberOfParameters [(Type TyVared)] [(Type TyVared)]
   | AmbiguousType TyVar
   deriving Show
 
@@ -702,12 +772,12 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
 
     unifyMany :: [Type TyVared] -> [Type TyVared] -> Solve Subst
     unifyMany [] [] = pure emptySubst
-    unifyMany (tl:ls) (tr:rs) = do
+    unifyMany (tl:ls) (tr:rs) | length ls == length rs = do  -- quick fix - we don't need recursion here.
       su1 <- unify tl tr
       su2 <- unifyMany (subst su1 ls) (subst su1 rs)
       pure $ su2 `compose` su1
-    unifyMany tl tr = error $ "Should not happen! Type mismatch: " <> show tl <> " and " <> show tr <> "."
-
+    unifyMany tl tr = report $ MismatchingNumberOfParameters tl tr
+    
 
     bind :: TyVar -> Type TyVared -> Solve Subst
     bind tyv t | t == tyvar tyv = pure emptySubst
@@ -718,6 +788,7 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
     unifyFunEnv :: EnvUnion TyVared -> EnvUnion TyVared -> Subst
     unifyFunEnv lenv@(Ty.EnvUnion { Ty.unionID = lid }) renv@(Ty.EnvUnion { Ty.unionID = rid }) =
       Subst (Map.fromList [(lid, env), (rid, env)]) Map.empty -- i don't think we need an occurs check
+      --       traceShow ("ENVUNI: " <> show lenv <> "|||||" <> show renv <> "8=====>" <> show env <> "\n") $ 
       where
         newUnionID = lid
         env = Ty.EnvUnion { Ty.unionID = newUnionID, Ty.union = funEnv }
@@ -737,13 +808,15 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
     emptySubst = Subst Map.empty Map.empty :: Subst
 
 compose :: Subst -> Subst -> Subst
-compose sl@(Subst envsl tysl) (Subst envsr tysr) = Subst (Map.map (subst sl) envsr `Map.union` envsl) (Map.map (subst sl) tysr `Map.union` tysl)
+compose sl@(Subst envsl tysl) (Subst envsr tysr) = Subst 
+  (Map.map (subst sl) envsr `Map.union` envsl)
+  (Map.map (subst sl) tysr `Map.union` tysl)
 
 
 -- this is correct when it comes to typing, but requires me to use applicative shit everywhere. kinda cringe.
 type Res = Result (NonEmpty TyVar)
 finalize :: Module TyVared -> Either (NonEmpty TyVar) (Module Typed)
-finalize (Ty.Mod tystmts) = fmap T.Mod $  convertResult $ traverse annStmt tystmts where
+finalize (Ty.Mod tystmts) = fmap T.Mod $ convertResult $ traverse annStmt tystmts where
   annStmt :: AnnStmt TyVared -> Res (AnnStmt Typed)
   annStmt = transverse $ \(Ty.AnnStmt anns stmt) ->
     fmap (T.AnnStmt anns) $ case first fExpr stmt of
@@ -787,32 +860,15 @@ finalize (Ty.Mod tystmts) = fmap T.Mod $  convertResult $ traverse annStmt tystm
     Ty.TVar tv -> pure $ T.TVar tv
     Ty.TFun union args ret -> T.TFun <$> fEnvUnion union <*> sequenceA args <*> ret where
       fEnvUnion (Ty.EnvUnion unionID envs) = case envs of
-        [] -> error "Should not happen... I guess? If it does happen, figure out why and make it an error."
-        (e:es) -> T.EnvUnion unionID <$> traverse fEnv' (e :| es)
+        -- Union is empty in this case for example:
+        -- f (ff () -> a)  # only the specified type is present without any implied environment,
+        --   pass
+        [] -> pure $ T.EnvUnion unionID []
+        (e:es) -> T.EnvUnion unionID <$> traverse fEnv' (e : es)
       fEnv'(Ty.Env envid ets) = T.Env envid <$> traverse sequenceA ets
 
   fEnv :: Env TyVared -> Res (Env Typed)
   fEnv (Ty.Env envid ets) = T.Env envid <$> (traverse . traverse) fType ets
-
--- substituteTypes fsu tmod = fmap subAnnStmt tmod
-  -- where
-  --   subAnnStmt :: AnnStmt TyVared -> AnnStmt Typed
-  --   subAnnStmt = hoist $ \(Ty.AnnStmt ann bstmt) -> T.AnnStmt ann $ case bstmt of
-  --     R.DataDefinition dd -> DataDefinition dd
-  --     R.FunctionDefinition dec body -> FunctionDefinition (fmap subType dec) body
-  --     stmt -> NormalStmt $ first subExpr stmt
-
-  --   subExpr :: Expr TyVared -> Expr Typed
-  --   subExpr = hoist $ \(Ty.ExprType t expr) -> ExprType (subType t) $ mapInnerExprType subType expr
-
-  --   subType :: Type TyVared -> Type Typed
-  --   subType = cata $ \case
-  --     TF' (Left tyv) -> case Map.lookup tyv fsu of
-  --       Just t -> t
-  --       Nothing ->
-  --         error $ "Failed finding tyvar '" <> show tyv <> "' in Full Subst, which should not happen." <> show (fsu, length tmod)
-
-  --     TF' (Right t) -> Fix $ mapTypeEnv (\(TyFunEnv _ fe) -> fe) t
 
 convertResult :: Result e a -> Either e a
 convertResult = \case
@@ -849,34 +905,87 @@ class Substitutable a where
   ftv :: a -> Set TyVar
   subst :: Subst -> a -> a
 
+
 instance Substitutable Ty.Mod where
+  ftv (Ty.Mod stmts) = ftv stmts
+  subst su (Ty.Mod stmts) = Ty.Mod $ fmap (subst su) stmts
 
 instance Substitutable (Fix Ty.AnnotatedStmt) where
+  ftv = cata $ \(Ty.AnnStmt _ stmt) -> case stmt of
+    Ty.MutDefinition _ (Left t) -> ftv t
+    stmt -> bifold $ first ftv stmt
+
+  subst su = cata $ embed . sub
+    where 
+      sub (Ty.AnnStmt ann stmt) = Ty.AnnStmt ann $ case stmt of
+        Ty.MutDefinition v (Left t) -> Ty.MutDefinition v (Left (subst su t))
+        stmt -> first (subst su) stmt
+
+instance Substitutable (Fix Ty.ExprType) where
+  ftv = cata $ \(Ty.ExprType t e) -> ftv t <> case e of
+    Ty.As e t -> e <> ftv t
+    Ty.Lam env params body -> ftv env <> ftv params <> body
+    e -> fold e
+  subst su = hoist $ \(Ty.ExprType t e) -> Ty.ExprType (subst su t) (case e of
+    Ty.As e t -> Ty.As e (subst su t)
+    Ty.Lam env params body -> Ty.Lam (subst su env) (subst su params) body
+    e -> e)
+
+
+instance Substitutable UniqueVar where
+  ftv _ = mempty
+  subst _ = id
+
 
 instance Substitutable Ty.FunDec where
+  ftv (Ty.FD env _ params ret) = ftv env <> ftv params <> ftv ret
+  subst su (Ty.FD env fid params ret) = Ty.FD (subst su env) fid (subst su params) (subst su ret)
 
+-- here we treat the type as if it was a normal type
 instance Substitutable UnstantiatedType where
+  ftv = \case
+    UTyVar tyv -> Set.singleton tyv
+    
+    UTCon _ apps -> ftv apps
+    UTFun env params ret -> ftv env <> ftv params <> ftv ret  -- ???
+    UTExternalVariable _ -> mempty
+    UTUnchanged t -> ftv t
+  subst = error "Should not be called."
+
 
 instance Substitutable (Fix Ty.TypeF) where
+  ftv = cata $ \case
+    Ty.TyVar tyv -> Set.singleton tyv
+    t -> fold t
+  
+  subst (Subst envm tyvm) = cata $ embed . \case
+    Ty.TyVar tyv -> case tyvm !? tyv of
+        Nothing -> Ty.TyVar tyv
+        Just t -> project t
+
+    -- we might need to substitute the union thing
+    Ty.TFun ogUnion@(Ty.EnvUnion { Ty.unionID = uid }) ts t ->
+
+      -- might need to replace the union
+      let union = case envm !? uid of
+            Just eunion -> eunion
+            Nothing -> ogUnion
+
+      in Ty.TFun union ts t
+
+    t -> t
 
 instance Substitutable (Ty.EnvUnionF (Fix Ty.TypeF)) where
+  ftv (Ty.EnvUnion _ envs) = ftv envs
+  subst su@(Subst unions _) (Ty.EnvUnion uid envs) = do
+    case unions !? uid of
+      Just suUnion -> suUnion
+      Nothing -> Ty.EnvUnion uid $ subst su envs
 
+instance Substitutable (Ty.EnvF (Fix Ty.TypeF)) where
+  ftv (Ty.Env _ vars) = ftv $ fmap snd vars
+  subst su = fmap (subst su)
 
-
--- maybe I should just set new types
--- instance Substitutable (Type TyVared) where
---   ftv = cata $ \case
---     Ty.TyVar tyv -> Set.singleton tyv
---     t -> fold t
-
---   subst su@(Subst envsu tysu) = hoist $ \case
---     Ty.TyVar tyv -> fromMaybe (tyvar ty) $ Map.lookup ty tysu
---     Ty.TFun env params ret -> TFun (subst su env) params ret
---     t -> t
-
--- instance Substitutable (TyFunEnv' (Fix TypeF')) where
---   ftv (TyFunEnv _ (FunEnv ne)) = (foldMap . foldMap) (ftv . snd) ne -- the big question - is envid an ftv? my answer: no
---   subst (Subst envsu _) env = fromMaybe env $ Map.lookup env envsu -- i almost forgot: i added an another field in subst... so yeah, we should substitute.
 
 instance Substitutable a => Substitutable [a] where
   ftv = foldMap ftv
@@ -889,35 +998,6 @@ instance Substitutable a => Substitutable (NonEmpty a) where
 instance (Substitutable a, Substitutable b) => Substitutable (a, b) where
   ftv = bifoldMap ftv ftv
   subst su = bimap (subst su) (subst su)
-
--- instance (Substitutable a, Substitutable b, Substitutable c) => Substitutable (a, b, c) where
---   ftv (x, y, z) = ftv x <> ftv y <> ftv z
---   subst su (x, y, z) = (subst su x, subst su y, subst su z)
-
--- -- TODO: I want to off myself...
--- instance Substitutable (Fix (ExprType l v c (Fix TypeF') (Fix TypeF'))) where
---   ftv = cata $ \(ExprType t expr) -> ftv t <> fold expr
---   subst su = cata $ \(ExprType t expr) -> Fix $ ExprType (subst su t) (fmap (subst su) expr)
-
--- instance Substitutable (TypedEnv v (Fix TypeF')) where
---   ftv (TypedEnv vts) = foldMap (foldMap ftv . snd) vts
---   subst su = fmap (subst su)
-
--- instance Substitutable (GFunDec TypedEnv c v (Fix TypeF')) where
---   ftv (FD _ params _ ret) = ftv ret <> foldMap (ftv . snd) params
---   subst su (FD name params env ret) = FD name ((fmap . fmap) (subst su) params) (subst su env) (subst su ret)
-
--- instance Substitutable (Fix (AnnStmtF (BigStmtF datadef (GFunDec TypedEnv UniqueCon UniqueVar (Fix TypeF')) (StmtF UniqueCon UniqueVar (Fix (ExprType l v c (Fix TypeF') (Fix TypeF'))))))) where
---   ftv = cata $ \(AnnStmt _ bstmt) -> case bstmt of
---     NormalStmt stmt -> bifoldMap ftv id stmt
---     DataDefinition _ -> mempty
---     FunctionDefinition fd stmts -> ftv fd <> fold stmts
-
---   subst su = hoist $ \(AnnStmt anns bstmt) -> AnnStmt anns $ case bstmt of
---     NormalStmt stmt -> NormalStmt $ first (subst su) stmt
---     DataDefinition dd -> DataDefinition dd
---     FunctionDefinition fd stmts -> FunctionDefinition (subst su fd) stmts
-
 
 
 rt2ty :: Type Resolved -> Infer (Type TyVared)
@@ -936,16 +1016,25 @@ rt2ty = cata (fmap embed . f)
         pure $ Ty.TFun union params' ret'
 
 t2ty :: Type Typed -> Type TyVared
-t2ty = undefined
+t2ty = hoist $ \case
+  T.TCon ut apps -> Ty.TCon ut apps
+  T.TFun union args ret -> Ty.TFun (reunion' union) args ret
+  T.TVar tv -> Ty.TVar tv
 
 emptyUnion :: Infer (EnvUnion TyVared)
-emptyUnion = undefined
+emptyUnion = do
+  uid <- newUnionID
+  pure $ Ty.EnvUnion uid []
 
 singletonUnion :: Env TyVared -> Infer (EnvUnion TyVared)
-singletonUnion = undefined
+singletonUnion env = do
+  uid <- newUnionID
+  pure $ Ty.EnvUnion uid [env]
 
 emptyEnv :: Infer (Env TyVared)
-emptyEnv = undefined
+emptyEnv = do
+  uid <- newEnvID
+  pure $ Ty.Env uid []
 
 
 bidmap :: Bifunctor p => (c -> d) -> p c c -> p d d

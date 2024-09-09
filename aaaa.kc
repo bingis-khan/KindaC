@@ -1,0 +1,16 @@
+
+
+uni (x () -> b, y () -> b) -> Int
+	print x == y
+	return 69
+
+x = 1
+f ()
+	return x
+
+n = True
+g ()
+	print n
+	return 3
+
+uni (f, g)
