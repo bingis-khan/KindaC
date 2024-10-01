@@ -15,7 +15,7 @@ import Data.Eq.Deriving
 import Data.Ord.Deriving
 import Data.Fix (Fix (..))
 import qualified Data.List.NonEmpty as NonEmpty
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty ((:|)))
 
 import Data.Bifunctor.TH (deriveBifoldable, deriveBifunctor)
 import Data.Functor.Classes (Show1 (..), Eq1 (liftEq))
@@ -51,20 +51,22 @@ instance Ord (EnvF t) where
 
 $(deriveEq1 ''EnvF)
 $(deriveOrd1 ''EnvF)
+$(deriveShow1 ''EnvF)
 
 
 data EnvUnionF t = EnvUnion
   { unionID :: UnionID
   , union :: NonEmpty (EnvF t)
   } deriving (Functor, Foldable, Traversable)
+$(deriveShow1 ''EnvUnionF)
 
 instance Show (EnvUnionF t) where
   show = undefined
 
-instance Show1 EnvUnionF where
-  liftShowsPrec = undefined
-
 instance Eq (EnvUnionF t) where
+  -- special case for generated empty env function definitions
+  EnvUnion { union = (Env { env = [] } :| []) } == EnvUnion { union = (Env { env = [] } :| []) } = True
+
   EnvUnion { unionID = l } == EnvUnion { unionID = r }  = l == r
 
 instance Eq1 EnvUnionF where
@@ -74,11 +76,14 @@ $(deriveOrd1 ''EnvUnionF)
 
 
 instance Ord (EnvUnionF t) where
+  -- special case for generated empty env function definitions
+  EnvUnion { union = (Env { env = [] } :| []) } `compare` EnvUnion { union = (Env { env = [] } :| []) } = EQ
+
   EnvUnion { unionID = l } `compare` EnvUnion { unionID = r } = l `compare` r
 
 
 data TypeF a
-  = TCon UniqueType
+  = TCon UniqueType                [a]  -- this last part is not needed. It's used by Mono.mapType function to "remember" which type parameters were mapped.
   | TFun (EnvUnionF a) [a] a
   deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
@@ -122,7 +127,7 @@ type instance Expr Mono = Fix ExprType
 ---------------------
 
 data DataCon = DC UniqueCon [Type Mono] deriving (Eq, Show)
-data DataDef = DD UniqueType [TVar] [Annotated DataCon] deriving (Eq, Show)
+data DataDef = DD UniqueType [Annotated DataCon] deriving (Eq, Show)
 
 
 --------------
@@ -148,7 +153,7 @@ data StmtF a
 
   | If (Expr Mono) (NonEmpty a) [((Expr Mono), NonEmpty a)] (Maybe (NonEmpty a))
   | ExprStmt (Expr Mono)
-  | Return (Either (Type Mono) (Expr Mono))
+  | Return (Expr Mono)
   deriving (Show, Functor, Foldable, Traversable)
 $(deriveShow1 ''StmtF)
 
@@ -168,8 +173,8 @@ data Function = Fun FunDec (NonEmpty (AnnStmt Mono)) deriving (Show)
 ---------------
 
 data Mod = Mod
-  { dataTypes :: [DataDef]
-  , functions :: [Function]
+  { dataTypes :: [Annotated DataDef]
+  , functions :: [Annotated Function]
   , main :: [AnnStmt Mono]
   } deriving Show
 
@@ -186,9 +191,9 @@ type instance Module Mono = Mod
 mModule :: Module Mono -> String
 mModule mod =
   let fds = comment "Datatypes" $
-              sepBy "\n" $ fmap tDataDef mod.dataTypes
+              sepBy "\n" $ fmap (\(Annotated anns dd) -> annotate anns (tDataDef dd)) mod.dataTypes
       fs = comment "Functions" $
-              sepBy "\n" $ fmap tFunction mod.functions
+              sepBy "\n" $ fmap (\(Annotated anns fd) -> annotate anns (tFunction fd)) mod.functions
       main = comment "Main" $ tStmts mod.main
   in show $ flip runReader CtxData $ sepBy "\n" [fds, fs, main]
 
@@ -213,7 +218,7 @@ tStmt stmt = case stmt of
         tBody ("elif" <+> tExpr cond) elseIf) elseIfs <>
     maybe mempty (tBody "else") mElse
   ExprStmt e -> tExpr e
-  Return e -> "return" <+> fromEither (first (\t -> "::" <+> tType t) (tExpr <$> e))
+  Return e -> "return" <+> tExpr e
 
 
 tExpr :: Expr Mono -> Context
@@ -241,7 +246,7 @@ tFunction :: Function -> Context
 tFunction (Fun fd body) = tBody (tFunDec fd) body
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines (\(Annotated ann dc) -> annotate ann (tConDef dc)) cons
+tDataDef (DD tid cons) = indent (ppTypeInfo tid) $ ppLines (\(Annotated ann dc) -> annotate ann (tConDef dc)) cons
 
 tConDef :: DataCon -> Context
 tConDef (DC g t) = foldl' (<+>) (ppCon g) $ tTypes t
@@ -251,15 +256,14 @@ tFunDec (FD env v params retType) = comment (tEnv env) $ ppVar Local v <+> enclo
 
 tTypes :: Functor t => t (Type Mono) -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of
-  TCon _ -> enclose t
+  TCon _ _ -> enclose t
   TFun {} -> enclose t
-  _ -> tType t
   where
     enclose x = "(" <> tType x <> ")"
 
 tType :: Type Mono -> Context
 tType = cata $ \case
-  TCon con -> ppTypeInfo con
+  TCon con _ -> ppTypeInfo con
   TFun env args ret -> tEnvUnion env <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
 
 tEnvUnion :: EnvUnionF Context -> Context

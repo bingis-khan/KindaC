@@ -1,0 +1,47 @@
+
+# what should happen with the union?
+
+ff = :69
+f (f () -> Int)
+	ff <= f
+
+eb = True
+f1 ()
+	print eb
+	return 420
+
+ei = 2137
+f2 ()
+	print ei
+	return 1337
+
+f(f1)
+f(f2)
+
+
+## type assignment, no inference
+ff = :69   # uid-1{eid-1[]}() -> Int
+f (f () -> Int)  # eid-2[]() -> Int
+	ff <= f
+
+eb = True  # Bool
+f1 ()  # eid-3[eb Bool]() -> Int
+	print eb
+	return 420
+
+ei = 2137  # Int
+f2 ()  # eid-4[ei Int]() -> Int
+	print ei
+	return 1337
+
+f (  # eid-2[]() -> Int
+	f1  # uid-2{eid-3[eb Bool]}() -> Int
+)
+
+f (  # eid-2[]() -> Int
+	f2  # uid-3{eid-4[ei Int]}() -> Int
+)
+
+
+## after type inference (note the 'ff' local variable)
+### how should unions behave?

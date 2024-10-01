@@ -2,6 +2,8 @@
 
 uni (x () -> b, y () -> b) -> Int
 	print x == y
+	print x
+
 	return 69
 
 x = 1

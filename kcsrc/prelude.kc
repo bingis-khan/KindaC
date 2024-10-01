@@ -1,4 +1,9 @@
 
+
+# void type
+Unit
+	Unit
+
 # cstdinclude includes the module if the type is used. it will also enclose the name in "<" and ">" - that's because I might want to include custom c modules.
 #[ctype 'bool', cstdinclude 'stdbool.h']
 Bool

@@ -5,5 +5,22 @@ id (x)
 g ()
 	print id(True)
 	print id(1)
+	return Unit
 
 print g
+
+
+Unused
+	Some
+	Unused
+	Type Int
+
+Used a
+	IUseThis a Bool
+	Dupsko a a Unused a Int
+
+
+hey = IUseThis(123, True)
+print hey
+
+return 69

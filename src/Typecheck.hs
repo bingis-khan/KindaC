@@ -29,7 +29,7 @@ import Data.Foldable (for_, fold)
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Set (Set, (\\), member)
 import qualified Data.Set as Set
-import Control.Monad.Trans.Writer (runWriter, Writer)
+import Control.Monad.Trans.Writer (runWriter, Writer, runWriterT, WriterT)
 import qualified Control.Monad.Trans.Writer as Writer
 import Data.Tuple (swap)
 import Data.Bifunctor (bimap, Bifunctor)
@@ -49,7 +49,7 @@ import AST.Common (Module, Type, TVar (TV), AnnStmt, Expr, LitType (LInt), Uniqu
 import AST.Resolved (Resolved)
 import AST.Typed (Typed)
 import AST.TyVared (TyVared, TyVar, TypeF (..), tyModule)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique, Unique, hashUnique)
 import Data.Functor ((<&>))
 import Data.List (nub)
@@ -71,7 +71,7 @@ typecheck mprelude rStmts = do
     liftIO $ putStrLn "UNSUBST"
     liftIO $ putStrLn $ tyModule tyStmts
 
-    let (errors, su) = solveConstraints constraints
+    (errors, su) <- liftIO $ solveConstraints constraints
     let finalTyStmts = subst su tyStmts
 
     -- debug print
@@ -268,7 +268,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
       R.DataDefinition (R.DD tid tvars cons) -> do
         newType tid tvars
 
-        nucons <- for cons $ \(Annotated _ (R.DC c ts)) -> do
+        nucons <- for cons $ \(Annotated anns (R.DC c ts)) -> do
           tyts <- traverse rt2ty ts
           env <- emptyEnv
           let tyvars = fmap (Fix . Ty.TVar) tvars
@@ -333,17 +333,14 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
 
         pure $ Ty.If cond ifTrue ((fmap . first) fst elseIfs) ifFalse
 
-      R.Return mret -> do
+      R.Return (ret, t) -> do
         emret <- RWS.asks returnType
 
         -- Nothing -> Void / ()
-        let opty = maybe (findType "Unit") pure  -- TODO: Right now, the default is "Void". Should be an empty tuple or something.
+        let opty = maybe (findType "Int") pure  -- When default return type is nothing, this means that we are parsing prelude. Return type from top level should be "Int".
         eret <- opty emret
-        case mret of
-          Nothing -> pure $ Ty.Return $ Left eret
-          Just (ret, t) -> do
-            t `uni` eret
-            pure $ Ty.Return $ Right ret
+        t `uni` eret
+        pure $ Ty.Return ret
 
       R.Print (expr, _) ->
         pure $ Ty.Print expr
@@ -572,7 +569,7 @@ newType ti tvars =
 newEnvID :: Infer EnvID
 newEnvID = EnvID <$> liftIO newUnique
 
-newUnionID :: Infer UnionID
+newUnionID :: MonadIO io => io UnionID
 newUnionID = UnionID <$> liftIO newUnique
 
 
@@ -674,7 +671,6 @@ newTVarGen = TVG 0
 
 
 data Subst = Subst (Map UnionID (EnvUnion TyVared)) (Map TyVar (Type TyVared))
-type FullSubst = (Map TyVar (Type Typed), Map (Env TyVared) (Env Typed))  -- The last substitution after substituting all the types
 
 
 -- base `finalize` on it - remove after.
@@ -707,7 +703,7 @@ subSolve ctx = do
   ogvars <- RWS.gets variables  -- variables outside of scope. we will remove them after they are solved. (types are not ambiguous if they "come from outside" of the part we are solving (function probably))
 
   (x, constraints) <-  RWS.mapRWST (fmap (\(x, s, constraints) -> ((x, constraints), s { variables = ogvars }, constraints))) ctx
-  let (_, sub) = solveConstraints constraints  -- here, some ambigous variables might come out. we'll find them at the end, so ignore them right now, but we might save them later (in development) for performance.
+  (_, sub) <- liftIO $ solveConstraints constraints  -- here, some ambigous variables might come out. we'll find them at the end, so ignore them right now, but we might save them later (in development) for performance.
   let substituted = sub `subst` x
 
   pure substituted
@@ -733,7 +729,8 @@ withEnv renv x = do
 --   pure $ Ty.Env { Ty.envID = envID, Ty.env = envts }
 
 
-newtype Solve a = Solve { unSolve :: Writer [TypeError] a } deriving (Functor, Applicative, Monad)
+newtype Solve a = Solve { unSolve :: WriterT [TypeError] IO a } deriving (Functor, Applicative, Monad, MonadIO)
+
 data TypeError
   = InfiniteType TyVar (Type TyVared)
   | TypeMismatch (Type TyVared) (Type TyVared)
@@ -743,8 +740,9 @@ data TypeError
 
 -- Solve constraints and generate a substitution from those constraints.
 -- TODO: Why do we return a substitution and an error list?
-solveConstraints :: [Constraint] -> ([TypeError], Subst)
-solveConstraints = swap . runWriter . unSolve .  solve emptySubst
+--    TEMP: IO is temporary for generating unique values
+solveConstraints :: [Constraint] -> IO ([TypeError], Subst)
+solveConstraints = fmap swap . runWriterT . unSolve . solve emptySubst
   where
     solve :: Subst -> [Constraint] -> Solve Subst
     solve su [] = pure su
@@ -761,7 +759,7 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
         (Ty.TFun lenv lps lr, Ty.TFun renv rps rr) -> do
           su1 <- unifyMany lps rps
           su2 <- unify (subst su1 lr) (subst su1 rr)
-          let su3 = lenv `unifyFunEnv` renv
+          su3 <- liftIO $ lenv `unifyFunEnv` renv
 
           pure $ compose su3 $ compose su2 su1
 
@@ -785,13 +783,14 @@ solveConstraints = swap . runWriter . unSolve .  solve emptySubst
                   report $ InfiniteType tyv t
                | otherwise = pure $ Subst Map.empty $ Map.singleton tyv t
 
-    unifyFunEnv :: EnvUnion TyVared -> EnvUnion TyVared -> Subst
-    unifyFunEnv lenv@(Ty.EnvUnion { Ty.unionID = lid }) renv@(Ty.EnvUnion { Ty.unionID = rid }) =
-      Subst (Map.fromList [(lid, env), (rid, env)]) Map.empty -- i don't think we need an occurs check
+    unifyFunEnv :: EnvUnion TyVared -> EnvUnion TyVared -> IO Subst
+    unifyFunEnv lenv@(Ty.EnvUnion { Ty.unionID = lid }) renv@(Ty.EnvUnion { Ty.unionID = rid }) = do
+      unionID <- newUnionID
+      let env = Ty.EnvUnion { Ty.unionID = unionID, Ty.union = funEnv }
+
+      pure $ Subst (Map.fromList [(lid, env), (rid, env)]) Map.empty -- i don't think we need an occurs check
       --       traceShow ("ENVUNI: " <> show lenv <> "|||||" <> show renv <> "8=====>" <> show env <> "\n") $ 
       where
-        newUnionID = lid
-        env = Ty.EnvUnion { Ty.unionID = newUnionID, Ty.union = funEnv }
 
         union2envset = Set.fromList . (\(Ty.EnvUnion { Ty.union = union }) -> union)
         envset2union = Set.toList
@@ -828,7 +827,7 @@ finalize (Ty.Mod tystmts) = fmap T.Mod $ convertResult $ traverse annStmt tystmt
 
       Ty.If cond ifTrue elseIfs melse -> T.If <$> cond <*> sequenceA ifTrue <*> traverse (bitraverse id sequenceA) elseIfs <*> traverse sequenceA melse
       Ty.ExprStmt e -> T.ExprStmt <$> e
-      Ty.Return me -> T.Return <$> bitraverse fType id me
+      Ty.Return me -> T.Return <$> me
 
       Ty.DataDefinition dd -> T.DataDefinition <$> fDataDef dd
       Ty.FunctionDefinition fd body -> T.FunctionDefinition <$> fFunDec fd <*> sequenceA body
@@ -913,12 +912,14 @@ instance Substitutable Ty.Mod where
 instance Substitutable (Fix Ty.AnnotatedStmt) where
   ftv = cata $ \(Ty.AnnStmt _ stmt) -> case stmt of
     Ty.MutDefinition _ (Left t) -> ftv t
+    Ty.FunctionDefinition fundec stmts -> ftv fundec <> fold stmts
     stmt -> bifold $ first ftv stmt
 
   subst su = cata $ embed . sub
     where 
       sub (Ty.AnnStmt ann stmt) = Ty.AnnStmt ann $ case stmt of
         Ty.MutDefinition v (Left t) -> Ty.MutDefinition v (Left (subst su t))
+        Ty.FunctionDefinition fundec stmts -> Ty.FunctionDefinition (subst su fundec) stmts
         stmt -> first (subst su) stmt
 
 instance Substitutable (Fix Ty.ExprType) where
@@ -958,7 +959,7 @@ instance Substitutable (Fix Ty.TypeF) where
     Ty.TyVar tyv -> Set.singleton tyv
     t -> fold t
   
-  subst (Subst envm tyvm) = cata $ embed . \case
+  subst su@(Subst envm tyvm) = cata $ embed . \case
     Ty.TyVar tyv -> case tyvm !? tyv of
         Nothing -> Ty.TyVar tyv
         Just t -> project t
@@ -967,7 +968,7 @@ instance Substitutable (Fix Ty.TypeF) where
     Ty.TFun ogUnion@(Ty.EnvUnion { Ty.unionID = uid }) ts t ->
 
       -- might need to replace the union
-      let union = case envm !? uid of
+      let union = subst su $ case envm !? uid of
             Just eunion -> eunion
             Nothing -> ogUnion
 

@@ -9,7 +9,7 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Functor.Foldable (transverse, cata, embed)
 import Data.Foldable (fold)
 import Control.Monad.Trans.RWS (RWST)
-import Data.Map (Map)
+import Data.Map (Map, (!?))
 import Data.Maybe (mapMaybe)
 import qualified Control.Monad.Trans.RWS as RWST
 import qualified Data.Map as Map
@@ -22,7 +22,7 @@ import Data.Set (Set)
 import Data.Bifoldable (bifoldMap)
 import qualified Data.Set as Set
 
-import AST.Common (Module, AnnStmt, Expr, Type, UniqueVar (..), UniqueCon (..), UniqueType (..), Mutability (..), Locality (..), VarName, TCon, ConName, Annotated (..))
+import AST.Common (Module, AnnStmt, Expr, Type, UniqueVar (..), UniqueCon (..), UniqueType (..), Mutability (..), Locality (..), VarName, TCon, ConName (CN), Annotated (..))
 import AST.Converged (Prelude)
 import AST.Untyped (Untyped, StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..))
 import qualified AST.Untyped as U
@@ -32,6 +32,7 @@ import AST.Typed (Typed)
 import qualified AST.Typed as T
 import Data.Fix (Fix(..))
 import Debug.Trace (traceShowId, traceShow, traceShowWith)
+import Data.String (fromString)
 
 
 
@@ -84,7 +85,13 @@ rStmts = traverse -- traverse through the list with Ctx
         re <- rExpr e
         stmt $ R.ExprStmt re
       Return e -> do
-        re <- traverse rExpr e
+        mre <- traverse rExpr e
+        re <- case mre of
+          Just re -> pure re
+          Nothing -> do
+            uc <- undefined
+            pure $ Fix (R.Con uc)
+
         stmt $ R.Return re
       DataDefinition (DD tyName tyParams cons) -> do
         tid <- newType tyName
@@ -180,10 +187,15 @@ data Scope = Scope
   { varScope :: Map VarName UniqueVar
   , conScope :: Map ConName UniqueCon
   , tyScope :: Map TCon UniqueType
+
+  , unitType :: UniqueCon
   }
 
 emptyScope :: Scope
-emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty }
+emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty, unitType = CI { conID = error "It is an error to not have a unit type defined. Hopefully it's thunked, so this error won't be accessed.", conName = unitName } }
+
+unitName :: ConName
+unitName = CN $ fromString "Unit"
 
 -- Add later after I do typechecking.
 mkScope :: Prelude -> Scope
@@ -191,6 +203,10 @@ mkScope prelude = Scope
   { varScope = vars
   , conScope = cons
   , tyScope = types
+
+  , unitType = case cons !? unitName of
+    Just unit -> unit
+    Nothing -> error "Prelude must ABSOLUTELY have a Unit type defined."
   } where
     cons = Map.fromList $ fmap (\ci -> (ci.conName, ci)) $ foldMap extractCons $ T.fromMod prelude
     extractCons = \case

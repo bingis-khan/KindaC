@@ -85,8 +85,9 @@ data StmtF expr a
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
   | ExprStmt expr
-  | Return (Maybe expr)
+  | Return expr
   deriving (Show, Eq, Functor, Foldable, Traversable)
+$(deriveShow1 ''StmtF)
 
 -- The "big statement" - the distinction here is that the non-normal stmts need special treatment while typechecking. Not required (might remove later), but makes generating constraints slightly less annoying!
 -- TODO: really?
@@ -101,10 +102,12 @@ $(deriveBifunctor ''StmtF)
 $(deriveBifunctor ''BigStmtF)
 $(deriveBitraversable ''StmtF)
 $(deriveBitraversable ''BigStmtF)
+$(deriveShow1 ''BigStmtF)
 
 -- not sure about this one. if using it is annoying, throw it out. (eliminates the possibility to bimap)
 -- also, the style does not fit.
-data AnnotatedStmt a = AnnStmt [Ann] (BigStmtF (Expr Resolved) a) deriving (Functor, Foldable, Traversable)
+data AnnotatedStmt a = AnnStmt [Ann] (BigStmtF (Expr Resolved) a) deriving (Show, Functor, Foldable, Traversable)
+$(deriveShow1 ''AnnotatedStmt)
 
 type instance Stmt Resolved = BigStmtF (Expr Resolved) (AnnStmt Resolved)
 type instance AnnStmt Resolved = Fix AnnotatedStmt
@@ -114,7 +117,7 @@ type instance AnnStmt Resolved = Fix AnnotatedStmt
 -- Module --
 ---------------
 
-newtype Mod = Mod { fromMod :: [AnnStmt Resolved] }
+newtype Mod = Mod { fromMod :: [AnnStmt Resolved] } deriving Show
 
 type instance Module Resolved = Mod
 

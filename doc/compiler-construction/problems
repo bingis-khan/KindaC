@@ -35,6 +35,7 @@ functions - easy
 variables - hard
 
 I originally planned for the language to not be able to export variables from modules (and, if so, only immutable ones), but due to recent changes of my design...
+  >> also, a function could modify the variable, so I would still have this problem
 
 what if we combine them?
 
@@ -141,7 +142,7 @@ I see a few possible solutions:
 	
 		- basically turn all the modules and files into a single file, which then will be typechecked! this can also be easily parallelized!
 
-	The functions will then already be grouped by their calls, so the only thing left will me (concat . map) in both typechecking and monomorphization!
+	The functions will then already be grouped by their calls, so the only thing left will be (concat . map) in both typechecking and monomorphization!
 	Oh shid, I wanted to do 2, but 1 seems simpler.
 
 	But module separation - if a variable is undefined in a file, it should throw an error. Other modules being included should not impact this. 
@@ -235,3 +236,33 @@ g (m a)
 	x <&= gg
 
 I'll just treat them as variables! So, a TVar will be a: TV { Unique, Name }
+
+
+Okay, right now - no conversion functions. Env Union will be unified with every variable n shit. But I'll have to figure out the rules soon.
+
+
+1. THE REQUIRED
+
+ 1. Mark outside unions and inside unions - inside unions will always be replaced by outside unions
+    a. outside unions are assigned to variables. either assigned to or variables you use. they should probably become marked "outside" when entering a new type context (eg. entering a function)
+	b. inside are always on defined types (which are unable to represent any environment)
+ 2. Instantiate inside unions. Do not instantiate outside unions. When unifying an outside union with inside union, it becomes an outside union.
+ 3. Some extra stuff: "outside" is relative:
+
+		f (fx)
+			x = fx  # 2. here x union is inside, fx is also inside
+			ff (ffx () -> Int)
+				x = ffx  # 1. here: ffx union is inside; x union is outside
+
+		# 3. f (fx) - the fx parameter has is inside, so any call would instantiate it.
+
+	 So, make sure to include some info to know which env unions reach where (based on stack)
+
+
+This type of structure allows us to not have to unify stuff like this:
+
+g (f () -> b)
+	print f 
+
+^^^^^ without our way to fix it, ALL of the polymorphic call (eg. () -> Int and () -> Bool) would have to have the same environment.
+

@@ -22,4 +22,6 @@ main = do
     Right mod -> do
       putStrLn $ tModule mod
       monoModule <- mono prelude mod
+
+      putStrLn "MONO MODULE AYO"
       putStrLn $ mModule monoModule

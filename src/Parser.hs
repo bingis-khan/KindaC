@@ -177,7 +177,7 @@ sDataDefinition = recoverableIndentBlock $ do
 dataCon :: Parser DataCon
 dataCon = do
   conName <- dataConstructor
-  types <- many pType
+  types <- many typeTerm
   return $ DC conName types 
 
 

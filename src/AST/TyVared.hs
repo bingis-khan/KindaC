@@ -153,7 +153,7 @@ data StmtF expr a
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
   | ExprStmt expr
-  | Return (Either (Type TyVared) expr)  -- TODO: make it only an expression (this requires me to get the () constructor)
+  | Return expr  -- TODO: make it only an expression (this requires me to get the () constructor)
 
   -- Big statements
   | DataDefinition DataDef
@@ -209,7 +209,7 @@ tStmt stmt = case first tExpr stmt of
         tBody ("elif" <+> cond) elseIf) elseIfs <>
     maybe mempty (tBody "else") mElse
   ExprStmt e -> e
-  Return e -> "return" <+> fromEither (first (\t -> "::" <+> tType t) e)
+  Return e -> "return" <+> e
 
   DataDefinition dd -> tDataDef dd
   FunctionDefinition fd body -> tBody (tFunDec fd) body

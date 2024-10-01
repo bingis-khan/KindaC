@@ -91,10 +91,12 @@ data StmtF expr a
   | DataDefinition DataDef
   | FunctionDefinition FunDec (NonEmpty a)
   deriving (Show, Eq, Functor, Foldable, Traversable)
+$(deriveShow1 ''StmtF)
 
 -- not sure about this one. if using it is annoying, throw it out. (eliminates the possibility to bimap)
 -- also, the style does not fit.
-data AnnotatedStmt expr a = AnnStmt [Ann] (StmtF expr a) deriving (Functor)
+data AnnotatedStmt expr a = AnnStmt [Ann] (StmtF expr a) deriving (Show, Functor)
+$(deriveShow1 ''AnnotatedStmt)
 
 type instance Stmt Untyped = StmtF (Expr Untyped) (AnnStmt Untyped)
 type instance AnnStmt Untyped = Fix (AnnotatedStmt (Expr Untyped))
@@ -104,7 +106,7 @@ type instance AnnStmt Untyped = Fix (AnnotatedStmt (Expr Untyped))
 -- Module --
 ---------------
 
-newtype Mod = Mod [AnnStmt Untyped]
+newtype Mod = Mod [AnnStmt Untyped] deriving Show
 
 type instance Module Untyped = Mod
 
