@@ -1,0 +1,77 @@
+# Should I allow uppercase variable names and lowercase constructor names?
+# The only problem I found was:
+
+T
+	A
+	B
+	C
+
+t = aOrBOrC()
+
+case t
+	A
+		print 'a'
+
+	B
+		print 'b'
+
+	C
+		print 'c'
+
+# Then, if we remove the 'A' constructor like this:
+
+T
+	B
+	C
+
+# Then case t will always match A, as it will be treated as a variable name.
+# ehhh, i dunno
+# also, which looks prettier
+
+Maybe a
+	Just a
+	None
+
+
+# or
+
+Maybe a
+	just a
+	none
+
+# But it's only a problem with enums
+
+T
+	A Int String
+	# ...
+
+# ...
+
+case t
+	A(x, y)
+		print 'a'
+		print x
+		print y
+
+# Okay, right now I'll decide to do only uppercase letters, as my language is principled already: (= vs <=)
+# comparison example:
+
+x = 1
+
+Either a b
+	Left a
+	Right b
+
+y = Left(1)
+
+Maybe a
+	Just a
+	Nothing
+
+x = Nothing
+
+y = Just(1)
+
+Maybe a
+	just (Maybe a) a (Either a a)
+	nothing

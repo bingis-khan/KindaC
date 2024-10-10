@@ -1,0 +1,41 @@
+# Proxy Int
+# 123
+# Proxy Unchecked
+# Proxy Unchecked
+# Proxy Checked
+# True
+
+main ()
+	Proxy a
+		Proxy
+
+	x = Proxy as Proxy Int  # a function type will not work: (Int -> Int)
+	print x
+	print 123
+
+
+	Unchecked
+	Checked
+
+
+	check (p Proxy Unchecked) -> Proxy Checked
+		print p
+		return Proxy
+
+	makeUnchecked () -> Proxy Unchecked
+		return Proxy
+
+	consumeChecked (p Proxy Checked) -> Bool
+		return True
+
+
+	uch = makeUnchecked()
+	print uch
+	ch = check(uch)
+	print ch
+	ch = consumeChecked(ch)
+	print ch
+
+	return
+
+main()

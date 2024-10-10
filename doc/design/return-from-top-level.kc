@@ -1,0 +1,22 @@
+# Maybe I should disallow the `return` keyword for top level?
+# Instead of writing (this is top level):
+
+hadError = doSomeIO()
+
+if hadError
+	return 1
+
+
+# A clearer way would be
+
+hadError = doSomeIO()
+
+if hadError
+	exit(1)
+
+
+# Maybe I can force this "good style"
+# Plus, it's more functional!
+
+# But both options are easy, so I don't care right now.
+# Right now it's ALLOWED.

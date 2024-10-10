@@ -1,0 +1,16 @@
+# False
+# False
+# ()
+# ()
+# True
+# ()
+
+uni (x, y)
+	print x == y
+	return
+
+n = uni (1, 4)
+m = uni (True, False)
+print n
+print m
+print uni(True, True)

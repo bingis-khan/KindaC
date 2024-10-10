@@ -1,0 +1,12 @@
+
+somefun ()
+	x = 1
+	f ()
+		print x
+		return
+
+	f()
+
+	return
+
+somefun()

@@ -1,0 +1,28 @@
+
+print 1
+print 2
+y = 2
+
+g ()
+    f()
+
+f ()
+    print 123
+
+# if i add mutual recursion:
+# mutual recursion scope ends here, because of the second 'f' is here.
+# I might also throw an error if there are any redefinitions (which are explicitly allowed)
+
+f = 69
+
+
+g' ()
+    print f
+
+id (x) => x
+
+print 1
+
+z = 5
+
+print f

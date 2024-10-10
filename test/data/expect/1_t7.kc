@@ -1,0 +1,21 @@
+# 3
+# 2
+# 69
+
+n = 69
+printn ()
+	print n
+	return
+
+printn2 ()
+	print 2
+	printn()
+	return
+
+printn3 ()
+	print 3
+	printn2()
+	return
+
+
+printn3()

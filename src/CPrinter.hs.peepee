@@ -1,0 +1,264 @@
+{-# LANGUAGE NamedFieldPuns, OverloadedStrings, DuplicateRecordFields  #-}
+{-# OPTIONS_GHC -Wno-unused-do-bind #-}
+{-# LANGUAGE LambdaCase #-}
+module CPrinter (cModule) where
+
+import AST.Common (Module, Annotated, AnnStmt, Expr, LitType (..), Locality (..), Type)
+import AST.Mono (Mono, FunDec, DataDef, AnnotatedStmt (..), StmtF (..), ExprType (..), ExprF (..))
+import qualified AST.Mono as M
+import Data.Text (Text)
+import Control.Monad.Trans.RWS (RWS)
+import Control.Monad.Trans.State (State)
+import Data.List.NonEmpty (NonEmpty)
+import Data.Traversable (for)
+import Data.Functor.Identity (Identity)
+import Data.Foldable (for_, traverse_, sequenceA_)
+import Data.Functor.Foldable (Recursive (cata))
+import Control.Monad.Trans.Writer (Writer)
+import Data.String (IsString)
+import GHC.Exts (IsString(fromString))
+import Data.Fix (Fix(..))
+import qualified Data.List.NonEmpty as NonEmpty
+import Data.Unique (hashUnique)
+import Data.Biapplicative (bimap)
+
+
+newtype PP' a  = PP (Writer String a)
+type PP = PP' ()
+
+
+cModule :: Module Mono -> Text
+cModule M.Mod{ functions, dataTypes, main } = pp $ do
+  comment "DATATYPES"
+  for_ dataTypes cDataType
+
+  comment "FUNCTIONS"
+  for_ functions cFunction
+
+  comment "MAIN"
+  cMain main
+
+cFunction :: Annotated (FunDec, NonEmpty (AnnStmt Mono)) -> PP
+cFunction = undefined
+
+cDataType :: Annotated DataDef -> PP
+cDataType = undefined
+
+cMain :: [AnnStmt Mono] -> PP
+cMain = ccFunction "main" "int" [] . fmap cStmt
+
+cStmt :: AnnStmt Mono -> PP
+cStmt = cata $ \(AnnStmt anns monoStmt) -> case monoStmt of
+  Pass -> comment "/* `pass` here. */"
+  Print e
+    | typeTypeOf e == BuiltIn "Int" -> do
+      include "stdio.h"
+      statement $ cCall "printf" [cString "%d\\n", cExpr e]
+
+
+    | typeTypeOf e == BuiltIn "Bool" -> do
+      include "stdio.h"
+      statement $ cCall "printf" [cString "%s\n", cTernary (cExpr e) (cString "True") (cString "False")]
+
+    | otherwise -> undefined  -- we don't print funny types yet.
+
+  Assignment mvi e -> statement $ do
+    "const"
+    cType (typeOf e)
+    cVar mvi
+    "="
+    cExpr e
+
+  MutDefinition mvi me -> statement $ do
+    cType (typeOf undefined)  -- current AST representation is lacking.
+    cVar mvi
+    optional me $ \e -> do
+      "="
+      cExpr e
+
+  MutAssignment mvi e -> statement $ do
+    cVar mvi
+    "="
+    cExpr e
+
+  If cond ifTrue elifs mElse -> do
+    oneline $ do
+      "if"
+      enclose "(" ")" $ cExpr cond
+      cBlock ifTrue
+
+    for_ elifs $ \(elifCond, elifBody) -> oneline $ do
+      "else"
+      "if"
+      enclose "(" ")" $ cExpr elifCond
+      cBlock elifBody
+
+    optional mElse $ \els -> oneline $ do
+      "else"
+      cBlock els
+
+  ExprStmt e -> statement $ cExpr e
+  Return me -> statement $ do
+    "return"
+    optional me $ \e -> do
+      cExpr e
+
+
+cExpr :: Expr Mono -> PP
+cExpr = cata $ \(ExprType t expr) -> case expr of
+  Lit (LInt i) -> cInt i
+
+  Var (Local, envTransform) mvi -> cVarAccess envTransform (cVar mvi)
+  Var (FromEnvironment, envTransform) mvi -> cVarAccess envTransform (cEnvVar mvi)
+
+  Con mci -> cCon mci
+
+  Op l op r -> enclose "(" ")" $ do
+    l
+    cOp op
+    r
+
+  Call callee args -> cCall callee args
+
+  Lam _ _ _ -> error "unused"  -- i need better ASTs
+
+
+cType :: Type Mono -> PP
+cType = cata $ \case
+  M.TCon mti _ -> cMonoTypeInfo mti  -- the type should be defined by that point.
+  M.TFun env args ret -> typedef env args ret
+
+-- right now, dumb-prints it;
+--  later make it more readable by consulting some global state about name collisions.
+-- cMonoTypeInfo :: MonoTypeInfo -> PP
+-- cMonoTypeInfo MTI { typeID, typeName } = identifier $ do
+--   p typeName
+--   "_"
+--   p (hashUnique typeID)
+
+-- cBlock :: Foldable f => f PP -> PP
+-- cBlock stmts = enclose "{" "}" $
+--   indent $ sequenceA_ stmts
+
+-- cVar :: MonoVarInfo -> PP
+-- cVar MVI { varID, varName } = identifier $ do
+--   p varName
+--   "_"
+--   p (hashUnique varID)
+
+-- cEnvVar :: MonoVarInfo -> PP
+-- cEnvVar v = identifier $ do
+--   "env"
+--   "."
+--   cVar v
+
+-- cCon :: MonoConInfo -> PP
+-- cCon MCI { conID, conName } = identifier $ do
+--   p conName
+--   "_"
+--   p (hashUnique conID)
+
+-- -- do sanitization in the future.
+-- cString :: Text -> PP
+-- cString = fromString . show  -- afaik, this will be printed with quotes, like in C
+
+-- cInt :: Int -> PP
+-- cInt = fromString . show
+
+-- cTernary :: PP -> PP -> PP -> PP
+-- cTernary cond t f = do
+--   cond
+--   "?"
+--   t
+--   ":"
+--   f
+
+-- -- cMonoEnv -> constructs the environment
+-- cMonoEnv, cMonoEnvType :: MonoEnv -> PP
+-- cMonoEnv env = do
+--   let structTypes = bimap (cVar . snd) (cType . snd) env
+--   undefined
+-- cMonoEnvType = undefined
+
+-- cMonoEnvInfo :: MonoEnvInfo -> PP
+-- cMonoEnvInfo = undefined
+
+-- cVarAccess :: EnvTransform -> PP -> PP
+-- cVarAccess = undefined
+
+-- ccFunction :: PP -> PP -> [(PP, PP)] -> [PP] -> PP
+-- ccFunction = undefined
+
+-- cCall :: PP -> [PP] -> PP
+-- cCall = undefined
+
+-- cOp :: Op -> PP
+-- cOp = undefined
+
+-- cStruct :: [(PP, PP)] -> PP
+-- cStruct = undefined
+
+-- include :: Text -> PP
+-- include = undefined
+
+-- typedef :: Env PP -> [PP] -> PP -> PP
+-- typedef = undefined
+
+
+
+data TypeType
+  = BuiltIn Text
+  | UserDefined Text
+  deriving Eq
+
+typeTypeOf :: Expr Mono -> TypeType
+typeTypeOf = undefined
+
+typeOf :: Expr Mono -> Type Mono
+typeOf = undefined
+
+comment :: Text -> PP
+comment = undefined
+
+enclose :: PP -> PP -> PP -> PP
+enclose = undefined
+
+
+statement :: PP -> PP
+statement = undefined
+
+oneline :: PP -> PP  -- make everything into a one line until the first indent
+oneline = undefined
+
+identifier :: PP -> PP
+identifier = undefined
+
+indent :: PP -> PP
+indent = undefined
+
+optional :: Maybe a -> (a -> PP) -> PP
+optional = undefined
+
+
+pp :: PP -> Text
+pp = undefined
+
+p :: Show a => a -> PP
+p = fromString . show
+
+
+instance Functor PP' where
+  fmap = undefined
+
+instance Applicative PP' where
+  pure = undefined
+  _ <*> _ = undefined
+
+instance Monad PP' where
+  _ >>= _ = undefined
+
+
+instance IsString (PP' a) where
+    fromString = undefined
+
+

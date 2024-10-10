@@ -1,0 +1,22 @@
+
+In this program:
+
+x = 1
+x-ptr =& x
+
+# captures the pointer and modifies x when called.
+modifies-x () -> Int
+	x-ptr <&= 69
+	return 420
+
+
+# modifies-x() is called before the lambda. Now, what is expected?
+# Should x be from before the expression was executed?
+# or should x be from when its called?
+print modifies-x() (n: n + x)()  # (this is function composition here, interpret it as (n: n + x)(modifies-x()))
+
+
+--- 
+
+it might be solved by assigning each call to a variable
+kek, and this will make c look like the text format of llvm kek.

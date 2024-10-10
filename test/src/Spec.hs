@@ -1,5 +1,8 @@
 import YesNo (yesno)
+import Expect (expect)
 
 
 main :: IO ()
-main = yesno
+main = do
+  -- yesno
+  expect

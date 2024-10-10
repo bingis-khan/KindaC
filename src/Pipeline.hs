@@ -29,9 +29,9 @@ loadModule mPrelude filename = do
   case parse filename source of
     Left err -> pure $ Left err
     Right ast -> do
-      print ast
+      -- print ast
       (errs, rmod) <- resolve mPrelude ast
-      print rmod
+      -- print rmod
 
       mtmod <- typecheck mPrelude rmod
       case mtmod of

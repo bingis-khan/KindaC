@@ -1,0 +1,18 @@
+# True
+# 72
+# ()
+# 423
+# (Int, Int) -> Int
+
+
+x = 1
+y = 2
+
+f (z, n)
+	print n
+	return x + y + z
+
+print f(69, True)
+print f(420, Unit)
+
+print f as (Int, Int) -> Int

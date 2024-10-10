@@ -1,11 +1,11 @@
 {-# LANGUAGE LambdaCase, OverloadedRecordDot, OverloadedStrings #-}
 module Mono (mono) where
 
-import AST.Converged (Prelude)
-import AST.Common (Module, AnnStmt, Annotated (..), Expr, Type, Env, UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, EnvUnion, TCon (..), UnionID (..), Ann, EnvID (..))
+import AST.Converged (Prelude(..))
+import AST.Common (Module, AnnStmt, Annotated (..), Expr, Type, Env, UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, EnvUnion, TCon (..), UnionID (..), Ann, EnvID (..), Mutability (..), VarName (..))
 import AST.Typed (Typed)
 import qualified AST.Typed as T
-import AST.Mono (Mono)
+import AST.Mono (Mono, MonoInt)
 import qualified AST.Mono as M
 import Data.Fix (Fix(..))
 import Control.Monad.Trans.Reader (ReaderT, runReaderT)
@@ -22,6 +22,7 @@ import Data.Text (Text)
 import Data.Foldable (fold)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Traversable (for)
+import Data.Functor ((<&>))
 
 
 data Context' = Context
@@ -31,11 +32,11 @@ data Context' = Context
   , tvarMap :: Map TVar (Type Mono)  -- this describes the temporary mapping of tvars while monomorphizing.
 
   -- Monomorphized cached versions of functions
-  , funFind :: Map (UniqueVar, Type Mono) UniqueVar
+  , funFind :: Map (UniqueVar, Type Mono) M.EnvDef  -- Env and Union are for later environment addition
   , conFind :: Map (UniqueCon, Type Mono) UniqueCon
 
   -- Ordering so that functions won't need forward declarations.
-  , funOrder :: [Annotated M.Function]
+  , funOrder :: [Annotated (M.Function (AnnStmt MonoInt))]
 
   -- Typed functions/constructors (not yet monomorphized)
   , functions :: Map UniqueVar (Annotated Function)
@@ -47,20 +48,38 @@ type Context = StateT Context' IO
 
 mono :: Prelude -> Module Typed -> IO (Module Mono)
 mono prelude mod = do
-  let combined = T.fromMod prelude <> T.fromMod mod
+  let combined = T.fromMod prelude.tpModule <> T.fromMod mod
 
   -- I think I'll just do it procedurally
   --   But gather types before!
-  (stmts, ctx) <- flip runStateT startingContext $ mStmts combined
+  (mistmts, ctx) <- flip runStateT startingContext $ mStmts combined
   let mtypes = ctx.typeOrder
-  let mfuns = ctx.funOrder
-  let mmod = M.Mod { M.dataTypes = mtypes, M.functions = mfuns, M.main = stmts }
+  let mifuns = ctx.funOrder
+
+  -- Change the representation of a funFind map from (UV, Type) -> UV to UV -> [UV]
+  let usageFind = toUsageFind ctx.funFind
+
+  let mstmts = substEnv usageFind <$> mistmts 
+  let mfuns = substEnv usageFind `fmap3` mifuns
+  let mmod = M.Mod { M.dataTypes = mtypes, M.functions = mfuns, M.main = mstmts }
   pure mmod
+
+
+substEnv :: Map UniqueVar (NonEmpty M.EnvDef) -> AnnStmt MonoInt -> AnnStmt Mono
+substEnv usageFind = cata $ embed . first substf
+  where
+    substf :: M.EnvPlaceholder -> M.EnvDefs
+    substf (M.EPH uv) = case usageFind !? uv of
+      Nothing -> []
+      Just (v:|vs) -> v:vs
+
+toUsageFind :: Map (UniqueVar, Type Mono) M.EnvDef -> Map UniqueVar (NonEmpty M.EnvDef)
+toUsageFind = Map.mapKeysWith (<>) fst . fmap NonEmpty.singleton
 
 
 mStmts = traverse mAnnStmt
 
-mAnnStmt :: AnnStmt Typed -> Context (AnnStmt Mono)
+mAnnStmt :: AnnStmt Typed -> Context (AnnStmt MonoInt)
 mAnnStmt = cata $ fmap embed . (\(T.AnnStmt ann stmt) -> 
   let mann = M.AnnStmt ann
       noann = M.AnnStmt []
@@ -82,9 +101,9 @@ mAnnStmt = cata $ fmap embed . (\(T.AnnStmt ann stmt) ->
     addDatatype ann datadef
     pure $ noann M.Pass
 
-  T.FunctionDefinition fundec body -> do
+  T.FunctionDefinition fundec@(T.FD _ uv _ _) body -> do
     addFunction ann (Function fundec (sequenceA body))
-    pure $ noann M.Pass
+    pure $ noann $ M.EnvHere $ M.EPH uv
   )
 
 
@@ -109,8 +128,7 @@ mExpr = cata $ fmap embed . \(T.ExprType t expr) -> do
       (Fix (M.ExprType _ e')) <- e
       pure e'
     T.Lam env args ret ->
-      let args' = (traverse . traverse) mType args
-      in M.Lam <$> mEnv (mType <$> env) <*> args' <*> ret
+      M.EnvInit <$> mLambda t' env args ret  -- M.Lam <$> mEnv (mType <$> env) <*> args' <*> ret
 
   pure $ M.ExprType t' expr'
 
@@ -119,7 +137,7 @@ mType = cata $ fmap embed . \case
   T.TCon tid pts -> do
 
     params <- sequenceA pts
-    mt <- typeCon tid params "mono"
+    mt <- typeCon tid params ""
     pure $ decoMonoType mt
 
   T.TFun union params ret -> do
@@ -140,7 +158,10 @@ mUnion T.EnvUnion { T.unionID = unionID, T.union = union } = do
 
 mEnv :: T.EnvF (Context (Type Mono)) -> Context (Env Mono)
 mEnv T.Env { T.envID = envID, T.env = env } = do
-  env' <- traverse sequenceA env
+  env' <- for env $ \(uv, ctxt) -> do
+    ctxt' <- ctxt
+    uv' <- variable uv ctxt'
+    pure (uv', ctxt')
   pure $ M.Env { M.envID = envID, M.env = env' }
 
 
@@ -191,10 +212,14 @@ typeCon t apps nameAppend = do
                   mts -> do
                     union <- emptyUnion
                     pure $ Fix $ M.TFun union mts newType
-            modify $ \ctx -> ctx { conFind = Map.insert (uc, conType) uc ctx.conFind }
 
             -- I don't think we need to change UniqueCon, as we will not directly compare constructors from now on? (and in codegen, they will be prefixed with the newUniqueType)
-            pure $ M.DC uc mts
+            -- UPDATE: we need to do that. example: Proxy Int and Proxy Bool will use the same constructor, which uses the same enum -> type error in C.
+            newCID <- liftIO newUnique
+            let uc' = uc { conID = newCID }
+
+            modify $ \ctx -> ctx { conFind = Map.insert (uc, conType) uc' ctx.conFind }
+            pure $ M.DC uc' mts
 
         let newDataDef = Annotated anns $ M.DD newUniqueType newDCs
         pure newDataDef
@@ -239,7 +264,7 @@ variable :: UniqueVar -> Type Mono -> Context UniqueVar
 variable ti t = do
   monofuns <- gets funFind
   case monofuns !? (ti, t) of
-    Just monofun -> pure monofun
+    Just (M.EnvDef (M.FD _ monofun _ _) _) -> pure monofun
     Nothing -> do
       funs <- gets functions
       case funs !? ti of
@@ -281,9 +306,9 @@ addDatatype anns dd@(T.DD ut _ dc) =
 -- then, these mappings are retrieved by the 'retrieveTV' function
 mFunction :: Annotated Function -> Type Mono -> Context UniqueVar
 mFunction (Annotated anns (Function fundec@(T.FD _ tv _ _) ctxBody)) monoType = do
-  -- !!! THIS SHOULD BE REMOVED BECAUSE IT IS SHITTY
-  let placeholderUnionID = case monoType of
-        Fix (M.TFun (M.EnvUnion uid _) _ _) -> uid
+  -- !!! THIS SHOULD BE REMOVED BECAUSE IT IS SHITTY (by that I meant the placeholderUnionID, which is used to create a function type. But "downcasting" the type to get a union is also very iffy. )
+  let union@(M.EnvUnion placeholderUnionID _) = case monoType of
+        Fix (M.TFun union _ _) -> union
         tmono -> error $ "SHOULD NOT HAPPEN. This type should have been a function type: " <> show tmono
 
   let funtype = fundec2type placeholderUnionID fundec  -- convert from function declaration to a Type Typed
@@ -291,14 +316,32 @@ mFunction (Annotated anns (Function fundec@(T.FD _ tv _ _) ctxBody)) monoType = 
     mfd@(M.FD _ uv _ _) <- mFunDec fundec
     body <- ctxBody
 
-    let mFun = M.Fun mfd body
+    let mFun = M.Fun mfd union body
 
     -- add it to monomorphized functions
-    ctx <- get
-    let ctx' = ctx { funFind = Map.insert (tv, monoType) uv ctx.funFind, funOrder = ctx.funOrder ++ [Annotated anns mFun] }
-    put ctx'
+    modify $ \ctx -> ctx { funFind = Map.insert (tv, monoType) (M.EnvDef mfd union) ctx.funFind, funOrder = ctx.funOrder ++ [Annotated anns mFun] }
 
     pure uv
+
+mLambda :: Type Mono -> Env Typed -> [(UniqueVar, Type Typed)] -> Context (Expr Mono) -> Context M.EnvDef
+mLambda t tenv tparams tret = do
+  let (Fix (M.TFun union _ _)) = t  -- safe but unsafe cast.
+  env <- mEnv $ mType <$> tenv
+  params <- traverse2 mType tparams
+  expr@(Fix (M.ExprType ret _)) <- tret
+
+  -- Make fundec (outside :0)
+  newUV <- mkLambdaUV
+  let fundec = M.FD env newUV params ret
+  let body = NonEmpty.singleton $ Fix $ M.AnnStmt [] $ M.Return expr
+  let mFun = M.Fun fundec union body
+
+  -- add it to monomorphized functions
+  modify $ \ctx -> ctx { funOrder = ctx.funOrder ++ [Annotated [] mFun] }
+
+  let envdef = M.EnvDef fundec union
+
+  pure envdef
 
 mFunDec :: T.FunDec -> Context M.FunDec
 mFunDec (T.FD env oldUV params ret) = do
@@ -364,6 +407,16 @@ mkUV uv = do
   newVar <- liftIO newUnique
   pure $ uv { varID = newVar }
 
+-- used by 'mLambda' (lambdas don't have UniqueVars)
+mkLambdaUV :: Context UniqueVar
+mkLambdaUV = do
+  newVar <- liftIO newUnique
+  pure $ VI
+    { varID = newVar
+    , varName = VN "lambda"
+    , mutability = Immutable
+    }
+
 convertUT :: UniqueType -> [Type Mono] -> Type Mono
 convertUT ut apps = Fix $ M.TCon ut apps
 
@@ -377,7 +430,7 @@ fundec2type placeholderUnionID (T.FD env _ params ret) =
 
 
 
-data Function = Function T.FunDec (Context (NonEmpty (AnnStmt Mono)))
+data Function = Function T.FunDec (Context (NonEmpty (AnnStmt MonoInt)))
 
 
 startingContext :: Context'
@@ -398,3 +451,5 @@ startingContext = Context
 
 
 traverse2 = traverse . traverse
+fmap3 = fmap . fmap . fmap
+

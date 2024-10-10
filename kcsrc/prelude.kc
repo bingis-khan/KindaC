@@ -23,20 +23,23 @@ Int  # Make sure this is parsed as DataDefinition with zero constructors instead
 # #[ctype 'int8_t', cstdinclude 'stdint.h']
 # I8
 
+# some test function
 fib (x)
 	if x == 0
 		return 0
 	elif x == 1
 		return 1
 	else
-		return (x - 1) + (x - 2)
+		return fib(x - 1) + fib(x - 2)
 
 
-# temporaly commented out
-#Maybe a
-#	Just a
-#	Nothing
-#
-#Either e a
-#	Left e
-#	Right a
+# ayoooo
+
+Maybe a
+	Just a
+	Nothing
+
+
+Either e a
+	Left e
+	Right a

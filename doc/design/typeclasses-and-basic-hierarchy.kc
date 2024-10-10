@@ -1,0 +1,180 @@
+
+# the kind of 'f' is deduced to be * -> * from the declaration
+# the compiler will throw an error if they do not match.
+class Functor f
+	map(fn a -> b, x f a) -> f b
+
+
+# one possible impl of Monoid
+class Monoid a
+	mempty a  # is this allowed?
+	mempty() -> a  # or only functions are possible (it would make it simpler ayo)
+
+	mappend(a, a) -> a
+
+# for addition
+impl Monoid Int
+	mempty(): 0
+
+	mappend(l Int, r Int): l + r
+
+
+# Show typeclass for displaying stuff
+#  (out is also a typeclass)
+class Out
+	write-bytes([byte])
+
+
+# we show no distinction between Typeclasses and Datatypes
+class Show a
+	show(Out, a) -> Out
+
+# now the funny stuff. Should I make string type be super polymorphic? let's try:
+class Show a, Iterator Rune => Str a
+	# i guess we don't need any special classes?
+	# i guess only Show class matters?
+	# hmmm....
+	# ah! but we also need to work on the string
+	to-bytes() -> Iterator Byte
+	to-runes() -> Iterator Rune
+
+	# etc...
+
+# ConstStr is a constant UTF-8 string
+# maybe I should shorten the name??
+impl Str ConstStr
+	# ....
+
+impl Str Char
+	# ...
+
+ConcatStr
+	ConcatStr Str Str
+# actual type: ConcatStr s s' <= Str s, Str s'
+
+concat (l Str, r Str) -> Str
+	return ConcatStr(l, r)
+
+# or even better?
+Join a b
+	Join a b
+
+join (a, b): Join(a, b)
+
+impl Str (Join a b) <= Str a, Str b
+	# ...
+
+# what the hell...
+
+
+# or should I go this way:
+
+class CharOrStr a
+	from-char(Char c) -> a
+
+# writing this:
+c = 'a'
+
+# would silently result in
+c = from-char('a')
+
+# and
+impl CharOrStr Char
+	from-char(c Char): c  # identity
+
+c = from-char('a') # it's a Char
+print-char(c)
+
+
+# or
+impl CharOrStr ConstStr
+	from-char(c Char)
+		s = ????
+		return s
+
+c = from-char('a')  # it's a String
+print-string(c)
+
+# if I can figure this out, we can have pretty cool stuff, like:
+StrStoredInU64
+	SSIU64 U64
+
+impl CharOrStr StrStoredInU64
+	from-char(c Char)
+		s = c to-integral()
+		return StrStoredInU64(s)
+
+# or maybe I shouldn't have Chars?
+s = 'a' to-runes()[0]  # or, more rust-like, to-runes() next() unwrap()
+
+# We don't have Chars, we have Runes. Or, maybe
+s as Rune
+
+# should I call Runes as Rune or Char?
+
+
+
+----- PERFORMANCE ------
+
+Str typeclass will be nice to use, but not performant.
+
+# example (==) implementation:
+
+is-equal-op (l Str, r Str) -> Bool
+	for lc, rc in zip(l to-runes(), r to-runes())
+		if lc /= rc
+			return False
+	return True
+
+# however, comparing ConstStr is fast:
+is-equal-op (l ConstStr, r ConstStr) -> Bool
+	if l.len /= r.len
+		return False
+	return cnile.memcmp(l as-raw-ptr(), r as-raw-ptr(), l.len) == 0
+
+# so maybe we should keep strings untypeclassed (Str == ConstStr)
+# then just have a StringBuilder to build strings?
+
+# but, with the typeclass, format strings come for free.
+default-message = random-message()  # this might have allocated something previously.
+format = 'sucking done {random-int(100, 300)} times. Result: {default-message}'
+
+print format
+
+
+# because of this, we don't need any allocation or writef stuff like this:
+
+something (out Show)
+	out
+		show('sucking done ')
+		show(random-int(100, 300))
+		show(' times.')
+		show('Result: ')
+		show(default-message)
+
+# but it can be hidden
+
+# polymorphic args tho
+printf (fmt ConstStr, ...xs Show)
+	out = get-stdout()
+	arg-i = 0
+
+	# analyze fmt in a loop
+	for c in fmt
+		# ....
+		if c == '%'
+			out show(xs[i])
+			arg-i = arg-i + 1
+
+# usage
+printf('sucking done % times. Result: %', random-int(100, 300), default-message)
+
+
+# or maybe just varargs like this:
+print('sucking done ', random-int(100, 300), ' times. Result: ', default-message')
+
+# where print is defined like so:
+print(...ss Show) -> ()
+	out = get-stdout()
+	for s in ss
+		out write(s)

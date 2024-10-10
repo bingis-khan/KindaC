@@ -44,8 +44,8 @@ import qualified AST.Resolved as R
 import qualified AST.TyVared as Ty
 import qualified AST.Typed as T
 
-import AST.Converged (Prelude)
-import AST.Common (Module, Type, TVar (TV), AnnStmt, Expr, LitType (LInt), UniqueVar, UniqueCon, UniqueType (typeName), EnvUnion, Env, Annotated (Annotated), Op (..), TCon (fromTC, TC), Locality (..), EnvID (..), UnionID (..))
+import AST.Converged (Prelude(..), boolTypeName, tlReturnTypeName, intTypeName, PreludeFind (..), boolFind, tlReturnFind, intFind)
+import AST.Common (Module, Type, TVar (TV), AnnStmt, Expr, LitType (LInt), UniqueVar, UniqueCon, UniqueType (typeName), EnvUnion, Env, Annotated (Annotated), Op (..), TCon (fromTC, TC), Locality (..), EnvID (..), UnionID (..), Result(..), fromResult)
 import AST.Resolved (Resolved)
 import AST.Typed (Typed)
 import AST.TyVared (TyVared, TyVar, TypeF (..), tyModule)
@@ -63,22 +63,22 @@ import Debug.Trace (traceShow, traceShowWith, traceShowId)
 
 typecheck :: Maybe Prelude -> Module Resolved -> IO (Either (NonEmpty TypeError) (Module Typed))
 typecheck mprelude rStmts = do
-    let env = topLevelEnv mprelude  -- extract from Prelude unchanging things about the environment, like predefined types, including the return value.
+    let env = mkContext mprelude  -- extract from Prelude unchanging things about the environment, like predefined types, including the return value.
         senv = makeSEnv mprelude  -- we should generate senv here....
 
     (tyStmts, constraints) <- generateConstraints env senv rStmts
 
-    liftIO $ putStrLn "UNSUBST"
-    liftIO $ putStrLn $ tyModule tyStmts
+    -- liftIO $ putStrLn "UNSUBST"
+    -- liftIO $ putStrLn $ tyModule tyStmts
 
     (errors, su) <- liftIO $ solveConstraints constraints
     let finalTyStmts = subst su tyStmts
 
     -- debug print
-    liftIO $ putStrLn $ (\(Subst su1 su2) -> show su1) su
+    -- liftIO $ putStrLn $ (\(Subst su1 su2) -> show su1) su
 
-    liftIO $ putStrLn "\nSUBST"
-    liftIO $ putStrLn $ tyModule finalTyStmts
+    -- liftIO $ putStrLn "\nSUBST"
+    -- liftIO $ putStrLn $ tyModule finalTyStmts
     
     pure $ case finalize finalTyStmts of
         Left ambs ->
@@ -95,63 +95,38 @@ typecheck mprelude rStmts = do
 -- ENVIRONMENT PREPARATION --
 -----------------------------
 
-topLevelEnv :: Maybe Prelude -> PreludeEnv
-topLevelEnv mprelude = case mprelude of
-  Nothing -> PreludeEnv { preludeDefines = Nothing, returnType = Nothing }
-  Just prelude ->
-    let
-        defines = dataTypes prelude
-        defaultReturnTypeName = TC "Int"
-        defaultReturnType = case Map.lookup defaultReturnTypeName defines of
-          Nothing -> error $ "Could not find the default return type '" <> show defaultReturnTypeName <> " in Prelude."
-          Just t -> t2ty t
-    in PreludeEnv { preludeDefines = Just defines, returnType = Just defaultReturnType }
-  where
-    dataTypes :: Prelude -> Map TCon (Type Typed)
-    dataTypes
-      = Map.fromList
-      . mapMaybe
-        (\case
-          Fix (T.AnnStmt _ (T.DataDefinition (T.DD tid tvars _))) -> Just (tid.typeName,  dataType tid tvars)
-          _ -> Nothing
-        )
-      . T.fromMod
-
 -- TODO: explain what makeSEnv is for (after coming back to this function after some time, I have no idea what it does)
 -- TODO: I had to add IO, because I have to regenerate envIDs. The obvious solution is to not lose them - preserve the env IDs.
 -- TODO: I should probably do it only once, when exporting the package (so that empty env IDs are the same).
 -- 
 makeSEnv :: Maybe Prelude -> Infer StatefulEnv
 makeSEnv Nothing = pure emptySEnv
-makeSEnv (Just (T.Mod prelude)) = do
+makeSEnv (Just prelude) = do
   -- gather top level variables that should be accessible from prelude
-  vars <- fmap (Map.fromList . catMaybes) . for prelude $ \(Fix (T.AnnStmt _ bstmt)) -> case bstmt of
-      T.FunctionDefinition (T.FD env v params ret) _ -> do -- TODO: very hacky - these env "transforms" shouldn't be here or happen at all for that matter.
-        let
-          utfun = UTFun (tenv2tyenv env) (fmap (t2ty . snd) params) (t2ty ret)
-          scheme = Forall (tv ret <> foldMap (tv . snd) params) utfun
-        pure $ Just (v, scheme)
+  let vars = Map.fromList $ Map.elems prelude.varNames <&> \case
+        Left (T.FD env v params ret) -> -- TODO: very hacky - these env "transforms" shouldn't be here or happen at all for that matter.
+          let
+            utfun = UTFun (tenv2tyenv env) (fmap (t2ty . snd) params) (t2ty ret)
+            scheme = Forall (tv ret <> foldMap (tv . snd) params) utfun
+          in (v, scheme)
 
-      T.Assignment v (Fix (T.ExprType t _)) -> pure $ Just (v, Forall Set.empty (UTExternalVariable t))
+        Right (v, t) -> 
+          (v, Forall Set.empty (UTExternalVariable t))
 
-      _ -> pure Nothing
+  cons <- fmap Map.fromList $ for (Map.elems prelude.conNames) $ \case
+    (tid, tvars, T.DC ci ts) -> do
+      env <- emptyEnv
+      let tyts = fmap t2ty ts
+          tyvars = fmap (Fix . Ty.TVar) tvars
+          utype =
+            case tyts of
+              [] -> UTCon tid tyvars
+              tys ->
+                let td = Fix $ TCon tid tyvars
+                in UTFun env tys td
+      pure (ci, Forall (Set.fromList tvars) utype)
 
-  -- gather all accessible constructors
-  let manyCons (T.DD tid tvars cons) = do
-        let dt = t2ty $ dataType tid tvars
-        for cons $ \(Annotated anns (T.DC ci ts)) -> do
-          env <- emptyEnv
-          let tyts = fmap t2ty ts
-              tyvars = fmap (Fix . Ty.TVar) tvars
-              utype =
-                case tyts of
-                  [] -> UTCon tid tyvars
-                  tys ->
-                    let td = Fix $ TCon tid tyvars
-                    in UTFun env tys td
-          pure (ci, Forall (Set.fromList tvars) utype)
-
-  cons <- fmap (Map.fromList . concat) $ traverse manyCons $ mapMaybe (\case { Fix (T.AnnStmt _ (T.DataDefinition dd)) -> Just dd; _ -> Nothing }) prelude
+  let ts = Map.fromList $ Map.elems prelude.tyNames <&> \(T.DD tid tvars _) -> (tid, t2ty $ dataType tid tvars)
 
   pure StatefulEnv
     { variables = vars
@@ -161,10 +136,6 @@ makeSEnv (Just (T.Mod prelude)) = do
     , env = []
     } where
 
-
-    -- gather types from top level
-    ts = Map.fromList $ oneType <$> mapMaybe (\case { Fix (T.AnnStmt _ (T.DataDefinition dd)) -> Just dd; _ -> Nothing }) prelude
-    oneType (T.DD tid tvars _) = (tid, t2ty $ dataType tid tvars)
 
     tv :: Type Typed -> Set TVar
     tv = cata $ \case
@@ -179,7 +150,7 @@ makeSEnv (Just (T.Mod prelude)) = do
 -- CONSTRAINT GENERATION --
 ---------------------------
 
-generateConstraints :: PreludeEnv -> Infer StatefulEnv -> Module Resolved -> IO (Module TyVared, [Constraint])
+generateConstraints :: Context -> Infer StatefulEnv -> Module Resolved -> IO (Module TyVared, [Constraint])
 generateConstraints env senv utModule = do
   (tvStmts, constraints) <- evalRWST ((RWS.put =<< senv)
     >> inferModule) env emptySEnv
@@ -261,7 +232,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
         let schemeTyVars = fntFtv \\ envFtv  -- Only variables that exist in the "front" type. (front = the type that we will use as a scheme and will be able to generalize)
 
         let (scheme, sfdec, sfbody) = closeOver schemeTyVars fdec fbody
-        newVar name (traceShowId scheme)
+        newVar name scheme
 
         pure $ Ty.AnnStmt anns $ Ty.FunctionDefinition sfdec sfbody
 
@@ -324,7 +295,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
         pure $ Ty.MutAssignment v expr
 
       R.If (cond, t) ifTrue elseIfs ifFalse -> do
-        boolt <- findType "Bool"
+        boolt <- findBuiltinType boolFind
 
         t `uni` boolt
 
@@ -337,7 +308,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
         emret <- RWS.asks returnType
 
         -- Nothing -> Void / ()
-        let opty = maybe (findType "Int") pure  -- When default return type is nothing, this means that we are parsing prelude. Return type from top level should be "Int".
+        let opty = maybe (findBuiltinType tlReturnFind) pure  -- When default return type is nothing, this means that we are parsing prelude. Return type from top level should be "Int".
         eret <- opty emret
         t `uni` eret
         pure $ Ty.Return ret
@@ -393,7 +364,7 @@ inferExpr = cata (fmap embed . inferExprType)
 
     -- TODO: merge it with previous function - I don't think it's necessarily needed?
     inferExprLayer = \case
-      Ty.Lit (LInt _ ) -> findType "Int"
+      Ty.Lit (LInt _ ) -> findBuiltinType intFind
 
       Ty.Var External v -> error "Don't use external variables... yet!"
       Ty.Var _ v -> lookupVar v
@@ -401,11 +372,11 @@ inferExpr = cata (fmap embed . inferExprType)
 
       Ty.Op l op r | op == NotEquals || op == Equals -> do
         l `uni` r
-        findType "Bool"
+        findBuiltinType boolFind
 
       -- arithmetic
       Ty.Op l _ r -> do
-        intt <- findType "Int"
+        intt <- findBuiltinType intFind
         l `uni` intt
         r `uni` intt
 
@@ -591,35 +562,32 @@ letters :: [Text]
 letters = map (Text.pack . ('\'':)) $ [1..] >>= flip replicateM ['a'..'z']
 
 
-findType :: Text -> Infer (Type TyVared)
-findType tname = do
-  PreludeEnv { preludeDefines = mprelude } <- RWS.ask
-  case mprelude of
-    -- Typechecking module WITH imported prelude.
-    Just ts -> case Map.lookup (TC tname) ts of
-      Just t -> pure $ t2ty t
-      Nothing -> error $ "Missing prelude type '" <> show tname <> "'. Exiting."
-
-    -- Typechecking without imported prelude. (parsing prelude itself probably, or debugging.)
-    -- Use current environment to find required types.
+findBuiltinType :: PreludeFind -> Infer (Type TyVared)
+findBuiltinType (PF tc pf) = do
+  Ctx { prelude  = prelud } <- RWS.ask
+  case prelud of
+    Just p -> pure $ t2ty $ pf p
     Nothing -> do
       ts <- RWS.gets types
-      case findMap tname (\ti -> fromTC ti.typeName) ts of
+      case findMap tc typeName ts of
         Just t -> pure t
-        Nothing -> error $ "Required prelude type '" <> show tname <> "' not in scope. Exiting."
-
+        Nothing -> error $ "[TYPE ERROR]: Could not find inbuilt type '" <> show tc <> "'."
 
 -- todo: after I finish, or earlier, maybe make sections for main logic, then put stuff like datatypes or utility functions at the bottom.
-type Infer a = RWST PreludeEnv [Constraint] StatefulEnv IO a
+type Infer a = RWST Context [Constraint] StatefulEnv IO a
 
-
--- Actually, all of the member variables are Maybe depending on Prelude. TODO: change it in the future, so It's a sort of Maybe Env.
-data PreludeEnv = PreludeEnv
-  { preludeDefines :: Maybe PreludeTypes
+data Context = Ctx
+  { prelude :: Maybe Prelude
   , returnType :: Maybe (Type TyVared)
   }
 
-type PreludeTypes = Map TCon (Type Typed)
+mkContext :: Maybe Prelude -> Context
+mkContext Nothing = Ctx { prelude = Nothing, returnType = Nothing }
+mkContext (Just prelud) = Ctx { prelude = Just prelud, returnType = Just (exprType prelud.toplevelReturn) }
+  where
+    exprType :: Expr Typed -> Type TyVared
+    exprType (Fix (T.ExprType t _)) = t2ty t
+
 
 type Constraint = (Type TyVared, Type TyVared)
 
@@ -815,7 +783,7 @@ compose sl@(Subst envsl tysl) (Subst envsr tysr) = Subst
 -- this is correct when it comes to typing, but requires me to use applicative shit everywhere. kinda cringe.
 type Res = Result (NonEmpty TyVar)
 finalize :: Module TyVared -> Either (NonEmpty TyVar) (Module Typed)
-finalize (Ty.Mod tystmts) = fmap T.Mod $ convertResult $ traverse annStmt tystmts where
+finalize (Ty.Mod tystmts) = fmap T.Mod $ fromResult $ traverse annStmt tystmts where
   annStmt :: AnnStmt TyVared -> Res (AnnStmt Typed)
   annStmt = transverse $ \(Ty.AnnStmt anns stmt) ->
     fmap (T.AnnStmt anns) $ case first fExpr stmt of
@@ -854,7 +822,7 @@ finalize (Ty.Mod tystmts) = fmap T.Mod $ convertResult $ traverse annStmt tystmt
 
   fType :: Type TyVared -> Res (Type Typed)
   fType = transverse $ \case
-    Ty.TyVar tyv -> Ambiguous $ NonEmpty.singleton tyv
+    Ty.TyVar tyv -> Failure $ NonEmpty.singleton tyv
     Ty.TCon ut ts -> T.TCon ut <$> sequenceA ts
     Ty.TVar tv -> pure $ T.TVar tv
     Ty.TFun union args ret -> T.TFun <$> fEnvUnion union <*> sequenceA args <*> ret where
@@ -868,24 +836,6 @@ finalize (Ty.Mod tystmts) = fmap T.Mod $ convertResult $ traverse annStmt tystmt
 
   fEnv :: Env TyVared -> Res (Env Typed)
   fEnv (Ty.Env envid ets) = T.Env envid <$> (traverse . traverse) fType ets
-
-convertResult :: Result e a -> Either e a
-convertResult = \case
-  Ambiguous e -> Left e
-  Okay x -> Right x
-
-data Result e a
-  = Ambiguous e
-  | Okay a
-  deriving (Functor, Foldable, Traversable)
-
-instance Semigroup e => Applicative (Result e) where
-  Ambiguous e <*> Ambiguous e' = Ambiguous $ e <> e'
-  Ambiguous e <*> _ = Ambiguous e
-  _ <*> Ambiguous e = Ambiguous e
-  Okay f <*> Okay x = Okay (f x)
-
-  pure = Okay
 
 
 tyvar :: TyVar -> Type TyVared

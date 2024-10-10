@@ -70,4 +70,7 @@ tests:
     - hspec
     - text
     - directory
+    - temporary
+    - filepath
+    - HUnit
     

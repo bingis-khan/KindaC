@@ -1,0 +1,11 @@
+# Int -> Int at \*
+
+fun (f Int -> Int) -> Unit
+	print f
+	return
+
+id (x)
+	return x
+
+
+fun(id)

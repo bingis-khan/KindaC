@@ -1,0 +1,23 @@
+#$ Some currying
+# 3
+# 1214
+# 489
+
+# curried add
+add = x: y: x + y
+sub = x: y: x - y
+
+# add 'unused' warning and silence the warning in the generated code / add (void)expr to silence it.
+mul = x: y: x * y
+div = x: y: x / y
+
+print add(1)(2)
+print sub(1337)(123)
+
+
+add69 = add(69)
+
+mapInt (f Int -> Int, x Int) -> Int
+	return f(x)
+
+print mapInt(add69, 420)

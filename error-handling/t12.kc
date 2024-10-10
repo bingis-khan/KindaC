@@ -1,0 +1,12 @@
+
+Maybe a
+	Just a
+	None
+
+
+isGreaterThan5 (x Int) -> Maybe Int
+	if x > 5
+		return Just(x)
+	else
+		return None
+

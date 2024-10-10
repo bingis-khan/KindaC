@@ -1,0 +1,25 @@
+# 420
+# 1234
+# 123123123
+# ()
+# ()
+
+bool (cond Bool, ifTrue () -> a, ifFalse () -> b)
+	if cond
+		ifTrue()
+	else
+		ifFalse()
+
+	return
+
+
+printx (x a)
+	print x
+	return
+
+bool(1 == 2, :printx(69), :printx(420))
+bool(Unit == Unit, :printx(1234), :printx(Unit))
+
+unit = printx(123123123)
+printx(unit)
+printx(unit)

@@ -1,3 +1,5 @@
+# i want to bundle the compiler in std and replace makefiles with appropriate std functions
+
 #! ~/.local/bin/kc run
 use Build
 	srcTree

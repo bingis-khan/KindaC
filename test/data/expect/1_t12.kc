@@ -1,0 +1,24 @@
+#$ Custom types can be compared (no typeclasses yet.)
+# False
+# True
+# False
+
+Maybe a
+	Just a
+	None
+
+
+is5 (x Int) -> Maybe Int
+	if x == 5
+		return Just(x)
+	else
+		return None
+
+x = is5(12)
+y = is5(5)
+z = is5(1337)
+
+
+print x == y
+print x == z
+print y == z

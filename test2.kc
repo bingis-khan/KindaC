@@ -1,9 +1,0 @@
-id (x)
-	return x
-
-f (x)
-	id(x)
-	return 1
-
-f (1)
-

@@ -68,7 +68,7 @@ statement = choice
 sPass :: Parser (Stmt Untyped)
 sPass = do
   keyword "pass"
-  undefined Pass
+  pure Pass
 
 sIf :: Parser (Stmt Untyped)
 sIf = do
@@ -416,7 +416,7 @@ symbol :: Text -> Parser ()
 symbol = void . L.symbol sc
 
 keyword :: Text -> Parser ()
-keyword kword = void $ lexeme (string kword <* notFollowedBy identifierChar)
+keyword kword = void $ lexeme (try $ string kword <* notFollowedBy identifierChar)
 
 scope :: (a -> NonEmpty (AnnStmt Untyped) -> b) -> Parser a -> Parser b
 scope f ref = recoverableIndentBlock $ do

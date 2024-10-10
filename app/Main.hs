@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE LambdaCase #-}
 module Main (main) where
 
 import qualified Data.Text.IO as TextIO
@@ -8,14 +10,16 @@ import Pipeline (loadModule)
 import AST.Typed (tModule)
 import AST.Mono (mModule)
 import Mono (mono)
+import CPrinter (cModule)
+import AST.Converged (Prelude(..))
 
 
 main :: IO ()
 main = do
   prelude <- preparePrelude
-  putStrLn $ tModule prelude
+  putStrLn $ tModule prelude.tpModule
 
-  [filename] <- getArgs
+  (filename, outputc) <- parseArgs
   t <- loadModule (Just prelude) filename
   case t of
     Left err -> TextIO.putStrLn err
@@ -25,3 +29,24 @@ main = do
 
       putStrLn "MONO MODULE AYO"
       putStrLn $ mModule monoModule
+
+      let cout = cModule monoModule
+      if outputc
+        then do
+          let newFilename = takeBaseName filename <> ".c"
+          TextIO.writeFile newFilename cout
+        else do
+          TextIO.putStrLn cout
+
+type Filename = String
+type OutputC = Bool
+parseArgs :: IO (Filename, OutputC)
+parseArgs = do
+  args <- getArgs
+  let (mFilename, outputC) = foldr (\case { "--output-c" -> \(fn, _) -> (fn, True); fn -> \(_, oc) -> (Just fn, oc) }) (Nothing, False) args
+  pure $ case mFilename of
+    Just name -> (name, outputC)
+    Nothing -> error "No filename provided."
+
+takeBaseName :: FilePath -> String
+takeBaseName = reverse . drop 1 . dropWhile (/= '.') . reverse

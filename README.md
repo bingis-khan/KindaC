@@ -4,15 +4,27 @@ hehe
 
 The plan is to do the whole pipeline (except codegen) in order to typecheck and import prelude automatically to files.
 
+## directory structure
 
-# todo BIG ASS BUGS and DESIGN MISTAKES
+- `src/` - haskell compiler source
+- `kcsrc/` - std
+- `test/` - test directory, including test cases
+- `doc/` - documentation (README inside)
+- `error-handling/` - put files here, when error is stupid or unreadable
+- `ctest/` - testing stuff in C
+- `old/` - old compiler
+
+
+## todo
+
+### todo BIG ASS BUGS and DESIGN MISTAKES
 - make declared tvars (ex. fun (x a, y b), etc.) have a UNIQUE ID, because right now it's possible to confuse the compiler (during environment resolution!! in the Env Union, 'a's from different functions might meet and it would be annoying to distinguish them (it's possible: use function ID + tvar))
 - resolving environments in previously declared tvars (before the struct declaration) is broken.
   - !!!! instead of using an ID with Maps, just actually replace them with the objects (they are going to be pointers anyway.) Make 'Eq' and 'Ord' still use the ID. Win-Win!
 - resolving environments in previously declared tvars (in ANOTHER module) will be broken.
 - !!!! Fix union instantiation (see 1. REQUIRED of doc/compiler-construction/problems)
 
-# todo
+### todo misc
 - parse pattern matching
 - [V] change VarID, ConID, TypeID to their "typeinfo" datatypes: I think it's more haskell-ish and they are immutable anyway.
 - add types to the ASTPrettyPrinter module so that
@@ -52,6 +64,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - MEMOIZING AND DIRECT REFERENCES: change Typecheck/Mono ASTs to those, that directly reference functions (Either UniqueVar Function). This will stop requiring us to use Maps for Monomorphization. Make sure to allow memoizing by UniqueVar.
 - Maybe the monomorphized AST should be an actual AST (starting from Main, without function list). This would also be pretty easy to compile and it would help with future interpretation..? And maybe it'll be easier to generate output programs?
 
-# thoughts???
+
+## thoughts???
 - should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?
 

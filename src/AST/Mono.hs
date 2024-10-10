@@ -27,6 +27,7 @@ import Data.Foldable (foldl')
 
 
 data Mono
+data MonoInt  -- intermediate repr for env mapping (see StmtF definition)
 
 
 ----------
@@ -96,6 +97,12 @@ type instance Env Mono = EnvF (Type Mono)
 type instance EnvUnion Mono = EnvUnionF (Type Mono)
 
 
+--------------
+-- Function --
+--------------
+
+data FunDec = FD (Env Mono) UniqueVar [(UniqueVar, Type Mono)] (Type Mono) deriving (Show, Eq)
+
 
 ----------------
 -- Expression --
@@ -109,10 +116,14 @@ data ExprF a
 
   | Op a Op a
   | Call a [a]
-  | Lam (Env Mono) [(UniqueVar, Type Mono)] a  -- I might actually eliminate the lambda and replace it with a function call?
+  -- | Lam (Env Mono) [(UniqueVar, Type Mono)] a  -- I might actually eliminate the lambda and replace it with a function call?
+
+  | EnvInit EnvDef  -- Initializes environment of a lambda for a function.
   deriving (Show, Eq, Functor, Foldable, Traversable)
 
 data ExprType a = ExprType (Type Mono) (ExprF a) deriving (Show, Eq, Functor, Foldable, Traversable)
+
+data EnvDef = EnvDef FunDec (EnvUnion Mono) deriving (Show, Eq)  
 
 
 $(deriveShow1 ''ExprF)
@@ -120,6 +131,7 @@ $(deriveShow1 ''ExprType)
 $(deriveEq1 ''ExprF)
 
 type instance Expr Mono = Fix ExprType
+type instance Expr MonoInt = Expr Mono
 
 
 ---------------------
@@ -130,19 +142,17 @@ data DataCon = DC UniqueCon [Type Mono] deriving (Eq, Show)
 data DataDef = DD UniqueType [Annotated DataCon] deriving (Eq, Show)
 
 
---------------
--- Function --
---------------
-
-data FunDec = FD (Env Mono) UniqueVar [(UniqueVar, Type Mono)] (Type Mono) deriving (Show, Eq)
-
 
 ---------------
 -- Statement --
 ---------------
 
 -- I want to leave expr here, so we can bifold and bimap
-data StmtF a
+--- env is for backpatching environment acquisition.
+---  can have two states:
+---  - TO DISTINGUISH WHICH FUNCTION: UniqueVar of a function
+---  - TO INSTANTIATE THE ENVIRONMENT: UniqueVar of a mono function + other stuff like its env
+data StmtF env a
   -- Typical statements
   = Print (Expr Mono)
   | Assignment UniqueVar (Expr Mono)
@@ -151,21 +161,34 @@ data StmtF a
   | MutDefinition UniqueVar (Either (Type Mono) (Expr Mono))  -- additional type inserted to preserve the information we got during typechecking.
   | MutAssignment UniqueVar (Expr Mono)
 
-  | If (Expr Mono) (NonEmpty a) [((Expr Mono), NonEmpty a)] (Maybe (NonEmpty a))
+  | If (Expr Mono) (NonEmpty a) [(Expr Mono, NonEmpty a)] (Maybe (NonEmpty a))
   | ExprStmt (Expr Mono)
   | Return (Expr Mono)
+
+  | EnvHere env
   deriving (Show, Functor, Foldable, Traversable)
 $(deriveShow1 ''StmtF)
+$(deriveBifunctor ''StmtF)
+
+-- EnvHere IMPLEMENTATIONS
+newtype EnvPlaceholder = EPH UniqueVar deriving Show   -- BEFORE finding usage
+type EnvDefs = [EnvDef]                                -- AFTER finding function usage
+-- technically, we should define Env outside, like: Env [(UniqueVar, EnvUnion)], because it doesn't change per function instantiation.
+
 
 -- not sure about this one. if using it is annoying, throw it out. (eliminates the possibility to bimap)
 -- also, the style does not fit.
-data AnnotatedStmt a = AnnStmt [Ann] (StmtF a) deriving (Show, Functor, Foldable, Traversable)
+data AnnotatedStmt env a = AnnStmt [Ann] (StmtF env a) deriving (Show, Functor, Foldable, Traversable)
 $(deriveShow1 ''AnnotatedStmt)
+$(deriveBifunctor ''AnnotatedStmt)
 
-type instance Stmt Mono = StmtF (AnnStmt Mono)
-type instance AnnStmt Mono = Fix AnnotatedStmt
+type instance Stmt Mono = StmtF EnvDefs (AnnStmt Mono)
+type instance Stmt MonoInt = StmtF EnvPlaceholder (AnnStmt Mono)
+type instance AnnStmt Mono = Fix (AnnotatedStmt EnvDefs)
+type instance AnnStmt MonoInt = Fix (AnnotatedStmt EnvPlaceholder)
 
-data Function = Fun FunDec (NonEmpty (AnnStmt Mono)) deriving (Show)
+-- TODO: right now, unions distinguish functions also. so, for now, they will be included in the datatype
+data Function stmt = Fun FunDec (EnvUnion Mono) (NonEmpty stmt) deriving (Show, Functor)
 
 
 ---------------
@@ -174,7 +197,7 @@ data Function = Fun FunDec (NonEmpty (AnnStmt Mono)) deriving (Show)
 
 data Mod = Mod
   { dataTypes :: [Annotated DataDef]
-  , functions :: [Annotated Function]
+  , functions :: [Annotated (Function (AnnStmt Mono))]
   , main :: [AnnStmt Mono]
   } deriving Show
 
@@ -220,6 +243,12 @@ tStmt stmt = case stmt of
   ExprStmt e -> tExpr e
   Return e -> "return" <+> tExpr e
 
+  EnvHere [] -> "[ENV]: not generated"
+  EnvHere (env:envs) -> ppBody tEnvDef "[ENV]:" (env :| envs)
+
+tEnvDef :: EnvDef -> Context
+tEnvDef (EnvDef (FD env uv _ _) union) = ppVar Local uv <+> "=" <+> tEnv env <+> "{" <+> tEnvUnion' union <+> "}"
+
 
 tExpr :: Expr Mono -> Context
 tExpr = cata $ \(ExprType t expr) ->
@@ -231,7 +260,7 @@ tExpr = cata $ \(ExprType t expr) ->
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
-  Lam env params e -> tEnv env <+> sepBy " " (map (\(v, t) -> ppVar Local v <+> tType t) params) <> ":" <+> e
+  EnvInit envdef -> tEnvDef envdef
   where
     ppOp op = case op of
       Plus -> "+"
@@ -242,8 +271,8 @@ tExpr = cata $ \(ExprType t expr) ->
       NotEquals -> "/="
 
 
-tFunction :: Function -> Context
-tFunction (Fun fd body) = tBody (tFunDec fd) body
+tFunction :: Function (AnnStmt Mono) -> Context
+tFunction (Fun fd _ body) = tBody (tFunDec fd) body
 
 tDataDef :: DataDef -> Context
 tDataDef (DD tid cons) = indent (ppTypeInfo tid) $ ppLines (\(Annotated ann dc) -> annotate ann (tConDef dc)) cons
@@ -268,6 +297,9 @@ tType = cata $ \case
 
 tEnvUnion :: EnvUnionF Context -> Context
 tEnvUnion EnvUnion { unionID = uid, union = us } = ppUnionID uid <> encloseSepBy "{" "}" ", " (NonEmpty.toList $ fmap tEnv' us)
+
+tEnvUnion' :: EnvUnion Mono -> Context
+tEnvUnion' = tEnvUnion . fmap tType
 
 tEnv :: Env Mono -> Context
 tEnv = tEnv' . fmap tType

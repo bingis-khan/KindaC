@@ -1,0 +1,32 @@
+
+envx = 1
+somef ()
+	print envx
+	return
+
+coolenv1 = True
+doi ()
+	print coolenv1
+	return
+
+coolenv2 = Unit
+doj ()
+	print coolenv2
+	return
+
+
+uni1 (x, y)
+	print x == y
+	x()
+	y()
+	return Unit
+
+uni2 (x, y)
+	print x == y
+	x()
+	y()
+	return Unit
+
+
+uni1(somef, doi)
+uni2(somef, doj)

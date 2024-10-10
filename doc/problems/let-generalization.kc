@@ -1,0 +1,51 @@
+After I add typeclasses, there arises a problem.
+Imagine a Monoid class
+
+class Monoid a
+	mempty a
+
+And if I write this (I use let-generalization):
+
+x = mempty  # the type is Monoid a => a
+
+This is okay in pure programming languages, but it causes problems in mine, as something like this: (imagine Bool and Int are monoids)
+
+
+x = printAndReturn(mempty)
+
+if x as Bool
+	print x as Int
+
+
+# It will get printed twice... and also in weird places (if it was in Haskell, not sure how it should work here)
+
+What I'll do is disallow generalization of let-bindings that are not functions.
+
+Then, the only possible similar thing would be
+
+x = :printAndReturn(mempty)  # Type is Monoid a => () -> a
+
+# Then, to use it:
+if x() as Bool
+	print x() as Int
+
+
+I think we can actually make polymorphic values.
+We already have to make "function tuples" if we use a generic function multiple types.
+
+
+Look
+
+class Monoid a
+	mempty a
+
+
+Dupa
+	Dupa
+
+fuck () -> Dupa
+	print 'haha fuck you'
+	return Dupa
+
+impl Monoid Dupa
+	mempty = fuck()

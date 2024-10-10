@@ -1,0 +1,45 @@
+
+Should I make new env unions while monomorphising? 
+
+
+
+Two possible ways to represent unions as a struct:
+
+1.
+Union {
+	tag,
+	union {  // like a C type
+		function_ptr,
+		env
+	}
+}
+
+2. or
+
+Union {
+	function_ptr,
+	union {
+		env
+	}
+}
+
+
+1 is fatter.
+2 requires a cast (might be harder to optimize?)
+
+
+but, the problem is, that if you use a function in a union, where there is some environment in one of the cases, now every function must take in an environment parameter.
+so, if you plan on your function to have a specific number of parameters, if you assign it to some other strucuture, it might just grow an Env parameter on top of it.
+
+The hidden 3. option I'm currently doing, is that every Env Union generates its own function. This is probably not what you want: it generates a function FOR EACH APPLIED ENVIRONMENT - EACH UNION. Imagine how many id functions would get generated... But it solves problems 1 and 2 with the least amount of overhead.
+
+My current plan:
+If it works now, it's a problem for later. We can switch how functions are generated at compile time/argument. Then we can benchmark (size, speed, etc.) Then, we'll choose the most optimal way.
+
+
+
+So:
+1. more overhead, pattern matching, but smaller functions.
+2. minimum overhead, no pattern matching, extra ignored parameter (+ more functions)
+3. not always extra parameter, minimum overhead, but MANY more functions generated. (marrying Env Union with function definition)
+

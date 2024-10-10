@@ -88,6 +88,7 @@ test-suite all
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      Expect
       Specific
       YesNo
       Paths_KindaC
@@ -95,7 +96,8 @@ test-suite all
       test/src
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-      KindaC
+      HUnit
+    , KindaC
     , base >=4.7 && <5
     , bifunctors
     , bimap
@@ -103,6 +105,7 @@ test-suite all
     , data-fix
     , deriving-compat
     , directory
+    , filepath
     , hspec
     , megaparsec
     , parser-combinators
@@ -110,6 +113,7 @@ test-suite all
     , process
     , recursion-schemes
     , split
+    , temporary
     , text
     , transformers
   default-language: Haskell2010
