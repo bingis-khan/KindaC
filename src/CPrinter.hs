@@ -424,6 +424,8 @@ cExpr expr = do
             v <- createIntermediateVariable t' e
             cCall (v & ".fun") $ ("&" & v & ".uni") : fmap snd args
 
+    -- TEMP: this is only defined to be okay per C23 standard (unions zero initialized)
+    -- To be C99 compatible, I would have to declare it first, then memset it, then use it.
     M.ExprType _ (Op (Fix (M.ExprType t _), e) Equals (Fix (M.ExprType t' _), e')) | not (isBuiltinType t builtin) -> do
       el <- createIntermediateVariable t e
       er <- createIntermediateVariable t' e'

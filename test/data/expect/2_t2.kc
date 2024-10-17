@@ -1,0 +1,15 @@
+#$ Compare a datatype a single constructor which takes in one function.
+# False
+
+Fun
+	Fun (Int -> Int)
+
+id (x)
+	return x
+
+add1 (x)
+	return x + 1
+
+x = Fun(id)
+y = Fun(add1)
+print x == y

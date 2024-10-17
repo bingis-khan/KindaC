@@ -1,0 +1,20 @@
+#$ Custom types can be compared (no typeclasses yet.) ((with complex expression))
+# True
+
+
+MyMaybe a
+	MyJust a
+	MyNone
+
+is5 (x Int) -> MyMaybe Int
+	if x == 5
+		return MyJust(x)
+	else
+		return MyNone
+
+x = is5(12)
+y = is5(5)
+z = is5(1337)
+
+
+print (x == y) == ((x == z) == (y == z))

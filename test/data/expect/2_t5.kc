@@ -1,0 +1,18 @@
+#$ A mixed union/normal constructor is used.
+# Fun
+# Fun
+# Fun
+
+Fun
+	Fun (Int -> Int)
+	SomethingElse Int Unit
+	AndElse
+
+x = Fun(x: x + 1)
+print x
+
+y = SomethingElse(123, Unit)
+print y
+
+z = AndElse
+print z

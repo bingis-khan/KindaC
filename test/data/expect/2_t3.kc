@@ -1,0 +1,9 @@
+#$ Only one constructor is used (an type's inner union is unused.)
+# Fun
+
+Fun
+	Fun1 (Int -> Int)
+	Fun2 (() -> Unit)
+
+x = Fun1(x: x + 1)
+print x

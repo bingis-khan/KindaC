@@ -1,3 +1,6 @@
+#$ Datatype with a single constructor which takes in one function.
+# ()
+# Fun
 
 Fun
 	Fun (Int -> Int)

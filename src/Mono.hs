@@ -12,29 +12,33 @@ import Data.Fix (Fix(..))
 import Control.Monad.Trans.Reader (ReaderT, runReaderT)
 import Data.Functor.Foldable (transverse, embed, cata, para, Base, project)
 import Data.Bitraversable (bitraverse)
-import Data.Biapplicative (first)
+import Data.Biapplicative (first, second)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Map (Map, (!?))
+import Data.Map (Map, (!?), (!))
 import Control.Monad.Trans.State (StateT, runStateT, get, modify, put, gets)
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Data.Unique (newUnique)
 import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text)
-import Data.Foldable (fold)
+import Data.Foldable (fold, traverse_, sequenceA_)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Traversable (for)
 import Data.Functor ((<&>))
+import Data.Maybe (catMaybes, mapMaybe)
+import Data.Functor.Identity (Identity(..))
+import Data.Set (Set)
+import Control.Monad (void, unless)
 
 
 data Context' = Context
-  { typeFind :: Map (UniqueType, [Type Mono], [EnvUnion Mono]) UniqueType  -- this is used to find types. (won't be preserved)
-  , typeOrder :: [Annotated M.DataDef]  -- this actually orders types. (part of the interface)
+  { typeFind :: Map (UniqueType, [Type Mono], [EnvUnion Mono]) (UniqueType, Annotated T.DataDef, Type Mono) -- this is used to find types. (won't be preserved)
 
   , tvarMap :: TypeMap  -- this describes the temporary mapping of tvars while monomorphizing.
 
   -- Monomorphized cached versions of functions
   , funFind :: Map (UniqueVar, Type Mono) M.EnvDef  -- Env and Union are for later environment addition
-  , conFind :: Map (UniqueCon, Type Mono) UniqueCon
+  , conFind :: Map (UniqueCon, Type Mono) M.DataCon
 
   -- Ordering so that functions won't need forward declarations.
   , funOrder :: [Annotated (M.Function (AnnStmt MonoInt))]
@@ -56,16 +60,48 @@ mono prelude mod = do
   -- I think I'll just do it procedurally
   --   But gather types before!
   (mistmts, ctx) <- flip runStateT startingContext $ mStmts combined
-  let mtypes = ctx.typeOrder
+  let mtypeIDs = Map.elems ctx.typeFind
+
+  -- order types here.
+  let mtypesToOrder = Map.fromList $ mtypeIDs <&> \(mut, Annotated anns (T.DD _ _ _ anncons), mt) ->
+        let conIDs = anncons <&> \(Annotated conanns (T.DC uc _)) -> (conanns, uc)
+            cons = flip mapMaybe conIDs $ \(conanns, uc) -> ctx.conFind !? (uc, mt) <&> \mdc -> Annotated conanns mdc
+        in (mut, Annotated anns $ M.DD mut cons)
+
+  let mtypes = orderTypes mtypesToOrder
+
   let mifuns = ctx.funOrder
 
   -- Change the representation of a funFind map from (UV, Type) -> UV to UV -> [UV]
   let usageFind = toUsageFind ctx.funFind
 
-  let mstmts = substEnv usageFind <$> mistmts 
+  let mstmts = substEnv usageFind <$> mistmts
   let mfuns = substEnv usageFind `fmap3` mifuns
   let mmod = M.Mod { M.dataTypes = mtypes, M.functions = mfuns, M.main = mstmts }
   pure mmod
+
+orderTypes :: Map UniqueType (Annotated M.DataDef) -> [Annotated M.DataDef]
+orderTypes order =
+  let dds = Map.elems order
+      Identity ((), (ordered, _)) = runStateT (traverse_ orderDataDef dds) ([], Set.empty)
+  in reverse ordered
+  where
+    orderDataDef mdd@(Annotated _ (M.DD t cons)) = do
+      let ts = concatMap (\(Annotated _ (M.DC _ ts)) -> ts) cons
+      traverse_ orderType ts
+
+      inserted <- gets snd
+      unless (Set.member t inserted) $ do
+        modify $ second $ Set.insert t
+        modify $ first (mdd :)
+
+
+    orderType :: Type Mono -> StateT ([Annotated M.DataDef], Set UniqueType) Identity ()
+    orderType = cata $ \case
+      M.TCon ut ts -> do
+        sequenceA_ ts
+        orderDataDef $ order ! ut
+      t -> sequenceA_ t
 
 
 substEnv :: Map UniqueVar (NonEmpty M.EnvDef) -> AnnStmt MonoInt -> AnnStmt Mono
@@ -83,7 +119,7 @@ toUsageFind = Map.mapKeysWith (<>) fst . fmap NonEmpty.singleton
 mStmts = traverse mAnnStmt
 
 mAnnStmt :: AnnStmt Typed -> Context (AnnStmt MonoInt)
-mAnnStmt = cata $ fmap embed . (\(T.AnnStmt ann stmt) -> 
+mAnnStmt = cata $ fmap embed . (\(T.AnnStmt ann stmt) ->
   let mann = M.AnnStmt ann
       noann = M.AnnStmt []
   in case first mExpr stmt of
@@ -140,7 +176,7 @@ mType = cata $ fmap embed . \case
   T.TCon tid pts unions -> do
 
     params <- sequenceA pts
-    unions' <- mUnion `traverse` unions
+    unions' <- mUnion `traverse` filter (\(T.EnvUnion _ ts) -> not $ null ts) unions  -- very hacky, but should work. I think it echoes the need for a datatype that correctly represents what we're seeing here - a possible environment definition, which might not be initialized.
     mt <- typeCon tid params unions' ""
     pure $ decoMonoType mt
 
@@ -192,13 +228,13 @@ typeCon t apps unions nameAppend = do
   case typeFind !? (t, apps, unions) of
 
     -- Yes, we have. Just return it.
-    Just tid -> pure $ convertUT tid apps
+    Just (tid, _, _) -> pure $ convertUT tid apps
 
     -- No, do funny stuff.
     Nothing -> do
       -- Find the type
       types <- gets types
-      let (Annotated anns oldType@(T.DD _ tvs tunions _)) = case types !? t of
+      let tdd = case types !? t of
               Just t' -> t'
 
               -- this should not happen when we add memoized definitions in types.
@@ -211,37 +247,34 @@ typeCon t apps unions nameAppend = do
 
       -- Add the monotype (to be referred to later)
       -- Add it here to prevent infinite recursion (for example, in case of pointers, which refer back to the structure, which are mono-ed in the constructor)
-      modify $ \ctx -> ctx { typeFind = Map.insert (t, apps, unions) newUniqueType ctx.typeFind }
+      modify $ \ctx -> ctx { typeFind = Map.insert (t, apps, unions) (newUniqueType, tdd, newType) ctx.typeFind }
 
       -- monomorphize by unifying applied
       --  1. type variables (applied)
       --  2. unions (from function types in the datatype)
-      mDataDef <- mapType (zip (Fix . T.TVar <$> tvs) apps) (zip tunions unions) $ do
-        let (T.DD _ _ _ dcs) = oldType
-        newDCs <- for dcs $ \(Annotated anns (T.DC uc ts)) ->
-          fmap (Annotated anns) $ do
-            -- we need to update searchable constructors (used by 'constructor')
-            mts <- traverse mType ts
-            conType <- case mts of
-                  [] -> pure newType
-                  mts -> do
-                    union <- emptyUnion
-                    pure $ Fix $ M.TFun union mts newType
+      -- mDataDef <- mapType (zip (Fix . T.TVar <$> tvs) apps) (zip tunions unions) $ do
+      --   let (T.DD _ _ _ dcs) = oldType
+      --   newDCs <- fmap catMaybes $ for dcs $ \(Annotated anns (T.DC uc ts)) ->
+      --     fmap (Just . Annotated anns) $ do
+      --       -- we need to update searchable constructors (used by 'constructor')
+      --       mts <- traverse mType ts
+      --       conType <- case mts of
+      --             [] -> pure newType
+      --             mts -> do
+      --               union <- emptyUnion
+      --               pure $ Fix $ M.TFun union mts newType
 
-            -- I don't think we need to change UniqueCon, as we will not directly compare constructors from now on? (and in codegen, they will be prefixed with the newUniqueType)
-            -- UPDATE: we need to do that. example: Proxy Int and Proxy Bool will use the same constructor, which uses the same enum -> type error in C.
-            newCID <- liftIO newUnique
-            let uc' = uc { conID = newCID }
+      --       -- I don't think we need to change UniqueCon, as we will not directly compare constructors from now on? (and in codegen, they will be prefixed with the newUniqueType)
+      --       -- UPDATE: we need to do that. example: Proxy Int and Proxy Bool will use the same constructor, which uses the same enum -> type error in C.
+      --       newCID <- liftIO newUnique
+      --       let uc' = uc { conID = newCID }
 
-            modify $ \ctx -> ctx { conFind = Map.insert (uc, conType) uc' ctx.conFind }
-            pure $ M.DC uc' mts
+      --       modify $ \ctx -> ctx { conFind = Map.insert (uc, conType) uc' ctx.conFind }
+      --       pure $ M.DC uc' mts
 
-        let newDataDef = Annotated anns $ M.DD newUniqueType newDCs
-        pure newDataDef
+      --   let newDataDef = Annotated anns $ M.DD newUniqueType newDCs
+      --   pure newDataDef
 
-
-      -- Add the monomorphized data definition to data order
-      modify $ \ctx -> ctx { typeOrder = ctx.typeOrder ++ [ mDataDef ] }
 
       pure newType
 
@@ -292,13 +325,27 @@ variable ti t = do
 constructor :: UniqueCon -> Type Mono -> Context UniqueCon
 constructor ci t = do
   monocons <- gets conFind
-  case monocons !? (ci, t) of
-    Just monocon -> pure monocon
+
+  -- very stupid, but works. we want to use the type being constructed itself.
+  --  if it's a function, multiple parameters, so return return type
+  --  if it's a TCon, return itself, because enum value
+  let mt = case t of
+        Fix (M.TCon _ _) -> t
+        Fix (M.TFun _ _ mt) -> mt
+
+  case monocons !? (ci, mt) of
+    Just (M.DC monocon _) -> pure monocon
     Nothing -> do
-      let relatedCons = filter (\((uc, _), _) -> uc == ci) $ Map.toList monocons
-      -- error $ "Not really possible. A monomorphic type means that the type was already added: " <> show ci <> "\n" <> M.ctx M.tType t <> "\n" <> M.ctx (Common.indent "With:" . Common.sepBy "\n" . fmap (\((conFrom, typeFrom), conTo) -> Common.ppCon conFrom <> ":" <+> M.tType typeFrom <+> "=>" <+> Common.ppCon conTo)) relatedCons
-      -- TEMP
-      pure ci
+      newCID <- liftIO newUnique
+      let muc = ci { conID = newCID }
+      let mdc = case project t of
+            M.TCon _ _ -> M.DC muc []
+            M.TFun _ args _ -> M.DC muc args
+
+            -- _ -> error $ "Should not happen. Type: " <> M.ctx M.tType t
+
+      modify $ \ctx -> ctx { conFind = Map.insert (ci, mt) mdc ctx.conFind }
+      pure muc
 
 
 addFunction :: [Ann] -> Function -> Context ()
@@ -446,7 +493,7 @@ decoMonoType :: Type Mono -> M.TypeF (Type Mono)
 decoMonoType = project
 
 fundec2type :: UnionID -> T.FunDec -> Type Typed
-fundec2type placeholderUnionID (T.FD env _ params ret) = 
+fundec2type placeholderUnionID (T.FD env _ params ret) =
   let union = T.EnvUnion placeholderUnionID [env]
   in Fix $ T.TFun union (snd <$> params) ret
 
@@ -481,7 +528,6 @@ data Function = Function T.FunDec (Context (NonEmpty (AnnStmt MonoInt)))
 startingContext :: Context'
 startingContext = Context
   { typeFind = Map.empty
-  , typeOrder = []
 
   , tvarMap = mempty
 

@@ -1,0 +1,13 @@
+#$ Disjoint constructors (but same type) are used.
+# Fun
+# Fun
+
+Fun
+	Fun1 (Int -> Int)
+	Fun2 (() -> Unit)
+
+x = Fun1(x: x + 1)
+print x
+
+y = Fun2(: Unit)
+print y
