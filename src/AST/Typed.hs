@@ -73,7 +73,7 @@ instance Ord (EnvUnionF t) where
 
 
 data TypeF a
-  = TCon UniqueType [a]
+  = TCon UniqueType [a] [EnvUnionF a]
   | TVar TVar  -- should I make a unique TVar?
   | TFun (EnvUnionF a) [a] a
   deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
@@ -119,7 +119,7 @@ type instance Expr Typed = Fix ExprType
 ---------------------
 
 data DataCon = DC UniqueCon [Type Typed] deriving (Eq, Show)
-data DataDef = DD UniqueType [TVar] [Annotated DataCon] deriving (Eq, Show)
+data DataDef = DD UniqueType [TVar] [EnvUnion Typed] [Annotated DataCon] deriving (Eq, Show)
 
 
 --------------
@@ -234,7 +234,7 @@ tExpr = cata $ \(ExprType t expr) ->
 
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines (\(Annotated ann dc) -> annotate ann (tConDef dc)) cons
+tDataDef (DD tid tvs unions cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs <+> tUnions unions) $ ppLines (\(Annotated ann dc) -> annotate ann (tConDef dc)) cons
 
 tConDef :: DataCon -> Context
 tConDef (DC g t) = foldl' (<+>) (ppCon g) $ tTypes t
@@ -244,7 +244,7 @@ tFunDec (FD env v params retType) = comment (tEnv env) $ ppVar Local v <+> enclo
 
 tTypes :: Functor t => t (Type Typed) -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of
-  TCon _ (_:_) -> enclose t
+  TCon _ (_:_) _ -> enclose t
   TFun {} -> enclose t
   _ -> tType t
   where
@@ -252,9 +252,17 @@ tTypes = fmap $ \t@(Fix t') -> case t' of
 
 tType :: Type Typed -> Context
 tType = cata $ \case
-  TCon con params -> foldl' (<+>) (ppTypeInfo con) params
+  TCon con params unions -> 
+    let conunion = case unions of
+          [] -> []
+          unions -> "|" : (tEnvUnion <$> unions)
+    in foldl' (<+>) (ppTypeInfo con) (params ++ conunion)
   TVar (TV tv) -> pretty tv
   TFun env args ret -> tEnvUnion env <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+
+tUnions :: [EnvUnion Typed] -> Context
+tUnions [] = mempty
+tUnions unions = "|" <+> sepBy " " (tEnvUnion . fmap tType <$> unions)
 
 tEnvUnion :: EnvUnionF Context -> Context
 tEnvUnion EnvUnion { unionID = uid, union = us } = ppUnionID uid <> encloseSepBy "{" "}" ", " (fmap tEnv' us)

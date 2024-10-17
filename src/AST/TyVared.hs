@@ -84,7 +84,7 @@ instance Show TyVar where
 
 
 data TypeF a
-  = TCon UniqueType [a]
+  = TCon UniqueType [a] [EnvUnionF a]  -- the last [EnvUnionF a] is for custom datatypes, which contain functions. what about recursive definitions?
   | TVar TVar  -- should I make a unique TVar?
   | TFun (EnvUnionF a) [a] a
   | TyVar TyVar
@@ -96,6 +96,13 @@ $(deriveEq1 ''TypeF)
 type instance Type TyVared = Fix TypeF
 type instance Env TyVared = EnvF (Type TyVared)
 type instance EnvUnion TyVared = EnvUnionF (Type TyVared)
+
+-- When we want to isolate only the data constructor.
+-- MUST have the same parameters as TCon from TypeF
+-- I'm not replacing the TCon parameters with this, because I don't feel like fixing all the compilation errors now.
+data TypeConstructor = TypeCon UniqueType [Type TyVared] [EnvUnion TyVared] 
+type2tycon :: Type TyVared -> TypeConstructor
+type2tycon = undefined
 
 
 ----------------
@@ -127,7 +134,7 @@ type instance Expr TyVared = Fix ExprType
 ---------------------
 
 data DataCon = DC UniqueCon [Type TyVared] deriving (Eq, Show)
-data DataDef = DD UniqueType [TVar] [Annotated DataCon] deriving (Eq, Show)
+data DataDef = DD UniqueType [TVar] [EnvUnion TyVared] [Annotated DataCon] deriving (Eq, Show)
 
 
 --------------
@@ -238,7 +245,7 @@ tExpr = cata $ \(ExprType t expr) ->
 
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines (\(Annotated ann dc) -> annotate ann (tConDef dc)) cons
+tDataDef (DD tid tvs _ cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines (\(Annotated ann dc) -> annotate ann (tConDef dc)) cons
 
 tConDef :: DataCon -> Context
 tConDef (DC g t) = foldl' (<+>) (ppCon g) $ tTypes t
@@ -248,7 +255,7 @@ tFunDec (FD env v params retType) = comment (tEnv env) $ ppVar Local v <+> enclo
 
 tTypes :: Functor t => t (Type TyVared) -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of
-  TCon _ (_:_) -> enclose t
+  TCon {} -> enclose t
   TFun {} -> enclose t
   _ -> tType t
   where
@@ -256,7 +263,7 @@ tTypes = fmap $ \t@(Fix t') -> case t' of
 
 tType :: Type TyVared -> Context
 tType = cata $ \case
-  TCon con params -> foldl' (<+>) (ppTypeInfo con) params
+  TCon con params unions -> foldl' (<+>) (ppTypeInfo con) $ params ++ ["|"] ++ (tEnvUnion <$> unions)
   TVar (TV tv) -> pretty tv
   TFun env args ret -> tEnvUnion env <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
   TyVar tyv -> pretty $ show tyv

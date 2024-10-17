@@ -1,0 +1,73 @@
+How do we infer unions from custom datatypes??
+
+Fun
+	Fun (Int -> Int)
+
+
+Although definition does not change, we have to make an addition to the type:
+
+TCon Fun [] [Union@69{}]
+
+We can instantiate the union type by having a special method to do that.
+Change `instantiate` to `instantiateCon`.
+
+[Union@69{}](Int -> Int) -> TCon Fun [] [Union@69{}]
+
+Notice the same ID. This should be transformed into the same type during monomorphization. Different envs will produce different types.
+
+
+What about nested types? Imagine:
+
+Fun
+	Fun (Int -> Int)
+
+Fun2
+	Fun2 Fun
+
+# ex.
+n = 123
+addn (x): x + n
+f = Fun2(Fun(addn))
+
+
+So:
+
+Fun: [Union@69{}](Int -> Int) -> TCon Fun [] [Union@69{}]
+Fun2: TCon Fun [] [Union@70] -> TCon Fun2 [Union@70]  -- transfer of environments.
+
+
+to simplify:
+
+Fun
+	Fun x(Int -> Int)
+
+DD n
+	A a(Int -> Int)
+	B b(n -> Int)
+	C c(n -> n)
+	D dFun
+	or
+	D Fun [d]
+
+a|(Int -> Int) -> DD n [a, b, c, d]
+b|(n -> Int) -> DD n [a, b, c, d]
+c|(n -> n) -> DD n [a, b, c, d]
+Fun [d] -> DD n [a, b, c, d]
+
+x(Int -> Int) -> Fun [x]
+
+So, the [list] is composed of function unions and unions from other TCons.
+
+
+How do I encode this information? That some env will be equal to some other env? How will this be monomorphized?
+
+1. What I will do now: I'll store a list in the definition.
+So,
+DD [EnvUnion]
+TCon [EnvUnion]
+the length is the same
+
+Then make a mapping. I guess this env union won't be replaced.
+
+
+BTW: we can probably create space for unions during resolving - all of them are from previously existing datatypes and functions (which are defined).

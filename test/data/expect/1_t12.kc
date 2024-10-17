@@ -3,16 +3,16 @@
 # True
 # False
 
-Maybe a
-	Just a
-	None
 
+MyMaybe a
+	MyJust a
+	MyNone
 
-is5 (x Int) -> Maybe Int
+is5 (x Int) -> MyMaybe Int
 	if x == 5
-		return Just(x)
+		return MyJust(x)
 	else
-		return None
+		return MyNone
 
 x = is5(12)
 y = is5(5)

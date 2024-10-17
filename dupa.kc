@@ -1,0 +1,14 @@
+
+Dupa a
+	DDD a
+	AAA a
+
+add1 (x)
+	return x + 1
+
+n = 123
+addn (x)
+	return x + n
+
+x = DDD(add1)
+y = DDD(addn)

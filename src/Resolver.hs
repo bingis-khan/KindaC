@@ -224,8 +224,8 @@ mkState prelude = CtxState
       { varScope = prelude.varNames <&> \case
           Left (T.FD _ uv _ _) -> uv
           Right (uv, _) -> uv
-      , conScope = prelude.conNames <&> \(_, _, T.DC uc _) -> uc
-      , tyScope = prelude.tyNames <&> \(T.DD ut _ _) -> ut
+      , conScope = prelude.conNames <&> \(_, _, _, T.DC uc _) -> uc
+      , tyScope = prelude.tyNames <&> \(T.DD ut _ _ _) -> ut
       }
 
     -- cons = Map.fromList $ fmap (\ci -> (ci.conName, ci)) $ foldMap extractCons $ T.fromMod prelude

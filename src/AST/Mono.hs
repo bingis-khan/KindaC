@@ -210,6 +210,9 @@ type instance Module Mono = Mod
 
 -- Printing the AST
 
+ctx :: (a -> Context) -> a -> String
+ctx f = show . flip runReader CtxData . f
+
 
 mModule :: Module Mono -> String
 mModule mod =

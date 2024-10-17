@@ -32,7 +32,7 @@ import qualified Data.Set as Set
 import Control.Monad (when, unless)
 import Data.Bool (bool)
 -- import Data.List (unsnoc)
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, mapMaybe, isJust)
 import Data.Biapplicative (second, first)
 import Data.Map (Map, (!?))
 import Data.List (find)
@@ -44,24 +44,37 @@ import Debug.Trace (traceShowId, traceShow, traceShowWith)
 -- todo: some function order cleanup after it works
 
 -- Global PP state.
-newtype PP' a = PP { fromPP :: RWS Builtin [Text] Extra a } deriving (Functor, Applicative, Monad)
-type PP = PP' ()
+newtype PPG a = PP { fromPP :: RWS Builtin [Text] Extra a } deriving (Functor, Applicative, Monad)
+type PP = PPG ()
 
-instance (a ~ ()) => Semigroup (PP' a) where
+instance (a ~ ()) => Semigroup (PPG a) where
   PP l <> PP r = PP $ l >> r
 
-instance (a ~ ()) => Monoid (PP' a) where
+instance (a ~ ()) => Monoid (PPG a) where
   mempty = PP $ RWS.rws $ \_ s -> (mempty, s, [])
 
 
--- Line (Expression) PP state.
-newtype PL' a = PL { fromPL :: RWS Builtin [Text] (Extra, [Text]) a } deriving (Functor, Applicative, Monad)
-type PL = PL' ()
+-- Top level PP state (every function/enum/struct/etc.)
+newtype PPTL a = PT { fromPPTL :: RWS Builtin [Text] (Extra, [TopLevelBlock]) a } deriving (Functor, Applicative, Monad)
+type PT = PPTL ()
+type TopLevelBlock = PP
 
-instance (a ~ ()) => Semigroup (PL' a) where
+instance (a ~ ()) => Semigroup (PPTL a) where
+  PT l <> PT r = PT $ l >> r
+
+instance (a ~ ()) => Monoid (PPTL a) where
+  mempty = PT $ RWS.rws $ \_ s -> (mempty, s, [])
+
+
+-- Line (Expression) PP state.
+newtype PPL a = PL { fromPL :: RWS Builtin [Text] (Extra, [TopLevelBlock], [AdditionalLine]) a } deriving (Functor, Applicative, Monad)
+type PL = PPL ()
+type AdditionalLine = PT
+
+instance (a ~ ()) => Semigroup (PPL a) where
   PL l <> PL r = PL $ l >> r
 
-instance (a ~ ()) => Monoid (PL' a) where
+instance (a ~ ()) => Monoid (PPL a) where
   mempty = PL $ RWS.rws $ \_ s -> (mempty, s, [])
 
 
@@ -69,21 +82,36 @@ instance (a ~ ()) => Monoid (PL' a) where
 
 
 -- Basic operators + transitions
-pl :: PL' a -> PP' a
-pl (PL p) = do -- RWS.mapRWS (\(a, _, t) -> (a, extra, [Text.concat t])) p.fromPL
+pt :: PPTL a -> PPG a
+pt (PT p) = do
   r <- PP RWS.ask
-  s <- PP RWS.get
+  extra <- PP RWS.get
 
-  let (x, (e, ts), tokens) = RWS.runRWS p r (s, [])
-  let line = Text.concat tokens
-  PP $ RWS.put e
+  let (x, (extra', topLevelBlocks), tokens) = RWS.runRWS p r (extra, [])
+  let block = Text.unlines tokens
+  PP $ RWS.put extra'
 
-  PP $ RWS.tell $ reverse ts
-  PP $ RWS.tell [line]
+  sequenceA_ $ reverse topLevelBlocks
+  PP $ RWS.tell [block]
 
   pure x
 
-statement :: PL -> PP
+
+pl :: PPL a -> PPTL a
+pl (PL p) = do -- RWS.mapRWS (\(a, _, t) -> (a, extra, [Text.concat t])) p.fromPL
+  r <- PT RWS.ask
+  (extra, tls) <- PT RWS.get
+
+  let (x, (extra', topLevelBlocks, lines), tokens) = RWS.runRWS p r (extra, tls, [])
+  let line = Text.concat tokens
+  PT $ RWS.put (extra', topLevelBlocks)
+
+  sequenceA_ $ reverse lines
+  PT $ RWS.tell [line]
+
+  pure x
+
+statement :: PL -> PT
 statement p = pl $ p & ";"
 
 
@@ -97,40 +125,40 @@ infixr 6 §  -- hihi
 
 -- join with next line
 infixr 5 &>
-(&>) :: PL -> PP -> PP
+(&>) :: PL -> PT -> PT
 (&>) l r = do
   line <- pl $ Text.concat <$> carvel l
-  lins <- carve r
-  PP $ case lins of
+  lins <- carvet r
+  PT $ case lins of
     [] -> RWS.tell [line]
     (li:lis) -> RWS.tell $ (line <> li) : lis
 
 infixl 5 §>
-(§>) :: PL -> PP -> PP
+(§>) :: PL -> PT -> PT
 (§>) l r = do
   line <- pl $ Text.concat <$> carvel l
-  lins <- carve r
-  PP $ case lins of
+  lins <- carvet r
+  PT $ case lins of
     [] -> RWS.tell [line]
     (li:lis) | Text.null line -> RWS.tell $ li : lis
     (li:lis) -> RWS.tell $ (line <> " " <> li) : lis
 
 infixr 4 <&
-(<&) :: PP -> PL -> PP
+(<&) :: PT -> PL -> PT
 (<&) l r = do
-  lins <- carve l
+  lins <- carvet l
   line <- pl $ Text.concat <$> carvel r
-  PP $ case unsnoc lins of
+  PT $ case unsnoc lins of
     Nothing -> RWS.tell [line]
     Just (lls, ll) | Text.null line -> RWS.tell $ lls ++ [ll]
     Just (lls, ll) -> RWS.tell $ lls ++ [ll <> line]
 
 infixr 4 <§
-(<§) :: PP -> PL -> PP
+(<§) :: PT -> PL -> PT
 (<§) l r = do
-  lins <- carve l
+  lins <- carvet l
   line <- pl $ Text.concat <$> carvel r
-  PP $ case unsnoc lins of
+  PT $ case unsnoc lins of
     Nothing -> RWS.tell [line]
     Just (lls, ll) | Text.null line -> RWS.tell $ lls ++ [ll]
     Just (lls, ll) -> RWS.tell $ lls ++ [ll <> " " <> line]
@@ -143,11 +171,11 @@ data Extra = Extra
   --  is this good? probably not. but I just want to get this C printer working.
   --   ??? if an environment refers to another environment, we would ideally like to have it sorted out.
   , definedUnions :: Set UnionID
-  , ordered :: [PP]  -- this is more so, that I can have Envs and Unions in one place.
+  -- , ordered :: [PP]  -- this is more so, that I can have Envs and Unions in one place.
   , definedEnvs :: Set EnvID
 
-  -- kind of a hack, but it works. i should later properly order these structs?
-  , fwdEnvUnionDeclarations :: [PP]
+  -- functions that should be defined once
+  -- , equalityFunctions :: [PP]
   }
 
 data Builtin = Builtin
@@ -162,39 +190,32 @@ cModule M.Mod{ M.functions = functions, M.dataTypes = dataTypes, M.main = main }
   let (includes, builtin, dataTypes') = splitBuiltins dataTypes
   in pp builtin $ do
 
-  comment "includes"
+  comment' "includes"
   for_ includes $ \include ->
     ppt $ "#include<" <> include <> ">"
+
+  -- Right now, it always gets included. It shouldn't be like this.
+  ppt "#include<string.h>"
+
 
   "#pragma clang diagnostic ignored \"-Wtautological-compare\""
   "#pragma clang diagnostic ignored \"-Wparentheses-equality\""
 
-  textDatatypes <- carve $ do
-    comment "DATATYPES"
-    for_ dataTypes' cDataType
+  comment' "DATATYPES"
+  for_ dataTypes' cDataType
 
   -- kind of a hack...
-  textFunctions <- carve $ do
-    comment "FUNCTIONS"
-    for_ functions cFunction
+  comment' "FUNCTIONS"
+  for_ functions cFunction
 
-  textMain <- carve $ do
-    comment "MAIN"
-    cMain main
+  comment' "MAIN"
+  cMain main
 
-  extra <- PP RWS.get
-  textEnvs <- carve $ do
-    comment "Env and Union forward declarations"
-    sequenceA_ extra.fwdEnvUnionDeclarations
-
-    comment "Envs and Unions"
-    sequenceA_ extra.ordered
-
-  PP $ do
-    RWS.tell textDatatypes
-    RWS.tell textEnvs
-    RWS.tell textFunctions
-    RWS.tell textMain
+  -- This should be removed - left for reference.
+  -- extra <- PP RWS.get
+  -- textEnvs <- carve $ do
+  --   comment "Envs and Unions"
+  --   sequenceA_ extra.ordered
 
 
 type StdIncludes = Set Text
@@ -246,41 +267,55 @@ cDataType (M.Annotated _ (M.DD _ [])) = mempty
 
 -- 1. enum
 cDataType (M.Annotated _ (M.DD ut dc)) | all (\(M.Annotated _ (M.DC _ args)) -> null args) dc  =
-  "typedef" § "enum" §> cBlock ((\(M.Annotated _ (M.DC uc _)) -> pl $ cCon NoArgs uc) <$> dc) <§ cUniqueType ut & ";"
+  pt $ "typedef" § "enum" §> cBlock ((\(M.Annotated _ (M.DC uc _)) -> pl $ cCon NoArgs uc) <$> dc) <§ cUniqueType ut & ";"
 
 -- 2. struct
 cDataType (M.Annotated _ (M.DD ut [dc])) = do
   -- define the struct
-  "typedef" §> cDataStruct dc <§ cUniqueType ut & ";"
+  pt $ "typedef" §> cDataStruct dc <§ cUniqueType ut & ";"
 
   -- then, define the constructor
-  cDataConstructorFunction undefined dc
-  
+  -- TODO: currently broken
+  cSingleDataConstructorFunction ut dc
+
 
 
 -- 3. ADT
 cDataType (M.Annotated _ (M.DD ut dcs)) = do
   let tags = cDataConTag <$> dcs
-  "typedef" § "struct" &> cBlock
+  pt $ "typedef" § "struct" &> cBlock
     [ "enum" §> cBlock [ pl $ sepBy ", " tags ]  <§ "tag;"
     , "union" §> cBlock (cDataCon ut <$> dcs) <§ "uni;"
     ] <§ cUniqueType ut & ";"
 
   for_ dcs $ cDataConstructorFunction ut
 
-cDataCon :: UniqueType -> Annotated DataCon -> PP
+cDataCon :: UniqueType -> Annotated DataCon -> PT
 -- I ideally don't want any preprocessor crap (for the source to be easily parsed.) This is temporary, because I want to make the ASTs more expressive soon (which would allow me to generate this at call site.)
 cDataCon ut dc@(M.Annotated _ (M.DC uc [])) = pl $ "#define" § cCon NoArgs uc § enclose "(" ")" (enclose "(" ")" (cUniqueType ut) § "{" § ".tag" § "=" § cDataConTag dc § "}")
 cDataCon _ dc@(M.Annotated _ (M.DC uc (_:_))) = cDataStruct dc <§ cCon NoArgs uc & ";"
 
 -- used by both of cDataCon and cDataType
-cDataStruct :: Annotated DataCon -> PP
+cDataStruct :: Annotated DataCon -> PT
 cDataStruct (M.Annotated _ (M.DC uc ts)) = "struct" §> cBlock [ member t i | (t, i) <- zip ts [1::Int ..] ]  -- cBlock "struct" (fmap cType ts) <+> cCon NoArgs uc <.> ";"
   where
     -- right now, it's impossible to access member variables. just assign next ints for now.
     member t i = statement $ cTypeVar (cDataConArgName uc i) t
 
 -- An optional constructor (will not do the constructor if it the con does not need it.)
+cSingleDataConstructorFunction :: UniqueType -> Annotated DataCon -> PP
+cSingleDataConstructorFunction _ (M.Annotated _ (M.DC _ [])) = error "Impossible. This should have been considered an 'enum' type of datatype."
+cSingleDataConstructorFunction ut (M.Annotated _ (M.DC uc args@(_:_))) =
+  let
+    cparamnames = [ cDataConArgName uc i | i <- [1..] ]
+    cparams = [ cTypeVar name t | (t, name) <- zip args cparamnames ]
+    assigns     = [ "." & name § "=" § name  |  (_, name) <- zip args cparamnames ]
+
+    ret = Fix $ M.TCon ut []  -- this is bad (if we have any parameters, this will be incorrect. but it won't matter, per the current implementation of 'cTypeVar')
+
+  in ccFunction (cCon WithArgs uc) ret cparams
+    [ statement $ "return" § enclose "(" ")" (cUniqueType ut) § "{" § sepBy ", "  assigns § "}" ]
+
 cDataConstructorFunction :: UniqueType -> Annotated DataCon -> PP
 cDataConstructorFunction _ (M.Annotated _ (M.DC _ [])) = mempty
 cDataConstructorFunction ut dc@(M.Annotated _ (M.DC uc args@(_:_))) = do
@@ -289,7 +324,7 @@ cDataConstructorFunction ut dc@(M.Annotated _ (M.DC uc args@(_:_))) = do
   let assigns     = [ "." & name § "=" § name  |  (_, name) <- zip args cparamnames ]
 
   let ret = Fix $ M.TCon ut []  -- this is bad (if we have any parameters, this will be incorrect. but it won't matter, per the current implementation of 'cTypeVar')
-  ccFunction (cCon WithArgs uc) ret cparams 
+  ccFunction (cCon WithArgs uc) ret cparams
     [ statement $ "return" § enclose "(" ")" (cUniqueType ut) § "{" § ".tag" § "=" § cDataConTag dc & ", " § ".uni." & cCon NoArgs uc § "=" § "{" § sepBy ", " assigns § "}" § "}" ]
 
 cDataConArgName :: UniqueCon -> Int -> PL
@@ -306,19 +341,21 @@ cFunction (M.Annotated _ (M.Fun (M.FD env uv params ret) union body)) = do
         then cVar uv
         else cVarFun uv
   let cparams = params <&> \(uv, t) -> cTypeVar (cVar uv) t
-  ccparams <- if isUnionEmpty union
-    then pure cparams
-    else do
-      (envtype, _, _) <- pl $ cEnv env
-      pure $ ((ptrTo envtype § "env") :) cparams
+  let envparam = do
+        (envtype, _, _) <- cEnv env
+        ptrTo envtype § "env"
+
+  let ccparams = if isUnionEmpty union
+      then cparams
+      else envparam : cparams
 
   ccFunction funref ret ccparams (cStmt <$> body)
 
 cMain :: [AnnStmt Mono] -> PP
-cMain stmts = "int" § "main" & "()" &> cBlock (cStmt <$> stmts)
+cMain stmts = pt $ "int" § "main" & "()" &> cBlock (cStmt <$> stmts)
 
 
-cStmt :: AnnStmt Mono -> PP
+cStmt :: AnnStmt Mono -> PT
 cStmt = cata $ \(AnnStmt anns monoStmt) -> case monoStmt of
   Pass -> comment "pass (nuttin)"
   Print et ->
@@ -338,12 +375,11 @@ cStmt = cata $ \(AnnStmt anns monoStmt) -> case monoStmt of
         bareExpr e
         statement $ cPrintf (ppType (Fix (M.TCon ut ts)) <> "\\n") []
 
-      Function union args ret
-        | isUnionEmpty union -> do
-          statement $ cPrintf (ppType (Fix (M.TFun union args ret)) <> " at %p\\n") [enclose "(" ")" "void*" § e]
-        | otherwise -> do
-          bareExpr e
-          statement $ cPrintf (ppType (Fix (M.TFun union args ret)) <> "\\n") []
+      Function union args ret ->
+          let e' = if isUnionEmpty union
+              then e
+              else e & ".fun"
+          in statement $ cPrintf (ppType (Fix (M.TFun union args ret)) <> " at %p\\n") [enclose "(" ")" "void*" § e']
     where
       bareExpr = statement . (enclose "(" ")" "void" §)
 
@@ -376,38 +412,55 @@ cStmt = cata $ \(AnnStmt anns monoStmt) -> case monoStmt of
 
 
 cExpr :: Expr Mono -> PL
-cExpr = para $ \case
-  M.ExprType t (Call (ft, e) args) ->
-      let t'@(Fix (M.TFun union _ _)) = expr2type ft
-      in if isUnionEmpty union
-        then
-          cCall e $ fmap snd args
+cExpr expr = do
+  builtin <- PL RWS.ask
+  flip para expr $ \case
+    M.ExprType t (Call (ft, e) args) ->
+        let t'@(Fix (M.TFun union _ _)) = expr2type ft
+        in if isUnionEmpty union
+          then
+            cCall e $ fmap snd args
+          else do
+            v <- createIntermediateVariable t' e
+            cCall (v & ".fun") $ ("&" & v & ".uni") : fmap snd args
+
+    M.ExprType _ (Op (Fix (M.ExprType t _), e) Equals (Fix (M.ExprType t' _), e')) | not (isBuiltinType t builtin) -> do
+      el <- createIntermediateVariable t e
+      er <- createIntermediateVariable t' e'
+      enclose "(" ")" $ "0 == " § cCall "memcmp" [ref el, ref er, sizeOf t]
+    M.ExprType _ (Op (Fix (M.ExprType t _), e) NotEquals (Fix (M.ExprType t' _), e')) | not (isBuiltinType t builtin) -> do
+      el <- createIntermediateVariable t e
+      er <- createIntermediateVariable t' e'
+      enclose "(" ")" $ "0 != " § cCall "memcmp" [ref el, ref er, sizeOf t]
+
+    M.ExprType t expr -> case fmap snd expr of
+      Call {} -> error "unreachable"
+
+      Lit (M.LInt x) -> pls x
+
+      Var Local uv -> cVar uv
+      Var FromEnvironment uv -> "env->" & cVar uv
+      Var External _ -> undefined
+
+      Con uc -> case t of
+        Fix (M.TFun {}) -> cCon WithArgs uc
+        Fix (M.TCon {}) -> cCon NoArgs uc
+
+      -- Op l Equals r | isBuiltinType undefined builtin -> undefined
+      Op l op r -> enclose "(" ")" $ l § cOp op § r
+
+      EnvInit envdef@(M.EnvDef (M.FD _ v _ _) union) -> if isUnionEmpty union
+        then cVar v
         else do
-          v <- createIntermediateVariable t' e
-          cCall (v & ".fun") $ ("&" & v & ".uni") : fmap snd args
-
-  M.ExprType t expr -> case fmap snd expr of
-    Call {} -> error "unreachable"
-
-    Lit (M.LInt x) -> pls x
-
-    Var Local uv -> cVar uv
-    Var FromEnvironment uv -> "env->" & cVar uv
-    Var External _ -> undefined
-
-    Con uc -> case t of
-      Fix (M.TFun {}) -> cCon WithArgs uc
-      Fix (M.TCon {}) -> cCon NoArgs uc
-
-    Op l op r -> enclose "(" ")" $ l § cOp op § r
-
-    EnvInit envdef@(M.EnvDef (M.FD _ v _ _) union) -> if isUnionEmpty union
-      then cVar v
-      else do
-        (_, _, inst) <- cEnvDef envdef
-        inst
+          (_, _, inst) <- cEnvDef envdef
+          inst
 
 
+sizeOf :: Type Mono -> PL
+sizeOf t = cCall "sizeof" [cType t]
+
+ref :: PL -> PL
+ref = ("&" &)
 
 cCall :: PL -> [PL] -> PL
 cCall callee args = callee & cParamList args
@@ -415,18 +468,18 @@ cCall callee args = callee & cParamList args
 cParamList :: [PL] -> PL
 cParamList = enclose "(" ")" . sepBy ", "
 
-createIntermediateVariable :: Type Mono -> PL -> PL' PL
+createIntermediateVariable :: Type Mono -> PL -> PPL PL
 createIntermediateVariable t e = do
   next <- nextTemp
-  assignment <- fmap Text.concat $ carvel $ cTypeVar next t § "=" § e & ";"
+  let assignment = statement $ cTypeVar next t § "=" § e
 
   PL $ RWS.modify $ second (assignment :)
   pure next
 
-nextTemp :: PL' PL
+nextTemp :: PPL PL
 nextTemp = do
-  extra <- PL $ RWS.gets fst
-  PL $ RWS.modify $ first $ \extra -> extra { tempcounter = extra.tempcounter + 1 }
+  extra <- PL $ RWS.gets (\(ex, _, _) -> ex)
+  PL $ RWS.modify $ \(extra, tls, ls) -> (extra { tempcounter = extra.tempcounter + 1 }, tls, ls)
 
   let nextID = fromString $ "temp" <> show extra.tempcounter
   pure nextID
@@ -439,7 +492,7 @@ cPrintf formatString args =
   let cformat = cstr formatString
   in cCall "printf" (cformat : args)
 
-cBlock :: Traversable t => t PP -> PP
+cBlock :: Traversable t => t PT -> PT
 cBlock stmts = do
   "{"
   indent $ sequenceA_ stmts
@@ -484,7 +537,9 @@ cOp = \case
 cTypeVar :: PL -> Type Mono -> PL
 cTypeVar v (Fix (M.TCon ut _)) = cUniqueType ut § v
 
-cTypeVar v (Fix (M.TFun union@(M.EnvUnion uid _) _ _)) | not (isUnionEmpty union) = cUnionType uid § v
+cTypeVar v (Fix (M.TFun union args ret)) | not (isUnionEmpty union) = do
+  cUnion args ret union § v
+
 cTypeVar v (Fix (M.TFun _ args ret)) =
   let cargs = cType <$> args
   in cTypeFun ret cargs v
@@ -498,7 +553,7 @@ cType (Fix (M.TCon ut _)) = cUniqueType ut
 cType (Fix (M.TFun union args ret)) =
   let cargs = if isUnionEmpty union
       then cType <$> args
-      else ptrTo (cUnionType union.unionID) : (cType <$> args)
+      else ptrTo (cUnion args ret union) : (cType <$> args)
   in cTypeVar (cCall "(*)" cargs) ret
 
 
@@ -510,6 +565,10 @@ cUniqueType t = do
     Just tname -> plt tname
     Nothing -> cUniqueTypeName t
 
+isBuiltinType :: Type Mono -> Builtin -> Bool
+isBuiltinType (Fix (M.TFun _ _ _)) _ = False
+isBuiltinType (Fix (M.TCon t _)) ts = isJust $ ts.typeSubst !? t
+
 
 cUniqueTypeName :: UniqueType -> PL
 cUniqueTypeName t = plt t.typeName.fromTC & "__" & pls (hashUnique t.typeID)
@@ -519,9 +578,9 @@ cUniqueTypeName t = plt t.typeName.fromTC & "__" & pls (hashUnique t.typeID)
 -- Right now there are two possibilities for a function.
 --  1. No environment
 --  2. One of the functions in the union has an environment.
-cEnvDef :: M.EnvDef -> PL' (PL, PL, PL)  -- (Type, Name, Inst)
+cEnvDef :: M.EnvDef -> PPL (PL, PL, PL)  -- (Type, Name, Inst)
 cEnvDef (M.EnvDef fundec@(M.FD env v args ret) union) = do
-  unionType <- cUnion fundec union
+  let unionType = cUnion (snd <$> args) ret union
   (_, envName, envinst) <- cEnv env
 
   -- kind of spaghetti-ish. depending on the union, the function is defined to have an extra argument or not.
@@ -544,49 +603,49 @@ cEnvDef (M.EnvDef fundec@(M.FD env v args ret) union) = do
 -- It just creates a union if it does not exist and returns the types.
 --  no matter what the code is supposed to do, this is how you should obtain union name and type.
 --   TODO: don't generate the union if it's empty (or should the check happen outside of the function?)
-cUnion :: M.FunDec -> EnvUnion Mono -> PL' PL -- (Type, Fun Ass -> Env Ass -> Inst)
-cUnion (M.FD _ _ args ret) union@(M.EnvUnion uid envs) = do
-  extra <- PL $ RWS.gets fst
-  unless (uid `Set.member` extra.definedUnions) $ do
-    envTypes <- for envs $ \env -> do
-          -- this adds all environments to our scope (the one that matters :3)
-          --   TODO: this is super iffy. I guess my structure aint very good.
-          (envType, envName, _) <- cEnv env
+cUnion :: [Type Mono] -> Type Mono -> EnvUnion Mono -> PL -- (Type, Fun Ass -> Env Ass -> Inst)
+cUnion args ret union@(M.EnvUnion uid envs) = do
+  envTypes <- for envs $ \env -> do
+        -- this adds all environments to our scope (the one that matters :3)
+        --   TODO: this is super iffy. I guess my structure aint very good.
+        (envType, envName, _) <- cEnv env
 
-          pure $ statement $ envType § envName
+        pure $ statement $ envType § envName
 
-    let fun = statement $ do
-          let cargs = bool id ("void*":) (not $ isUnionEmpty union) $ cType . snd <$> args
-          cTypeFun ret cargs "fun"
+  let fun = statement $ do
+        let cargs = bool id ("void*":) (not $ isUnionEmpty union) $ cType <$> args
+        cTypeFun ret cargs "fun"
 
-    let union = "union" §> cBlock envTypes <§ "uni;"
-    let whole = cUnionType uid §> cBlock [fun, union] <& ";"
+  let union = "union" §> cBlock envTypes <§ "uni;"
+  let whole = do
+        extra <- getExtra
+        unless (uid `Set.member` extra.definedUnions) $ do
+          modifyExtra $ \extra -> extra { definedUnions = Set.insert uid extra.definedUnions }
+          pt $ cUnionType uid §> cBlock [fun, union] <& ";"
 
-    addFwdDecl (cUnionType uid)
-    PL $ RWS.modify $ first $ \extra -> extra { definedUnions = Set.insert uid extra.definedUnions, ordered = extra.ordered ++ [whole] }
-
-  pure (cUnionType uid)
+  addTopLevel whole
 
 
-cEnv :: Env Mono -> PL' (PL, PL, PL)  -- (Type, Name, Inst)
+  cUnionType uid
+
+
+cEnv :: Env Mono -> PPL (PL, PL, PL)  -- (Type, Name, Inst)
 cEnv (M.Env eid vars) = do
-  extra <- PL $ RWS.gets fst
-  unless (eid `Set.member` extra.definedEnvs) $ do
-    let varTypes = vars <&> \(v, t) -> do
-          statement $ do
-            cTypeVar (cVar v) t
-    let env = cEnvType eid §> cBlock varTypes <& ";"
+  let varTypes = vars <&> \(v, t) -> do
+        statement $ do
+          cTypeVar (cVar v) t
+  let env = do
+        extra <- getExtra
+        unless (eid `Set.member` extra.definedEnvs) $ do
+          modifyExtra $ \extra -> extra { definedEnvs = Set.insert eid extra.definedEnvs }
+          pt $ cEnvType eid §> cBlock varTypes <& ";"
 
-    addFwdDecl (cEnvType eid)
-    PL $ RWS.modify $ first $ \extra -> extra { definedEnvs = Set.insert eid extra.definedEnvs, ordered = extra.ordered ++ [env] }
+  addTopLevel env
 
-  let cvars = vars <&> \(v, t) -> "." & cVar v § "=" § cVar v
+  let cvars = vars <&> \(v, _) -> "." & cVar v § "=" § cVar v
   let inst = "{" § sepBy ", " cvars § "}"
 
   pure (cEnvType eid, cEnvName eid, inst)
-
-addFwdDecl :: PL -> PL
-addFwdDecl decl = PL $ RWS.modify $ first $ \extra -> extra { fwdEnvUnionDeclarations = statement decl : extra.fwdEnvUnionDeclarations }
 
 cEnvName :: EnvID -> PL
 cEnvName env = "e" & pls (hashUnique env.fromEnvID)
@@ -597,12 +656,13 @@ cEnvType env = "struct" § "et" & pls (hashUnique env.fromEnvID)
 cUnionName :: UnionID -> PL
 cUnionName u = "u" & pls (hashUnique u.fromUnionID)
 
+-- Don't use this, because union will not be generated. Use `cUnion` for union type.
 cUnionType :: UnionID -> PL
 cUnionType u =
   "struct" § "ut" & pls (hashUnique u.fromUnionID)
 
-ccFunction :: Traversable t => PL -> Type Mono -> [PL] -> t PP -> PP
-ccFunction name t args body = "static" § cTypeVar (name & enclose "(" ")" (sepBy ", " args)) t  §> cBlock body
+ccFunction :: Traversable t => PL -> Type Mono -> [PL] -> t PT -> PP
+ccFunction name t args body = pt $ "static" § cTypeVar (name & enclose "(" ")" (sepBy ", " args)) t  §> cBlock body
 
 ptrTo :: PL -> PL
 ptrTo = (<> "*")
@@ -621,15 +681,18 @@ sepBy :: PL -> [PL] -> PL
 sepBy _ [] = mempty
 sepBy sep (x:xs) = foldl' (\l r -> l & sep & r) x xs
 
-indent :: PP -> PP
-indent (PP x) = PP $ RWS.censor (fmap ("  " <>)) x
+indent :: PT -> PT
+indent (PT x) = PT $ RWS.censor (fmap ("  " <>)) x
 
-optional :: Maybe a -> (a -> PP) -> PP
+optional :: Maybe a -> (a -> PT) -> PT
 optional Nothing _ = mempty
 optional (Just x) f = f x
 
-comment :: Text -> PP
-comment text = ppt $ "// " <> text
+comment' :: Text -> PP
+comment' = pt . comment
+
+comment :: Text -> PT
+comment text = ptt $ "// " <> text
 
 cstr :: Text -> PL
 cstr text = plt $ "\"" <> text <> "\""
@@ -639,6 +702,9 @@ pls = fromString . show
 
 plt :: Text -> PL
 plt = fromString . Text.unpack
+
+ptt :: Text -> PT
+ptt = fromString . Text.unpack
 
 ppt :: Text -> PP
 ppt = fromString . Text.unpack
@@ -650,30 +716,48 @@ pp b p =
     extra = Extra
       { tempcounter = 0
       , definedUnions = mempty
-      , ordered = mempty
       , definedEnvs = mempty
-      , fwdEnvUnionDeclarations = mempty
       }
     (_, _, text) = RWS.runRWS p.fromPP b extra
   in Text.unlines text
 
 
 
-instance (a ~ ()) => IsString (PP' a) where
+instance (a ~ ()) => IsString (PPG a) where
   fromString s = PP $ RWS.rws $ \_ e -> ((), e, [Text.pack s])
 
-instance (a ~ ()) => IsString (PL' a) where
+instance (a ~ ()) => IsString (PPTL a) where
+  fromString s = PT $ RWS.rws $ \_ e -> ((), e, [Text.pack s])
+
+instance (a ~ ()) => IsString (PPL a) where
   fromString s = PL $ RWS.rws $ \_ e -> ((), e, [Text.pack s])
 
 
 
 ------- MISC -------
 
-carve :: PP -> PP' [Text]
-carve p =
-  PP $ RWS.censor (const []) $ snd <$> RWS.listen p.fromPP
+modifyExtra :: (Extra -> Extra) -> PP
+modifyExtra fmod = PP $ RWS.modify fmod -- $ \(extra, tls, ls) -> (fmod extra, tls, ls)
 
-carvel :: PL -> PL' [Text]
+getExtra :: PPG Extra
+getExtra = PP $ RWS.get
+
+addTopLevel :: PP -> PL
+addTopLevel thing = do
+  PL $ RWS.modify $ \(extra, topLevelBlocks, lines) -> (extra, thing : topLevelBlocks, lines)
+
+
+carve :: RWS r [Text] s () -> RWS r [Text] s [Text]
+carve p =
+  RWS.censor (const []) $ snd <$> RWS.listen p
+
+carveg :: PP -> PPG [Text]
+carveg = PP . carve . fromPP
+
+carvet :: PT -> PPTL [Text]
+carvet = PT . carve . fromPPTL
+
+carvel :: PL -> PPL [Text]
 carvel p =
   PL $ RWS.censor (const []) $ snd <$> RWS.listen p.fromPL
 

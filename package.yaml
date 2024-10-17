@@ -28,6 +28,15 @@ dependencies:
   - split
   - text
 
+  # https://discourse.haskell.org/t/recompilation-issue-with-stack-test/10120/11
+  # Test packages. The thing is, when they are only in `tests`, it triggers recompilation, which is slow.
+  - hspec
+  - text
+  - directory
+  - temporary
+  - filepath
+  - HUnit
+
 ghc-options:
 - -Wall
 - -Wcompat
@@ -67,10 +76,4 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - KindaC
-    - hspec
-    - text
-    - directory
-    - temporary
-    - filepath
-    - HUnit
     

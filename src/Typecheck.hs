@@ -23,17 +23,16 @@ import Control.Monad.Trans.RWS (RWST, evalRWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed, hoist, project, transverse)
-import Control.Monad (replicateM)
+import Control.Monad (replicateM, zipWithM)
 import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold)
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Set (Set, (\\), member)
 import qualified Data.Set as Set
-import Control.Monad.Trans.Writer (runWriter, Writer, runWriterT, WriterT)
+import Control.Monad.Trans.Writer (runWriterT, WriterT)
 import qualified Control.Monad.Trans.Writer as Writer
 import Data.Tuple (swap)
 import Data.Bifunctor (bimap, Bifunctor)
-import Data.Maybe (mapMaybe, catMaybes)
 import Data.List ( find )
 import Data.Bifoldable (bifoldMap, bifold)
 import qualified Data.List.NonEmpty as NonEmpty
@@ -44,16 +43,14 @@ import qualified AST.Resolved as R
 import qualified AST.TyVared as Ty
 import qualified AST.Typed as T
 
-import AST.Converged (Prelude(..), boolTypeName, tlReturnTypeName, intTypeName, PreludeFind (..), boolFind, tlReturnFind, intFind)
-import AST.Common (Module, Type, TVar (TV), AnnStmt, Expr, LitType (LInt), UniqueVar, UniqueCon, UniqueType (typeName), EnvUnion, Env, Annotated (Annotated), Op (..), TCon (fromTC, TC), Locality (..), EnvID (..), UnionID (..), Result(..), fromResult)
+import AST.Converged (Prelude(..), PreludeFind (..), boolFind, tlReturnFind, intFind)
+import AST.Common (Module, Type, TVar (TV), AnnStmt, Expr, LitType (LInt), UniqueVar, UniqueCon, UniqueType (typeName), EnvUnion, Env, Annotated (Annotated), Op (..), Locality (..), EnvID (..), UnionID (..), Result(..), fromResult)
 import AST.Resolved (Resolved)
 import AST.Typed (Typed)
-import AST.TyVared (TyVared, TyVar, TypeF (..), tyModule)
+import AST.TyVared (TyVared, TyVar, TypeF (..))
 import Control.Monad.IO.Class (liftIO, MonadIO)
-import Data.Unique (newUnique, Unique, hashUnique)
+import Data.Unique (newUnique)
 import Data.Functor ((<&>))
-import Data.List (nub)
-import Debug.Trace (traceShow, traceShowWith, traceShowId)
 
 
 -- I have some goals alongside rewriting typechecking:
@@ -69,17 +66,17 @@ typecheck mprelude rStmts = do
     (tyStmts, constraints) <- generateConstraints env senv rStmts
 
     -- liftIO $ putStrLn "UNSUBST"
-    -- liftIO $ putStrLn $ tyModule tyStmts
+    -- liftIO $ putStrLn $ Ty.tyModule tyStmts
 
     (errors, su) <- liftIO $ solveConstraints constraints
     let finalTyStmts = subst su tyStmts
 
     -- debug print
-    -- liftIO $ putStrLn $ (\(Subst su1 su2) -> show su1) su
+    -- liftIO $ putStrLn $ (\(Subst su1 su2) -> show su1 <> "\n" <> show su2) su
 
     -- liftIO $ putStrLn "\nSUBST"
-    -- liftIO $ putStrLn $ tyModule finalTyStmts
-    
+    -- liftIO $ putStrLn $ Ty.tyModule finalTyStmts
+
     pure $ case finalize finalTyStmts of
         Left ambs ->
             let ambiguousTyVarsErrors = AmbiguousType <$> ambs
@@ -110,23 +107,20 @@ makeSEnv (Just prelude) = do
             scheme = Forall (tv ret <> foldMap (tv . snd) params) utfun
           in (v, scheme)
 
-        Right (v, t) -> 
+        Right (v, t) ->
           (v, Forall Set.empty (UTExternalVariable t))
 
   cons <- fmap Map.fromList $ for (Map.elems prelude.conNames) $ \case
-    (tid, tvars, T.DC ci ts) -> do
+    (tid, tvars, unions, T.DC ci ts) -> do
       env <- emptyEnv
       let tyts = fmap t2ty ts
           tyvars = fmap (Fix . Ty.TVar) tvars
-          utype =
-            case tyts of
-              [] -> UTCon tid tyvars
-              tys ->
-                let td = Fix $ TCon tid tyvars
-                in UTFun env tys td
+      utype <- do
+            unions' <- reunion `traverse` unions
+            pure $ UTCon tyts tid tyvars unions'
       pure (ci, Forall (Set.fromList tvars) utype)
 
-  let ts = Map.fromList $ Map.elems prelude.tyNames <&> \(T.DD tid tvars _) -> (tid, t2ty $ dataType tid tvars)
+  ts <- fmap Map.fromList $ for (Map.elems prelude.tyNames) $ \(T.DD tid tvars unions _) -> (tid,) . Ty.TypeCon tid (Fix . Ty.TVar <$> tvars) <$> traverse reunion unions
 
   pure StatefulEnv
     { variables = vars
@@ -173,23 +167,6 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
     -- go through additional layers (in the future also position information)
     inferAnnStmt :: Substitutable a => Base (AnnStmt Resolved) (Infer a) -> Infer (Base (AnnStmt TyVared) a)
     inferAnnStmt (R.AnnStmt anns rStmt) = case rStmt of
-      -- Old let generalization
-      -- NormalStmt (Assignment v rexpr) -> do
-      --   texpr@(Fix (ExprType texprt _)) <- subSolve $ inferExpr rexpr
-      --   -- substitution done in subSolve
-
-      --   -- generalization
-      --   envFtv <- foldMap (\(Forall _ e) -> ftv e) . Map.elems <$> RWS.gets variables  -- 
-      --   let texprtFtv = ftv texprt
-      --   let schemeTyVars = texprtFtv \\ envFtv
-      --   -- Do amibguous check at the end. 
-
-      --   let (scheme, schemeExpr) = closeOverExpr schemeTyVars texpr -- Replace Left -> Right
-
-      --   newVar v scheme
-
-      --   pure $ AnnStmt anns $ NormalStmt $ Assignment v schemeExpr
-
 
       R.FunctionDefinition (R.FD varenv name params ret) rbody -> do
         -- |||| start subSolve
@@ -237,25 +214,52 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
         pure $ Ty.AnnStmt anns $ Ty.FunctionDefinition sfdec sfbody
 
       R.DataDefinition (R.DD tid tvars cons) -> do
-        newType tid tvars
+        -- definition of type should go here.
 
-        nucons <- for cons $ \(Annotated anns (R.DC c ts)) -> do
-          tyts <- traverse rt2ty ts
-          env <- emptyEnv
-          let tyvars = fmap (Fix . Ty.TVar) tvars
-          let utype =
-                case tyts of
-                  [] -> UTCon tid tyvars
-                  tys ->
-                    let td = Fix $ TCon tid tyvars
-                    in UTFun env tys td
+        -- Envs in Datatypes: gather all of the unions.
+        -- to do that:
+        --  1. get unions from function types
+        --  2. get unions from TCons (which previously got them from function types)
+        -- I need to have the same order for them. This is important!! (I don't have a better way for now.)
+        let exunzip = first concat . unzip
+        typez <- RWS.gets types
+        (unions, nucons) <- fmap exunzip $ for cons $ \(Annotated anns (R.DC c ts)) -> do
+          let
+            mapTypeAndExtractUnion :: Base (Type Resolved) (Infer ([EnvUnion TyVared], Type TyVared)) -> Infer ([EnvUnion TyVared], Ty.TypeF (Type TyVared))
+            mapTypeAndExtractUnion = \case
+              R.TCon t ts -> do
+                case typez !? t of
+                  Nothing -> error $ "Could not find type " <> show t <> ". This is probably impossible?? Maybe???"
+                  Just (Ty.TypeCon ut _tyvars tconUnions) -> do
+                    (paramUnions, ts') <- exunzip <$> sequenceA ts
+                    let unions = tconUnions <> paramUnions
+                    pure (unions, Ty.TCon ut ts' unions)
+
+              R.TVar tv -> pure (mempty, Ty.TVar tv)
+
+              R.TFun params ret -> do
+                (paramUnions, params') <- exunzip <$> sequenceA params
+                (retUnions, ret') <- ret
+                funEmpty <- emptyUnion  -- this union is for the function itself.
+                let union = funEmpty : paramUnions <> retUnions
+                pure (union, Ty.TFun funEmpty params' ret')
+
+          (unions, tyts) <- fmap (first concat . unzip) $ for ts $ cata $ (fmap . fmap) embed . mapTypeAndExtractUnion
+          pure (unions, (c, tyts, tvars, anns))
+
+
+        -- Now, let's construct the datatypes using the collected unions from all of the constructors.
+        cons' <- for nucons $ \(uc, tyts, tvars, anns) -> do
+          let tyvars = Fix . Ty.TVar <$> tvars
+          let utype = UTCon tyts tid tyvars unions
 
           let scheme = Forall (Set.fromList tvars) utype
-          newCon c scheme
+          newCon uc scheme
+          pure $ Annotated anns $ Ty.DC uc tyts
 
-          pure $ Annotated anns $ Ty.DC c tyts
+        let nudd = Ty.DD tid tvars unions cons'
 
-        let nudd = Ty.DD tid tvars nucons
+        newType tid tvars unions
         pure $ Ty.AnnStmt anns $ Ty.DataDefinition nudd -- DataDefinition dd
 
       R.NormalStmt rstmt -> do
@@ -355,6 +359,7 @@ inferExpr = cata (fmap embed . inferExprType)
           l' <- l
           r' <- r
           pure $ Ty.Op l' op r'
+
         R.Call e args -> do
           liftA2 Ty.Call e (sequenceA args)
 
@@ -471,7 +476,32 @@ instantiate (Forall tvars ut) = do
 
 instantiateType :: Type Unstantiated -> Infer (Type TyVared)
 instantiateType = \case
-  UTCon ut ts -> pure $ Fix $ Ty.TCon ut ts
+  UTCon params ut ts unions -> do
+    unions' <- cloneUnion `traverse` unions
+    let unionMapping = Map.fromList $ zip unions unions'
+
+    let
+      findUnion :: EnvUnion TyVared -> EnvUnion TyVared
+      findUnion union = Map.findWithDefault union union unionMapping
+
+      mapTypeUnions :: Type TyVared -> Type TyVared
+      mapTypeUnions = cata $ embed . \case
+        Ty.TCon ut types unions ->
+          let unions' = findUnion <$> unions
+          in Ty.TCon ut types unions'
+
+        Ty.TFun union params ret -> Ty.TFun (findUnion union) params ret
+        Ty.TVar tv -> Ty.TVar tv
+        Ty.TyVar tv -> Ty.TyVar tv
+
+    t <- case params of
+          [] -> pure $ Fix $ Ty.TCon ut ts unions'
+          (_:_) -> do
+            funUnion <- singletonUnion =<< emptyEnv
+            let td = Fix $ Ty.TCon ut ts unions'
+            pure $ Fix $ Ty.TFun funUnion params td
+
+    pure $ mapTypeUnions t
   UTFun env args ret -> do
     union <- singletonUnion env
     pure $ Fix $ Ty.TFun union args ret
@@ -506,8 +536,8 @@ closeOver :: Substitutable a => Set TyVar -> Ty.FunDec -> NonEmpty a -> (Scheme,
 closeOver tyvars fd body  = (scheme, sfd, sbody)
   where
     scheme = Forall tvars (UTFun senv sparams sret)
-    tvars 
-      =  fdTVars fd 
+    tvars
+      =  fdTVars fd
       <> Set.map (\(Ty.TyV tname) -> TV tname) tyvars  -- change closed over tyvars into tvars
     sparams = fmap snd svparams
     sbody = subst newSubst body
@@ -531,10 +561,9 @@ newVar v scheme = RWS.modify $ \s -> s { variables = Map.insert v scheme s.varia
 newCon :: UniqueCon -> Scheme -> Infer ()
 newCon c scheme = RWS.modify $ \s -> s { constructors = Map.insert c scheme s.constructors }
 
-newType :: UniqueType -> [TVar] -> Infer ()
-newType ti tvars =
-  let t = Fix $ Ty.TCon ti $ fmap (Fix . Ty.TVar) tvars
-
+newType :: UniqueType -> [TVar] -> [EnvUnion TyVared] -> Infer ()
+newType ti tvars unions =
+  let t = Ty.TypeCon ti (Fix . Ty.TVar <$> tvars) unions
   in RWS.modify $ \s -> s { types = Map.insert ti t s.types }
 
 newEnvID :: Infer EnvID
@@ -570,7 +599,7 @@ findBuiltinType (PF tc pf) = do
     Nothing -> do
       ts <- RWS.gets types
       case findMap tc typeName ts of
-        Just t -> pure t
+        Just t -> pure $ tycon2type t
         Nothing -> error $ "[TYPE ERROR]: Could not find inbuilt type '" <> show tc <> "'."
 
 -- todo: after I finish, or earlier, maybe make sections for main logic, then put stuff like datatypes or utility functions at the bottom.
@@ -594,7 +623,7 @@ type Constraint = (Type TyVared, Type TyVared)
 data StatefulEnv = StatefulEnv
   { variables :: Map UniqueVar Scheme
   , constructors :: Map UniqueCon Scheme
-  , types :: Map UniqueType (Type TyVared)
+  , types :: Map UniqueType Ty.TypeConstructor
   , tvargen :: TVarGen
   , env :: [Env TyVared]
   }
@@ -619,7 +648,7 @@ data Scheme = Forall (Set TVar) (Type Unstantiated)
 data Unstantiated  -- name is retarded on purpose.
 type instance Type Unstantiated = UnstantiatedType
 data UnstantiatedType
-  = UTCon UniqueType [Type TyVared]
+  = UTCon [Type TyVared] UniqueType [Type TyVared] [EnvUnion TyVared]
   -- | UTVar TVar
   | UTFun (Env TyVared) [Type TyVared] (Type TyVared)  -- this might be incorrect tho...
   | UTyVar TyVar
@@ -686,7 +715,7 @@ withEnv renv x = do
   -- remove things that are part of the inner environment (right now, just an intersection, because renv is already done in Resolver)
   let renvVarSet = Set.fromList $ R.fromEnv renv
   let outerEnv = e { Ty.env = filter ((`member` renvVarSet) . fst) e.env }
-  
+
   pure (outerEnv, x')
 
 -- TODO: should probably change the name
@@ -731,8 +760,10 @@ solveConstraints = fmap swap . runWriterT . unSolve . solve emptySubst
 
           pure $ compose su3 $ compose su2 su1
 
-        (TCon t ta, TCon t' ta') | t == t' -> do
-          unifyMany ta ta'
+        (TCon t ta unions, TCon t' ta' unions') | t == t' -> do
+          su1 <- unifyMany ta ta'
+          sus2 <- liftIO $ zipWithM unifyFunEnv unions unions'
+          pure $ foldr compose su1 (reverse sus2)  -- have to reverse to preserve order (compose sus22 (compose sus21 su1))
 
         (_, _) -> report $ TypeMismatch tl tr
 
@@ -743,7 +774,7 @@ solveConstraints = fmap swap . runWriterT . unSolve . solve emptySubst
       su2 <- unifyMany (subst su1 ls) (subst su1 rs)
       pure $ su2 `compose` su1
     unifyMany tl tr = report $ MismatchingNumberOfParameters tl tr
-    
+
 
     bind :: TyVar -> Type TyVared -> Solve Subst
     bind tyv t | t == tyvar tyv = pure emptySubst
@@ -775,8 +806,8 @@ solveConstraints = fmap swap . runWriterT . unSolve . solve emptySubst
     emptySubst = Subst Map.empty Map.empty :: Subst
 
 compose :: Subst -> Subst -> Subst
-compose sl@(Subst envsl tysl) (Subst envsr tysr) = Subst 
-  (Map.map (subst sl) envsr `Map.union` envsl)
+compose sl@(Subst envsl tysl) sr@(Subst envsr tysr) = Subst
+  (Map.map (subst sl) envsr `Map.union` Map.map (subst sr) envsl)
   (Map.map (subst sl) tysr `Map.union` tysl)
 
 
@@ -812,7 +843,7 @@ finalize (Ty.Mod tystmts) = fmap T.Mod $ fromResult $ traverse annStmt tystmts w
     Ty.Lam env args ret -> T.Lam <$> fEnv env <*> traverse (\(uv, t) -> (uv,) <$> fType t) args <*> ret
 
   fDataDef :: Ty.DataDef -> Res T.DataDef
-  fDataDef (Ty.DD ut tv cons) = T.DD ut tv <$> traverse fDataCon cons
+  fDataDef (Ty.DD ut tv unions cons) = T.DD ut tv <$> fEnvUnion `traverse` unions <*> traverse fDataCon cons
 
   fDataCon :: Annotated Ty.DataCon -> Res (Annotated T.DataCon)
   fDataCon (Annotated anns (Ty.DC uc tyv)) = Annotated anns . T.DC uc <$> traverse fType tyv
@@ -823,16 +854,20 @@ finalize (Ty.Mod tystmts) = fmap T.Mod $ fromResult $ traverse annStmt tystmts w
   fType :: Type TyVared -> Res (Type Typed)
   fType = transverse $ \case
     Ty.TyVar tyv -> Failure $ NonEmpty.singleton tyv
-    Ty.TCon ut ts -> T.TCon ut <$> sequenceA ts
+    Ty.TCon ut ts union -> T.TCon ut <$> sequenceA ts <*> fEnvUnion' `traverse` union
     Ty.TVar tv -> pure $ T.TVar tv
-    Ty.TFun union args ret -> T.TFun <$> fEnvUnion union <*> sequenceA args <*> ret where
-      fEnvUnion (Ty.EnvUnion unionID envs) = case envs of
-        -- Union is empty in this case for example:
-        -- f (ff () -> a)  # only the specified type is present without any implied environment,
-        --   pass
-        [] -> pure $ T.EnvUnion unionID []
-        (e:es) -> T.EnvUnion unionID <$> traverse fEnv' (e : es)
-      fEnv'(Ty.Env envid ets) = T.Env envid <$> traverse sequenceA ets
+    Ty.TFun union args ret -> T.TFun <$> fEnvUnion' union <*> sequenceA args <*> ret where
+
+  fEnvUnion :: EnvUnion TyVared -> Res (EnvUnion Typed)
+  fEnvUnion = fEnvUnion' . fmap fType
+
+  fEnvUnion' (Ty.EnvUnion unionID envs) = case envs of
+    -- Union is empty in this case for example:
+    -- f (ff () -> a)  # only the specified type is present without any implied environment,
+    --   pass
+    [] -> pure $ T.EnvUnion unionID []
+    (e:es) -> T.EnvUnion unionID <$> traverse fEnv' (e : es)
+      where fEnv'(Ty.Env envid ets) = T.Env envid <$> traverse sequenceA ets
 
   fEnv :: Env TyVared -> Res (Env Typed)
   fEnv (Ty.Env envid ets) = T.Env envid <$> (traverse . traverse) fType ets
@@ -841,8 +876,8 @@ finalize (Ty.Mod tystmts) = fmap T.Mod $ fromResult $ traverse annStmt tystmts w
 tyvar :: TyVar -> Type TyVared
 tyvar = Fix . Ty.TyVar
 
-dataType :: UniqueType -> [TVar] -> Type Typed
-dataType tid tvars = Fix $ T.TCon tid $ fmap (Fix . T.TVar) tvars
+tycon2type :: Ty.TypeConstructor -> Type TyVared
+tycon2type (Ty.TypeCon uid tys unions) = Fix $ Ty.TCon uid tys unions
 
 
 
@@ -866,7 +901,7 @@ instance Substitutable (Fix Ty.AnnotatedStmt) where
     stmt -> bifold $ first ftv stmt
 
   subst su = cata $ embed . sub
-    where 
+    where
       sub (Ty.AnnStmt ann stmt) = Ty.AnnStmt ann $ case stmt of
         Ty.MutDefinition v (Left t) -> Ty.MutDefinition v (Left (subst su t))
         Ty.FunctionDefinition fundec stmts -> Ty.FunctionDefinition (subst su fundec) stmts
@@ -896,8 +931,8 @@ instance Substitutable Ty.FunDec where
 instance Substitutable UnstantiatedType where
   ftv = \case
     UTyVar tyv -> Set.singleton tyv
-    
-    UTCon _ apps -> ftv apps
+
+    UTCon params _ apps unions -> ftv params <> ftv apps <> ftv unions
     UTFun env params ret -> ftv env <> ftv params <> ftv ret  -- ???
     UTExternalVariable _ -> mempty
     UTUnchanged t -> ftv t
@@ -908,7 +943,7 @@ instance Substitutable (Fix Ty.TypeF) where
   ftv = cata $ \case
     Ty.TyVar tyv -> Set.singleton tyv
     t -> fold t
-  
+
   subst su@(Subst envm tyvm) = cata $ embed . \case
     Ty.TyVar tyv -> case tyvm !? tyv of
         Nothing -> Ty.TyVar tyv
@@ -918,11 +953,11 @@ instance Substitutable (Fix Ty.TypeF) where
     Ty.TFun ogUnion@(Ty.EnvUnion { Ty.unionID = uid }) ts t ->
 
       -- might need to replace the union
-      let union = subst su $ case envm !? uid of
-            Just eunion -> eunion
-            Nothing -> ogUnion
+      let union = subst su ogUnion
 
       in Ty.TFun union ts t
+
+    Ty.TCon ut cons unions -> Ty.TCon ut cons (subst su unions)
 
     t -> t
 
@@ -956,8 +991,13 @@ rt2ty = cata (fmap embed . f)
   where
     f = \case
       R.TCon t ts -> do
-        ts' <- sequenceA ts
-        pure $ Ty.TCon t ts'
+        typez <- RWS.gets types
+        case typez !? t of
+          Nothing -> error $ "Could not find type " <> show t <> ". This is probably impossible?? Maybe???"
+          Just (Ty.TypeCon ut _tyvars unions) -> do
+            ts' <- sequenceA ts
+            pure $ Ty.TCon ut ts' unions
+
 
       R.TVar tv -> pure $ Ty.TVar tv
       R.TFun params ret -> do
@@ -968,9 +1008,14 @@ rt2ty = cata (fmap embed . f)
 
 t2ty :: Type Typed -> Type TyVared
 t2ty = hoist $ \case
-  T.TCon ut apps -> Ty.TCon ut apps
+  T.TCon ut apps union -> Ty.TCon ut apps (reunion' <$> union)
   T.TFun union args ret -> Ty.TFun (reunion' union) args ret
   T.TVar tv -> Ty.TVar tv
+
+cloneUnion :: EnvUnion TyVared -> Infer (EnvUnion TyVared)
+cloneUnion union = do
+  uid <- newUnionID
+  pure $ union { Ty.unionID = uid }
 
 emptyUnion :: Infer (EnvUnion TyVared)
 emptyUnion = do

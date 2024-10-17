@@ -2,7 +2,7 @@
 # 72
 # ()
 # 423
-# (Int, Int) -> Int
+# (Int, Int) -> Int at \*
 
 
 x = 1

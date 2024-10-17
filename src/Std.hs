@@ -65,11 +65,11 @@ makePrelude prelude = fromResult $
 
     -- check if there is a Unit type
     unitOr = case cons !? unitName of
-      Just (uniqueType, [], T.DC unitCon []) -> 
-        let unitType = Fix $ T.TCon uniqueType []  -- reconstruct the type of constructor
+      Just (uniqueType, [], [], T.DC unitCon []) -> 
+        let unitType = Fix $ T.TCon uniqueType [] []  -- reconstruct the type of constructor
         in Success (unitCon, unitType)
 
-      Just (ut, tvars, T.DC uc apps) ->
+      Just (ut, tvars, _, T.DC uc apps) ->
         Failure $ ne $ "[PRELUDE ERROR]: You may not use constructors that require arguments or their types require parameters. "  <> show uc <> " " <> show ut <> " " <> show apps <> " " <> show tvars
       Nothing -> Failure $ ne $ "[PRELUDE ERROR]: Could not find any constructor with the name '" <> show unitName <>  "'."
 
@@ -85,7 +85,7 @@ makePrelude prelude = fromResult $
 
     tryFindType :: String -> TCon -> Result (NonEmpty String) (Type Typed)
     tryFindType reason tcon = case types !? tcon of
-      Just (T.DD uniqueType tvars _) -> Success $ Fix $ T.TCon uniqueType $ Fix . T.TVar <$> tvars
+      Just (T.DD uniqueType tvars unions _) -> Success $ Fix $ T.TCon uniqueType (Fix . T.TVar <$> tvars) unions
       Nothing -> Failure $ ne $ "[PRELUDE ERROR]: Could not find a type to represent " <> reason <> "of the program. Looking for '" <> show tcon <> "'."
 
     ne :: String -> NonEmpty String
@@ -93,15 +93,15 @@ makePrelude prelude = fromResult $
 
 
     -- gather all of this shit (copied from Resolver)
-    cons = Map.fromList $ fmap (\(dc@(T.DC ci _), ty, ts) -> (ci.conName, (ty, ts, dc))) $ foldMap extractCons $ T.fromMod prelude
+    cons = Map.fromList $ fmap (\(dc@(T.DC ci _), ty, unions, ts) -> (ci.conName, (ty, ts, unions, dc))) $ foldMap extractCons $ T.fromMod prelude
     extractCons = \case
-      Fix (T.AnnStmt _ (T.DataDefinition (T.DD ty tvars dcons))) -> fmap (\(Annotated _ dccon) -> (dccon, ty, tvars)) dcons
+      Fix (T.AnnStmt _ (T.DataDefinition (T.DD ty tvars unions dcons))) -> fmap (\(Annotated _ dccon) -> (dccon, ty, unions, tvars)) dcons
       _ -> []
 
     types = Map.fromList $ mapMaybe extractTypes $ T.fromMod prelude
     extractTypes = \case
       -- TODO, but not really: Expecting that Int and Bool types have no parameters, arguments and evironments, but this is not checked. :)
-      Fix (T.AnnStmt _ (T.DataDefinition dd@(T.DD tid _ _))) -> Just (tid.typeName, dd)
+      Fix (T.AnnStmt _ (T.DataDefinition dd@(T.DD tid _ _ _))) -> Just (tid.typeName, dd)
       _ -> Nothing
 
     -- right now, we're only taking functions and IMMUTABLE variables. not sure if I should include mutable ones

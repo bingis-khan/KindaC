@@ -3,7 +3,7 @@ module AST.Converged (module AST.Converged) where
 
 -- TODO: make AST.Converged into AST after refactor
 
-import AST.Common (Module, Type, UniqueCon, VarName, UniqueVar, ConName (..), UniqueType, TCon (..), Expr, TVar)
+import AST.Common (Module, Type, UniqueCon, VarName, UniqueVar, ConName (..), UniqueType, TCon (..), Expr, TVar, EnvUnion)
 import AST.Typed (Typed)
 
 import Data.Map (Map)
@@ -29,7 +29,7 @@ data Prelude = Prelude
   , intType :: Type Typed
 
   , varNames :: Map VarName (Either T.FunDec (UniqueVar, Type Typed))
-  , conNames :: Map ConName (UniqueType, [TVar], T.DataCon)
+  , conNames :: Map ConName (UniqueType, [TVar], [EnvUnion Typed], T.DataCon)
   , tyNames  :: Map TCon T.DataDef
   } deriving Show
 

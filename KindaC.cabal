@@ -43,18 +43,23 @@ library
       src
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
   build-depends:
-      base >=4.7 && <5
+      HUnit
+    , base >=4.7 && <5
     , bifunctors
     , bimap
     , containers
     , data-fix
     , deriving-compat
+    , directory
+    , filepath
+    , hspec
     , megaparsec
     , parser-combinators
     , prettyprinter
     , process
     , recursion-schemes
     , split
+    , temporary
     , text
     , transformers
   default-language: Haskell2010
@@ -67,19 +72,24 @@ executable kc
       app
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-      KindaC
+      HUnit
+    , KindaC
     , base >=4.7 && <5
     , bifunctors
     , bimap
     , containers
     , data-fix
     , deriving-compat
+    , directory
+    , filepath
+    , hspec
     , megaparsec
     , parser-combinators
     , prettyprinter
     , process
     , recursion-schemes
     , split
+    , temporary
     , text
     , transformers
   default-language: Haskell2010

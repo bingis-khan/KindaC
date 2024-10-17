@@ -1,0 +1,48 @@
+
+USER STORY XDDDDDDD
+
+I had a structure that represents a type:
+
+Type
+	TCon UniqueType [Type]
+	TFun Union [Type] Type
+	# more stuff...
+
+
+I had a data structure that needed to use store only the TCon part, yet its type was `Type`.
+If I had untyped unions, then it would be easy.
+
+TCon
+	unique-type UniqueType
+	apps [Type]
+
+TFun
+	union Union
+	params [Type]
+	ret Type
+
+# .... an more
+
+Type = TCon | TFun | # ...
+
+
+It would be a no brainer. There would be no change needed. And it would be pretty nice to use.
+I would not need to refactor.
+Other places it can be used it to do typesafe codegen.
+Sometimes not every register can be used for stuff. This would make it easy to encode it in the type:
+
+mov (from EAX | EBX | ... | EDI | Address | Relative, to EAX | EBX | ... an so on)
+	case from
+		EAX
+			# ...
+
+		# ...
+
+		Address { pos }
+			# ...
+	# ....
+
+It would be pretty nice. Anonymous unions are nicer to use like this - they allow greater flexibility.
+
+However, the problem is readability and debuggability with HINDLEY MILNER. A bug in the code would cause random ass errors later in the compilation, which would be very confusing.
+Hmm, I'll have to think about it. It would play nice with anonymous structures, but then the language might get too unstructured.
