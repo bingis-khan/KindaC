@@ -1,0 +1,11 @@
+#$ Recursion with environment actually works.
+# 84
+
+min = 69
+sum' (max Int) -> Int
+	if max == 0
+		return 69
+	else
+		return sum'(max - 1)
+
+print sum'(5)
