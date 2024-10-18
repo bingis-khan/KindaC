@@ -38,7 +38,7 @@ data MonoInt  -- intermediate repr for env mapping (see StmtF definition)
 -- I'll do deduplication during the codegen phase
 data EnvF t = Env
   { envID :: EnvID
-  , env :: [(UniqueVar, t)]  -- t is here, because of recursion schemes.
+  , env :: [(UniqueVar, Locality, t)]  -- t is here, because of recursion schemes.
   } deriving (Functor, Foldable, Traversable)
 
 instance Show t => Show (EnvF t) where
@@ -117,8 +117,7 @@ data ExprF a
   | Op a Op a
   | Call a [a]
   -- | Lam (Env Mono) [(UniqueVar, Type Mono)] a  -- I might actually eliminate the lambda and replace it with a function call?
-
-  | EnvInit EnvDef  -- Initializes environment of a lambda for a function.
+  | EnvInit EnvDef
   deriving (Show, Eq, Functor, Foldable, Traversable)
 
 data ExprType a = ExprType (Type Mono) (ExprF a) deriving (Show, Eq, Functor, Foldable, Traversable)
@@ -210,9 +209,6 @@ type instance Module Mono = Mod
 
 -- Printing the AST
 
-ctx :: (a -> Context) -> a -> String
-ctx f = show . flip runReader CtxData . f
-
 
 mModule :: Module Mono -> String
 mModule mod =
@@ -263,6 +259,7 @@ tExpr = cata $ \(ExprType t expr) ->
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
+
   EnvInit envdef -> tEnvDef envdef
   where
     ppOp op = case op of
@@ -308,7 +305,7 @@ tEnv :: Env Mono -> Context
 tEnv = tEnv' . fmap tType
 
 tEnv' :: EnvF Context -> Context
-tEnv' Env { envID = eid, env = vs } = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, t) -> ppVar Local v <+> t) vs)
+tEnv' Env { envID = eid, env = vs } = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
 
 
 tBody :: Foldable f => Context -> f (AnnStmt Mono) -> Context

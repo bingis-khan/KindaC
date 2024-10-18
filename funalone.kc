@@ -1,8 +1,0 @@
-
-appi (f (Int -> Int), x Int) -> Int
-	return f(x)
-
-add1 (x)
-	return x + 1
-
-print appi(add1, 2)

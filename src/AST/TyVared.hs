@@ -4,7 +4,7 @@
 module AST.TyVared (module AST.TyVared) where
 
 import Data.Unique (Unique, hashUnique)
-import AST.Common (UniqueType, TVar (..), Type, LitType (..), Locality (..), UniqueVar, UniqueCon, Op (..), Expr, Annotated (..), Ann, AnnStmt, Stmt, Module, Env, EnvUnion, Context, ppBody, CtxData (..), ppLines, annotate, (<+>), ppVar, fromEither, pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppUnique, UnionID, EnvID, ppEnvID, ppUnionID)
+import AST.Common (UniqueType, TVar (..), Type, LitType (..), Locality (..), UniqueVar, UniqueCon, Op (..), Expr, Annotated (..), Ann, AnnStmt, Stmt, Module, Env, EnvUnion, Context, ppBody, CtxData (..), ppLines, annotate, (<+>), ppVar, fromEither, pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppUnique, UnionID, EnvID, ppEnvID, ppUnionID, ctx)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Functor.Classes (Show1 (liftShowsPrec), Eq1 (liftEq))
 import Text.Show.Deriving
@@ -37,11 +37,11 @@ data TyVared
 --  - always nice to have additional information?
 data EnvF t = Env  -- right now, make Env local to "Typed" module, because the definition will change with monomorphization.
   { envID :: EnvID
-  , env :: [(UniqueVar, t)]  -- t is here, because of recursion schemes.
+  , env :: [(UniqueVar, Locality, t)]  -- t is here, because of recursion schemes.
   } deriving (Functor, Foldable, Traversable)
 
 instance Show t => Show (EnvF t) where
-  show Env { envID = envID, env = env } = show envID <> "#" <> show (fmap (\(v, t) -> show v <> " " <> show t) env)
+  show Env { envID = envID, env = env } = show envID <> "#" <> show (fmap (\(v, locality, t) -> ctx (ppVar locality) v <> " " <> show t) env)
 
 $(deriveShow1 ''EnvF)
 
@@ -275,7 +275,7 @@ tEnv :: Env TyVared -> Context
 tEnv = tEnv' . fmap tType
 
 tEnv' :: EnvF Context -> Context
-tEnv' Env { envID = eid, env = vs } = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, t) -> ppVar Local v <+> t) vs)
+tEnv' Env { envID = eid, env = vs } = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
 
 
 tBody :: Foldable f => Context -> f (AnnStmt TyVared) -> Context

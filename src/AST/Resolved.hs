@@ -35,7 +35,7 @@ type instance Type Resolved = Fix TypeF
 -- Expression --
 ----------------
 
-newtype Env = Env { fromEnv :: [UniqueVar]} deriving (Show, Eq, Ord)
+newtype Env = Env { fromEnv :: [(UniqueVar, Locality)]} deriving (Show, Eq, Ord)
 
 data ExprF a
   = Lit LitType

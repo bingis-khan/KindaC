@@ -2,7 +2,7 @@
 module Mono (mono) where
 
 import AST.Converged (Prelude(..))
-import AST.Common (Module, AnnStmt, Annotated (..), Expr, Type, Env, UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, EnvUnion, TCon (..), UnionID (..), Ann, EnvID (..), Mutability (..), VarName (..), (<+>))
+import AST.Common (Module, AnnStmt, Annotated (..), Expr, Type, Env, UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, EnvUnion, TCon (..), UnionID (..), Ann, EnvID (..), Mutability (..), VarName (..), (<+>), Locality (..))
 import AST.Typed (Typed)
 import qualified AST.Typed as T
 import AST.Mono (Mono, MonoInt)
@@ -28,7 +28,8 @@ import Data.Functor ((<&>))
 import Data.Maybe (catMaybes, mapMaybe)
 import Data.Functor.Identity (Identity(..))
 import Data.Set (Set)
-import Control.Monad (void, unless)
+import Control.Monad (void, unless, join, (<=<))
+import Data.Semigroup (sconcat)
 
 
 data Context' = Context
@@ -47,6 +48,8 @@ data Context' = Context
   , functions :: Map UniqueVar (Annotated Function)
   , constructors :: Map UniqueCon T.DataDef
   , types :: Map UniqueType (Annotated T.DataDef)
+
+  , additionalStatements :: [AnnStmt MonoInt]  -- Not used anymore, but might become useful in the future.
   }
 
 
@@ -116,10 +119,10 @@ toUsageFind :: Map (UniqueVar, Type Mono) M.EnvDef -> Map UniqueVar (NonEmpty M.
 toUsageFind = Map.mapKeysWith (<>) fst . fmap NonEmpty.singleton
 
 
-mStmts = traverse mAnnStmt
+mStmts = fmap (foldMap NonEmpty.toList) . traverse mAnnStmt
 
-mAnnStmt :: AnnStmt Typed -> Context (AnnStmt MonoInt)
-mAnnStmt = cata $ fmap embed . (\(T.AnnStmt ann stmt) ->
+mAnnStmt :: AnnStmt Typed -> Context (NonEmpty (AnnStmt MonoInt))
+mAnnStmt = cata $ (((fmap sconcat . traverse prependAdditionalStatements) . fmap embed . sequenceA) <=< (\(T.AnnStmt ann stmt) ->  -- what the fuck
   let mann = M.AnnStmt ann
       noann = M.AnnStmt []
   in case first mExpr stmt of
@@ -141,10 +144,17 @@ mAnnStmt = cata $ fmap embed . (\(T.AnnStmt ann stmt) ->
     pure $ noann M.Pass
 
   T.FunctionDefinition fundec@(T.FD _ uv _ _) body -> do
-    addFunction ann (Function fundec (sequenceA body))
+    addFunction ann (Function fundec (sconcat <$> sequenceA body))
     pure $ noann $ M.EnvHere $ M.EPH uv
-  )
+  ))
 
+prependAdditionalStatements :: AnnStmt MonoInt -> Context (NonEmpty (AnnStmt MonoInt))
+prependAdditionalStatements annstmt = do
+  statements <- gets additionalStatements
+  modify $ \c -> c { additionalStatements = [] }
+  pure $ case reverse statements of
+    [] -> annstmt :| []
+    (firs:rest) -> firs :| (rest ++ [annstmt])
 
 mExpr :: Expr Typed -> Context (Expr Mono)
 mExpr = cata $ fmap embed . \(T.ExprType t expr) -> do
@@ -166,8 +176,8 @@ mExpr = cata $ fmap embed . \(T.ExprType t expr) -> do
       -- Ignore 'as' by unpacking the variable and passing in the previous expression.
       (Fix (M.ExprType _ e')) <- e
       pure e'
-    T.Lam env args ret ->
-      M.EnvInit <$> mLambda t' env args ret  -- M.Lam <$> mEnv (mType <$> env) <*> args' <*> ret
+    T.Lam env args ret -> do
+      mLambda t' env args ret  -- M.Lam <$> mEnv (mType <$> env) <*> args' <*> ret
 
   pure $ M.ExprType t' expr'
 
@@ -206,10 +216,10 @@ mUnion T.EnvUnion { T.unionID = unionID, T.union = union } = do
 
 mEnv :: T.EnvF (Context (Type Mono)) -> Context (Env Mono)
 mEnv T.Env { T.envID = envID, T.env = env } = do
-  env' <- for env $ \(uv, ctxt) -> do
+  env' <- for env $ \(uv, loc, ctxt) -> do
     ctxt' <- ctxt
     uv' <- variable uv ctxt'
-    pure (uv', ctxt')
+    pure (uv', loc, ctxt')
   pure $ M.Env { M.envID = envID, M.env = env' }
 
 
@@ -387,7 +397,7 @@ mFunction (Annotated anns (Function fundec@(T.FD _ tv _ _) ctxBody)) monoType = 
 
     pure uv
 
-mLambda :: Type Mono -> Env Typed -> [(UniqueVar, Type Typed)] -> Context (Expr Mono) -> Context M.EnvDef
+mLambda :: Type Mono -> Env Typed -> [(UniqueVar, Type Typed)] -> Context (Expr Mono) -> Context (M.ExprF (Expr Mono))
 mLambda t tenv tparams tret = do
   let (Fix (M.TFun union _ _)) = t  -- safe but unsafe cast.
   env <- mEnv $ mType <$> tenv
@@ -395,17 +405,18 @@ mLambda t tenv tparams tret = do
   expr@(Fix (M.ExprType ret _)) <- tret
 
   -- Make fundec (outside :0)
-  newUV <- mkLambdaUV
-  let fundec = M.FD env newUV params ret
+  uv <- mkLambdaUV
+  let fundec = M.FD env uv params ret
   let body = NonEmpty.singleton $ Fix $ M.AnnStmt [] $ M.Return expr
   let mFun = M.Fun fundec union body
 
   -- add it to monomorphized functions
-  modify $ \ctx -> ctx { funOrder = ctx.funOrder ++ [Annotated [] mFun] }
-
   let envdef = M.EnvDef fundec union
+  modify $ \ctx -> ctx 
+    { funOrder = ctx.funOrder ++ [Annotated [] mFun]
+    }
 
-  pure envdef
+  pure $ M.EnvInit envdef
 
 mFunDec :: T.FunDec -> Context M.FunDec
 mFunDec (T.FD env oldUV params ret) = do
@@ -447,9 +458,10 @@ mapType types2uni unions2uni ctx = do
         let tenvmap = Map.fromList $ fmap (\env -> (env.envID, env.env)) tenvs
             menvmap = Map.fromList $ NonEmpty.toList $ fmap (\env -> (env.envID, env.env)) menvs
 
-        let doEnv :: [(UniqueVar, Type Typed)] -> [(UniqueVar, Type Mono)] -> Context TypeMap
+        let doEnv :: [(UniqueVar, Locality, Type Typed)] -> [(UniqueVar, Locality, Type Mono)] -> Context TypeMap
             doEnv tenvs menvs =
-              let envmap = Map.intersectionWith doMap (Map.fromList tenvs) (Map.fromList menvs)
+              let fromList = Map.fromList . fmap (\(uv, _, t) -> (uv, t))
+                  envmap = Map.intersectionWith doMap (fromList tenvs) (fromList menvs)
               in fold <$> sequenceA (Map.elems envmap)
 
         let envmap = Map.intersectionWith doEnv tenvmap menvmap
@@ -538,6 +550,8 @@ startingContext = Context
   , functions = Map.empty
   , constructors = Map.empty
   , types = Map.empty
+
+ , additionalStatements = mempty
   }
 
 

@@ -9,7 +9,7 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Functor.Foldable (transverse, cata, embed)
 import Data.Foldable (fold)
 import Control.Monad.Trans.RWS (RWST)
-import Data.Map (Map)
+import Data.Map (Map, (!?))
 import qualified Control.Monad.Trans.RWS as RWST
 import qualified Data.Map as Map
 
@@ -18,10 +18,10 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.Set (Set)
-import Data.Bifoldable (bifoldMap)
+import Data.Bifoldable (bifoldMap, bifold)
 import qualified Data.Set as Set
 
-import AST.Common (Module, AnnStmt, Expr, Type, UniqueVar (..), UniqueCon (..), UniqueType (..), Mutability (..), Locality (..), VarName, TCon, ConName, Annotated (..))
+import AST.Common (Module, AnnStmt, Expr, Type, UniqueVar (..), UniqueCon (..), UniqueType (..), Mutability (..), Locality (..), VarName (..), TCon, ConName, Annotated (..))
 import AST.Converged (Prelude(..))
 import qualified AST.Converged as Prelude
 import AST.Untyped (Untyped, StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..))
@@ -31,6 +31,9 @@ import qualified AST.Resolved as R
 import qualified AST.Typed as T
 import Data.Fix (Fix(..))
 import Data.Functor ((<&>))
+import Data.Biapplicative (first)
+import qualified Data.Text as Text
+import Data.Maybe (fromMaybe, mapMaybe)
 
 
 
@@ -111,8 +114,9 @@ rStmts = traverse -- traverse through the list with Ctx
 
         -- set the environment
         -- TODO: maybe just make it a part of 'closure'?
-        let innerEnv = gatherVariables rbody
-        env <- 
+        let tempFunDec = Fix $ R.AnnStmt [] $ R.FunctionDefinition (R.FD (Env []) vid rparams rret) rbody
+        let innerEnv = gatherVariables tempFunDec
+        env <-
           -- traceShowId <$> 
           mkEnv (
             -- traceShowWith (\ienv -> show vid <> show " " <> show ienv)
@@ -147,7 +151,7 @@ rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
       rBody <- scope body
       pure (rParams, rBody)
 
-    let innerEnv = gatherVariablesFromExpr rBody  -- TODO: environment making in 'closure' function.
+    let innerEnv = gatherVariablesFromExpr rBody -- TODO: environment making in 'closure' function.
     env <- mkEnv innerEnv
     pure $ R.Lam env rParams rBody
 
@@ -195,6 +199,7 @@ type Ctx = RWST () [ResolveError] CtxState IO  -- I might add additional context
 
 data CtxState = CtxState
   { scopes :: NonEmpty Scope
+  , inLambda :: Bool  -- hack to check if we're in a lambda currently. the when the lambda is not in another lambda, we put "Local" locality.
   , prelude :: Maybe Prelude  -- Only empty when actually parsing prelude.
   }
 
@@ -219,6 +224,7 @@ mkState :: Prelude -> CtxState
 mkState prelude = CtxState
   { scopes = NonEmpty.singleton scope
   , prelude = Just prelude
+  , inLambda = False
   } where
     scope = Scope
       { varScope = prelude.varNames <&> \case
@@ -251,6 +257,12 @@ newVar mut name = do
   vid <- liftIO newUnique
   let var = VI { varID = vid, varName = name, mutability = mut }
   modifyThisScope $ \sc -> sc { varScope = Map.insert name var sc.varScope }
+  return var
+
+lambdaVar :: Ctx UniqueVar
+lambdaVar = do
+  vid <- liftIO newUnique
+  let var = VI { varID = vid, varName = VN (Text.pack "lambda"), mutability = Immutable }
   return var
 
 resolveVar :: VarName -> Ctx (Locality, UniqueVar)
@@ -326,6 +338,12 @@ modifyThisScope f =
 lookupScope :: (Ord b) => b -> NonEmpty (Map b c) -> Maybe (Locality, c)
 lookupScope k = foldr (\(locality, l) r -> (locality,) <$> Map.lookup k l <|> r) Nothing . (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs)
 
+localityOfVariablesAtCurrentScope :: Ctx (Map UniqueVar (UniqueVar, Locality))
+localityOfVariablesAtCurrentScope = do
+  scopes <- getScopes
+  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (v, (v, locality))) $ Map.elems l.varScope) <> r) mempty $ (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs) scopes
+
+
 unit :: Ctx UniqueCon
 unit = do
   ctx <- RWST.get
@@ -353,23 +371,26 @@ data ResolveError
 -- environment stuff
 mkEnv :: Set UniqueVar -> Ctx Env
 mkEnv innerEnv = do
-  scope <- getScopes
+  locality <- localityOfVariablesAtCurrentScope
+  pure $ Env $ mapMaybe (locality !?) $ Set.toList innerEnv
+  -- scope <- getScopes
 
-  -- gather elements in current scope (we assume we are just "outside" of the env we compare it with)
-  let outerEnv = foldMap (Set.fromList . Map.elems. varScope) scope
-  pure $ Env $ Set.toList $ (
-    -- traceShowId 
-    outerEnv) `Set.intersection` innerEnv
+  -- -- gather elements in current scope (we assume we are just "outside" of the env we compare it with)
+  -- -- TEMP: i assume we can just change the filtering to be in the `gather...`
+  -- -- not right now. why? assignments. we can't filter stuff that is after assignments. this seems a bit easier.
+  -- let outerEnv = foldMap (Set.fromList . Map.elems. varScope) scope
+  -- pure $ Env $ Set.toList $ (
+  --   -- traceShowId 
+  --   outerEnv) `Set.intersection` innerEnv
 
 -- used for function definitions
-gatherVariables :: NonEmpty (AnnStmt Resolved) -> Set UniqueVar
-gatherVariables = foldMap $ cata $ \(R.AnnStmt _ bstmt) -> case bstmt of
-  R.DataDefinition _ -> mempty
-  R.FunctionDefinition _ vars -> fold vars
-  stmt -> bifoldMap gatherVariablesFromExpr id stmt
+gatherVariables :: AnnStmt Resolved -> Set UniqueVar
+gatherVariables = cata $ \(R.AnnStmt _ bstmt) -> case first gatherVariablesFromExpr bstmt of
+  stmt -> bifold stmt
 
 -- used for lambdas
 gatherVariablesFromExpr :: Expr Resolved -> Set UniqueVar
 gatherVariablesFromExpr = cata $ \case
   R.Var _ v -> Set.singleton v  -- TODO: Is this... correct? It's used for making the environment, but now we can just use this variable to know. This is todo for rewrite.
+                                --   Update: I don't understand the comment above.
   expr -> fold expr

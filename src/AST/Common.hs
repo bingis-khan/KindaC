@@ -9,7 +9,7 @@ module AST.Common (module AST.Common) where
 import Data.Text (Text)
 import Data.Unique (Unique, hashUnique)
 import qualified Data.Text as Text
-import Control.Monad.Trans.Reader (Reader)
+import Control.Monad.Trans.Reader (Reader, runReader)
 import Prettyprinter (Doc)
 import Data.String (IsString (..))
 import qualified Prettyprinter as PP
@@ -180,6 +180,8 @@ instance Semigroup e => Applicative (Result e) where
 type Context = Reader CtxData (Doc ())  -- I guess I can add syntax coloring or something with the annotation (the () in Doc)
 data CtxData = CtxData  -- basically stuff like printing options or something (eg. don't print types)
 
+ctx :: (a -> Context) -> a -> String
+ctx f = show . flip runReader CtxData . f
 
 ppBody :: Foldable t => (a -> Context) -> Context -> t a -> Context
 ppBody f header = indent header . ppLines f

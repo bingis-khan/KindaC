@@ -191,11 +191,10 @@ cModule M.Mod{ M.functions = functions, M.dataTypes = dataTypes, M.main = main }
   in pp builtin $ do
 
   comment' "includes"
-  for_ includes $ \include ->
-    ppt $ "#include<" <> include <> ">"
+  for_ includes cInclude
 
   -- Right now, it always gets included. It shouldn't be like this.
-  ppt "#include<string.h>"
+  cInclude "string.h"
 
 
   "#pragma clang diagnostic ignored \"-Wtautological-compare\""
@@ -352,12 +351,12 @@ cFunction (M.Annotated _ (M.Fun (M.FD env uv params ret) union body)) = do
   ccFunction funref ret ccparams (cStmt <$> body)
 
 cMain :: [AnnStmt Mono] -> PP
-cMain stmts = pt $ "int" § "main" & "()" &> cBlock (cStmt <$> stmts)
+cMain stmts = pt $ "int" § "main" & "()" §> cBlock (cStmt <$> stmts)
 
 
 cStmt :: AnnStmt Mono -> PT
 cStmt = cata $ \(AnnStmt anns monoStmt) -> case monoStmt of
-  Pass -> comment "pass (nuttin)"
+  Pass -> mempty  -- comment "pass (nuttin)"
   Print et ->
     let e = cExpr et
     in case typeFromExpr et of
@@ -440,9 +439,7 @@ cExpr expr = do
 
       Lit (M.LInt x) -> pls x
 
-      Var Local uv -> cVar uv
-      Var FromEnvironment uv -> "env->" & cVar uv
-      Var External _ -> undefined
+      Var loc uv -> cVarVal loc uv
 
       Con uc -> case t of
         Fix (M.TFun {}) -> cCon WithArgs uc
@@ -499,6 +496,11 @@ cBlock stmts = do
   "{"
   indent $ sequenceA_ stmts
   "}"
+
+cVarVal :: Locality -> UniqueVar -> PL
+cVarVal Local uv = cVar uv
+cVarVal FromEnvironment uv = "env->" & cVar uv
+cVarVal External _ = undefined
 
 cVar :: UniqueVar -> PL
 cVar v = plt v.varName.fromVN & "__" & pls (hashUnique v.varID)
@@ -633,7 +635,7 @@ cUnion args ret union@(M.EnvUnion uid envs) = do
 
 cEnv :: Env Mono -> PPL (PL, PL, PL)  -- (Type, Name, Inst)
 cEnv (M.Env eid vars) = do
-  let varTypes = vars <&> \(v, t) -> do
+  let varTypes = vars <&> \(v, loc, t) -> do
         statement $ do
           cTypeVar (cVar v) t
   let env = do
@@ -644,7 +646,7 @@ cEnv (M.Env eid vars) = do
 
   addTopLevel env
 
-  let cvars = vars <&> \(v, _) -> "." & cVar v § "=" § cVar v
+  let cvars = vars <&> \(v, loc, _) -> "." & cVar v § "=" § cVarVal loc v
   let inst = "{" § sepBy ", " cvars § "}"
 
   pure (cEnvType eid, cEnvName eid, inst)
@@ -695,6 +697,9 @@ comment' = pt . comment
 
 comment :: Text -> PT
 comment text = ptt $ "// " <> text
+
+cInclude :: Text -> PP
+cInclude t = ppt $ "#include <" <> t <> ">"
 
 cstr :: Text -> PL
 cstr text = plt $ "\"" <> text <> "\""

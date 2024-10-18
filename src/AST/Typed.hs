@@ -34,7 +34,7 @@ data Typed
 --  - always nice to have additional information?
 data EnvF t = Env
   { envID :: EnvID
-  , env :: [(UniqueVar, t)]  -- t is here, because of recursion schemes.
+  , env :: [(UniqueVar, Locality, t)]  -- t is here, because of recursion schemes.
   } deriving (Functor, Foldable, Traversable)
 
 instance Show t => Show (EnvF t) where
@@ -271,7 +271,7 @@ tEnv :: Env Typed -> Context
 tEnv = tEnv' . fmap tType
 
 tEnv' :: EnvF Context -> Context
-tEnv' Env { envID = eid, env = vs } = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, t) -> ppVar Local v <+> t) vs)
+tEnv' Env { envID = eid, env = vs } = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
 
 
 tBody :: Foldable f => Context -> f (AnnStmt Typed) -> Context

@@ -51,6 +51,7 @@ import AST.TyVared (TyVared, TyVar, TypeF (..))
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
+import Data.Maybe (mapMaybe)
 
 
 -- I have some goals alongside rewriting typechecking:
@@ -455,8 +456,8 @@ lookupCon c = do
 addEnv :: UniqueVar -> Type TyVared -> Infer ()
 addEnv v ty = RWS.modify $ \s -> s { env = fmap mapFunEnv s.env }
   where
-    mapFunEnv :: Env TyVared -> Env TyVared
-    mapFunEnv (Ty.Env envid vts) = Ty.Env envid ((v, ty) : vts)
+    mapFunEnv :: [(UniqueVar, Type TyVared)] -> [(UniqueVar, Type TyVared)]
+    mapFunEnv = ((v, ty) :)
 
 instantiate :: Scheme -> Infer (Type TyVared)
 instantiate (Forall tvars ut) = do
@@ -625,7 +626,7 @@ data StatefulEnv = StatefulEnv
   , constructors :: Map UniqueCon Scheme
   , types :: Map UniqueType Ty.TypeConstructor
   , tvargen :: TVarGen
-  , env :: [Env TyVared]
+  , env :: [[(UniqueVar, Type TyVared)]]
   }
 
 emptySEnv :: StatefulEnv
@@ -708,13 +709,14 @@ subSolve ctx = do
 
 withEnv :: R.Env -> Infer a -> Infer (Env TyVared, a)
 withEnv renv x = do
-  env <- emptyEnv
-  RWS.modify $ \s -> s { env = env : s.env }
+  RWS.modify $ \s -> s { env = [] : s.env }
   (e, x') <- RWS.mapRWST (fmap (\(x, s@StatefulEnv { env = (e:ogenvs) }, cs) -> ((e, x), s { env = ogenvs }, cs))) x  -- we're using tail, because we want an error if something happens.
 
   -- remove things that are part of the inner environment (right now, just an intersection, because renv is already done in Resolver)
-  let renvVarSet = Set.fromList $ R.fromEnv renv
-  let outerEnv = e { Ty.env = filter ((`member` renvVarSet) . fst) e.env }
+  env <- emptyEnv
+  let renvVarMap = Map.fromList $ R.fromEnv renv
+  env <- emptyEnv
+  let outerEnv = env { Ty.env = mapMaybe (\(uv, t) -> (\l -> (uv, l, t)) <$> (renvVarMap !? uv)) e }
 
   pure (outerEnv, x')
 
@@ -867,10 +869,10 @@ finalize (Ty.Mod tystmts) = fmap T.Mod $ fromResult $ traverse annStmt tystmts w
     --   pass
     [] -> pure $ T.EnvUnion unionID []
     (e:es) -> T.EnvUnion unionID <$> traverse fEnv' (e : es)
-      where fEnv'(Ty.Env envid ets) = T.Env envid <$> traverse sequenceA ets
+      where fEnv'(Ty.Env envid ets) = T.Env envid <$> traverse (\(v, loc, t) -> (,,) v loc <$> t) ets
 
   fEnv :: Env TyVared -> Res (Env Typed)
-  fEnv (Ty.Env envid ets) = T.Env envid <$> (traverse . traverse) fType ets
+  fEnv (Ty.Env envid ets) = T.Env envid <$> (traverse . (\f (v, loc, t) -> (,,) v loc <$> f t)) fType ets
 
 
 tyvar :: TyVar -> Type TyVared
@@ -878,7 +880,6 @@ tyvar = Fix . Ty.TyVar
 
 tycon2type :: Ty.TypeConstructor -> Type TyVared
 tycon2type (Ty.TypeCon uid tys unions) = Fix $ Ty.TCon uid tys unions
-
 
 
 -------------------
@@ -969,7 +970,7 @@ instance Substitutable (Ty.EnvUnionF (Fix Ty.TypeF)) where
       Nothing -> Ty.EnvUnion uid $ subst su envs
 
 instance Substitutable (Ty.EnvF (Fix Ty.TypeF)) where
-  ftv (Ty.Env _ vars) = ftv $ fmap snd vars
+  ftv (Ty.Env _ vars) = ftv $ fmap (\(v, _, _) -> v) vars
   subst su = fmap (subst su)
 
 
