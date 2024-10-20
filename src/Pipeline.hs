@@ -1,4 +1,4 @@
-module Pipeline (loadModule) where
+module Pipeline (loadModule, parseModule) where
 
 import qualified Data.Text.IO as TextIO
 import Parser (parse)
@@ -11,6 +11,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 import AST.Converged (Prelude)
 import AST.Common (Module)
 import AST.Typed (Typed)
+import AST.Untyped (Untyped)
 -- import ASTPrettyPrinter (tModule, rModule, mModule)
 -- import Mono (monoModule)
 
@@ -41,6 +42,13 @@ loadModule mPrelude filename = do
 
         Right _ | (not . null) errs -> pure $ Left $ Text.unlines $ s2t errs
         Right tmod -> pure $ Right tmod
+
+
+-- Misc for testing
+parseModule :: FilePath -> IO (Either Text (Module Untyped))
+parseModule filename = do
+  source <- TextIO.readFile filename
+  pure $ parse filename source
 
 -- dbgLoadModule :: Maybe Prelude -> FilePath -> IO Text
 -- dbgLoadModule mPrelude filename = do

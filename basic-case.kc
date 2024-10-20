@@ -1,0 +1,14 @@
+
+maybee = Just(69)
+
+case maybee
+	Just(x)
+		print x
+
+	Nothing
+		print 0
+
+
+case 60
+	Just(Just(Just(Tuple(x, Stmt(a, Just(x), Nothing, avc)))))
+		pass

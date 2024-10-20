@@ -69,9 +69,27 @@ data DataDef = DD TCon [TVar] [Annotated DataCon] deriving (Eq, Show)
 data FunDec = FD VarName [(VarName, Maybe (Type Untyped))] (Maybe (Type Untyped)) deriving (Show, Eq)
 
 
+----------
+-- Case --
+----------
+
+data Deconstruction
+  = CaseVariable VarName
+  | CaseConstructor ConName [Deconstruction]
+  deriving (Show, Eq)
+
+data Case expr a = Case 
+  { deconstruction :: Deconstruction
+  , caseCondition :: Maybe expr
+  , body :: NonEmpty a
+  } deriving (Show, Eq, Functor, Foldable, Traversable)
+
+
 ---------------
 -- Statement --
 ---------------
+
+$(deriveShow1 ''Case)
 
 -- I want to leave expr here, so we can bifold and bimap
 data StmtF expr a
@@ -84,6 +102,7 @@ data StmtF expr a
   | MutAssignment VarName expr
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
+  | Switch expr (NonEmpty (Case expr a))
   | ExprStmt expr
   | Return (Maybe expr)
 

@@ -25,7 +25,7 @@ import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
 import AST.Common (Stmt, Module, Expr, Ann (..), Type, TVar (..), TCon (..), ConName (..), AnnStmt, VarName (..), Annotated (..), Op (..), LitType (..))
-import AST.Untyped (Untyped, ExprF (..), FunDec (..), DataCon (..), AnnotatedStmt (AnnStmt), TypeF (..), StmtF (..), Mod (Mod), DataDef (..))
+import AST.Untyped (Untyped, ExprF (..), FunDec (..), DataCon (..), AnnotatedStmt (AnnStmt), TypeF (..), StmtF (..), Mod (Mod), DataDef (..), Deconstruction (..), Case (..))
 
 
 type Parser = Parsec MyParseError Text
@@ -50,6 +50,7 @@ topLevels = do
 statement :: Parser (Stmt Untyped)
 statement = choice
   [ sPass
+  , sCase
   , sIf
   , sPrint
   , sReturn
@@ -76,6 +77,31 @@ sIf = do
   elifs <- many $ scope (,) (keyword "elif" >> expression)
   elseBody <- optional $ scope (const id) (keyword "else")
   pure $ If cond ifBody elifs elseBody
+
+sCase :: Parser (Stmt Untyped)
+sCase = recoverableIndentBlock $ do
+  -- case header
+  keyword "case"
+  condition <- expression
+
+  -- switch inner
+  pure $ L.IndentSome Nothing (pure . Switch condition . NE.fromList) sSingleCase
+
+sSingleCase :: Parser (Case (Expr Untyped) (AnnStmt Untyped))
+sSingleCase = scope id $ do
+  -- deconstructor
+  decon <- sDeconstruction
+
+  -- parse expression here in the future
+  pure $ Case decon Nothing
+
+sDeconstruction :: Parser Deconstruction
+sDeconstruction = caseVariable <|> caseConstructor
+  where
+    caseVariable = CaseVariable <$> variable
+    caseConstructor = CaseConstructor <$> dataConstructor <*> args
+    args = do
+      between (symbol "(") (symbol ")") (sepBy1 sDeconstruction (symbol ",")) <|> pure []
 
 sPrint :: Parser (Stmt Untyped)
 sPrint = do
