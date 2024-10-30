@@ -34,6 +34,7 @@ type family Type phase
 type family Env phase
 type family EnvUnion phase
 type family Expr phase
+type family Decon phase
 type family Stmt phase
 type family AnnStmt phase
 type family Module phase

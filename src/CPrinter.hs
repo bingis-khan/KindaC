@@ -6,8 +6,8 @@
 module CPrinter (cModule) where
 
 import qualified AST.Mono as M
-import AST.Mono (Mono, DataDef, FunDec, Function, AnnotatedStmt (..), StmtF (..), ExprF (..), DataCon)
-import AST.Common (Module, Annotated, AnnStmt, Expr, Type, EnvUnion, UniqueType (..), TCon (..), UniqueVar, Env, Locality (..), UniqueCon, Op (..), EnvID, UnionID, Ann (..))
+import AST.Mono (Mono, DataDef, FunDec, Function, AnnotatedStmt (..), StmtF (..), ExprF (..), DataCon, Case (..), DeconF (..))
+import AST.Common (Module, Annotated, AnnStmt, Expr, Type, EnvUnion, UniqueType (..), TCon (..), UniqueVar, Env, Locality (..), UniqueCon, Op (..), EnvID, UnionID, Ann (..), Decon)
 
 import Control.Monad.Trans.Writer (Writer)
 import Data.Text (Text)
@@ -38,13 +38,14 @@ import Data.Map (Map, (!?))
 import Data.List (find)
 import qualified Data.Map as Map
 import Debug.Trace (traceShowId, traceShow, traceShowWith)
+import GHC.Base (NonEmpty((:|)))
 
 
 
 -- todo: some function order cleanup after it works
 
 -- Global PP state.
-newtype PPG a = PP { fromPP :: RWS Builtin [Text] Extra a } deriving (Functor, Applicative, Monad)
+newtype PPG a = PP { fromPP :: RWS (Builtin, ConInfo) [Text] Extra a } deriving (Functor, Applicative, Monad)
 type PP = PPG ()
 
 instance (a ~ ()) => Semigroup (PPG a) where
@@ -55,7 +56,7 @@ instance (a ~ ()) => Monoid (PPG a) where
 
 
 -- Top level PP state (every function/enum/struct/etc.)
-newtype PPTL a = PT { fromPPTL :: RWS Builtin [Text] (Extra, [TopLevelBlock]) a } deriving (Functor, Applicative, Monad)
+newtype PPTL a = PT { fromPPTL :: RWS (Builtin, ConInfo) [Text] (Extra, [TopLevelBlock]) a } deriving (Functor, Applicative, Monad)
 type PT = PPTL ()
 type TopLevelBlock = PP
 
@@ -67,7 +68,7 @@ instance (a ~ ()) => Monoid (PPTL a) where
 
 
 -- Line (Expression) PP state.
-newtype PPL a = PL { fromPL :: RWS Builtin [Text] (Extra, [TopLevelBlock], [AdditionalLine]) a } deriving (Functor, Applicative, Monad)
+newtype PPL a = PL { fromPL :: RWS (Builtin, ConInfo) [Text] (Extra, [TopLevelBlock], [AdditionalLine]) a } deriving (Functor, Applicative, Monad)
 type PL = PPL ()
 type AdditionalLine = PT
 
@@ -113,6 +114,12 @@ pl (PL p) = do -- RWS.mapRWS (\(a, _, t) -> (a, extra, [Text.concat t])) p.fromP
 
 statement :: PL -> PT
 statement p = pl $ p & ";"
+
+statement' :: PPL a -> PPTL a
+statement' p = pl $ do
+  x <- p
+  ";"
+  pure x
 
 
 infixr 7 &
@@ -188,13 +195,13 @@ cModule :: Module Mono -> Text
 cModule M.Mod{ M.functions = functions, M.dataTypes = dataTypes, M.main = main } =
   -- TODO: this should be checked beforehand to give an error during/after typechecking. (also Parse, not Validate)
   let (includes, builtin, dataTypes') = splitBuiltins dataTypes
-  in pp builtin $ do
+
+      -- should not be needed when I memoize shit
+      conInfos = collectConInfo dataTypes
+  in pp (builtin, conInfos) $ do
 
   comment' "includes"
-  for_ includes cInclude
-
-  -- Right now, it always gets included. It shouldn't be like this.
-  cInclude "string.h"
+  for_ (Set.fromList [ "stdlib.h", "string.h", "stdio.h" ] <> includes) cInclude
 
 
   "#pragma clang diagnostic ignored \"-Wtautological-compare\""
@@ -216,10 +223,13 @@ cModule M.Mod{ M.functions = functions, M.dataTypes = dataTypes, M.main = main }
   --   comment "Envs and Unions"
   --   sequenceA_ extra.ordered
 
+type ConInfo = Map UniqueCon DataCon
+collectConInfo :: [Annotated DataDef] -> ConInfo
+collectConInfo = Map.fromList . map (\(M.Annotated _ dc@(M.DC uc _)) -> (uc, dc)) . concatMap (\(M.Annotated _ (M.DD _ cons)) -> cons)
 
 type StdIncludes = Set Text
 splitBuiltins :: [Annotated DataDef] -> (StdIncludes, Builtin, [Annotated DataDef])
-splitBuiltins = foldr splitCon (Set.singleton "stdio.h", Builtin { typeSubst = mempty, conSubst = mempty }, [])
+splitBuiltins = foldr splitCon (mempty, Builtin { typeSubst = mempty, conSubst = mempty }, [])
   where
     splitCon :: Annotated DataDef -> (StdIncludes, Builtin, [Annotated DataDef]) -> (StdIncludes, Builtin, [Annotated DataDef])
     splitCon add@(M.Annotated ddanns dd) (includes, bins, dds) =
@@ -406,13 +416,54 @@ cStmt = cata $ \(AnnStmt anns monoStmt) -> case monoStmt of
     optional elseBody $ \els ->
       "else" §> cBlock els
 
+  Switch switch (firstCase :| otherCases) -> do
+    condName <- statement' $ do
+      next <- nextTemp
+      cTypeVar next (expr2type switch) § "=" § cExpr switch
+      pure next
+
+    "if" § enclose "(" ")" (cDeconCondition condName firstCase.deconstruction) §> do
+      let tvars = tvarsFromDecon condName firstCase.deconstruction
+      let defs = map (\(uv, t, acc) -> statement $ cTypeVar (cVar uv) t § "=" § acc) tvars
+
+      cBlock $ NonEmpty.prependList defs firstCase.body
+
+    for_ otherCases $ \kase -> "else if" § enclose "(" ")" (cDeconCondition condName kase.deconstruction) §> do
+      let tvars = tvarsFromDecon condName kase.deconstruction
+      let defs = map (\(uv, t, acc) -> statement $ cTypeVar (cVar uv) t § "=" § acc) tvars
+
+      cBlock $ NonEmpty.prependList defs kase.body
+
+    -- this should not be needed. just in case
+    "else" §> cBlock
+      [ statement $ cCall "printf" [ "\"Case not matched on line %d.\\n\"", "__LINE__" ]
+      , statement $ cCall "exit"   [ "1" ]
+      ]
+
   MutDefinition {} -> undefined
   MutAssignment {} -> undefined
 
+cDeconCondition :: PL -> Decon Mono -> PL
+cDeconCondition condVar decon = sepBy " && " $ fmap (\(uc, acc) -> enclose "(" ")" (condVar & acc § "==" § cCon NoArgs uc & "t")) $ flip cata decon $ \case  -- cCon NoArgs uc & "t" is a quick inlining of cDataConTag...
+  CaseVariable _ _ -> []
+  CaseConstructor _ uc args ->
+    let prefix :: PL
+        prefix = ".uni." & cCon NoArgs uc & "."
+        dcParams = concatMap (\(pref, as) -> (fmap . fmap) ((prefix & pref) &) as) $ zip (cDataConArgName uc <$> [1::Int ..]) args
+    in (uc, ".tag") : dcParams
+
+tvarsFromDecon :: PL -> Decon Mono -> [(UniqueVar, Type Mono, PL)]
+tvarsFromDecon conName = (fmap . fmap . fmap) (conName &) $ cata $ \case
+  CaseVariable t uv -> [(uv, t, "")]
+  CaseConstructor _ uc vars -> 
+    let prefix :: PL
+        prefix = ".uni." & cCon NoArgs uc & "."
+        dcParams = concatMap (\(pref, as) -> (fmap . fmap) ((prefix & pref) &) as) $ zip (cDataConArgName uc <$> [1::Int ..]) vars
+    in dcParams
 
 cExpr :: Expr Mono -> PL
 cExpr expr = do
-  builtin <- PL RWS.ask
+  builtin <- PL $ RWS.asks fst
   flip para expr $ \case
     M.ExprType t (Call (ft, e) args) ->
         let t'@(Fix (M.TFun union _ _)) = expr2type ft
@@ -520,7 +571,7 @@ data ConType
 cCon :: ConType -> UniqueCon -> PL
 -- enum type constructor (refer to actual datatype)
 cCon NoArgs c = do
-  cs <- PL $ RWS.asks conSubst
+  cs <- PL $ RWS.asks $ conSubst . fst
   case cs !? c of
     Just t -> plt t
     Nothing -> plt c.conName.fromCN & "__" & pls (hashUnique c.conID)
@@ -564,7 +615,7 @@ cType (Fix (M.TFun union args ret)) =
 -- The definite source for UniqueType naming
 cUniqueType :: UniqueType -> PL
 cUniqueType t = do
-  ts <- PL $ RWS.asks typeSubst
+  ts <- PL $ RWS.asks $ typeSubst . fst
   case ts !? t of
     Just tname -> plt tname
     Nothing -> cUniqueTypeName t
@@ -717,7 +768,7 @@ ppt :: Text -> PP
 ppt = fromString . Text.unpack
 
 
-pp :: Builtin -> PP -> Text
+pp :: (Builtin, ConInfo) -> PP -> Text
 pp b p =
   let
     extra = Extra

@@ -8,7 +8,7 @@
 {-# LANGUAGE OverloadedStrings, OverloadedRecordDot #-}
 module AST.Mono (module AST.Mono) where
 
-import AST.Common (LitType (..), Op (..), Type, Expr, Annotated (..), TVar (..), Stmt, Ann, Module, AnnStmt, UniqueType, UniqueVar, UniqueCon, Locality (Local), Env, EnvUnion, Context, CtxData (..), ppLines, annotate, (<+>), ppVar, pretty, fromEither, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID)
+import AST.Common (LitType (..), Op (..), Type, Expr, Annotated (..), TVar (..), Stmt, Ann, Module, AnnStmt, UniqueType, UniqueVar, UniqueCon, Locality (Local), Env, EnvUnion, Context, CtxData (..), ppLines, annotate, (<+>), ppVar, pretty, fromEither, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, Decon, (<+?>))
 
 import Text.Show.Deriving
 import Data.Eq.Deriving
@@ -140,6 +140,26 @@ type instance Expr MonoInt = Expr Mono
 data DataCon = DC UniqueCon [Type Mono] deriving (Eq, Show)
 data DataDef = DD UniqueType [Annotated DataCon] deriving (Eq, Show)
 
+----------
+-- Case --
+----------
+
+data DeconF a
+  = CaseVariable (Type Mono) UniqueVar
+  | CaseConstructor (Type Mono) UniqueCon [a]
+  deriving (Show, Eq, Functor)
+$(deriveShow1 ''DeconF)
+$(deriveEq1 ''DeconF)
+
+type instance Decon Mono = Fix DeconF
+
+data Case a = Case 
+  { deconstruction :: Decon Mono
+  , caseCondition :: Maybe (Expr Mono)
+  , body :: NonEmpty a
+  } deriving (Show, Functor, Foldable, Traversable)
+$(deriveShow1 ''Case)
+
 
 
 ---------------
@@ -161,6 +181,7 @@ data StmtF env a
   | MutAssignment UniqueVar (Expr Mono)
 
   | If (Expr Mono) (NonEmpty a) [(Expr Mono, NonEmpty a)] (Maybe (NonEmpty a))
+  | Switch (Expr Mono) (NonEmpty (Case a))
   | ExprStmt (Expr Mono)
   | Return (Expr Mono)
 
@@ -239,11 +260,23 @@ tStmt stmt = case stmt of
     foldMap (\(cond, elseIf) ->
         tBody ("elif" <+> tExpr cond) elseIf) elseIfs <>
     maybe mempty (tBody "else") mElse
+  Switch switch cases -> 
+    ppBody tCase (tExpr switch) cases
   ExprStmt e -> tExpr e
   Return e -> "return" <+> tExpr e
 
   EnvHere [] -> "[ENV]: not generated"
   EnvHere (env:envs) -> ppBody tEnvDef "[ENV]:" (env :| envs)
+
+tCase :: Case (AnnStmt Mono) -> Context
+tCase kase = tBody (tDecon kase.deconstruction <+?> fmap tExpr kase.caseCondition) kase.body
+
+tDecon :: Decon Mono -> Context
+tDecon = cata $ \case
+  CaseVariable _ uv -> ppVar Local uv
+  CaseConstructor _ uc [] -> ppCon uc
+  CaseConstructor _ uc args@(_:_) -> ppCon uc <> encloseSepBy "(" ")" ", " args
+
 
 tEnvDef :: EnvDef -> Context
 tEnvDef (EnvDef (FD env uv _ _) union) = ppVar Local uv <+> "=" <+> tEnv env <+> "{" <+> tEnvUnion' union <+> "}"

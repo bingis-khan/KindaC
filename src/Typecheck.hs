@@ -24,7 +24,7 @@ import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed, hoist, project, transverse)
 import Control.Monad (replicateM, zipWithM)
-import Data.Bitraversable (bitraverse)
+import Data.Bitraversable (bitraverse, bisequenceA)
 import Data.Foldable (for_, fold)
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Set (Set, (\\), member)
@@ -44,7 +44,7 @@ import qualified AST.TyVared as Ty
 import qualified AST.Typed as T
 
 import AST.Converged (Prelude(..), PreludeFind (..), boolFind, tlReturnFind, intFind)
-import AST.Common (Module, Type, TVar (TV), AnnStmt, Expr, LitType (LInt), UniqueVar, UniqueCon, UniqueType (typeName), EnvUnion, Env, Annotated (Annotated), Op (..), Locality (..), EnvID (..), UnionID (..), Result(..), fromResult)
+import AST.Common (Module, Type, TVar (TV), AnnStmt, Expr, LitType (LInt), UniqueVar, UniqueCon, UniqueType (typeName), EnvUnion, Env, Annotated (Annotated), Op (..), Locality (..), EnvID (..), UnionID (..), Result(..), fromResult, Decon)
 import AST.Resolved (Resolved)
 import AST.Typed (Typed)
 import AST.TyVared (TyVared, TyVar, TypeF (..))
@@ -75,8 +75,8 @@ typecheck mprelude rStmts = do
     -- debug print
     -- liftIO $ putStrLn $ (\(Subst su1 su2) -> show su1 <> "\n" <> show su2) su
 
-    -- liftIO $ putStrLn "\nSUBST"
-    -- liftIO $ putStrLn $ Ty.tyModule finalTyStmts
+    liftIO $ putStrLn "\nSUBST"
+    liftIO $ putStrLn $ Ty.tyModule finalTyStmts
 
     pure $ case finalize finalTyStmts of
         Left ambs ->
@@ -309,6 +309,51 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
 
         pure $ Ty.If cond ifTrue ((fmap . first) fst elseIfs) ifFalse
 
+      R.Switch (rswitch, switchType) cases -> do
+        tdecons <- traverse inferCase cases
+        for_ tdecons $ \(_, dec) ->
+          switchType `uni` dec
+        pure $ Ty.Switch rswitch (fst <$> tdecons)
+        where
+          inferCase R.Case { R.deconstruction = decon, R.caseCondition = caseCon, R.body = body } = do
+            tdecon <- inferDecon decon
+            let tCaseCon = fst <$> caseCon
+            pure (Ty.Case tdecon tCaseCon body, decon2type tdecon)
+
+          decon2type :: Decon TyVared -> Type TyVared
+          decon2type (Fix dec) = case dec of
+            Ty.CaseVariable t _ -> t
+            Ty.CaseConstructor t _ _ -> t
+
+          inferDecon :: Decon Resolved -> Infer (Decon TyVared)
+          inferDecon = cata $ fmap embed . f where
+            f = \case
+              R.CaseVariable uv -> do
+                t <- lookupVar uv
+
+                pure (Ty.CaseVariable t uv)
+
+              R.CaseConstructor uc args -> do
+
+                -- HACK! Unify the case statement by creating a fake function type.
+                ct <- lookupCon uc
+                let conOnly = case ct of
+                      Fix (TCon {}) -> ct
+                      Fix (TFun _ _ c@(Fix (TCon {}))) -> c
+
+                      -- error in resolver: just return a fresh type. (lookupCon already does that)
+                      _ -> ct
+
+                args' <- sequenceA args
+                syntheticConType <- case args' of
+                      [] -> pure conOnly
+                      (_:_) -> do
+                        un <- emptyUnion
+                        pure $ Fix $ TFun un (decon2type <$> args') conOnly
+
+                ct `uni` syntheticConType
+                pure (Ty.CaseConstructor conOnly uc args')
+
       R.Return (ret, t) -> do
         emret <- RWS.asks returnType
 
@@ -434,7 +479,7 @@ lookupVar v = do
       --    I thing I should change the names of those functions.
       t' <- fresh
       let scheme = Forall Set.empty $ UTUnchanged t'
-      RWS.modify $ \s -> s { variables = Map.insert v scheme s.variables }
+      newVar v scheme
       pure t'
 
 lookupCon :: UniqueCon -> Infer (Type TyVared)
@@ -827,11 +872,21 @@ finalize (Ty.Mod tystmts) = fmap T.Mod $ fromResult $ traverse annStmt tystmts w
       Ty.MutAssignment uv e -> T.MutAssignment uv <$> e
 
       Ty.If cond ifTrue elseIfs melse -> T.If <$> cond <*> sequenceA ifTrue <*> traverse (bitraverse id sequenceA) elseIfs <*> traverse sequenceA melse
+      Ty.Switch switch cases -> T.Switch <$> switch <*> traverse fCase cases
       Ty.ExprStmt e -> T.ExprStmt <$> e
       Ty.Return me -> T.Return <$> me
 
       Ty.DataDefinition dd -> T.DataDefinition <$> fDataDef dd
       Ty.FunctionDefinition fd body -> T.FunctionDefinition <$> fFunDec fd <*> sequenceA body
+
+  fCase :: Ty.Case (Res (Expr Typed)) (Res a) -> Res (T.Case (Expr Typed) a)
+  fCase Ty.Case { Ty.deconstruction = decon, Ty.caseCondition = caseCond, Ty.body = body } =
+    T.Case <$> fDecon decon <*> sequenceA caseCond <*> sequenceA body
+
+  fDecon :: Decon TyVared -> Res (Decon Typed)
+  fDecon = transverse $ \case
+    Ty.CaseVariable ty uv -> T.CaseVariable <$> fType ty <*> pure uv
+    Ty.CaseConstructor ty uc args -> T.CaseConstructor <$> fType ty <*> pure uc <*> sequenceA args
 
   fExpr :: Expr TyVared -> Res (Expr Typed)
   fExpr = transverse $ \(Ty.ExprType t e) -> T.ExprType <$> fType t <*> case e of
@@ -906,7 +961,23 @@ instance Substitutable (Fix Ty.AnnotatedStmt) where
       sub (Ty.AnnStmt ann stmt) = Ty.AnnStmt ann $ case stmt of
         Ty.MutDefinition v (Left t) -> Ty.MutDefinition v (Left (subst su t))
         Ty.FunctionDefinition fundec stmts -> Ty.FunctionDefinition (subst su fundec) stmts
+        Ty.Switch cond cases -> 
+          let cond' = subst su cond
+              cases' = subst su cases
+          in Ty.Switch cond' cases'
         stmt -> first (subst su) stmt
+
+instance (Substitutable expr, Substitutable stmt) => Substitutable (Ty.Case expr stmt) where
+  ftv kase = ftv kase.deconstruction <> ftv kase.caseCondition <> ftv kase.body
+  subst su kase = Ty.Case (subst su kase.deconstruction) (subst su kase.caseCondition) (subst su kase.body)
+
+instance Substitutable (Fix Ty.DeconF) where
+  ftv = cata $ \case
+    Ty.CaseVariable t _ -> ftv t
+    Ty.CaseConstructor t _ ftvs -> ftv t <> mconcat ftvs
+  subst su = hoist $ \case
+    Ty.CaseVariable t v -> Ty.CaseVariable (subst su t) v
+    Ty.CaseConstructor t uc ds -> Ty.CaseConstructor (subst su t) uc ds
 
 instance Substitutable (Fix Ty.ExprType) where
   ftv = cata $ \(Ty.ExprType t e) -> ftv t <> case e of
@@ -985,6 +1056,10 @@ instance Substitutable a => Substitutable (NonEmpty a) where
 instance (Substitutable a, Substitutable b) => Substitutable (a, b) where
   ftv = bifoldMap ftv ftv
   subst su = bimap (subst su) (subst su)
+
+instance Substitutable a => Substitutable (Maybe a) where
+  ftv = maybe mempty ftv
+  subst su = fmap (subst su)
 
 
 rt2ty :: Type Resolved -> Infer (Type TyVared)

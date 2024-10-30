@@ -1,0 +1,18 @@
+
+Note to myself:
+
+When parsing a function definition which might be a call, we should track if we parsed a type at any point.
+
+Example:
+
+# This is obviously a call.
+f (x, add1(69))
+
+# This is neither.
+f (x Int, add1(69))
+      ^    ^--- it means it's a call
+	  L-- means it's a function
+
+
+In my current implementation, there is a `try` function, which restores the parsing state.
+What I should do: check if a type was parsed before. If there was -> don't backtrack, just throw an error.

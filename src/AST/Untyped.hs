@@ -6,7 +6,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 module AST.Untyped where
 
-import AST.Common (LitType, Op, Type, Expr, Annotated, TCon, TVar, Stmt, Ann, Module, ConName, VarName, AnnStmt)
+import AST.Common (LitType, Op, Type, Expr, Annotated, TCon, TVar, Stmt, Ann, Module, ConName, VarName, AnnStmt, Decon)
 
 import Text.Show.Deriving
 import Data.Eq.Deriving
@@ -73,15 +73,18 @@ data FunDec = FD VarName [(VarName, Maybe (Type Untyped))] (Maybe (Type Untyped)
 -- Case --
 ----------
 
-data Deconstruction
+data DeconF a
   = CaseVariable VarName
-  | CaseConstructor ConName [Deconstruction]
-  deriving (Show, Eq)
+  | CaseConstructor ConName [a]
+  deriving (Show, Eq, Functor)
+$(deriveShow1 ''DeconF)
+$(deriveEq1 ''DeconF)
+type instance Decon Untyped = Fix DeconF
 
-data Case expr a = Case 
-  { deconstruction :: Deconstruction
+data Case expr stmt = Case
+  { deconstruction :: Decon Untyped
   , caseCondition :: Maybe expr
-  , body :: NonEmpty a
+  , body :: NonEmpty stmt
   } deriving (Show, Eq, Functor, Foldable, Traversable)
 
 

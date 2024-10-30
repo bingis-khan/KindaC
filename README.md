@@ -63,6 +63,10 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - eliminate the pretty printing module for the AST - since I'm switching to separate ASTs, I can just implement everything as an implementation of Show?
 - MEMOIZING AND DIRECT REFERENCES: change Typecheck/Mono ASTs to those, that directly reference functions (Either UniqueVar Function). This will stop requiring us to use Maps for Monomorphization. Make sure to allow memoizing by UniqueVar.
 - Maybe the monomorphized AST should be an actual AST (starting from Main, without function list). This would also be pretty easy to compile and it would help with future interpretation..? And maybe it'll be easier to generate output programs?
+- Maybe represent function arrow (->) as a (predefined) constructor? This might simplify typechecking, because the environments would need to be handled by TCons, which we, as it turns out, already need to do.
+- make another phase "Transform", which transforms case expressions, checks for exhaustiveness of those case expressions, checks for unused code paths and returns.
+  - But this will stop me from reporting those errors on functions, which, for example, are already typechecked... So, I'm not sure. I'll have to figure something out.
+  - but in general. get rid of `Resolved` and `TyVared`
 
 
 ## thoughts???

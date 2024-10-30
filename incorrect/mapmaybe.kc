@@ -1,0 +1,13 @@
+
+mapMaybe (m Maybe Int) -> Unit
+	case m
+		Just(x)
+			print x
+
+		Nothing
+			print 0
+
+	return
+
+mapMaybe(Just(1))
+mapMaybe(Nothing as Maybe Int)

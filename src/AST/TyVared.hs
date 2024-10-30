@@ -4,7 +4,7 @@
 module AST.TyVared (module AST.TyVared) where
 
 import Data.Unique (Unique, hashUnique)
-import AST.Common (UniqueType, TVar (..), Type, LitType (..), Locality (..), UniqueVar, UniqueCon, Op (..), Expr, Annotated (..), Ann, AnnStmt, Stmt, Module, Env, EnvUnion, Context, ppBody, CtxData (..), ppLines, annotate, (<+>), ppVar, fromEither, pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppUnique, UnionID, EnvID, ppEnvID, ppUnionID, ctx)
+import AST.Common (UniqueType, TVar (..), Type, LitType (..), Locality (..), UniqueVar, UniqueCon, Op (..), Expr, Annotated (..), Ann, AnnStmt, Stmt, Module, Env, EnvUnion, Context, ppBody, CtxData (..), ppLines, annotate, (<+>), ppVar, fromEither, pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppUnique, UnionID, EnvID, ppEnvID, ppUnionID, ctx, Decon, (<+?>))
 import Data.List.NonEmpty (NonEmpty)
 import Data.Functor.Classes (Show1 (liftShowsPrec), Eq1 (liftEq))
 import Text.Show.Deriving
@@ -144,6 +144,30 @@ data DataDef = DD UniqueType [TVar] [EnvUnion TyVared] [Annotated DataCon] deriv
 data FunDec = FD (Env TyVared) UniqueVar [(UniqueVar, Type TyVared)] (Type TyVared) deriving (Show, Eq)
 
 
+----------
+-- Case --
+----------
+
+data DeconF a
+  = CaseVariable (Type TyVared) UniqueVar
+  | CaseConstructor (Type TyVared) UniqueCon [a]
+  deriving (Show, Eq, Functor)
+$(deriveShow1 ''DeconF)
+$(deriveEq1 ''DeconF)
+
+type instance Decon TyVared = Fix DeconF
+
+data Case expr a = Case 
+  { deconstruction :: Decon TyVared
+  , caseCondition :: Maybe expr
+  , body :: NonEmpty a
+  } deriving (Show, Eq, Functor, Foldable, Traversable)
+$(deriveShow1 ''Case)
+$(deriveBifunctor ''Case)
+$(deriveBifoldable ''Case)
+$(deriveBitraversable ''Case)
+
+
 ---------------
 -- Statement --
 ---------------
@@ -159,6 +183,7 @@ data StmtF expr a
   | MutAssignment UniqueVar expr
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
+  | Switch expr (NonEmpty (Case expr a))
   | ExprStmt expr
   | Return expr  -- TODO: make it only an expression (this requires me to get the () constructor)
 
@@ -215,12 +240,22 @@ tStmt stmt = case first tExpr stmt of
     foldMap (\(cond, elseIf) ->
         tBody ("elif" <+> cond) elseIf) elseIfs <>
     maybe mempty (tBody "else") mElse
+  Switch switch cases -> 
+    ppBody tCase switch cases
   ExprStmt e -> e
   Return e -> "return" <+> e
 
   DataDefinition dd -> tDataDef dd
   FunctionDefinition fd body -> tBody (tFunDec fd) body
 
+tCase :: Case Context (AnnStmt TyVared) -> Context
+tCase kase = tBody (tDecon kase.deconstruction <+?> kase.caseCondition) kase.body
+
+tDecon :: Decon TyVared -> Context
+tDecon = cata $ \case
+  CaseVariable _ uv -> ppVar Local uv
+  CaseConstructor _ uc [] -> ppCon uc
+  CaseConstructor _ uc args@(_:_) -> ppCon uc <> encloseSepBy "(" ")" ", " args
 
 tExpr :: Expr TyVared -> Context
 tExpr = cata $ \(ExprType t expr) ->

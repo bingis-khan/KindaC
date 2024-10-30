@@ -1,0 +1,86 @@
+Ah, finally: pattern matching.
+
+I want to match patterns in two places:
+ > Testing multiple variations
+ - case statements/expressions
+
+ > Only irrefutable patterns! (maybe?)
+ - function parameters
+ - assignment (non-mutable!)
+
+
+# Design
+
+I'm thinking of two options of how case statements should look:
+
+1. Haskell-style
+
+case maybe-int
+	Nothing
+		print 'No value provided.'
+
+	Just x
+		print x
+
+
+2. NEW: JAI styleo
+
+Why? Allows us to minimally change the code when we want to SWITCH (ehehe) from an if to a switch/case 
+
+I have to somehow distinguish between an if statement and a case expression:
+
+if maybe-int
+	Nothing
+		print 'No value provideed.'
+
+	Just x
+		print x
+
+
+it's nice - immediate transition from an if statement to a switch-case. But *very* hard to parse. We'd have to test the first case statement, which might be a lot.
+
+Maybe we can do something like
+
+if maybe-int is
+	Nothing
+		...
+
+	Just x
+		...
+
+Except for `is`, maybe I can use `:` or something similar...
+There's also a possibility that `case` will be faster when we'll parallelize parsing: look only at the first token on line and then make a decision as to what body it is.
+
+
+## Expression syntax
+
+# It's possible to use the case expression as the only expression to an assignment,
+
+# single line version
+x = case maybe-int
+	Just x: x  # possible to declare one line functions.
+	Nothing: 0
+
+# multiline version
+x = case maybe-int
+	Just x
+		yield x
+
+	Nothing
+		yield 0
+
+# which keyword should I use? I still want to be able to return from the enclosing scope.
+x = case error-or-value
+	Right value
+		yield value
+
+	Left error
+		# return from function in case of an error. In the future, this is how '?' will be implemented.
+		return Left(error)
+
+
+## Guard patterns
+
+Guard patterns. You know 'em, I know 'em, ez. But, the problem is nice syntax.	
+
+See: design/to-colon-or-not-to-colon

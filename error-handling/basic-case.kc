@@ -1,0 +1,9 @@
+
+maybee = Just(69)
+
+case maybee
+	Just(x)
+		print x
+
+	Nothing
+		print 0

@@ -1,0 +1,178 @@
+# Preface
+
+I used colon ':' to mean that what normally is a body is only a single expression. You can write code slightly faster this way.
+
+But it's less than ideal - ':' also means that something is a lambda. This causes problems, as the ':' delimiter can not actually be used as a delimiter.
+
+Here, I'll discuss possible alternatives.
+
+
+## Why even use ':'?
+
+Should I? Maybe not.
+
+```
+	# normal expression
+
+	id (x): x
+	# vs
+	id (x) x
+
+
+	# a lambda
+	lazify (x): :x
+	# or
+	lazify (x): : x
+	# or
+	lazify (x):: x
+	#or
+	lazify (x) ::x
+	# same meaning, but the first and second one is the only non-wtf
+
+	# vs
+	lazify (x) :x
+	# or
+	lazify (x) : x
+	# or
+	lazify (x): x
+	# again. same meaning. the first and second one is non-wtf
+```
+
+So, seemingly, a colon is unneeded. However, there is one nice thing about the colon:
+
+some-fun (x):
+	x + 1 + 2 + 3 + 4 + 5 + 6 * random.int(1, 10)  # long expression
+
+We can unamibguously fold the expression. Since colon is a small character, it'll look natural to always put it after the function.
+
+Also, logically, a single expression function is lambda-ish, so syntactically comparing it to a lambda makes sense. It all fits nicely.
+
+
+But this is not that important. Just choose one way and be done with it. But it's not that simple. We probably want to be consistent with other language constructs.
+
+
+## if and case
+
+We ideally want to support this stuff. So, example:
+
+```
+	ord-as-int = if left > right: 1 else: 0
+	# ord
+	ord-as-int =
+		if left > right:
+			1
+		else:
+			0
+```
+
+Nice, but ambiguous:
+
+f = if bool: bool else 1
+# or
+f = if (bool: bool) (bool): bool else 1  # make a special expression parser for ifs
+
+f = if bool :x else :1
+# and
+f = if bool: x y else z
+
+And...
+f = if 1 -2 else -1
+
+> !! note that, although this parse is ambiguous, type isn't. A non-parened lambda should never be an argument to an if expression. We might actually us that. A special parsing table for expressions in an if statement.
+> !! Same with the other one. Just make it parse True, False... oh wait
+
+f = if 1 -2 -3 -4 -5 > 0 1 else 0
+
+> I mean, it's still possible I guess... We would have to check which operators are here after parsing the whole expression: Con, ==, !=, >= <=, and, or would be okay. same with a function call... oh wait
+
+f = if a() b() else g()
+
+> Shit. Ultra ambiguous.
+
+
+Consider case expressions now:
+
+default = case mint
+	Just(int): int
+	Nothing: 0
+
+Nice. We might even remove the colon and it'll still be unambiguous:
+
+default = case mint
+	Just(int) int
+	Nothing 0
+
+
+Now, let's add GUARDS:
+
+default = case mint
+	Just(int) if int > 0
+		yield 1
+	Just(int) if int = 0
+		yield 0
+	Just(int) if int < 0
+		yield -1
+	Nothing
+		yield 0
+
+It would be nice to write those as oneliners
+
+default = case mint
+	Just(int) if int > 0 1  # uh oh
+
+
+What about a colon?
+
+default = case mint
+	Just(int) if int > 0: 1
+	# nice... but
+
+	Just(int) if random-bool: 1
+
+	# okay...
+
+	Just(int) if random-bool: x f() g() h(): 1
+
+	# oh shit
+
+but, with the special operator table... it's okay...
+
+I might actually choose this!!
+
+
+## Different syntax
+
+We might go the Python way:
+
+# normal if statement, but
+
+x = 1 if True else 0
+
+# a case expr:
+
+default = case mint
+	Just(int) 1 if int > 0
+
+
+It looks kinda nice, but makes it harder to refactor - changing if-expr to if-stmt is harder.
+
+Also ambiguity and collisions with parsing expressions:
+
+default = case mint
+	Just(int) 1 if int > 0 else -1
+
+# or even funnier
+
+default = case mint
+	Just(int) 1 if int > 0 else 0 if int >= 0
+
+
+# another example
+x = if x > 0 then 1 else -1
+
+
+# OH OH OH
+
+x = if n == 1 : 1 elif n == 2 : 2 else 3
+
+# that looks so bad.... but we can allow it, why not.

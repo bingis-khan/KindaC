@@ -24,8 +24,8 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Common (Stmt, Module, Expr, Ann (..), Type, TVar (..), TCon (..), ConName (..), AnnStmt, VarName (..), Annotated (..), Op (..), LitType (..))
-import AST.Untyped (Untyped, ExprF (..), FunDec (..), DataCon (..), AnnotatedStmt (AnnStmt), TypeF (..), StmtF (..), Mod (Mod), DataDef (..), Deconstruction (..), Case (..))
+import AST.Common (Stmt, Module, Expr, Ann (..), Type, TVar (..), TCon (..), ConName (..), AnnStmt, VarName (..), Annotated (..), Op (..), LitType (..), Decon)
+import AST.Untyped (Untyped, ExprF (..), FunDec (..), DataCon (..), AnnotatedStmt (AnnStmt), TypeF (..), StmtF (..), Mod (Mod), DataDef (..), Case (..), DeconF (..))
 
 
 type Parser = Parsec MyParseError Text
@@ -95,11 +95,11 @@ sSingleCase = scope id $ do
   -- parse expression here in the future
   pure $ Case decon Nothing
 
-sDeconstruction :: Parser Deconstruction
+sDeconstruction :: Parser (Decon Untyped)
 sDeconstruction = caseVariable <|> caseConstructor
   where
-    caseVariable = CaseVariable <$> variable
-    caseConstructor = CaseConstructor <$> dataConstructor <*> args
+    caseVariable = Fix . CaseVariable <$> variable
+    caseConstructor = fmap Fix $ CaseConstructor <$> dataConstructor <*> args
     args = do
       between (symbol "(") (symbol ")") (sepBy1 sDeconstruction (symbol ",")) <|> pure []
 

@@ -1,0 +1,20 @@
+
+x = Just(Just(123))
+y = Nothing
+ys = Just(Nothing)
+print x == y
+print y == ys
+print x
+
+case Left(ys)
+	Left(Just(Just(x)))
+		print x
+
+	Left(Just(Nothing))
+		print 111
+
+	Left(Nothing)
+		print 0
+
+	Right(n)
+		print n as Int

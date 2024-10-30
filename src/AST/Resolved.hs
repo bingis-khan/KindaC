@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, UndecidableInstances #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Type, Expr, Annotated, TVar, Stmt, Ann, Module, AnnStmt, UniqueType, UniqueVar, UniqueCon, Locality)
+import AST.Common (LitType, Op, Type, Expr, Annotated, TVar, Stmt, Ann, Module, AnnStmt, UniqueType, UniqueVar, UniqueCon, Locality, Decon)
 
 import Text.Show.Deriving
 import Data.Eq.Deriving
@@ -69,9 +69,35 @@ data DataDef = DD UniqueType [TVar] [Annotated DataCon] deriving (Eq, Show)
 data FunDec = FD Env UniqueVar [(UniqueVar, Maybe (Type Resolved))] (Maybe (Type Resolved)) deriving (Show, Eq)
 
 
+----------
+-- Case --
+----------
+
+data DeconF a
+  = CaseVariable UniqueVar
+  | CaseConstructor UniqueCon [a]
+  deriving (Show, Eq, Functor)
+$(deriveShow1 ''DeconF)
+$(deriveEq1 ''DeconF)
+
+type instance Decon Resolved = Fix DeconF
+
+data Case expr a = Case 
+  { deconstruction :: Decon Resolved
+  , caseCondition :: Maybe expr
+  , body :: NonEmpty a
+  } deriving (Show, Eq, Functor, Foldable, Traversable)
+$(deriveBifunctor ''Case)
+$(deriveBifoldable ''Case)
+$(deriveBitraversable ''Case)
+
+
+
 ---------------
 -- Statement --
 ---------------
+
+$(deriveShow1 ''Case)
 
 -- I want to leave expr here, so we can bifold and bimap
 data StmtF expr a
@@ -84,6 +110,7 @@ data StmtF expr a
   | MutAssignment UniqueVar expr
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
+  | Switch expr (NonEmpty (Case expr a))
   | ExprStmt expr
   | Return expr
   deriving (Show, Eq, Functor, Foldable, Traversable)

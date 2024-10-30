@@ -21,7 +21,7 @@ import Data.Set (Set)
 import Data.Bifoldable (bifoldMap, bifold)
 import qualified Data.Set as Set
 
-import AST.Common (Module, AnnStmt, Expr, Type, UniqueVar (..), UniqueCon (..), UniqueType (..), Mutability (..), Locality (..), VarName (..), TCon, ConName, Annotated (..))
+import AST.Common (Module, AnnStmt, Expr, Type, UniqueVar (..), UniqueCon (..), UniqueType (..), Mutability (..), Locality (..), VarName (..), TCon, ConName, Annotated (..), Decon)
 import AST.Converged (Prelude(..))
 import qualified AST.Converged as Prelude
 import AST.Untyped (Untyped, StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..))
@@ -33,7 +33,7 @@ import Data.Fix (Fix(..))
 import Data.Functor ((<&>))
 import Data.Biapplicative (first)
 import qualified Data.Text as Text
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (mapMaybe)
 
 
 
@@ -82,6 +82,10 @@ rStmts = traverse -- traverse through the list with Ctx
           pure (rc, tb)) elseIfs
         rElseBody <- traverse rBody elseBody
         stmt $ R.If rcond rIfTrue rElseIfs rElseBody
+      Switch switch cases -> do
+        rswitch <- rExpr switch
+        rcases <- traverse rCase cases
+        stmt $ R.Switch rswitch rcases
       ExprStmt e -> do
         re <- rExpr e
         stmt $ R.ExprStmt re
@@ -124,9 +128,29 @@ rStmts = traverse -- traverse through the list with Ctx
 
         pure $ R.FunctionDefinition (R.FD env vid rparams rret) rbody
 
+    rCase :: U.Case (Expr Untyped) (Ctx (AnnStmt Resolved)) -> Ctx (R.Case (Expr Resolved) (AnnStmt Resolved))
+    rCase kase = do
+      rdecon <- rDecon kase.deconstruction
+      mrCond <- traverse rExpr kase.caseCondition
+      rbody <- rBody kase.body
+      pure $ R.Case rdecon mrCond rbody
+
     rBody :: Traversable t => t (Ctx a) -> Ctx (t a)
     rBody = scope . sequenceA
 
+rDecon :: Decon Untyped -> Ctx (Decon Resolved)
+rDecon = transverse $ \case
+  U.CaseVariable var -> do
+    rvar <- newVar Immutable var
+    pure $ R.CaseVariable rvar
+  U.CaseConstructor conname decons -> do
+    con <- resolveCon conname >>= \case
+      Just con -> pure con
+      Nothing -> do
+        err $ UndefinedConstructor conname
+        placeholderCon conname
+
+    R.CaseConstructor con <$> sequenceA decons
 
 rExpr :: Expr Untyped -> Ctx (Expr Resolved)
 rExpr = cata $ fmap embed . \case  -- transverse, but unshittified

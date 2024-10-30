@@ -10,7 +10,7 @@ import qualified AST.Mono as M
 import qualified AST.Common as Common
 import Data.Fix (Fix(..))
 import Control.Monad.Trans.Reader (ReaderT, runReaderT)
-import Data.Functor.Foldable (transverse, embed, cata, para, Base, project)
+import Data.Functor.Foldable (transverse, embed, cata, para, Base, project, hoist)
 import Data.Bitraversable (bitraverse)
 import Data.Biapplicative (first, second)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -136,6 +136,7 @@ mAnnStmt = cata $ (((fmap sconcat . traverse prependAdditionalStatements) . fmap
     <*> sequenceA ifTrue
     <*> traverse (bitraverse id sequenceA) elseIfs
     <*> traverse sequenceA else'
+  T.Switch switch cases -> fmap mann $ M.Switch <$> switch <*> traverse mCase cases
   T.ExprStmt expr -> mann . M.ExprStmt <$> expr
   T.Return ete -> mann . M.Return <$> ete
 
@@ -147,6 +148,21 @@ mAnnStmt = cata $ (((fmap sconcat . traverse prependAdditionalStatements) . fmap
     addFunction ann (Function fundec (sconcat <$> sequenceA body))
     pure $ noann $ M.EnvHere $ M.EPH uv
   ))
+
+mCase :: T.Case (Context (Expr Mono)) (Context (NonEmpty (AnnStmt MonoInt))) -> Context (M.Case (NonEmpty (AnnStmt MonoInt)))
+mCase kase = M.Case <$> mDecon kase.deconstruction <*> sequenceA kase.caseCondition <*> sequenceA kase.body
+  where 
+    mDecon = cata $ fmap embed . go
+      where
+        go = \case
+          T.CaseVariable t uv -> do
+            t' <- mType t
+            uv' <- variable uv t'
+            pure $ M.CaseVariable t' uv'
+          T.CaseConstructor t uc args -> do
+            t' <- mType t
+            uc' <- constructor uc t'
+            M.CaseConstructor t' uc' <$> sequenceA args
 
 prependAdditionalStatements :: AnnStmt MonoInt -> Context (NonEmpty (AnnStmt MonoInt))
 prependAdditionalStatements annstmt = do

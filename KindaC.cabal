@@ -21,7 +21,6 @@ data-files:
 
 library
   exposed-modules:
-      AST
       AST.Common
       AST.Converged
       AST.Mono
@@ -36,7 +35,6 @@ library
       Resolver
       Std
       Typecheck
-      Typecheck.Types
   other-modules:
       Paths_KindaC
   hs-source-dirs:

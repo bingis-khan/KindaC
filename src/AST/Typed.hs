@@ -1,9 +1,10 @@
 {-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, OverloadedStrings #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Type, Expr, Annotated (..), TVar (..), Stmt, Ann, Module, AnnStmt, UniqueType, UniqueVar, UniqueCon, Locality (Local), VarName, Env, EnvUnion, Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, fromEither, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, ppUnique, UnionID, EnvID, ppUnionID, ppEnvID)
+import AST.Common (LitType (..), Op (..), Type, Expr, Annotated (..), TVar (..), Stmt, Ann, Module, AnnStmt, UniqueType, UniqueVar, UniqueCon, Locality (Local), VarName, Env, EnvUnion, Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, fromEither, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, ppUnique, UnionID, EnvID, ppUnionID, ppEnvID, Decon)
 
 import Text.Show.Deriving
 import Data.Eq.Deriving
@@ -129,6 +130,30 @@ data DataDef = DD UniqueType [TVar] [EnvUnion Typed] [Annotated DataCon] derivin
 data FunDec = FD (Env Typed) UniqueVar [(UniqueVar, Type Typed)] (Type Typed) deriving (Show, Eq)
 
 
+----------
+-- Case --
+----------
+
+data DeconF a
+  = CaseVariable (Type Typed) UniqueVar
+  | CaseConstructor (Type Typed) UniqueCon [a]
+  deriving (Show, Eq, Functor)
+$(deriveShow1 ''DeconF)
+$(deriveEq1 ''DeconF)
+
+type instance Decon Typed = Fix DeconF
+
+data Case expr a = Case 
+  { deconstruction :: Decon Typed
+  , caseCondition :: Maybe expr
+  , body :: NonEmpty a
+  } deriving (Show, Eq, Functor, Foldable, Traversable)
+$(deriveShow1 ''Case)
+$(deriveBifunctor ''Case)
+$(deriveBifoldable ''Case)
+
+
+
 ---------------
 -- Statement --
 ---------------
@@ -144,6 +169,7 @@ data StmtF expr a
   | MutAssignment UniqueVar expr
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
+  | Switch expr (NonEmpty (Case expr a))
   | ExprStmt expr
   | Return expr
 
@@ -204,12 +230,22 @@ tStmt stmt = case first tExpr stmt of
     foldMap (\(cond, elseIf) ->
         tBody ("elif" <+> cond) elseIf) elseIfs <>
     maybe mempty (tBody "else") mElse
+  Switch switch cases -> 
+    ppBody tCase switch cases
   ExprStmt e -> e
   Return e -> "return" <+> e
 
   DataDefinition dd -> tDataDef dd
   FunctionDefinition fd body -> tBody (tFunDec fd) body
 
+tCase :: Case Context (AnnStmt Typed) -> Context
+tCase kase = tBody (tDecon kase.deconstruction <+?> kase.caseCondition) kase.body
+
+tDecon :: Decon Typed -> Context
+tDecon = cata $ \case
+  CaseVariable _ uv -> ppVar Local uv
+  CaseConstructor _ uc [] -> ppCon uc
+  CaseConstructor _ uc args@(_:_) -> ppCon uc <> encloseSepBy "(" ")" ", " args
 
 tExpr :: Expr Typed -> Context
 tExpr = cata $ \(ExprType t expr) ->

@@ -1,0 +1,12 @@
+
+outer (n)
+	inner ()
+			return n
+
+	return inner
+
+f = outer(69)
+g = outer(420)
+
+print f()
+print g()
