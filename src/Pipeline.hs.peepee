@@ -44,11 +44,6 @@ loadModule mPrelude filename = do
         Right tmod -> pure $ Right tmod
 
 
--- Misc for testing
-parseModule :: FilePath -> IO (Either Text (Module Untyped))
-parseModule filename = do
-  source <- TextIO.readFile filename
-  pure $ parse filename source
 
 -- dbgLoadModule :: Maybe Prelude -> FilePath -> IO Text
 -- dbgLoadModule mPrelude filename = do

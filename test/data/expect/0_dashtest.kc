@@ -1,0 +1,8 @@
+#$ Parsing dashes and compiling them. (no ambiguity)
+# 123
+# 67
+
+a-2 = 123
+a = 69
+print a-2
+print a - 2

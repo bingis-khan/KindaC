@@ -1,0 +1,49 @@
+Unit
+	Unit
+
+# cstdinclude includes the module if the type is used. it will also enclose the name in "<" and ">" - that's because I might want to include custom c modules.
+#[ctype 'bool', cstdinclude 'stdbool.h']
+Bool
+	#[clit 'false']
+	False
+
+	#[clit 'true']
+	True
+
+# Temporary, as I will use 'U32', 'I32', etc. types in code and there will be no "default" Int
+#[ctype 'int']
+Int  # Make sure this is parsed as DataDefinition with zero constructors instead of ExprType in the compiler.
+
+# #[ctype 'uint8_t', cstdinclude 'stdint.h']
+# U8
+
+# #[ctype 'int8_t', cstdinclude 'stdint.h']
+# I8
+
+# some test function
+fib (x)
+	if x == 0
+		return 0
+	elif x == 1
+		return 1
+	else
+		return fib(x - 1) + fib(x - 2)
+
+fib (123)
+fib(11111)
+fib(True)
+fib(False)
+fib(Unit)
+Maybe a
+	Just a
+	Nothing
+
+
+Either e a
+	Left e
+	Right a
+
+x = Just(1)
+y = Left(2)
+z = Right(3)
+

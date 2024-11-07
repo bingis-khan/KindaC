@@ -4,17 +4,19 @@
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE UndecidableInstances #-}
-module AST.Untyped where
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
+module AST.Untyped (module AST.Untyped) where
 
-import AST.Common (LitType, Op, Type, Expr, Annotated, TCon, TVar, Stmt, Ann, Module, ConName, VarName, AnnStmt, Decon)
+import AST.Common (LitType, Op, Annotated, TCon (..), TVar (..), ConName, VarName, (:.), (<+>), Context, pretty, ppTCon, encloseSepBy)
 
-import Text.Show.Deriving
 import Data.Eq.Deriving
 import Data.Fix (Fix)
 import Data.List.NonEmpty (NonEmpty)
+import Data.Foldable (foldl')
+import Data.Functor.Foldable (cata)
 
-
-data Untyped
 
 
 ----------
@@ -25,12 +27,10 @@ data TypeF a
   = TCon TCon [a]
   | TVar TVar
   | TFun [a] a
-  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+  deriving (Eq, Ord, Functor, Foldable, Traversable)
+type Type = Fix TypeF
 
-$(deriveShow1 ''TypeF)
 $(deriveEq1 ''TypeF)
-
-type instance Type Untyped = Fix TypeF
 
 
 ----------------
@@ -44,29 +44,28 @@ data ExprF a
 
   | Op a Op a
   | Call a [a]
-  | As a (Type Untyped)
+  | As a Type
   | Lam [VarName] a
-  deriving (Show, Eq, Functor, Foldable, Traversable)
+  deriving (Eq, Functor, Foldable, Traversable)
+type Expr = Fix ExprF
 
-$(deriveShow1 ''ExprF)
 $(deriveEq1 ''ExprF)
 
-type instance Expr Untyped = Fix ExprF
 
 
 ---------------------
 -- Data Definition --
 ---------------------
 
-data DataCon = DC ConName [Type Untyped] deriving (Eq, Show)
-data DataDef = DD TCon [TVar] [Annotated DataCon] deriving (Eq, Show)
+data DataCon = DC ConName [Type] deriving Eq
+data DataDef = DD TCon [TVar] [Annotated DataCon] deriving Eq
 
 
 --------------
 -- Function --
 --------------
 
-data FunDec = FD VarName [(VarName, Maybe (Type Untyped))] (Maybe (Type Untyped)) deriving (Show, Eq)
+data FunDec = FD VarName [(VarName, Maybe Type)] (Maybe Type) deriving Eq
 
 
 ----------
@@ -76,60 +75,64 @@ data FunDec = FD VarName [(VarName, Maybe (Type Untyped))] (Maybe (Type Untyped)
 data DeconF a
   = CaseVariable VarName
   | CaseConstructor ConName [a]
-  deriving (Show, Eq, Functor)
-$(deriveShow1 ''DeconF)
+  deriving (Eq, Functor)
 $(deriveEq1 ''DeconF)
-type instance Decon Untyped = Fix DeconF
+type Decon = Fix DeconF
 
-data Case expr stmt = Case
-  { deconstruction :: Decon Untyped
+data CaseF expr stmt = Case
+  { deconstruction :: Decon
   , caseCondition :: Maybe expr
   , body :: NonEmpty stmt
-  } deriving (Show, Eq, Functor, Foldable, Traversable)
+  } deriving (Eq, Functor, Foldable, Traversable)
+type Case = CaseF Expr AnnStmt
 
 
 ---------------
 -- Statement --
 ---------------
 
-$(deriveShow1 ''Case)
-
 -- I want to leave expr here, so we can bifold and bimap
 data StmtF expr a
   -- Typical statements
   = Print expr
   | Assignment VarName expr
+  | Mutation VarName expr
+
   | Pass
 
-  | MutDefinition VarName (Maybe expr)
-  | MutAssignment VarName expr
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
-  | Switch expr (NonEmpty (Case expr a))
+  | Switch expr (NonEmpty (CaseF expr a))
   | ExprStmt expr
   | Return (Maybe expr)
 
   -- Big statements
   | DataDefinition DataDef
   | FunctionDefinition FunDec (NonEmpty a)
-  deriving (Show, Eq, Functor, Foldable, Traversable)
-$(deriveShow1 ''StmtF)
+  deriving (Eq, Functor, Foldable, Traversable)
 
 -- not sure about this one. if using it is annoying, throw it out. (eliminates the possibility to bimap)
 -- also, the style does not fit.
-data AnnotatedStmt expr a = AnnStmt [Ann] (StmtF expr a) deriving (Show, Functor)
-$(deriveShow1 ''AnnotatedStmt)
 
-type instance Stmt Untyped = StmtF (Expr Untyped) (AnnStmt Untyped)
-type instance AnnStmt Untyped = Fix (AnnotatedStmt (Expr Untyped))
+type Stmt = StmtF Expr AnnStmt
+type AnnStmt = Fix (Annotated :. StmtF Expr)
 
 
 ---------------
 -- Module --
 ---------------
 
-newtype Mod = Mod [AnnStmt Untyped] deriving Show
-
-type instance Module Untyped = Mod
+newtype Module = Mod [AnnStmt]
 
 
+
+--------
+-- PP --
+--------
+
+uType :: Type -> Context
+uType = cata $ \case
+  TCon con params -> 
+    foldl' (<+>) (ppTCon con) params
+  TVar (TV tv) -> pretty tv
+  TFun args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret

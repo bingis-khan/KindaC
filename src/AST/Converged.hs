@@ -3,9 +3,7 @@ module AST.Converged (module AST.Converged) where
 
 -- TODO: make AST.Converged into AST after refactor
 
-import AST.Common (Module, Type, UniqueCon, VarName, UniqueVar, ConName (..), UniqueType, TCon (..), Expr, TVar, EnvUnion)
-import AST.Typed (Typed)
-
+import AST.Common (UniqueCon, VarName, UniqueVar, ConName (..), UniqueType, TCon (..), TVar)
 import Data.Map (Map)
 import qualified AST.Typed as T
 import Data.Fix (Fix(..))
@@ -21,17 +19,17 @@ import Data.Fix (Fix(..))
 
 
 data Prelude = Prelude
-  { tpModule :: Module Typed
+  { tpModule       :: T.Module
 
-  , unitValue :: (UniqueCon, Type Typed)
-  , toplevelReturn :: Expr Typed  -- includes the type one should refer to. should be Int (later U8)
-  , boolType :: Type Typed
-  , intType :: Type Typed
+  , unitValue      :: T.DataCon
+  , toplevelReturn :: T.Expr -- includes the type one should refer to. should be Int (later U8)
+  , boolType       :: T.Type
+  , intType        :: T.Type
 
-  , varNames :: Map VarName (Either T.FunDec (UniqueVar, Type Typed))
-  , conNames :: Map ConName (UniqueType, [TVar], [EnvUnion Typed], T.DataCon)
-  , tyNames  :: Map TCon T.DataDef
-  } deriving Show
+  , varNames       :: Map VarName (Either (UniqueVar, T.Type) T.Function)
+  , conNames       :: Map ConName T.DataCon
+  , tyNames        :: Map TCon T.DataDef
+  }
 
 
 unitName :: ConName
@@ -44,11 +42,11 @@ boolTypeName     = TC "Bool"
 
 
 -- Kinda of a weird solution. This "pack" describes the way a type could be found without Prelude.
-data PreludeFind = PF TCon (Prelude -> Type Typed)
+data PreludeFind = PF TCon (Prelude -> T.Type)
 
 -- since we have TCs, not sure if we need the added types (int, bool). maybe we can just find them normally, through conNames/tyNames.
 tlReturnFind, boolFind, intFind :: PreludeFind
-tlReturnFind = PF tlReturnTypeName ((\(Fix (T.ExprType t _)) -> t) . toplevelReturn)
+tlReturnFind = PF tlReturnTypeName ((\(Fix (T.TypedExpr t _)) -> t) . toplevelReturn)
 boolFind = PF boolTypeName boolType
 intFind = PF intTypeName intType
 

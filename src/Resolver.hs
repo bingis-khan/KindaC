@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, OverloadedRecordDot, DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase, OverloadedRecordDot, DuplicateRecordFields, RecursiveDo #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use <$>" #-}
 {-# LANGUAGE TupleSections #-}
@@ -16,17 +16,16 @@ import qualified Data.Map as Map
 import Data.List.NonEmpty (NonEmpty ((:|)), (<|))
 import qualified Data.List.NonEmpty as NonEmpty
 import Control.Applicative ((<|>))
-import Control.Monad (when)
 import Data.Set (Set)
-import Data.Bifoldable (bifoldMap, bifold)
+import Data.Bifoldable (bifold)
 import qualified Data.Set as Set
 
-import AST.Common (Module, AnnStmt, Expr, Type, UniqueVar (..), UniqueCon (..), UniqueType (..), Mutability (..), Locality (..), VarName (..), TCon, ConName, Annotated (..), Decon)
+import AST.Common (UniqueVar (..), UniqueCon (..), UniqueType (..), Locality (..), VarName (..), TCon, ConName, Annotated (..), (:.) (..))
 import AST.Converged (Prelude(..))
 import qualified AST.Converged as Prelude
-import AST.Untyped (Untyped, StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..))
+import AST.Untyped (StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..))
 import qualified AST.Untyped as U
-import AST.Resolved (Resolved, Env (..))
+import AST.Resolved (Env (..))
 import qualified AST.Resolved as R
 import qualified AST.Typed as T
 import Data.Fix (Fix(..))
@@ -34,45 +33,62 @@ import Data.Functor ((<&>))
 import Data.Biapplicative (first)
 import qualified Data.Text as Text
 import Data.Maybe (mapMaybe)
+import Data.Semigroup (sconcat)
+import Data.Traversable (for)
 
 
 
 
 -- Resolves variables, constructors and types and replaces them with unique IDs.
-resolve :: Maybe Prelude -> Module Untyped -> IO ([ResolveError], Module Resolved)
-resolve mPrelude uMod = do
+resolve :: Maybe Prelude -> U.Module -> IO ([ResolveError], R.Module)
+resolve mPrelude (U.Mod ustmts) = do
   let newState = maybe emptyState mkState mPrelude
-  (rmod, errs) <- RWST.evalRWST (rMod uMod) () newState
+  (rstmts, state, errs) <- RWST.runRWST (rStmts ustmts) () newState
+
+  let rmod = R.Mod { toplevel = rstmts, functions = state.functions, datatypes = state.datatypes }
+
   return (errs, rmod)
 
 
-rMod :: Module Untyped -> Ctx (Module Resolved)
-rMod (U.Mod stmts) = R.Mod <$> rStmts stmts
-
-rStmts :: [AnnStmt Untyped] -> Ctx [AnnStmt Resolved]
+rStmts :: [U.AnnStmt] -> Ctx [R.AnnStmt]
 rStmts = traverse -- traverse through the list with Ctx
-  $ cata (fmap embed . (\(U.AnnStmt anns utStmt) -> R.AnnStmt anns <$> rStmt utStmt)) -- go through Stmt recursively with Ctx. cata (fmap embed . ...) is transverse without the forall type.
+  $ cata (fmap embed . (\(O utStmt) -> O <$> rStmt utStmt)) -- go through Stmt recursively with Ctx. cata (fmap embed . ...) is transverse without the forall type.
   where
     -- actual logic
     -- maybe try to generalize it if possible using traverse n shit
-    stmt = pure . R.NormalStmt
-    rStmt = \case
+    rStmt (Annotated anns uStmt) =
+      let stmt = pure . Annotated anns
+          pass = pure $ Annotated [] R.Pass
+      in case uStmt of
       Print e -> do
         re <- rExpr e
         stmt $ R.Print re
       Assignment name e -> do
         re <- rExpr e
-        vid <- newVar Immutable name
+        vid <- newVar name
         stmt $ R.Assignment vid re
       Pass -> stmt R.Pass
-      MutDefinition name me -> do
-        mre <- traverse rExpr me
-        vid <- newVar Mutable name
-        stmt $ R.MutDefinition vid mre
-      MutAssignment name e -> do
+      Mutation name e -> do
         re <- rExpr e
-        (_, vid) <- resolveVar name
-        stmt $ R.MutAssignment vid re
+        (_, vf) <- resolveVar name
+
+        case vf of
+          R.DefinedVariable vid ->
+            stmt $ R.Mutation vid re
+
+          R.DefinedFunction fun -> do
+            err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
+
+            vid <- generateVar name
+            stmt $ R.Mutation vid re
+            
+          R.ExternalFunction fun -> do
+            err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
+
+            vid <- generateVar name
+            stmt $ R.Mutation vid re
+
+
       If cond ifTrue elseIfs elseBody -> do
         rcond <- rExpr cond
         rIfTrue <- scope $ sequenceA ifTrue
@@ -98,37 +114,50 @@ rStmts = traverse -- traverse through the list with Ctx
             pure $ Fix (R.Con uc)
 
         stmt $ R.Return re
-      DataDefinition (DD tyName tyParams cons) -> do
-        tid <- newType tyName
-        rCons <- traverse (\(Annotated anns (DC cname ctys)) -> do
-          cid <- newCon cname
+      DataDefinition (DD tyName tyParams cons) -> mdo
+        tid <- generateType tyName
+        -- tying the knot for the datatype definition
+
+        let dataDef = R.DD tid tyParams rCons anns
+        registerDatatype dataDef
+
+        rCons <- for cons $ \(Annotated conAnns (DC cname ctys)) -> do
+          cid <- generateCon cname
+
+          -- TODO: throw an error if there is more than one constructor with the same name in the same datatype.
+          -- TODO: also, can we redeclare constructors (in another datatype in the same scope?)
           rConTys <- traverse rType ctys
-          pure $ Annotated anns (R.DC cid rConTys)) cons
-        pure $ R.DataDefinition $ R.DD tid tyParams rCons
+          let rCon = R.DC dataDef cid rConTys conAnns
+          newCon rCon
+
+          pure rCon
+        pass
+
       FunctionDefinition (FD name params ret) body -> do
-        vid <- newVar Immutable name
-        (rparams, rret, rbody) <- closure $ do
-          rparams <- traverse (\(n, t) -> do
-            rn <- newVar Immutable n
-            rt <- traverse rType t
-            return (rn, rt)) params
-          rret <- traverse rType ret
-          rbody <- rBody body
-          pure (rparams, rret, rbody)
+        vid <- generateVar name
 
-        -- set the environment
-        -- TODO: maybe just make it a part of 'closure'?
-        let tempFunDec = Fix $ R.AnnStmt [] $ R.FunctionDefinition (R.FD (Env []) vid rparams rret) rbody
-        let innerEnv = gatherVariables tempFunDec
-        env <-
-          -- traceShowId <$> 
-          mkEnv (
-            -- traceShowWith (\ienv -> show vid <> show " " <> show ienv)
-            innerEnv)
+        rec
+          let function = R.Function (R.FD env vid rparams rret) rbody
+          newFunction function
 
-        pure $ R.FunctionDefinition (R.FD env vid rparams rret) rbody
+          (rparams, rret, rbody) <- closure $ do
+            rparams' <- traverse (\(n, t) -> do
+              rn <- newVar n
+              rt <- traverse rType t
+              return (rn, rt)) params
+            rret' <- traverse rType ret
+            rbody' <- rBody body
+            pure (rparams', rret', rbody')
 
-    rCase :: U.Case (Expr Untyped) (Ctx (AnnStmt Resolved)) -> Ctx (R.Case (Expr Resolved) (AnnStmt Resolved))
+          -- set the environment
+          --   NOTE: don't forget to remove self reference - it does not need to be in the environment.
+          -- TODO: maybe just make it a part of 'closure'?
+          let innerEnv = Set.delete vid $ sconcat $ fmap gatherVariables rbody
+          env <- mkEnv innerEnv
+
+        pass
+
+    rCase :: U.CaseF U.Expr (Ctx R.AnnStmt) -> Ctx (R.Case R.Expr R.AnnStmt)
     rCase kase = do
       rdecon <- rDecon kase.deconstruction
       mrCond <- traverse rExpr kase.caseCondition
@@ -138,10 +167,10 @@ rStmts = traverse -- traverse through the list with Ctx
     rBody :: Traversable t => t (Ctx a) -> Ctx (t a)
     rBody = scope . sequenceA
 
-rDecon :: Decon Untyped -> Ctx (Decon Resolved)
+rDecon :: U.Decon -> Ctx R.Decon
 rDecon = transverse $ \case
   U.CaseVariable var -> do
-    rvar <- newVar Immutable var
+    rvar <- newVar var
     pure $ R.CaseVariable rvar
   U.CaseConstructor conname decons -> do
     con <- resolveCon conname >>= \case
@@ -152,7 +181,7 @@ rDecon = transverse $ \case
 
     R.CaseConstructor con <$> sequenceA decons
 
-rExpr :: Expr Untyped -> Ctx (Expr Resolved)
+rExpr :: U.Expr -> Ctx R.Expr
 rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
   Lit x -> pure $ R.Lit x
   Var v -> do
@@ -170,17 +199,18 @@ rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
   Call c args -> R.Call <$> c <*> sequenceA args
   As e t -> R.As <$> e <*> rType t
   Lam params body -> do
+    lamId <- lambdaVar
     (rParams, rBody) <- closure $ do
-      rParams <- traverse (newVar Immutable) params
+      rParams <- traverse newVar params
       rBody <- scope body
       pure (rParams, rBody)
 
     let innerEnv = gatherVariablesFromExpr rBody -- TODO: environment making in 'closure' function.
     env <- mkEnv innerEnv
-    pure $ R.Lam env rParams rBody
+    pure $ R.Lam lamId env rParams rBody
 
 
-rType :: Type Untyped -> Ctx (Type Resolved)
+rType :: U.Type -> Ctx R.Type
 rType = transverse $ \case
   TCon t tapps -> do
     rt <- resolveType t
@@ -210,9 +240,9 @@ closure :: Ctx a -> Ctx a
 closure x = do
   oldScope <- RWST.get          -- enter scope
 
-  RWST.modify $ \state@(CtxState { scopes = scopes }) -> state { scopes = emptyScope <| fmap (\scope -> scope -- set all reachable variables as immutable
-    { varScope = fmap (\v -> v { mutability = Immutable } :: UniqueVar) scope.varScope
-    }) scopes }
+  RWST.modify $ \state@(CtxState { scopes = scopes' }) -> state { scopes = emptyScope <| fmap (\sc -> sc -- set all reachable variables as immutable
+    { varScope = sc.varScope
+    }) scopes' }
   x' <- x                       -- evaluate body
   RWST.put oldScope             -- exit scope
 
@@ -225,17 +255,21 @@ data CtxState = CtxState
   { scopes :: NonEmpty Scope
   , inLambda :: Bool  -- hack to check if we're in a lambda currently. the when the lambda is not in another lambda, we put "Local" locality.
   , prelude :: Maybe Prelude  -- Only empty when actually parsing prelude.
+
+  -- we need to keep track of each defiend function to actually typecheck it.
+  , functions :: [R.Function]
+  , datatypes :: [R.DataDef]
   }
 
 data Scope = Scope
-  { varScope :: Map VarName UniqueVar
-  , conScope :: Map ConName UniqueCon
-  , tyScope :: Map TCon UniqueType
+  { varScope :: Map VarName R.Variable
+  , conScope :: Map ConName R.Constructor
+  , tyScope :: Map TCon R.Datatype
   }
 
 emptyState :: CtxState
 emptyState =
-  CtxState { scopes = NonEmpty.singleton emptyScope, prelude = Nothing }
+  CtxState { scopes = NonEmpty.singleton emptyScope, prelude = Nothing, inLambda = False, functions = mempty, datatypes = mempty }
 
 emptyScope :: Scope
 emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty }
@@ -245,114 +279,123 @@ getScopes = RWST.gets scopes
 
 -- Add later after I do typechecking.
 mkState :: Prelude -> CtxState
-mkState prelude = CtxState
-  { scopes = NonEmpty.singleton scope
-  , prelude = Just prelude
+mkState prel = CtxState
+  { scopes = NonEmpty.singleton initialScope
+  , prelude = Just prel
   , inLambda = False
+  , functions = mempty
+  , datatypes = mempty
   } where
-    scope = Scope
-      { varScope = prelude.varNames <&> \case
-          Left (T.FD _ uv _ _) -> uv
-          Right (uv, _) -> uv
-      , conScope = prelude.conNames <&> \(_, _, _, T.DC uc _) -> uc
-      , tyScope = prelude.tyNames <&> \(T.DD ut _ _ _) -> ut
+    initialScope = Scope
+      { varScope = prel.varNames <&> \case
+          Right fun -> R.ExternalFunction fun
+          Left (uv, _) -> R.DefinedVariable uv
+      , conScope = R.ExternalConstructor <$> prel.conNames
+      , tyScope = R.ExternalDatatype <$> prel.tyNames
       }
 
-    -- cons = Map.fromList $ fmap (\ci -> (ci.conName, ci)) $ foldMap extractCons $ T.fromMod prelude
-    -- extractCons = \case
-    --   Fix (T.AnnStmt _ (T.DataDefinition (T.DD _ _ dcons))) -> fmap (\(Annotated _ (T.DC con _)) -> con) dcons
-    --   _ -> []
-
-    -- types = Map.fromList $ mapMaybe extractTypes $ T.fromMod prelude
-    -- extractTypes = \case
-    --   Fix (T.AnnStmt _ (T.DataDefinition (T.DD tid _ _))) -> Just (tid.typeName, tid)
-    --   _ -> Nothing
-
-    -- -- right now, we're only taking functions and IMMUTABLE variables. not sure if I should include mutable ones
-    -- vars = Map.fromList $ mapMaybe extractVars $ T.fromMod prelude
-    -- extractVars = \case
-    --   Fix (T.AnnStmt _ (T.Assignment v _)) -> Just (v.varName, v)
-    --   Fix (T.AnnStmt _ (T.FunctionDefinition (T.FD _ v _ _) _)) -> Just (v.varName, v)
-    --   _ -> Nothing
-
-
-newVar :: Mutability -> VarName -> Ctx UniqueVar
-newVar mut name = do
+generateVar :: VarName -> Ctx UniqueVar
+generateVar name = do
   vid <- liftIO newUnique
-  let var = VI { varID = vid, varName = name, mutability = mut }
-  modifyThisScope $ \sc -> sc { varScope = Map.insert name var sc.varScope }
-  return var
+  let var = VI { varID = vid, varName = name }
+  pure var
+
+newFunction :: R.Function -> Ctx ()
+newFunction fun = do
+  let uv = fun.functionDeclaration.functionId
+  modifyThisScope $ \sc -> sc { varScope = Map.insert uv.varName (R.DefinedFunction fun) sc.varScope }
+  RWST.modify $ \s -> s { functions = fun : s.functions }
+
+newVar :: VarName -> Ctx UniqueVar
+newVar name = do
+  uv <- generateVar name
+  modifyThisScope $ \sc -> sc { varScope = Map.insert uv.varName (R.DefinedVariable uv) sc.varScope }
+  pure uv
 
 lambdaVar :: Ctx UniqueVar
 lambdaVar = do
   vid <- liftIO newUnique
-  let var = VI { varID = vid, varName = VN (Text.pack "lambda"), mutability = Immutable }
+  let var = VI { varID = vid, varName = VN (Text.pack "lambda") }
   return var
 
-resolveVar :: VarName -> Ctx (Locality, UniqueVar)
+resolveVar :: VarName -> Ctx (Locality, R.Variable)
 resolveVar name = do
-  scopes <- getScopes
-  case lookupScope name (fmap varScope scopes) of
+  allScopes <- getScopes
+  case lookupScope name (fmap varScope allScopes) of
     Just v -> pure v
     Nothing -> do
       err $ UndefinedVariable name
-      (Local,) <$> placeholderVar name
+      (Local,) . R.DefinedVariable <$> placeholderVar name
 
 placeholderVar :: VarName -> Ctx UniqueVar
 placeholderVar name = do
   vid <- liftIO newUnique
-  pure $ VI { varID = vid, varName = name, mutability = Mutable }  -- mutable, because we it might be a placeholder of a mutable assignment
+  pure $ VI { varID = vid, varName = name }  -- mutable, because we it might be a placeholder of a mutable assignment
 
 
-newCon :: ConName -> Ctx UniqueCon
-newCon name = do
+generateCon :: ConName -> Ctx UniqueCon
+generateCon name = do
   cid <- liftIO newUnique
   let con = CI { conID = cid, conName = name }
-  modifyThisScope $ \sc -> sc { conScope = Map.insert name con sc.conScope }
   pure con
 
-resolveCon :: ConName -> Ctx (Maybe UniqueCon)
+newCon :: R.DataCon -> Ctx ()
+newCon dc@(R.DC _ uc _ _) = do
+  modifyThisScope $ \sc -> sc { conScope = Map.insert uc.conName (R.DefinedConstructor dc) sc.conScope }
+
+resolveCon :: ConName -> Ctx (Maybe R.Constructor)
 resolveCon name = do
-  scopes <- getScopes
+  allScopes <- getScopes
   -- This has been generalized to return Maybe instead of throwing an error.
   --   WHY? I needed this function somewhere else AND I the usage should be the same.
   --    This is more in line with the spiritual usage of Haskell - bubble up errors and handle them there. this makes it obvious what is happening with the value - no need to check inside the function. (remember this :3)
-  let maybeCon = snd <$> lookupScope name (fmap conScope scopes)
+  let maybeCon = snd <$> lookupScope name (fmap conScope allScopes)
   pure maybeCon
 
-placeholderCon :: ConName -> Ctx UniqueCon
+placeholderCon :: ConName -> Ctx R.Constructor
 placeholderCon name = do
-  cid <- liftIO newUnique
-  pure $ CI { conID = cid, conName = name }
+  uc <- generateCon name
+
+  -- fill in later with a placeholder type.
+  undefined
 
 
-newType :: TCon -> Ctx UniqueType
-newType name = do
-  -- Check for duplication first
-  -- if it exists, we still replace it, but an error is signaled.
-  scope <- NonEmpty.head <$> getScopes
-  when (name `Map.member` scope.tyScope) $
-    err $ TypeRedeclaration name
-
-  -- Generate a new unique type.
+-- Generate a new unique type.
+generateType :: TCon -> Ctx UniqueType
+generateType name = do
   tid <- liftIO newUnique
   let ty = TI { typeID = tid, typeName = name }
-  modifyThisScope $ \sc -> sc { tyScope = Map.insert name ty sc.tyScope }
   pure ty
 
-resolveType :: TCon -> Ctx UniqueType
+registerDatatype :: R.DataDef -> Ctx ()
+registerDatatype dd@(R.DD ut _ _ _) = do
+  -- Check for duplication first
+  -- if it exists, we still replace it, but an error is signaled.
+  let name = ut.typeName
+  currentScope <- NonEmpty.head <$> getScopes
+  case currentScope.tyScope !? name of
+    Nothing -> pure ()
+    Just (R.DefinedDatatype _) -> pure ()
+    Just (R.ExternalDatatype _) -> err $ TypeRedeclaration name
+
+  modifyThisScope $ \sc -> sc { tyScope = Map.insert name (R.DefinedDatatype dd) sc.tyScope }
+  RWST.modify $ \s -> s { datatypes = dd : s.datatypes }
+  pure ()
+
+resolveType :: TCon -> Ctx R.Datatype
 resolveType name = do
-  scopes <- getScopes
-  case lookupScope name (fmap tyScope scopes) of
+  allScopes <- getScopes
+  case lookupScope name (fmap tyScope allScopes) of
     Just (_, c) -> pure c  -- rn we will ignore the scope
     Nothing -> do
       err $ UndefinedType name
       placeholderType name
 
-placeholderType :: TCon -> Ctx UniqueType
+placeholderType :: TCon -> Ctx R.Datatype
 placeholderType name = do
-  tid <- liftIO newUnique
-  pure $ TI { typeID = tid, typeName = name }
+  tid <- generateType name
+  -- generate a placeholder type.
+  undefined
 
 modifyThisScope :: (Scope -> Scope) -> Ctx ()
 modifyThisScope f =
@@ -362,18 +405,13 @@ modifyThisScope f =
 lookupScope :: (Ord b) => b -> NonEmpty (Map b c) -> Maybe (Locality, c)
 lookupScope k = foldr (\(locality, l) r -> (locality,) <$> Map.lookup k l <|> r) Nothing . (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs)
 
-localityOfVariablesAtCurrentScope :: Ctx (Map UniqueVar (UniqueVar, Locality))
-localityOfVariablesAtCurrentScope = do
-  scopes <- getScopes
-  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (v, (v, locality))) $ Map.elems l.varScope) <> r) mempty $ (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs) scopes
 
-
-unit :: Ctx UniqueCon
+unit :: Ctx R.Constructor
 unit = do
   ctx <- RWST.get
   case ctx.prelude of
     -- When prelude was already typechecked, it should always be available.
-    Just prelud -> pure $ fst prelud.unitValue
+    Just prelud -> pure $ R.ExternalConstructor prelud.unitValue
 
     -- When we're resolving prelude, find it from the environment.
     Nothing ->
@@ -389,6 +427,7 @@ data ResolveError
   | UndefinedConstructor ConName
   | UndefinedType TCon
   | TypeRedeclaration TCon
+  | CannotMutateFunctionDeclaration VarName
   deriving Show
 
 
@@ -397,24 +436,21 @@ mkEnv :: Set UniqueVar -> Ctx Env
 mkEnv innerEnv = do
   locality <- localityOfVariablesAtCurrentScope
   pure $ Env $ mapMaybe (locality !?) $ Set.toList innerEnv
-  -- scope <- getScopes
 
-  -- -- gather elements in current scope (we assume we are just "outside" of the env we compare it with)
-  -- -- TEMP: i assume we can just change the filtering to be in the `gather...`
-  -- -- not right now. why? assignments. we can't filter stuff that is after assignments. this seems a bit easier.
-  -- let outerEnv = foldMap (Set.fromList . Map.elems. varScope) scope
-  -- pure $ Env $ Set.toList $ (
-  --   -- traceShowId 
-  --   outerEnv) `Set.intersection` innerEnv
+localityOfVariablesAtCurrentScope :: Ctx (Map UniqueVar (UniqueVar, Locality))
+localityOfVariablesAtCurrentScope = do
+  allScopes <- getScopes
+  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (v, (v, locality))) $ Map.elems $ R.asUniqueVar <$> l.varScope) <> r) mempty $ (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs) allScopes
 
 -- used for function definitions
-gatherVariables :: AnnStmt Resolved -> Set UniqueVar
-gatherVariables = cata $ \(R.AnnStmt _ bstmt) -> case first gatherVariablesFromExpr bstmt of
+gatherVariables :: R.AnnStmt -> Set UniqueVar
+gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesFromExpr bstmt of
   stmt -> bifold stmt
 
 -- used for lambdas
-gatherVariablesFromExpr :: Expr Resolved -> Set UniqueVar
+gatherVariablesFromExpr :: R.Expr -> Set UniqueVar
 gatherVariablesFromExpr = cata $ \case
-  R.Var _ v -> Set.singleton v  -- TODO: Is this... correct? It's used for making the environment, but now we can just use this variable to know. This is todo for rewrite.
+  R.Var _ v -> Set.singleton (R.asUniqueVar v)  -- TODO: Is this... correct? It's used for making the environment, but now we can just use this variable to know. This is todo for rewrite.
                                 --   Update: I don't understand the comment above.
   expr -> fold expr
+

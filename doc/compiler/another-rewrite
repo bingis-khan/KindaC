@@ -1,0 +1,12 @@
+Objectives:
+
+ - make it easy to interact with the AST. have all the information easily available.
+	- through memoization
+	- look at the usage patterns!
+	- I think I should merge TyVared and Typed. The modules will be tyvared, and merged will be actually Typed.
+
+ - proper use of type families? or remove them outright? or remove RECURSION SCHEMES?
+	- by removing recursion schemes, we won't have a reason to keep type parameters.
+	- we might also be able to keep some ASTs, so we won't have to duplicate printing procs.
+
+ - remove pointless Show instances -> normal print functions

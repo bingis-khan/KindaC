@@ -1,458 +1,575 @@
-{-# LANGUAGE LambdaCase, DuplicateRecordFields, OverloadedRecordDot, OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE DeriveFoldable #-}
-module Mono (monoModule) where
+{-# LANGUAGE LambdaCase, OverloadedRecordDot, OverloadedStrings #-}
+module Mono (mono) where
 
-import Data.Map (Map, (!?), unionWith)
-import Data.Set (Set)
-import Control.Monad.Trans.State (State, runState, evalState)
-import Data.Functor.Foldable (transverse, Base, cata, embed, ListF (Nil), project, para)
-import Control.Monad.Trans.RWS (RWS, evalRWS, listen, censor, RWST, evalRWST)
-import Data.Either (partitionEithers)
-import Data.Traversable (for)
-import Data.List.NonEmpty (NonEmpty ((:|)))
-import Data.Maybe (fromMaybe, catMaybes)
+import AST.Converged (Prelude(..))
+import AST.Common (Module, AnnStmt, Annotated (..), Expr, Type, Env, UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, EnvUnion, TCon (..), UnionID (..), Ann, EnvID (..), Mutability (..), VarName (..), (<+>), Locality (..))
+import qualified AST.Typed as T
+import AST.Mono (Mono, MonoInt)
+import qualified AST.Mono as M
+import qualified AST.Common as Common
 import Data.Fix (Fix(..))
+import Control.Monad.Trans.Reader (ReaderT, runReaderT)
+import Data.Functor.Foldable (transverse, embed, cata, para, Base, project, hoist)
 import Data.Bitraversable (bitraverse)
+import Data.Biapplicative (first, second)
+import Data.List.NonEmpty (NonEmpty (..))
+import Data.Map (Map, (!?), (!))
+import Control.Monad.Trans.State (StateT, runStateT, get, modify, put, gets)
+import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Data.Biapplicative (first, bimap)
-import qualified Control.Monad.Trans.RWS as RWS
 import Data.Unique (newUnique)
 import Control.Monad.IO.Class (liftIO)
-import qualified Data.Map as Map
-import qualified Control.Monad.Trans.RWS as RWST
-import qualified Data.List.NonEmpty as NonEmpty
-import Data.Foldable (for_, fold)
 import Data.Text (Text)
-import Data.Bifoldable (bifoldMap)
-import Control.Monad (join)
+import Data.Foldable (fold, traverse_, sequenceA_)
+import qualified Data.List.NonEmpty as NonEmpty
+import Data.Traversable (for)
+import Data.Functor ((<&>))
+import Data.Maybe (catMaybes, mapMaybe)
+import Data.Functor.Identity (Identity(..))
+import Data.Set (Set)
+import Control.Monad (void, unless, join, (<=<))
+import Data.Semigroup (sconcat)
 
-import AST.Common (UniqueVar, TVar, Type, UniqueType, Locality, UniqueCon, Module)
-import AST.Typed (Typed)
-import AST.Mono (Mono)
-import AST.Converged (Prelude)
-import AST.Typed as T
-import AST.Mono as M
 
+data Context' = Context
+  { typeFind :: Map (UniqueType, [Type Mono], [EnvUnion Mono]) (UniqueType, Annotated T.DataDef, Type Mono) -- this is used to find types. (won't be preserved)
 
+  , tvarMap :: TypeMap  -- this describes the temporary mapping of tvars while monomorphizing.
 
--- technically, I can split it into first getting the function definitions / datatypes and then applying them - this would be order independent.
--- -- todo do it like this, i think it will be clearer. i don't feel like doing it right now, because I would need to make another datatype.
-data ReaderShitContext = RSC
-  { usage :: Map UniqueVar (Set (Type Typed))
-  , genapps :: Map TVar (Type Mono)
+  -- Monomorphized cached versions of functions
+  , funFind :: Map (UniqueVar, Type Mono) M.EnvDef  -- Env and Union are for later environment addition
+  , conFind :: Map (UniqueCon, Type Mono) M.DataCon
+
+  -- Ordering so that functions won't need forward declarations.
+  , funOrder :: [Annotated (M.Function (AnnStmt MonoInt))]
+
+  -- Typed functions/constructors (not yet monomorphized)
+  , functions :: Map UniqueVar (Annotated Function)
+  , constructors :: Map UniqueCon T.DataDef
+  , types :: Map UniqueType (Annotated T.DataDef)
+
+  , additionalStatements :: [AnnStmt MonoInt]  -- Not used anymore, but might become useful in the future.
   }
 
-data Applications = Apps
-
-  -- this one monomorphizes and deduplicates types
-  { typeApps :: Map (UniqueType, [Type Mono]) (Type Mono)  -- make sure to ignore environment - we will be mapping the environment per call.
-
-  -- used for finding variables
-  , varApps :: Map (UniqueVar, Type Mono) Locality
-
-  -- ????
-  , conApps :: Map (UniqueCon, [Type Mono]) MonoConInfo
-
-  -- nice, qt environments
-  , funEnv :: Map (UniqueVar, Type Mono) (Maybe MonoEnvInfo, MonoEnv)
-  }
-
-type MonoCtx = RWST ReaderShitContext ([Either (Annotated (DataDef Mono)) (Annotated (FunDec Mono, NonEmpty (AnnStmt Mono)))], [AnnStmt Mono]) Applications IO  -- not very good - there should be a separate context for single statements. but idc rn
 
 
-monoModule :: Prelude -> Module Typed -> IO (Module Mono)
-monoModule prelude m = do
-  let combined = prelude <> m
-  let topUsage = getUsage combined
-  (stmts, (datfun, _)) <- evalRWST (monoStmts combined) (RSC { usage = topUsage, genapps = mempty }) (Apps { funEnv = mempty, typeApps = mempty, varApps = mempty, conApps = mempty })
-  let (dats, funs) = partitionEithers datfun
-  pure $ MonoModule { functions = funs, dataTypes = dats, main = stmts }
+type Context = StateT Context' IO
 
-monoStmts :: [AnnStmt Typed] -> MonoCtx [AnnStmt Mono]
-monoStmts tstmts = mstmts
+mono :: Prelude -> Module Typed -> IO (Module Mono)
+mono prelude mod = do
+  let combined = T.fromMod prelude.tpModule <> T.fromMod mod
+
+  -- I think I'll just do it procedurally
+  --   But gather types before!
+  (mistmts, ctx) <- flip runStateT startingContext $ mStmts combined
+  let mtypeIDs = Map.elems ctx.typeFind
+
+  -- order types here.
+  let mtypesToOrder = Map.fromList $ mtypeIDs <&> \(mut, Annotated anns (T.DD _ _ _ anncons), mt) ->
+        let conIDs = anncons <&> \(Annotated conanns (T.DC uc _)) -> (conanns, uc)
+            cons = flip mapMaybe conIDs $ \(conanns, uc) -> ctx.conFind !? (uc, mt) <&> \mdc -> Annotated conanns mdc
+        in (mut, Annotated anns $ M.DD mut cons)
+
+  let mtypes = orderTypes mtypesToOrder
+
+  let mifuns = ctx.funOrder
+
+  -- Change the representation of a funFind map from (UV, Type) -> UV to UV -> [UV]
+  let usageFind = toUsageFind ctx.funFind
+
+  let mstmts = substEnv usageFind <$> mistmts
+  let mfuns = substEnv usageFind `fmap3` mifuns
+  let mmod = M.Mod { M.dataTypes = mtypes, M.functions = mfuns, M.main = mstmts }
+  pure mmod
+
+orderTypes :: Map UniqueType (Annotated M.DataDef) -> [Annotated M.DataDef]
+orderTypes order =
+  let dds = Map.elems order
+      Identity ((), (ordered, _)) = runStateT (traverse_ orderDataDef dds) ([], Set.empty)
+  in reverse ordered
   where
-      flatTransverse n = para $ fmap embed . n
+    orderDataDef mdd@(Annotated _ (M.DD t cons)) = do
+      let ts = concatMap (\(Annotated _ (M.DC _ ts)) -> ts) cons
+      traverse_ orderType ts
 
-      -- magic -> basically i want to do the traverse . transverse combo, but I want it to have a concat thing.
-      -- TODO: choose better functions and names
-      mstmts = fmap concat $ sequenceA $ flip fmap tstmts $ flatTransverse $ \(AnnStmt anns tbigstmt) -> case tbigstmt of -- change transverse / traverse to something with flatmap
-
-        -- temporarily does not handle polymorphic definitions
-          -- right now, just generate the constructors and datatypes.
-        DataDefinition (DD ti [] cons) -> do
-          (Fix (MTCon mti)) <- monoType (Fix (TCon ti []))
-
-          cons' <- for cons $ \(DC ci ts anns) -> do
-            ts' <- traverse monoType ts
-            mci <- addCon ci ts'
-            pure $ DC mci ts' anns
-
-          RWS.tell ([Left (Annotated anns (DD mti [] cons'))], [])
-          pure $ project [Fix $ AnnStmt [] (NormalMonoStmt Pass)]
-        DataDefinition _ -> error "unsupported"
-
-        FunctionDefinition fundec@(FD v _ env _) body -> do
-          usage' <- RWS.asks usage
-          case usage' !? v of
-            Just uses -> do
-              let funtls = fmap fst body
-              let topUsage = getUsage $ NonEmpty.toList funtls
-              fmap (project . catMaybes) $ for (Set.toList uses) $ \t -> do
-                tvars <- traverse monoType $ t `mapTVarsOf` funDecType fundec
-                withFunctionScope tvars topUsage $ do
-                  t' <- addFun anns fundec body
-                  addEnv v t' env
-
-            -- function wasn't used, so we ignore
-            Nothing ->
-              pure $ project $ (:[]) $ Fix $ AnnStmt [] $ NormalMonoStmt Pass
-
-        NormalStmt stmt -> do
-          -- weird type stuff...
-          mstmt <- monoStmt anns $ first monoExpr $ fmap snd stmt -- i would want to add special context here later ig
-          pure $ project mstmt
-
-      -- TODO: after implementing this method, i realized that the default order is okay (instead of first monoExpr, just use bitraverse monoExpr id)
-      monoStmt :: [Ann] -> StmtF ConInfo VarInfo (MonoCtx (Expr Mono)) (MonoCtx [AnnStmt Mono]) -> MonoCtx [AnnStmt Mono]
-      monoStmt anns stmt = do
-        (a, (_, stmts)) <- censor (\(fundec, _) -> (fundec, [])) $ listen $ case stmt of
-          Pass -> pure Pass
-          Assignment v e -> do
-            e'@(Fix (ExprType t' _)) <- e
-            v' <- addVar v t'
-            pure $ Assignment v' e'
-
-          Print e -> Print <$> e
-          MutDefinition v (Just e) -> do
-            e'@(Fix (ExprType t' _)) <- e
-            v' <- addVar v t'
-            pure $ MutDefinition v' $ Just e'
-          MutDefinition v Nothing -> do  -- TODO: this doesn't work - there should be a type annotation here. Another reason to switch to different ASTs.
-            undefined
-
-          MutAssignment v e -> do
-            e'@(Fix (ExprType t' _)) <- e
-            v' <- addVar v t'
-            pure $ MutAssignment v' e'
+      inserted <- gets snd
+      unless (Set.member t inserted) $ do
+        modify $ second $ Set.insert t
+        modify $ first (mdd :)
 
 
-          If eif iftrue elifs melse -> do
-            eif' <- eif
-            iftrue' <- flattenNonEmpty <$> sequenceA iftrue
-            elifs' <- traverse (bitraverse id (fmap flattenNonEmpty . sequenceA)) elifs
-            melse' <- traverse (fmap flattenNonEmpty . sequenceA) melse
-            pure $ If eif' iftrue' elifs' melse'
-
-          ExprStmt e -> ExprStmt <$> e
-          Return me -> Return <$> sequenceA me
+    orderType :: Type Mono -> StateT ([Annotated M.DataDef], Set UniqueType) Identity ()
+    orderType = cata $ \case
+      M.TCon ut ts -> do
+        sequenceA_ ts
+        orderDataDef $ order ! ut
+      t -> sequenceA_ t
 
 
-        let ogStmt = Fix $ AnnStmt anns $ NormalMonoStmt a
-        pure $ stmts ++ [ogStmt]
+substEnv :: Map UniqueVar (NonEmpty M.EnvDef) -> AnnStmt MonoInt -> AnnStmt Mono
+substEnv usageFind = cata $ embed . first substf
+  where
+    substf :: M.EnvPlaceholder -> M.EnvDefs
+    substf (M.EPH uv) = case usageFind !? uv of
+      Nothing -> []
+      Just (v:|vs) -> v:vs
 
-      monoExpr :: Expr Typed -> MonoCtx (Expr Mono)
-      monoExpr = cata $ fmap embed . \(ExprType t e) -> do
-        t' <- monoType t
-        ExprType t' <$> case e of
-          Var l v -> do
-            env <- tryGetEnv v t'
-            v' <- snd <$> findVar (v, t')
-            case env of  -- also add function monotype + type
-              Just (Nothing, _) -> do  -- function and no env
-                pure $ Var (l, NoEnvs) v'
-                -- function instantiation here. [state to collect generated environments of functions] [state to collect variable + type -> monotype]
-              Just (Just envid, oldenv) -> do
-                let (Fix (MTFun env _ _)) = t'  -- this must happen
-                if isSameEnv oldenv env
-                  then pure $ Var (l, SameEnv envid oldenv) v'
-                  else pure $ Var (l, EnvTransform envid oldenv env) v'
-              Nothing -> do
-                -- a normal variable.
-                pure $ Var (l, Unchanged) v'
-          Lam env args lambod -> do
-            (menvid, oldenv) <- makeEnv env  -- this should not fail
-            v <- addLam oldenv t args lambod
+toUsageFind :: Map (UniqueVar, Type Mono) M.EnvDef -> Map UniqueVar (NonEmpty M.EnvDef)
+toUsageFind = Map.mapKeysWith (<>) fst . fmap NonEmpty.singleton
 
-            let envtransform = case menvid of
-                  Just envid -> SameEnv envid oldenv
-                  Nothing -> NoEnvs
-            pure $ Var (Local, envtransform) v -- [additional writer context for adding additional statements before it (executed before expression)]
 
-          Lit lt -> pure $ Lit lt
-          Con ci -> do
-            let (Fix (TCon _ apps)) = t  -- TODO: bad
-            tapps <- traverse monoType apps
-            mci <- addCon ci tapps
-            pure $ Con mci
+mStmts = fmap (foldMap NonEmpty.toList) . traverse mAnnStmt
 
-          Op l op r -> do
-            l' <- l
-            r' <- r
-            pure $ Op l' op r'
-          Call c args -> do
-            c' <- c
-            args' <- sequenceA args
-            pure $ Call c' args'
-          As e t -> do
-            e' <- e
-            t'' <- monoType t
-            pure $ As e' t''
+mAnnStmt :: AnnStmt Typed -> Context (NonEmpty (AnnStmt MonoInt))
+mAnnStmt = cata $ (((fmap sconcat . traverse prependAdditionalStatements) . fmap embed . sequenceA) <=< (\(T.AnnStmt ann stmt) ->  -- what the fuck
+  let mann = M.AnnStmt ann
+      noann = M.AnnStmt []
+  in case first mExpr stmt of
+  T.Pass -> pure $ M.AnnStmt ann M.Pass
+  T.Assignment vid expr -> mann . M.Assignment vid <$> expr
+  T.Print expr -> mann . M.Print <$> expr
+  T.MutDefinition vid ete -> mann . M.MutDefinition vid <$> bitraverse mType id ete
+  T.MutAssignment vid expr -> mann . M.MutAssignment vid <$> expr
+  T.If cond ifTrue elseIfs else' -> fmap mann $ M.If
+    <$> cond
+    <*> sequenceA ifTrue
+    <*> traverse (bitraverse id sequenceA) elseIfs
+    <*> traverse sequenceA else'
+  T.Switch switch cases -> fmap mann $ M.Switch <$> switch <*> traverse mCase cases
+  T.ExprStmt expr -> mann . M.ExprStmt <$> expr
+  T.Return ete -> mann . M.Return <$> ete
 
-findVar :: (VarInfo, Type Mono) -> MonoCtx (Locality, MonoVarInfo)
-findVar (v, t) = do
-  vars <- RWS.gets varApps
-  pure $ case vars !? (v, t) of
-    Just v -> v
-    Nothing -> error "Should not happen. There should be a variable here."
+  T.DataDefinition datadef -> do
+    addDatatype ann datadef
+    pure $ noann M.Pass
 
-addVar :: VarInfo -> Type Mono -> MonoCtx MonoVarInfo
-addVar v t = do
-  -- make monovar
-  mviid <- liftIO newUnique
-  let mvi = MVI {  varID = mviid, varName = v.varName }
+  T.FunctionDefinition fundec@(T.FD _ uv _ _) body -> do
+    addFunction ann (Function fundec (sconcat <$> sequenceA body))
+    pure $ noann $ M.EnvHere $ M.EPH uv
+  ))
 
-  RWS.modify $ \s -> s { varApps = Map.insert (v, t) (Local, mvi) s.varApps }
-  pure mvi
+mCase :: T.Case (Context (Expr Mono)) (Context (NonEmpty (AnnStmt MonoInt))) -> Context (M.Case (NonEmpty (AnnStmt MonoInt)))
+mCase kase = M.Case <$> mDecon kase.deconstruction <*> sequenceA kase.caseCondition <*> sequenceA kase.body
+  where 
+    mDecon = cata $ fmap embed . go
+      where
+        go = \case
+          T.CaseVariable t uv -> do
+            t' <- mType t
+            uv' <- variable uv t'
+            pure $ M.CaseVariable t' uv'
+          T.CaseConstructor t uc args -> do
+            t' <- mType t
+            uc' <- constructor uc t'
+            M.CaseConstructor t' uc' <$> sequenceA args
 
-newVar :: Text -> MonoCtx MonoVarInfo
-newVar name = do
-  mviid <- liftIO newUnique
-  let mvi = MVI { varID = mviid, varName = name }
-  pure mvi
+prependAdditionalStatements :: AnnStmt MonoInt -> Context (NonEmpty (AnnStmt MonoInt))
+prependAdditionalStatements annstmt = do
+  statements <- gets additionalStatements
+  modify $ \c -> c { additionalStatements = [] }
+  pure $ case reverse statements of
+    [] -> annstmt :| []
+    (firs:rest) -> firs :| (rest ++ [annstmt])
 
-addCon :: ConInfo -> [Type Mono] -> MonoCtx MonoConInfo
-addCon ci apps = do
-  cons <- RWS.gets conApps
-  case cons !? (ci, apps) of
-    Just mci -> pure mci
+mExpr :: Expr Typed -> Context (Expr Mono)
+mExpr = cata $ fmap embed . \(T.ExprType t expr) -> do
+  t' <- mType t
+  expr' <- case expr of
+
+    T.Var locality vid -> do
+      vid' <- variable vid t'
+      pure $ M.Var locality vid'
+
+    T.Con cid -> do
+      cid' <- constructor cid t'
+      pure $ M.Con cid'
+
+    T.Lit lit -> pure $ M.Lit lit
+    T.Op l op r -> M.Op <$> l <*> pure op <*> r
+    T.Call e args -> M.Call <$> e <*> sequenceA args
+    T.As e _ -> do
+      -- Ignore 'as' by unpacking the variable and passing in the previous expression.
+      (Fix (M.ExprType _ e')) <- e
+      pure e'
+    T.Lam env args ret -> do
+      mLambda t' env args ret  -- M.Lam <$> mEnv (mType <$> env) <*> args' <*> ret
+
+  pure $ M.ExprType t' expr'
+
+mType :: Type Typed -> Context (Type Mono)
+mType = cata $ fmap embed . \case
+  T.TCon tid pts unions -> do
+
+    params <- sequenceA pts
+    unions' <- mUnion `traverse` filter (\(T.EnvUnion _ ts) -> not $ null ts) unions  -- very hacky, but should work. I think it echoes the need for a datatype that correctly represents what we're seeing here - a possible environment definition, which might not be initialized.
+    mt <- typeCon tid params unions' ""
+    pure $ decoMonoType mt
+
+  T.TFun union params ret -> do
+    union' <- mUnion union
+    params' <- sequenceA params
+
+    M.TFun union' params' <$> ret
+
+  T.TVar tv -> decoMonoType <$> retrieveTV tv
+
+mUnion :: T.EnvUnionF (Context (Type Mono)) -> Context (EnvUnion Mono)
+mUnion T.EnvUnion { T.unionID = unionID, T.union = union } = do
+  typemap <- gets tvarMap
+  case lookupUnionMap typemap unionID of
+    Just munion -> pure munion
     Nothing -> do
-      uniq <- liftIO newUnique
-      let mci = MCI { conID = uniq, conName = ci.conName }
+      union' <- traverse mEnv union
+      case union' of
+        [] -> error $ "This means that we have some empty union during monomorphization, which should not happen. The union ID is " <> show unionID <> "."
 
-      RWS.modify $ \s -> s { conApps = Map.insert (ci, apps) mci s.conApps }
-      pure mci
+        -- TEMP
+        -- [] -> pure $ M.EnvUnion { M.unionID = unionID, M.union = (M.Env { M.envID = EnvID (fromUnionID unionID), M.env = [] }) :| [] }
 
-monoType :: Type Typed -> MonoCtx (Type Mono)
-monoType = cata $ fmap embed . \case
-  TCon ti tapps -> do
-    tapps' <- sequenceA tapps
+        e:es -> pure $ M.EnvUnion
+          { M.unionID = unionID, M.union = e :| es }
 
-    generatedTypes <- RWST.gets typeApps
-    case generatedTypes !? (ti, tapps') of
-      -- this type already exists
-      Just (Fix t) -> pure t
-
-      Nothing -> do
-        uniq <- liftIO newUnique
-
-        let mti = MTI { typeID = uniq, typeName = ti.typeName }
-        let t = Fix $ MTCon mti
-        RWS.modify $ \s -> s { typeApps = Map.insert (ti, tapps') t s.typeApps }
-
-        pure $ MTCon mti
-
-  TFun env args ret -> do
-    args' <- sequenceA args
-    ret' <- ret
-    env' <- env2env <$> sequenceA env
-    pure $ MTFun env' args' ret'
-
-
-  TVar tv -> do
-    tvmap <- RWS.asks genapps
-    pure $ case tvmap !? tv of
-      Just (Fix t) -> t
-      Nothing -> error $ "Should not happen :^) [boomer emoticon]; tv that was not found -> (" <> show tv <> ")"
-
-
-addFun :: [Ann] -> FunDec Typed -> NonEmpty (AnnStmt Typed, MonoCtx [AnnStmt Mono]) -> MonoCtx (Type Mono)
-addFun anns fundec body = do
-    ((funt, fundec'), body') <- bitraverse monoFunDec (fmap flattenNonEmpty . traverse snd) (fundec, body)
-
-    -- add function
-    RWS.tell ([Right (Annotated anns (fundec', body'))], [])
-
-    pure funt
-
--- also, should add a function to Writer
--- at the end, should call addVar 
-
-monoFunDec :: FunDec Typed -> MonoCtx (Type Mono, FunDec Mono)
-monoFunDec (FD v params env ret) = do
-  params' <- for params $ \(pv, pt) -> do
-    pt' <- monoType pt
-    pv' <- addVar pv pt'
-    pure (pv', pt')
-  env'@(MonoEnv env'') <- bimap snd snd <$> constructEnv env
-  ret' <- monoType ret
-
-  let envt = Env $ NonEmpty.singleton $ fmap snd env''
-  let funt = Fix $ MTFun envt (fmap snd params') ret'  -- that's a bit iffy, i should unify the whole MonoEnv -> Env thing. I'll see how addEnvs will look like.
-
-  v' <- addVar v funt
-  pure $ (funt, FD v' params' env' ret')
-
-
-addLam :: MonoEnvEnv (Locality, MonoVarInfo) (Maybe MonoEnvInfo, Type Mono) -> Type Typed -> [VarInfo] -> MonoCtx (Expr Mono) -> MonoCtx MonoVarInfo
-addLam env t args body = do
-  (Fix (MTFun _ argts ret)) <- monoType t  -- very iffy, it depends on environment variables from lists having the same order
-  mvi <- newVar "<lambda>"
-  args' <- traverse (\(v, t) -> (,t) <$> addVar v t) $ zip args argts
-  let env' = bimap snd snd env
-
-  let fundec = FD mvi args' env' ret
-  body' <- do
-    expr <- body
-
-    let stmt = Fix $ AnnStmt [] $ NormalMonoStmt $ Return $ Just expr
-    let funbody = NonEmpty.singleton stmt
-    pure funbody
-
-
-  RWS.tell ([Right (Annotated [] (fundec, body'))], [])
-  pure mvi
-
-
-addEnv :: VarInfo -> Type Mono -> TypedEnv VarInfo (Type Typed) -> MonoCtx (Maybe (AnnStmt Mono))  -- btw, must ignore envs in Set (Type Typed) - we'll do conversion at callsite. this is to minimize generated code.
-addEnv v t ogt = do
-  (menvid, env) <- makeEnv ogt
-
-  -- add env to state
-  RWS.modify $ \s -> s { funEnv = Map.insert (v, t) (menvid, env) s.funEnv }
-
-  pure $ case menvid of
-    Nothing -> Nothing
-    Just envid -> Just $ Fix $ AnnStmt [] $ EnvStmt envid env
-
-withFunctionScope :: Map TVar (Type Mono) -> Map VarInfo (Set (Type Typed)) -> MonoCtx a -> MonoCtx a
-withFunctionScope vars topUsage = RWS.withRWST (\r s -> (r { usage = Map.union topUsage r.usage, genapps = Map.union vars r.genapps }, s))
-
-
-makeEnv :: TypedEnv VarInfo (Type Typed) -> MonoCtx (Maybe MonoEnvInfo, MonoEnv)
-makeEnv env = do
-  env' <- constructEnv env
-  if null env
-    then pure (Nothing, env')
-    else do
-      uniq <- liftIO newUnique
-      let mei = MEI { envID = uniq }
-
-      pure (Just mei, env')
-
-constructEnv :: TypedEnv VarInfo (Type Typed) -> MonoCtx MonoEnv  -- TODO: i have to better divide these functions (but actually, rethink the datastructures: why does the referenced function not contain the environment id? just the env's structure? because of these weird thinks it's all fragmented)
-constructEnv (TypedEnv env) = do
-    funEnvs <- RWS.gets funEnv
-    fmap (MonoEnv . concat) $ for env $ \(v, t) -> do
-      t' <- for t $ \t -> do
-        mt <- monoType t
-        let me = fst =<< (funEnvs !? (v, mt))
-        pure (me, mt)
-      traverse (\t -> (, t) <$> findVar (v, snd t)) t'
+mEnv :: T.EnvF (Context (Type Mono)) -> Context (Env Mono)
+mEnv T.Env { T.envID = envID, T.env = env } = do
+  env' <- for env $ \(uv, loc, ctxt) -> do
+    ctxt' <- ctxt
+    uv' <- variable uv ctxt'
+    pure (uv', loc, ctxt')
+  pure $ M.Env { M.envID = envID, M.env = env' }
 
 
 
-tryGetEnv :: VarInfo -> Type Mono -> MonoCtx (Maybe (Maybe MonoEnvInfo, MonoEnv))
-tryGetEnv v t = do
-  funs <- RWS.gets funEnv
-  pure $ funs !? (v, t)
 
 
-isSameEnv :: MonoEnv -> Env (Type Mono) -> Bool
-isSameEnv _ (Env (_ :| [])) = True -- this is a bit of a cheat - we know that the environments should match at least one, so if there is only one, it's the same env.
-isSameEnv _ _ = False
+-- <---------8
+
+-- Adds a new monomorphized type.
+--   Reuses previously added types where possible.
+typeCon :: UniqueType -> [Type Mono] -> [EnvUnion Mono] -> Text -> Context (Type Mono)
+typeCon t apps unions nameAppend = do
+  typeFind <- gets typeFind
+
+  -- Check if we've already monomorphized this type before.
+  case typeFind !? (t, apps, unions) of
+
+    -- Yes, we have. Just return it.
+    Just (tid, _, _) -> pure $ convertUT tid apps
+
+    -- No, do funny stuff.
+    Nothing -> do
+      -- Find the type
+      types <- gets types
+      let tdd = case types !? t of
+              Just t' -> t'
+
+              -- this should not happen when we add memoized definitions in types.
+              Nothing -> error "Should not happen. (But will happen in practice though due to environments) ((why? we still haven't fixed the problem of union'ing environments from outside of module))"
+
+      -- Make a new type.
+      newTID <- liftIO newUnique
+      let newUniqueType = TI { typeID = newTID, typeName = TC (fromTC t.typeName <> nameAppend) }
+      let newType = convertUT newUniqueType apps
+
+      -- Add the monotype (to be referred to later)
+      -- Add it here to prevent infinite recursion (for example, in case of pointers, which refer back to the structure, which are mono-ed in the constructor)
+      modify $ \ctx -> ctx { typeFind = Map.insert (t, apps, unions) (newUniqueType, tdd, newType) ctx.typeFind }
+
+      -- monomorphize by unifying applied
+      --  1. type variables (applied)
+      --  2. unions (from function types in the datatype)
+      -- mDataDef <- mapType (zip (Fix . T.TVar <$> tvs) apps) (zip tunions unions) $ do
+      --   let (T.DD _ _ _ dcs) = oldType
+      --   newDCs <- fmap catMaybes $ for dcs $ \(Annotated anns (T.DC uc ts)) ->
+      --     fmap (Just . Annotated anns) $ do
+      --       -- we need to update searchable constructors (used by 'constructor')
+      --       mts <- traverse mType ts
+      --       conType <- case mts of
+      --             [] -> pure newType
+      --             mts -> do
+      --               union <- emptyUnion
+      --               pure $ Fix $ M.TFun union mts newType
+
+      --       -- I don't think we need to change UniqueCon, as we will not directly compare constructors from now on? (and in codegen, they will be prefixed with the newUniqueType)
+      --       -- UPDATE: we need to do that. example: Proxy Int and Proxy Bool will use the same constructor, which uses the same enum -> type error in C.
+      --       newCID <- liftIO newUnique
+      --       let uc' = uc { conID = newCID }
+
+      --       modify $ \ctx -> ctx { conFind = Map.insert (uc, conType) uc' ctx.conFind }
+      --       pure $ M.DC uc' mts
+
+      --   let newDataDef = Annotated anns $ M.DD newUniqueType newDCs
+      --   pure newDataDef
 
 
-newtype VarUsage = VarUsage { fromVarUsage :: Map VarInfo (Set (Type Typed)) }
-instance Semigroup VarUsage where
-  (VarUsage lm) <> (VarUsage rm) = VarUsage $ unionWith (<>) lm rm
+      pure newType
 
-instance Monoid VarUsage where
-  mempty = VarUsage mempty
-
-type VarConnections = Map VarInfo (Type Typed, Set (VarInfo, Type Typed))
-
-
-getUsage :: [AnnStmt Typed] -> Map VarInfo (Set (Type Typed))
-getUsage stmts = usage where
-    -- calculate usage
-    topUsage = fromVarUsage $ foldMap (cata tufold) stmts -- :: Map VarInfo (Set (Type Typed))
-
-    tufold :: Base (AnnStmt Typed) VarUsage -> VarUsage
-    tufold (AnnStmt ann bstmt) = case bstmt of
-      NormalStmt stmt -> bifoldMap exprFold id stmt
-      FunctionDefinition _ _ -> mempty
-      DataDefinition _ -> mempty
-
-    exprFold :: Expr Typed -> VarUsage
-    exprFold = cata $ \(ExprType ty expr) -> case expr of
-      Var _ v -> VarUsage $ Map.singleton v $ Set.singleton ty
-      e -> fold e
+emptyUnion :: Context (EnvUnion Mono)
+emptyUnion = do
+  envID <- EnvID <$> liftIO newUnique
+  let env = M.Env { M.envID = envID, M.env = [] }
+  unionID  <- UnionID <$> liftIO newUnique
+  let union = M.EnvUnion { M.unionID = unionID, M.union = NonEmpty.singleton env }
+  pure union
 
 
-    -- look how functions use other functions
-    connections = foldMap (cata conFold) stmts :: VarConnections
-    conFold :: Base (AnnStmt Typed) VarConnections -> VarConnections
-    conFold (AnnStmt _ bstmt) = case bstmt of
-      FunctionDefinition fundec@(FD v _ env _) _ ->
-        let t = funDecType fundec
-        in Map.singleton v (t, env2conns env)
-
-      NormalStmt stmt -> fold stmt
-      DataDefinition _ -> mempty
-
-    env2conns :: TypedEnv VarInfo (Type Typed) -> Set (VarInfo, Type Typed)
-    env2conns (TypedEnv env) = Set.fromList $ concatMap (\(v, ts) -> fmap (v,) ts) env
-
-    applyTVars :: Map TVar (Type Typed) -> Type Typed -> Type Typed
-    applyTVars vars (Fix t) = case t of
-      TVar tv -> case vars !? tv of
-        Just t' -> t'
-        Nothing -> Fix (TVar tv)
-
-      TFun env args ret -> Fix $ TFun env (fmap (applyTVars vars) args) (applyTVars vars ret)
-      TCon ti apps -> Fix $ TCon ti $ fmap (applyTVars vars) apps
-
-    go :: Map TVar (Type Typed) -> VarInfo -> Type Typed -> VarUsage
-    go vars v t =
-      case connections !? v of
-        Nothing -> mempty
-        Just (t', env) ->
-          let vars' = vars <> (t `mapTVarsOf` t')
-          in VarUsage (Map.singleton v (Set.singleton t)) <> foldMap (\(v, t) -> go vars' v (applyTVars vars' t)) env
-
-    -- use both of them to get total usage. apply recursively.
-    usage = fromVarUsage (foldMap (foldMap (uncurry $ go mempty) . (\(v, ts) -> (v,) <$> Set.toList ts)) (Map.toList topUsage)) :: Map VarInfo (Set (Type Typed))  -- scan all var usage (might not be a function, whatever). this will require funny stuf
+-- TODO: Example why we need previous knowledge about applications/later substitutions.
+-- x =& :1  # we need type knowledge here.
+-- ....
+-- f (x a)
+--  x <&= :printThenReturn(x, 420)
+-- f(1)
+-- f(True)
+retrieveTV :: TVar -> Context (Type Mono)
+retrieveTV tv = do
+  ctx <- get
+  case lookupTVarMap ctx.tvarMap tv of
+    Nothing -> error "It should not be possible. Probably, because the polymorphic application somehow leaked?"
+    Just t -> pure t
 
 
--- Left -> monomorphic, Right -> has tvars
--- this should fail, as we have already typechecked it before... TODO: maybe i should somehow preserve this info..?
-mapTVarsOf :: Type Typed -> Type Typed -> Map TVar (Type Typed)
-mapTVarsOf t (Fix (TVar tv)) = Map.singleton tv t
-mapTVarsOf (Fix (TCon ti apps)) (Fix (TCon ti' apps')) | ti == ti' = fold $ zipWith mapTVarsOf apps apps'
-mapTVarsOf (Fix (TFun _ params ret)) (Fix (TFun _ params' ret')) = fold $ mapTVarsOf ret ret' : zipWith mapTVarsOf params params'  -- ignore env
-mapTVarsOf t t' = error "FUCK I HATE THIS. SHIT PROGRAM"
+-- Both of these functions should contains this logic:
+--  1. check if variable is a function
+--     if it's not, leave it unchanged
+--  2. when it's a function, we want to monomorphize this function. check if we already have the monomorphic version of this function somewhere (eg. from a (UniqueVar, Type Mono) map)
+--     if it is, return its UniqueVar
+--  3. if it's not, apply the body and function declaration. then add it to those maps, so next time it will be selected like this.
+variable :: UniqueVar -> Type Mono -> Context UniqueVar
+variable ti t = do
+  monofuns <- gets funFind
+  case monofuns !? (ti, t) of
+    Just (M.EnvDef (M.FD _ monofun _ _) _) -> pure monofun
+    Nothing -> do
+      funs <- gets functions
+      case funs !? ti of
+        Nothing -> pure ti
+        Just fun -> do
+          mFunction fun t
 
 
-funDecType :: FunDec Typed -> Type Typed
-funDecType (FD _ params (TypedEnv env) ret) =
-  let env' = FunEnv [env]
-      params' = fmap snd params
-  in Fix $ TFun env' params' ret
 
-flattenNonEmpty :: NonEmpty [a] -> NonEmpty a
-flattenNonEmpty (x:|xs) =
-  let xs' = x ++ concat xs
-  in case xs' of
-    (x:xs) -> x :| xs
-    [] -> error "should not happen... or, actually, imagine a file with only one function... it can happen! but let's handle it later."
+constructor :: UniqueCon -> Type Mono -> Context UniqueCon
+constructor ci t = do
+  monocons <- gets conFind
 
--- again, another function that would not be partial if I had better datatypes.
-env2env :: FunEnv (Type Mono) -> Env (Type Mono)
-env2env (FunEnv (x:xs)) =
-  let x' = concatMap snd x
-      xs' = fmap (concatMap snd) xs
-  in Env $ x' :| xs'
-env2env (FunEnv []) = error "no envs (absence of even an empty env) should be impossible at this point"
+  -- very stupid, but works. we want to use the type being constructed itself.
+  --  if it's a function, multiple parameters, so return return type
+  --  if it's a TCon, return itself, because enum value
+  let mt = case t of
+        Fix (M.TCon _ _) -> t
+        Fix (M.TFun _ _ mt) -> mt
+
+  case monocons !? (ci, mt) of
+    Just (M.DC monocon _) -> pure monocon
+    Nothing -> do
+      newCID <- liftIO newUnique
+      let muc = ci { conID = newCID }
+      let mdc = case project t of
+            M.TCon _ _ -> M.DC muc []
+            M.TFun _ args _ -> M.DC muc args
+
+            -- _ -> error $ "Should not happen. Type: " <> M.ctx M.tType t
+
+      modify $ \ctx -> ctx { conFind = Map.insert (ci, mt) mdc ctx.conFind }
+      pure muc
+
+
+addFunction :: [Ann] -> Function -> Context ()
+addFunction anns function@(Function (T.FD _ uv _ _) _) =
+  modify $ \ctx -> ctx { functions = Map.insert uv (Annotated anns function) ctx.functions }
+
+addDatatype :: [Ann] -> T.DataDef -> Context ()
+addDatatype anns dd@(T.DD ut _ _ dc) =
+  let cids = fmap (\(Annotated _ (T.DC uc _)) -> uc) dc
+
+  -- For each constructor ID adds this datatype.
+  in modify $ \ctx -> ctx
+    { constructors = foldr (`Map.insert` dd) ctx.constructors cids
+    , types = Map.insert ut (Annotated anns dd) ctx.types
+    }
+
+
+-- These functions do
+--   - map types
+--   - type function
+--   - order it and add it to context
+-- then, these mappings are retrieved by the 'retrieveTV' function
+mFunction :: Annotated Function -> Type Mono -> Context UniqueVar
+mFunction (Annotated anns (Function fundec@(T.FD _ tv _ _) ctxBody)) monoType = do
+  -- !!! THIS SHOULD BE REMOVED BECAUSE IT IS SHITTY (by that I meant the placeholderUnionID, which is used to create a function type. But "downcasting" the type to get a union is also very iffy. )
+  let union@(M.EnvUnion placeholderUnionID _) = case monoType of
+        Fix (M.TFun union _ _) -> union
+        tmono -> error $ "SHOULD NOT HAPPEN. This type should have been a function type: " <> show tmono
+
+  let funtype = fundec2type placeholderUnionID fundec  -- convert from function declaration to a Type Typed
+  mapType [(funtype, monoType)] [] $ do
+    mfd@(M.FD _ uv _ _) <- mFunDec fundec
+    body <- ctxBody
+
+    let mFun = M.Fun mfd union body
+
+    -- add it to monomorphized functions
+    modify $ \ctx -> ctx { funFind = Map.insert (tv, monoType) (M.EnvDef mfd union) ctx.funFind, funOrder = ctx.funOrder ++ [Annotated anns mFun] }
+
+    pure uv
+
+mLambda :: Type Mono -> Env Typed -> [(UniqueVar, Type Typed)] -> Context (Expr Mono) -> Context (M.ExprF (Expr Mono))
+mLambda t tenv tparams tret = do
+  let (Fix (M.TFun union _ _)) = t  -- safe but unsafe cast.
+  env <- mEnv $ mType <$> tenv
+  params <- traverse2 mType tparams
+  expr@(Fix (M.ExprType ret _)) <- tret
+
+  -- Make fundec (outside :0)
+  uv <- mkLambdaUV
+  let fundec = M.FD env uv params ret
+  let body = NonEmpty.singleton $ Fix $ M.AnnStmt [] $ M.Return expr
+  let mFun = M.Fun fundec union body
+
+  -- add it to monomorphized functions
+  let envdef = M.EnvDef fundec union
+  modify $ \ctx -> ctx 
+    { funOrder = ctx.funOrder ++ [Annotated [] mFun]
+    }
+
+  pure $ M.EnvInit envdef
+
+mFunDec :: T.FunDec -> Context M.FunDec
+mFunDec (T.FD env oldUV params ret) = do
+  env' <- mEnv $ fmap mType env
+  newUV <- mkUV oldUV
+  params' <- traverse2 mType params
+  ret' <- mType ret
+  pure $ M.FD env' newUV params' ret'
+
+
+-- Figures out TVar -> MonoType mappings from two types: one before and one after monomorphization.
+--  it produces a type map which is then passed to the context in a stack-like way
+--   Used only in mFunction (for mono-ing functions) and typeCon (for mono-ing types and data definitions)
+--    however, the one in 'typeCon' is trivial - so much so, that we can specialize it for mFunction OR generalize it for both use cases (pass in a TVar -> MonoVar map instead of two types.)
+--      TODO: do the generalized version - will be cleaner
+--   !!! It might not be needed (the interface might be bad)
+mapType :: [(Type Typed, Type Mono)] -> [(EnvUnion Typed, EnvUnion Mono)] -> Context a -> Context a
+mapType types2uni unions2uni ctx = do
+  let doMap :: Type Typed -> Type Mono -> Context TypeMap
+      doMap (Fix (T.TFun tunion tparams tret)) (Fix (M.TFun munion mparams mret)) = do
+        -- not sure if we have to do that and how careful should we be with IDs
+        union <- doUnion tunion munion
+        ret <- doMap tret mret
+        pmap <- doMaps $ zip tparams mparams
+        pure $ union <> ret <> pmap
+
+      -- notice that we don't unify unions here. this information is absent from the type signature of monomorphic types as it is not really needed.
+      doMap (Fix (T.TCon _ tts _)) (Fix (M.TCon _ mts)) = doMaps $ zip tts mts
+
+      doMap (Fix (T.TVar tv)) mt = pure $ mkTVarMap tv mt
+      doMap mt mm = error $ "Mono: Type mapping failed. Should not happen: " <> show mt <> " | " <> show mm
+
+      doMaps :: [(Type Typed, Type Mono)] -> Context TypeMap
+      doMaps = fmap fold . traverse (uncurry doMap)
+
+      doUnion :: EnvUnion Typed -> EnvUnion Mono -> Context TypeMap
+      doUnion tunion@(T.EnvUnion _ tenvs) munion@(M.EnvUnion _ menvs) = do
+        -- make EnvID -> Env map
+        let tenvmap = Map.fromList $ fmap (\env -> (env.envID, env.env)) tenvs
+            menvmap = Map.fromList $ NonEmpty.toList $ fmap (\env -> (env.envID, env.env)) menvs
+
+        let doEnv :: [(UniqueVar, Locality, Type Typed)] -> [(UniqueVar, Locality, Type Mono)] -> Context TypeMap
+            doEnv tenvs menvs =
+              let fromList = Map.fromList . fmap (\(uv, _, t) -> (uv, t))
+                  envmap = Map.intersectionWith doMap (fromList tenvs) (fromList menvs)
+              in fold <$> sequenceA (Map.elems envmap)
+
+        let envmap = Map.intersectionWith doEnv tenvmap menvmap
+        didmaps <- fold <$> sequenceA (Map.elems envmap)
+        let unionMap = mkUnionMap tunion munion
+        pure $ unionMap <> didmaps
+
+      doUnions :: [(EnvUnion Typed, EnvUnion Mono)] -> Context TypeMap
+      doUnions = fmap fold . traverse (uncurry doUnion)
+
+  mapping <- liftA2 (<>) (doMaps types2uni) (doUnions unions2uni) -- generate this mapping (this will have greater precedence over other)
+
+  -- Temporarily add mapping in a stack-like way.
+  oldtvarMap <- gets tvarMap
+  modify $ \s -> s { tvarMap = mapping <> oldtvarMap }  -- Reminder: union prefers keys from first argument
+  result <- ctx
+  modify $ \s -> s { tvarMap = oldtvarMap }
+
+  pure result
+
+-- just makes a new UniqueVar (creates a new ID for deduplication with the unmonomorphized)
+mkUV :: UniqueVar -> Context UniqueVar
+mkUV uv = do
+  newVar <- liftIO newUnique
+  pure $ uv { varID = newVar }
+
+-- used by 'mLambda' (lambdas don't have UniqueVars)
+mkLambdaUV :: Context UniqueVar
+mkLambdaUV = do
+  newVar <- liftIO newUnique
+  pure $ VI
+    { varID = newVar
+    , varName = VN "lambda"
+    , mutability = Immutable
+    }
+
+convertUT :: UniqueType -> [Type Mono] -> Type Mono
+convertUT ut apps = Fix $ M.TCon ut apps
+
+decoMonoType :: Type Mono -> M.TypeF (Type Mono)
+decoMonoType = project
+
+fundec2type :: UnionID -> T.FunDec -> Type Typed
+fundec2type placeholderUnionID (T.FD env _ params ret) =
+  let union = T.EnvUnion placeholderUnionID [env]
+  in Fix $ T.TFun union (snd <$> params) ret
+
+
+-- TypeMap stuff
+
+data TypeMap = TypeMap (Map TVar (Type Mono)) (Map UnionID (EnvUnion Mono))
+
+
+lookupTVarMap :: TypeMap -> TVar -> Maybe (Type Mono)
+lookupTVarMap (TypeMap tvars _) tvar = tvars !? tvar
+
+lookupUnionMap :: TypeMap -> UnionID -> Maybe (EnvUnion Mono)
+lookupUnionMap (TypeMap _ unions) union = unions !? union
+
+mkTVarMap :: TVar -> Type Mono -> TypeMap
+mkTVarMap tv ty = TypeMap (Map.singleton tv ty) mempty
+
+mkUnionMap :: EnvUnion Typed -> EnvUnion Mono -> TypeMap
+mkUnionMap (T.EnvUnion { T.unionID = unionID }) munion = TypeMap mempty (Map.singleton unionID munion)
+
+instance Semigroup TypeMap where
+  TypeMap tvars unions <> TypeMap tvars' unions' = TypeMap (tvars <> tvars') (unions <> unions')
+
+instance Monoid TypeMap where
+  mempty = TypeMap mempty mempty
+
+
+data Function = Function T.FunDec (Context (NonEmpty (AnnStmt MonoInt)))
+
+
+startingContext :: Context'
+startingContext = Context
+  { typeFind = Map.empty
+
+  , tvarMap = mempty
+
+  , funFind = Map.empty
+  , conFind = Map.empty
+  , funOrder = []
+
+  , functions = Map.empty
+  , constructors = Map.empty
+  , types = Map.empty
+
+ , additionalStatements = mempty
+  }
+
+
+traverse2 = traverse . traverse
+fmap3 = fmap . fmap . fmap
 

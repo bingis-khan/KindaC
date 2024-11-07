@@ -54,19 +54,28 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - I had to replace `transverse` with their implementation due to the "forall" type of `transverse`. I wonder if there is a dedicated function instead of `transverse` - I can probably grep through the source by the implementation `cata (fmap embed . n)`.
 - `noFunEnv` and the whole imlementation of the algorithm is shaky at best, utterly disgusting at worst. just... fix this. `noFunEnv` is like the worst. incorrect state possible... it's fucked.
 - why are parameters being unified???
-- super slow on nested functions: `::::::::::::::::1`
+- [??] super slow on nested functions: `::::::::::::::::1`
+  - not currently! but when I change something minor, it happened? so kinda weird. might be a laziness problem.
 - mark unused variables and modify the generated code to not generate warnings in C.
 - do branching analysis to check if a code path does not return a value.
   - also add a `#[noreturn]` to mark a function that does not return (eg. `exit()`)
 - environments for datatypes (I'll do it after monomorphization/codegen, because I want to know what I'm getting myself into)
-- add unit type as default is there are no return statements.
-- eliminate the pretty printing module for the AST - since I'm switching to separate ASTs, I can just implement everything as an implementation of Show?
+- [??] add unit type as default is there are no return statements.
+- [V] eliminate the pretty printing module for the AST - since I'm switching to separate ASTs, I can just implement everything as an implementation of Show?
 - MEMOIZING AND DIRECT REFERENCES: change Typecheck/Mono ASTs to those, that directly reference functions (Either UniqueVar Function). This will stop requiring us to use Maps for Monomorphization. Make sure to allow memoizing by UniqueVar.
 - Maybe the monomorphized AST should be an actual AST (starting from Main, without function list). This would also be pretty easy to compile and it would help with future interpretation..? And maybe it'll be easier to generate output programs?
 - Maybe represent function arrow (->) as a (predefined) constructor? This might simplify typechecking, because the environments would need to be handled by TCons, which we, as it turns out, already need to do.
 - make another phase "Transform", which transforms case expressions, checks for exhaustiveness of those case expressions, checks for unused code paths and returns.
   - But this will stop me from reporting those errors on functions, which, for example, are already typechecked... So, I'm not sure. I'll have to figure something out.
   - but in general. get rid of `Resolved` and `TyVared`
+- Make it so that:
+  ```python
+    left-only = Left(10)
+    print-left(left-only)  # right now this is an error, because the type is Either Int a (with a being an "ambiguous" type)
+
+    # In Haskell, it just works. Make it like Haskell.
+  ```
+- Further simplify unification (make it Monoidal? find some algorithm, which enables me to make Subst composable)
 
 
 ## thoughts???

@@ -23,17 +23,11 @@ library
   exposed-modules:
       AST.Common
       AST.Converged
-      AST.Mono
       AST.Resolved
       AST.Typed
-      AST.TyVared
       AST.Untyped
-      CPrinter
-      Mono
       Parser
-      Pipeline
       Resolver
-      Std
       Typecheck
   other-modules:
       Paths_KindaC

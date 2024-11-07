@@ -1,0 +1,12 @@
+#$ Dash in front and trailing dash are parsed as subtraction.
+# 67
+# 66
+# -1
+# 67
+
+a = 69
+b = 3
+print a -2
+print a -b
+print 2- b
+print a- 2

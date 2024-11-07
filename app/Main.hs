@@ -5,43 +5,79 @@ module Main (main) where
 import qualified Data.Text.IO as TextIO
 import System.Environment (getArgs)
 -- import ASTPrettyPrinter (tModule)
-import Std (preparePrelude)
-import Pipeline (loadModule, parseModule)
+-- import Std (preparePrelude)
+-- import Pipeline (loadModule, parseModule)
 import AST.Typed (tModule)
-import AST.Mono (mModule)
-import Mono (mono)
-import CPrinter (cModule)
-import AST.Converged (Prelude(..))
+import AST.Common (ctx)
+import qualified AST.Untyped as U
+import qualified AST.Resolved as R
+import qualified AST.Typed as T
+import Parser (parse)
+import Resolver (resolve)
+import Data.Text (Text)
+import qualified Data.List.NonEmpty as NonEmpty
+import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
+import Typecheck (typecheck)
+-- import AST.Mono (mModule)
+-- import Mono (mono)
+-- import CPrinter (cModule)
+-- import AST.Converged (Prelude(..))
 
 
 main :: IO ()
 main = do
-  prelude <- preparePrelude
-  putStrLn $ tModule prelude.tpModule
+  -- prelude <- preparePrelude
+  -- putStrLn $ tModule prelude.tpModule
 
-  (filename, outputc) <- parseArgs
-  t <- loadModule (Just prelude) filename
-  case t of
+  -- (filename, outputc) <- parseArgs
+  -- t <- loadModule (Just prelude) filename
+  -- case t of
+  --   Left err -> TextIO.putStrLn err
+  --   Right mod -> do
+  --     putStrLn $ tModule mod
+  --     monoModule <- mono prelude mod
+
+  --     putStrLn "MONO MODULE AYO"
+  --     putStrLn $ mModule monoModule
+
+  --     let cout = cModule monoModule
+  --     if outputc
+  --       then do
+  --         let newFilename = takeBaseName filename <> ".c"
+  --         TextIO.writeFile newFilename cout
+  --       else do
+  --         TextIO.putStrLn cout
+
+  let filename = "testprelude.kc"
+  emod <- parseModule filename
+  case emod of
     Left err -> TextIO.putStrLn err
     Right mod -> do
-      putStrLn $ tModule mod
-      monoModule <- mono prelude mod
+      (rerrs, mod') <- resolve Nothing mod
+      putStrLn $ R.pModule mod'
 
-      putStrLn "MONO MODULE AYO"
-      putStrLn $ mModule monoModule
+      (terrs, tmod) <- typecheck Nothing mod'
+      putStrLn $ T.tModule tmod
+      let errors = s2t rerrs ++ s2t terrs
+      TextIO.putStrLn $ Text.unlines errors
 
-      let cout = cModule monoModule
-      if outputc
-        then do
-          let newFilename = takeBaseName filename <> ".c"
-          TextIO.writeFile newFilename cout
-        else do
-          TextIO.putStrLn cout
+      -- case mtmod of
+        -- Left tes -> 
+          -- let errors = (s2t errs ++) $ NonEmpty.toList $ s2t tes
+          -- in TextIO.putStrLn $ Text.unlines errors
 
-  -- emod <- parseModule filename
-  -- case emod of
-  --   Left err -> TextIO.putStrLn err
-  --   Right mod -> print mod
+        -- Right _ | (not . null) errs -> TextIO.putStrLn $ Text.unlines $ s2t errs
+        -- Right tmod -> putStrLn $ T.tModule tmod
+
+s2t :: (Functor f, Show a) => f a -> f Text
+s2t = fmap (Text.pack . show)
+
+-- Misc for testing
+parseModule :: FilePath -> IO (Either Text U.Module)
+parseModule filename = do
+  source <- TextIO.readFile filename
+  pure $ parse filename source
 
 type Filename = String
 type OutputC = Bool

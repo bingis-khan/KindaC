@@ -1,6 +1,8 @@
 {-# LANGUAGE LambdaCase, OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Use <$>" #-}
 
 module Parser (parse) where
 
@@ -24,22 +26,22 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Common (Stmt, Module, Expr, Ann (..), Type, TVar (..), TCon (..), ConName (..), AnnStmt, VarName (..), Annotated (..), Op (..), LitType (..), Decon)
-import AST.Untyped (Untyped, ExprF (..), FunDec (..), DataCon (..), AnnotatedStmt (AnnStmt), TypeF (..), StmtF (..), Mod (Mod), DataDef (..), Case (..), DeconF (..))
+import AST.Common (Ann (..), TVar (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx)
+import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case)
 
 
 type Parser = Parsec MyParseError Text
 type FileName = String
 
-parse :: FileName -> Text -> Either Text (Module Untyped)
+parse :: FileName -> Text -> Either Text Module
 parse filename = first (Text.pack . errorBundlePretty) . TM.parse (scn >> topLevels <* eof) filename
 
 
 -- Top level
-topLevels :: Parser (Module Untyped)
+topLevels :: Parser Module
 topLevels = do
   eas <- many $ recoverStmt (L.nonIndented sc  (annotationOr statement)) <* scn
-  Mod <$> annotateStatements eas  
+  Mod <$> annotateStatements eas
 
 
 
@@ -47,7 +49,7 @@ topLevels = do
 -- Parsing statements --
 ------------------------
 
-statement :: Parser (Stmt Untyped)
+statement :: Parser Stmt
 statement = choice
   [ sPass
   , sCase
@@ -57,8 +59,6 @@ statement = choice
   , sDataDefinition
 
   , sDefinition
-
-  , sMutDefinition
   , sMutAssignment
 
   , try (checkIfFunction >> sFunctionOrCall)
@@ -66,19 +66,19 @@ statement = choice
   ]
 
 -- Each statement
-sPass :: Parser (Stmt Untyped)
+sPass :: Parser Stmt
 sPass = do
   keyword "pass"
   pure Pass
 
-sIf :: Parser (Stmt Untyped)
+sIf :: Parser Stmt
 sIf = do
   (cond, ifBody) <- scope (,) (keyword "if" >> expression)
   elifs <- many $ scope (,) (keyword "elif" >> expression)
   elseBody <- optional $ scope (const id) (keyword "else")
   pure $ If cond ifBody elifs elseBody
 
-sCase :: Parser (Stmt Untyped)
+sCase :: Parser Stmt
 sCase = recoverableIndentBlock $ do
   -- case header
   keyword "case"
@@ -87,7 +87,7 @@ sCase = recoverableIndentBlock $ do
   -- switch inner
   pure $ L.IndentSome Nothing (pure . Switch condition . NE.fromList) sSingleCase
 
-sSingleCase :: Parser (Case (Expr Untyped) (AnnStmt Untyped))
+sSingleCase :: Parser Case
 sSingleCase = scope id $ do
   -- deconstructor
   decon <- sDeconstruction
@@ -95,7 +95,7 @@ sSingleCase = scope id $ do
   -- parse expression here in the future
   pure $ Case decon Nothing
 
-sDeconstruction :: Parser (Decon Untyped)
+sDeconstruction :: Parser Decon
 sDeconstruction = caseVariable <|> caseConstructor
   where
     caseVariable = Fix . CaseVariable <$> variable
@@ -103,38 +103,31 @@ sDeconstruction = caseVariable <|> caseConstructor
     args = do
       between (symbol "(") (symbol ")") (sepBy1 sDeconstruction (symbol ",")) <|> pure []
 
-sPrint :: Parser (Stmt Untyped)
+sPrint :: Parser Stmt
 sPrint = do
   keyword "print"
   expr <- expression
   pure $ Print expr
 
-sDefinition :: Parser (Stmt Untyped)
+sDefinition :: Parser Stmt
 sDefinition = do
   name <- try $ variable <* symbol "="
   rhs <- expression
   pure $ Assignment name rhs
 
-sMutDefinition :: Parser (Stmt Untyped)
-sMutDefinition = do
-  keyword "mut"
-  name <- variable
-  rhs <- optional $ symbol "<=" *> expression  -- I'm not sure if this should be optional (design reason: i want users to use inline if/case/whatever for conditional assignment). Right now we'll allow it, as it's easy to disallow it anyway.
-  pure $ MutDefinition name rhs
-
-sMutAssignment :: Parser (Stmt Untyped)
+sMutAssignment :: Parser Stmt
 sMutAssignment = do
   name <- try $ variable <* symbol "<="
   rhs <- expression
-  pure $ MutAssignment name rhs
+  pure $ Mutation name rhs
 
-sReturn :: Parser (Stmt Untyped)
+sReturn :: Parser Stmt
 sReturn = do
   keyword "return"
   expr <- optional expression
   pure $ Return expr
 
-sExpression :: Parser (Stmt Untyped)
+sExpression :: Parser Stmt
 sExpression = do
   from <- getOffset
   expr@(Fix chkExpr) <- expression
@@ -149,14 +142,14 @@ sExpression = do
 checkIfFunction :: Parser ()
 checkIfFunction = void $ lookAhead (functionHeader >> eol)
 
-sFunctionOrCall :: Parser (Stmt Untyped)
+sFunctionOrCall :: Parser Stmt
 sFunctionOrCall = recoverableIndentBlock $ do
   (header, mExpr) <- functionHeader
 
   -- If it's a single expression function (has the ':'), we know it's not a call.
   ret $ case mExpr of
     Just expr ->
-      let expr2stmt = Fix . AnnStmt [] . Return . Just
+      let expr2stmt = Fix . O . Annotated [] . Return . Just
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
       in L.IndentNone $ FunctionDefinition header body
@@ -174,7 +167,7 @@ sFunctionOrCall = recoverableIndentBlock $ do
                 funName = Fix $ Var name
             in pure $ ExprStmt $ Fix $ Call funName args
 
-functionHeader :: Parser (FunDec, Maybe (Expr Untyped))
+functionHeader :: Parser (FunDec, Maybe Expr)
 functionHeader = do
   let param = liftA2 (,) variable (optional pType)
   name <- variable
@@ -190,7 +183,7 @@ functionHeader = do
 
 
 -- Data definitions
-sDataDefinition :: Parser (Stmt Untyped)
+sDataDefinition :: Parser Stmt
 sDataDefinition = recoverableIndentBlock $ do
   tname <- typeName
   polys <- many generic
@@ -204,7 +197,7 @@ dataCon :: Parser DataCon
 dataCon = do
   conName <- dataConstructor
   types <- many typeTerm
-  return $ DC conName types 
+  return $ DC conName types
 
 
 
@@ -233,8 +226,8 @@ annotation = do
         where
           ann = pure . Just
 
-annotateStatements :: [Either [Ann] (Stmt Untyped)] -> Parser [AnnStmt Untyped]
-annotateStatements = assignAnnotations $ \anns stmt -> Fix $ AnnStmt anns stmt
+annotateStatements :: [Either [Ann] Stmt] -> Parser [AnnStmt]
+annotateStatements = assignAnnotations $ \anns stmt -> Fix $ O $ Annotated anns stmt
 
 assignAnnotations :: ([Ann] -> a -> b) -> [Either [Ann] a] -> Parser [b]
 assignAnnotations f annors =
@@ -256,10 +249,10 @@ annotationOr x = Left <$> annotation <|> Right <$> x
 -- Expressions --
 -----------------
 
-expression :: Parser (Expr Untyped)
+expression :: Parser Expr
 expression = makeExprParser term operatorTable
 
-operatorTable :: [[Operator Parser (Expr Untyped)]]
+operatorTable :: [[Operator Parser Expr]]
 operatorTable =
   [   --[ Postfix $ some identifier <&> \members expr -> toExpr (MemberAccess expr members)
         --]
@@ -288,18 +281,18 @@ operatorTable =
 binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
 binary s f = InfixL $ f <$ symbol s
 
-call :: Operator Parser (Expr Untyped)
+call :: Operator Parser Expr
 call = Postfix $ fmap (foldr1 (.) . reverse) $ some $ do
     args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
     return $ Fix . flip Call args
 
-as :: Operator Parser (Expr Untyped)
+as :: Operator Parser Expr
 as = Postfix $ do
     symbol "as"
     t <- pType
     return $ Fix . flip As t
 
-lambda :: Operator Parser (Expr Untyped)
+lambda :: Operator Parser Expr
 lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
   params <- try $ (variable `sepBy` symbol ",") <* symbol ":"
   return $ Fix . Lam params
@@ -309,22 +302,22 @@ lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
 -- Terms --
 -----------
 
-term :: Parser (Expr Untyped)
+term :: Parser Expr
 term = choice
   [ eDecimal
   , eGrouping
   , eIdentifier
   ]
 
-eDecimal :: Parser (Expr Untyped)
+eDecimal :: Parser Expr
 eDecimal = do
   decimal <- lexeme (L.signed sc L.decimal)
   retf $ Lit $ LInt decimal
 
-eGrouping :: Parser (Expr Untyped)
+eGrouping :: Parser Expr
 eGrouping = between (symbol "(") (symbol ")") expression
 
-eIdentifier :: Parser (Expr Untyped)
+eIdentifier :: Parser Expr
 eIdentifier = do
   id <- (Var <$> variable) <|> (Con <$> dataConstructor)
   retf id
@@ -335,7 +328,7 @@ eIdentifier = do
 -----------
 
 -- This is used to parse a standalone type
-pType :: Parser (Type Untyped)
+pType :: Parser Type
 pType = do
   term <- choice
     [ (:[]) <$> concrete
@@ -349,7 +342,7 @@ pType = do
   case fun of
     Nothing -> case term of
       [t] -> return t
-      ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> show ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
+      ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap (ctx uType) ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
     Just ret -> return $ Fix $ TFun term ret
 
   where
@@ -361,7 +354,7 @@ pType = do
 
 -- This is used to parse a type "term", for example if you're parsing a data definition.
 -- Ex. you cannot do this: Int -> Int, you have to do this: (Int -> Int)
-typeTerm :: Parser (Type Untyped)
+typeTerm :: Parser Type
 typeTerm = choice
   [ grouping
   , poly
@@ -373,7 +366,7 @@ typeTerm = choice
       tname <- typeName
       retf $ TCon tname []
 
-poly :: Parser (Type Untyped)
+poly :: Parser Type
 poly = Fix . TVar <$> generic
 
 
@@ -407,7 +400,7 @@ identifier :: Parser Text
 identifier = do
   lexeme $ do
     x <- lowerChar
-    xs <- many identifierChar
+    xs <- many $ identifierChar <|> try (char '-' <* notFollowedBy hspace1)
     pure $ T.pack (x:xs)
 
 dataConstructor :: Parser ConName
@@ -444,7 +437,7 @@ symbol = void . L.symbol sc
 keyword :: Text -> Parser ()
 keyword kword = void $ lexeme (try $ string kword <* notFollowedBy identifierChar)
 
-scope :: (a -> NonEmpty (AnnStmt Untyped) -> b) -> Parser a -> Parser b
+scope :: (a -> NonEmpty AnnStmt -> b) -> Parser a -> Parser b
 scope f ref = recoverableIndentBlock $ do
   x <- ref
   return $ L.IndentSome Nothing (fmap (f x . NE.fromList) . annotateStatements) (annotationOr statement)
@@ -503,7 +496,7 @@ registerExpect offset found expected = registerParseError $ TrivialError offset 
     text2token = NE.fromList . T.unpack
 
 
-recoverStmt :: Parser (Either [Ann] (Stmt Untyped)) -> Parser (Either [Ann] (Stmt Untyped))
+recoverStmt :: Parser (Either [Ann] Stmt) -> Parser (Either [Ann] Stmt)
 recoverStmt = recoverLine (Right Pass)
 
 recoverCon :: Parser (Either [Ann] DataCon) -> Parser (Either [Ann] DataCon)

@@ -2,27 +2,34 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Type, Expr, Annotated (..), TVar (..), Stmt, Ann, Module, AnnStmt, UniqueType, UniqueVar, UniqueCon, Locality (Local), VarName, Env, EnvUnion, Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, fromEither, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, ppUnique, UnionID, EnvID, ppUnionID, ppEnvID, Decon)
+import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines')
 
-import Text.Show.Deriving
 import Data.Eq.Deriving
 import Data.Fix (Fix (..))
-import qualified Data.List.NonEmpty as NonEmpty
 import Data.List.NonEmpty (NonEmpty)
 
 import Data.Bifunctor.TH (deriveBifoldable, deriveBifunctor)
-import Data.Unique (Unique, hashUnique)
-import Data.Functor.Classes (Show1 (..), Eq1 (liftEq))
+import Data.Functor.Classes (Eq1 (liftEq))
 import Control.Monad.Trans.Reader (runReader)
 import Data.Biapplicative (first)
-import Data.Bifunctor (bimap)
 import Data.Functor.Foldable (cata)
 import Data.Foldable (foldl')
+import Data.Text (Text)
 
 
-data Typed
+
+---------------------
+-- Data Definition --
+---------------------
+
+data DataCon = DC DataDef UniqueCon [Type] [Ann]
+data DataDef = DD UniqueType [TVar] [EnvUnion] [DataCon] [Ann]
+
+instance Eq DataDef where
+  DD ut _ _ _ _ == DD ut' _ _ _ _ = ut == ut'
 
 
 ----------
@@ -37,9 +44,7 @@ data EnvF t = Env
   { envID :: EnvID
   , env :: [(UniqueVar, Locality, t)]  -- t is here, because of recursion schemes.
   } deriving (Functor, Foldable, Traversable)
-
-instance Show t => Show (EnvF t) where
-  show (Env { envID = envID, env = env }) = "$" <> show envID <> "(" <> show env <> ")"
+type Env = EnvF Type
 
 instance Eq (EnvF t) where
   Env { envID = l } == Env { envID = r }  = l == r
@@ -55,16 +60,10 @@ data EnvUnionF t = EnvUnion
   { unionID :: UnionID
   , union :: [EnvF t]  -- List can be empty for types written by the programmer (which also don't have any other function's environment yet). This is okay, because functions are not yet monomorphised.
   } deriving (Functor, Foldable, Traversable)
-
-instance Show (EnvUnionF t) where
-  show = undefined
-
-instance Show1 EnvUnionF where
-  liftShowsPrec = undefined
+type EnvUnion = EnvUnionF Type
 
 instance Eq1 EnvUnionF where
-  liftEq = undefined
-
+  liftEq _ u u' = u.unionID == u'.unionID
 
 instance Eq (EnvUnionF t) where
   EnvUnion { unionID = l } == EnvUnion { unionID = r }  = l == r
@@ -73,18 +72,17 @@ instance Ord (EnvUnionF t) where
   EnvUnion { unionID = l } `compare` EnvUnion { unionID = r } = l `compare` r
 
 
+newtype TyVar = TyV { fromTyV :: Text } deriving (Eq, Ord)
+
 data TypeF a
-  = TCon UniqueType [a] [EnvUnionF a]
-  | TVar TVar  -- should I make a unique TVar?
+  = TCon DataDef [a] [EnvUnionF a]
+  | TVar TVar  -- TODO: make it unique per function scope. Should I use UniqueVar or something else?
   | TFun (EnvUnionF a) [a] a
-  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+  | TyVar TyVar
+  deriving (Eq, Functor, Foldable, Traversable)
+type Type = Fix TypeF
 
-$(deriveShow1 ''TypeF)
 $(deriveEq1 ''TypeF)
-
-type instance Type Typed = Fix TypeF
-type instance Env Typed = EnvF (Type Typed)
-type instance EnvUnion Typed = EnvUnionF (Type Typed)
 
 
 
@@ -92,42 +90,45 @@ type instance EnvUnion Typed = EnvUnionF (Type Typed)
 -- Expression --
 ----------------
 
--- newtype Env = Env [UniqueVar] deriving (Show, Eq, Ord)
-
 data ExprF a
   = Lit LitType
-  | Var Locality UniqueVar
-  | Con UniqueCon
+  | Var Locality Variable
+  | Con DataCon
 
   | Op a Op a
   | Call a [a]
-  | As a (Type Typed)
-  | Lam (Env Typed) [(UniqueVar, Type Typed)] a
-  deriving (Show, Eq, Functor, Foldable, Traversable)
+  | As a Type
+  | Lam Env [(UniqueVar, Type)] a
+  deriving (Functor, Foldable, Traversable)
 
-data ExprType a = ExprType (Type Typed) (ExprF a) deriving (Show, Eq, Functor, Foldable, Traversable)
+data TypedExpr a = TypedExpr Type (ExprF a) deriving (Functor, Foldable, Traversable)
+type Expr = Fix TypedExpr
 
-
-$(deriveShow1 ''ExprF)
-$(deriveShow1 ''ExprType)
-$(deriveEq1 ''ExprF)
-
-type instance Expr Typed = Fix ExprType
-
-
----------------------
--- Data Definition --
----------------------
-
-data DataCon = DC UniqueCon [Type Typed] deriving (Eq, Show)
-data DataDef = DD UniqueType [TVar] [EnvUnion Typed] [Annotated DataCon] deriving (Eq, Show)
-
+data Variable
+  = DefinedVariable UniqueVar
+  | DefinedFunction Function
 
 --------------
 -- Function --
 --------------
 
-data FunDec = FD (Env Typed) UniqueVar [(UniqueVar, Type Typed)] (Type Typed) deriving (Show, Eq)
+data FunDec = FD
+  { functionEnv :: Env
+  , functionId :: UniqueVar
+  , functionParameters :: [(UniqueVar, Type)]
+  , functionReturnType :: Type
+  }
+
+instance Eq FunDec where
+  FD _ uv _ _ == FD _ uv' _ _ = uv == uv'
+
+data Function = Function
+  { functionDeclaration :: FunDec
+  , functionBody :: NonEmpty AnnStmt
+  }
+
+instance Eq Function where
+  Function { functionDeclaration = fd } == Function { functionDeclaration = fd' } = fd == fd'
 
 
 ----------
@@ -135,22 +136,16 @@ data FunDec = FD (Env Typed) UniqueVar [(UniqueVar, Type Typed)] (Type Typed) de
 ----------
 
 data DeconF a
-  = CaseVariable (Type Typed) UniqueVar
-  | CaseConstructor (Type Typed) UniqueCon [a]
-  deriving (Show, Eq, Functor)
-$(deriveShow1 ''DeconF)
-$(deriveEq1 ''DeconF)
+  = CaseVariable Type UniqueVar
+  | CaseConstructor Type UniqueCon [a]
+  deriving (Functor)
+type Decon = Fix DeconF
 
-type instance Decon Typed = Fix DeconF
-
-data Case expr a = Case 
-  { deconstruction :: Decon Typed
+data Case expr a = Case
+  { deconstruction :: Decon
   , caseCondition :: Maybe expr
   , body :: NonEmpty a
-  } deriving (Show, Eq, Functor, Foldable, Traversable)
-$(deriveShow1 ''Case)
-$(deriveBifunctor ''Case)
-$(deriveBifoldable ''Case)
+  } deriving (Functor, Foldable, Traversable)
 
 
 
@@ -163,102 +158,95 @@ data StmtF expr a
   -- Typical statements
   = Print expr
   | Assignment UniqueVar expr
+  | Mutation UniqueVar expr
   | Pass
-
-  | MutDefinition UniqueVar (Either (Type Typed) expr)  -- additional type inserted to preserve the information we got during typechecking.
-  | MutAssignment UniqueVar expr
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
   | Switch expr (NonEmpty (Case expr a))
   | ExprStmt expr
   | Return expr
+  deriving (Functor, Foldable, Traversable)
 
-  -- Big statements
-  | DataDefinition DataDef
-  | FunctionDefinition FunDec (NonEmpty a)
-  deriving (Show, Eq, Functor, Foldable, Traversable)
-$(deriveBifoldable ''StmtF)
-$(deriveBifunctor ''StmtF)
-
-$(deriveShow1 ''StmtF)
 
 -- not sure about this one. if using it is annoying, throw it out. (eliminates the possibility to bimap)
 -- also, the style does not fit.
-data AnnotatedStmt a = AnnStmt [Ann] (StmtF (Expr Typed) a) deriving (Show, Functor, Foldable, Traversable)
-$(deriveShow1 ''AnnotatedStmt)
+type Stmt = StmtF Expr AnnStmt
+type AnnStmt = Fix (Annotated :. StmtF Expr)
 
-type instance Stmt Typed = StmtF (Expr Typed) (AnnStmt Typed)
-type instance AnnStmt Typed = Fix AnnotatedStmt
+$(deriveBifunctor ''Case)
+$(deriveBifoldable ''Case)
+$(deriveBifoldable ''StmtF)
+$(deriveBifunctor ''StmtF)
 
 
 ---------------
 -- Module --
 ---------------
 
-newtype Mod = Mod { fromMod :: [AnnStmt Typed] } deriving Show
-
-type instance Module Typed = Mod
-
-
+data Module = Mod
+  { toplevelStatements :: [AnnStmt]
+  
+  -- probably not needed, used for printing the AST.
+  , functions :: [Function]
+  , datatypes :: [DataDef]
+  }
 
 
 --------------------------------------------------------------------------------------
-
 -- Printing the AST
 
+tModule :: Module -> String
+tModule m = 
+  show . flip runReader CtxData $ ppLines'
+    [ ppLines tDataDef m.datatypes
+    , ppLines tFunction m.functions
+    , tStmts m.toplevelStatements
+    ]
 
-tModule :: Module Typed -> String
-tModule = show . flip runReader CtxData . tStmts . fromMod
-
-tStmts :: [AnnStmt Typed] -> Context
+tStmts :: [AnnStmt] -> Context
 tStmts = ppLines tAnnStmt
 
-tAnnStmt :: AnnStmt Typed -> Context
-tAnnStmt (Fix (AnnStmt ann stmt)) = annotate ann $ tStmt stmt
+tAnnStmt :: AnnStmt -> Context
+tAnnStmt (Fix (O (Annotated ann stmt))) = annotate ann $ tStmt stmt
 
-tStmt :: Stmt Typed -> Context
+tStmt :: Stmt -> Context
 tStmt stmt = case first tExpr stmt of
   Print e -> "print" <+> e
   Assignment v e -> ppVar Local v <+> "=" <+> e
   Pass -> "pass"
-  MutDefinition v me ->  "mut" <+> ppVar Local v <+> rhs
-    where
-      rhs = fromEither $ bimap (\t -> "::" <+> tType t) ("<=" <+>) me
-  MutAssignment v e -> ppVar Local v <+> "<=" <+> e
+  Mutation v e -> ppVar Local v <+> "<=" <+> e
   If ifCond ifTrue elseIfs mElse ->
-    tBody ("if" <+> ifCond ) ifTrue <>
+    tBody ("if" <+> ifCond) ifTrue <>
     foldMap (\(cond, elseIf) ->
         tBody ("elif" <+> cond) elseIf) elseIfs <>
     maybe mempty (tBody "else") mElse
-  Switch switch cases -> 
+  Switch switch cases ->
     ppBody tCase switch cases
   ExprStmt e -> e
   Return e -> "return" <+> e
 
-  DataDefinition dd -> tDataDef dd
-  FunctionDefinition fd body -> tBody (tFunDec fd) body
-
-tCase :: Case Context (AnnStmt Typed) -> Context
+tCase :: Case Context AnnStmt -> Context
 tCase kase = tBody (tDecon kase.deconstruction <+?> kase.caseCondition) kase.body
 
-tDecon :: Decon Typed -> Context
+tDecon :: Decon -> Context
 tDecon = cata $ \case
   CaseVariable _ uv -> ppVar Local uv
   CaseConstructor _ uc [] -> ppCon uc
   CaseConstructor _ uc args@(_:_) -> ppCon uc <> encloseSepBy "(" ")" ", " args
 
-tExpr :: Expr Typed -> Context
-tExpr = cata $ \(ExprType t expr) ->
-  let encloseInType c = "(" <> c <+> "::" <+> tType t <> ")"
+tExpr :: Expr -> Context
+tExpr = cata $ \(TypedExpr et expr) ->
+  let encloseInType c = "(" <> c <+> "::" <+> tType et <> ")"
   in encloseInType $ case expr of
   Lit (LInt x) -> pretty x
-  Var l v -> ppVar l v
-  Con c -> ppCon c
+  Var l (DefinedVariable v) -> ppVar l v
+  Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
+  Con (DC _ uc _ _) -> ppCon uc
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
   As x at -> x <+> "as" <+> tType at
-  Lam env params e -> tEnv env <+> sepBy " " (map (\(v, t) -> ppVar Local v <+> tType t) params) <> ":" <+> e
+  Lam lenv params e -> tEnv lenv <+> sepBy " " (map (\(v, t) -> ppVar Local v <+> tType t) params) <> ":" <+> e
   where
     ppOp op = case op of
       Plus -> "+"
@@ -270,15 +258,18 @@ tExpr = cata $ \(ExprType t expr) ->
 
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs unions cons) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs <+> tUnions unions) $ ppLines (\(Annotated ann dc) -> annotate ann (tConDef dc)) cons
+tDataDef (DD tid tvs unions cons _) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs <+> tUnions unions) $ ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
 
 tConDef :: DataCon -> Context
-tConDef (DC g t) = foldl' (<+>) (ppCon g) $ tTypes t
+tConDef (DC _ g t _) = foldl' (<+>) (ppCon g) $ tTypes t
+
+tFunction :: Function -> Context
+tFunction fn = tBody (tFunDec fn.functionDeclaration) fn.functionBody
 
 tFunDec :: FunDec -> Context
-tFunDec (FD env v params retType) = comment (tEnv env) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType
+tFunDec (FD fenv v params retType) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType
 
-tTypes :: Functor t => t (Type Typed) -> t Context
+tTypes :: Functor t => t Type -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of
   TCon _ (_:_) _ -> enclose t
   TFun {} -> enclose t
@@ -286,29 +277,33 @@ tTypes = fmap $ \t@(Fix t') -> case t' of
   where
     enclose x = "(" <> tType x <> ")"
 
-tType :: Type Typed -> Context
+tType :: Type -> Context
 tType = cata $ \case
-  TCon con params unions -> 
+  TCon (DD ut _ _ _ _) params unions ->
     let conunion = case unions of
           [] -> []
-          unions -> "|" : (tEnvUnion <$> unions)
-    in foldl' (<+>) (ppTypeInfo con) (params ++ conunion)
+          tunions -> "|" : (tEnvUnion <$> tunions)
+    in foldl' (<+>) (ppTypeInfo ut) (params ++ conunion)
   TVar (TV tv) -> pretty tv
-  TFun env args ret -> tEnvUnion env <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+  TFun fenv args ret -> tEnvUnion fenv <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+  TyVar ty -> tTyVar ty
 
-tUnions :: [EnvUnion Typed] -> Context
+tTyVar :: TyVar -> Context
+tTyVar (TyV t) = "#" <> pretty t
+
+tUnions :: [EnvUnion] -> Context
 tUnions [] = mempty
 tUnions unions = "|" <+> sepBy " " (tEnvUnion . fmap tType <$> unions)
 
 tEnvUnion :: EnvUnionF Context -> Context
 tEnvUnion EnvUnion { unionID = uid, union = us } = ppUnionID uid <> encloseSepBy "{" "}" ", " (fmap tEnv' us)
 
-tEnv :: Env Typed -> Context
+tEnv :: Env -> Context
 tEnv = tEnv' . fmap tType
 
 tEnv' :: EnvF Context -> Context
 tEnv' Env { envID = eid, env = vs } = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
 
 
-tBody :: Foldable f => Context -> f (AnnStmt Typed) -> Context
+tBody :: Foldable f => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt

@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE TypeOperators #-}
 module AST.Common (module AST.Common) where
 
 import Data.Text (Text)
@@ -29,15 +30,13 @@ import Data.List (intersperse)
 --   in the near future, I'll remove all Show/Show1 instances.
 -- same amount of mapping tho. it's not that big of a deal, to be honest. just, if I want to add/remove some feature, it'll take more code in my current design, but I don't really mind that now.
 
--- Common type families
-type family Type phase
-type family Env phase
-type family EnvUnion phase
-type family Expr phase
-type family Decon phase
-type family Stmt phase
-type family AnnStmt phase
-type family Module phase
+-- General composition operator (easier Fix usage)
+--  copied from TypeCompose package (I didn't need the whole thing, so I just copied the definition)
+infixl 9 :.
+newtype (g :. f) a = O (g (f a)) deriving (Eq, Ord, Functor, Foldable, Traversable)
+
+unO :: (g :. f) a -> g (f a)
+unO (O gfa) = gfa
 
 
 -- Type safety definitions
@@ -67,16 +66,13 @@ data Ann  -- or should this be a Map or something?
   | ACStdInclude Text
   deriving (Show, Eq, Ord)
   
+-- Decorator thing.
 data Annotated a = Annotated [Ann] a deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
-
--- data AnnotatedThing f a = AnnThing [Ann] (f a) deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
-
 
 -- Variable uniqueness
 data UniqueVar = VI
   { varID :: Unique
   , varName :: VarName
-  , mutability :: Mutability
   }
 
 
@@ -103,11 +99,11 @@ instance Ord UniqueVar where
 
 -- temporary instance
 instance Show UniqueVar where
-  show (VI { varID = vid, varName = vname, mutability = vt }) = "v" <> show (hashUnique vid) <> Text.unpack (fromVN vname) <> show vt
+  show (VI { varID = vid, varName = vname }) = "v" <> show (hashUnique vid) <> Text.unpack (fromVN vname)
 
 
 instance Show UniqueCon where
-  show (CI { conID = id, conName = name }) = show name <> "@" <> show (hashUnique id)
+  show (CI { conID = cid, conName = name }) = show name <> "@" <> show (hashUnique cid)
   
 instance Eq UniqueCon where
   CI { conID = l } == CI { conID = r } = l == r
@@ -127,8 +123,7 @@ instance Ord UniqueType where
 
   
 -- ...plus additional tags
-data Mutability = Immutable | Mutable deriving (Show, Eq, Ord)
-data Locality = Local | FromEnvironment | External deriving (Show, Eq, Ord)
+data Locality = Local | FromEnvironment deriving (Show, Eq, Ord)
 
 
 -- simplifies printing functions - not really needed..?
@@ -190,11 +185,11 @@ ppBody f header = indent header . ppLines f
 
 -- Technically should be something like Text for the annotation type, but I need to have access to context in annotations
 comment :: Context -> Context -> Context
-comment s ctx = "#" <+> s <\> ctx
+comment s cctx = "#" <+> s <\> cctx
 
 annotate :: [Ann] -> Context -> Context
-annotate [] ctx = ctx
-annotate xs ctx = "\n" <> ppAnn xs <\> ctx
+annotate [] actx = actx
+annotate xs actx = "\n" <> ppAnn xs <\> actx
 
 encloseSepBy :: Monoid a => a -> a -> a -> [a] -> a
 encloseSepBy l r p cs = l <> sepBy p cs <> r
@@ -208,19 +203,20 @@ indent header = (header <>) . fmap (PP.nest 2) . ("\n" <>)
 ppLines :: Foldable t => (a -> Context) -> t a -> Context
 ppLines f = foldMap ((<>"\n") . f)
 
-ppVar :: Locality -> UniqueVar -> Context
-ppVar l v = localTag <?+> vt <> pretty (fromVN v.varName) <> "$" <> pretty (hashUnique v.varID)
-  where
-    vt = case v.mutability of
-      Immutable -> ""
-      Mutable -> "*"
+ppLines' :: Foldable t => t Context -> Context
+ppLines' = foldMap (<> "\n")
 
+ppVar :: Locality -> UniqueVar -> Context
+ppVar l v = localTag <?+> pretty (fromVN v.varName) <> "$" <> pretty (hashUnique v.varID)
+  where
     localTag = case l of
       Local -> Nothing
       FromEnvironment -> Just "^"
-      External -> Just "E"
 
 -- annotate constructors with '@'
+ppTCon :: TCon -> Context
+ppTCon = pretty . fromTC
+
 ppCon :: UniqueCon -> Context
 ppCon con = "@" <> pretty (fromCN con.conName) <> "$" <> pretty (hashUnique con.conID)
 
