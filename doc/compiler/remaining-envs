@@ -1,0 +1,117 @@
+
+# ENV: {[], [a]}
+ff <= :print('dupa')
+
+f (x a) -> Unit
+	ff <= :print(x)
+
+# for example:
+f(True)
+f(Unit)
+f(69)
+
+
+# Env: {[], [a]} -> {[], [Bool], [Unit], [Int]}
+
+
+Solution? When monomorphizing `x =` or `f (x)` (the parameter) or `x:`, save the type to a `Map UniqueVar (Set Type)`.
+
+In this case, after typechecking:
+
+a: {Bool, Unit, Int}
+
+Q: Should all types of UniqueVar part of that environment? (not yet talking about function types)
+A: Yes. 
+
+
+Further problems: compound types and functions.
+
+
+Functions.
+
+# ENV: { [], [id] }
+ff <= :print(id(True), id(Unit))
+
+`id` function has different instantiations. How do we combat this?
+
+
+---
+
+
+inf (x a) -> ()
+	print inf(:print(x))
+
+loop! infinite recursion! for the compiler!!!
+
+inf (x () -> ()) -> ()
+	print inf(:print(x))
+
+also fucked! no polys, but environment is basically polymorphic!
+
+so the whole problem is scuffed! how do we even detect recursion!?
+
+I ain't gonna be like some lil nigga, who just disallows recursion. My goal is to produce something, which can be translated into a strongly connected components, and, based on that, should there be any weird stuff happening, provide errors (include LOCALTION INFORMATION, ayyy).
+
+But, is this even possible? I'm worried, because I don't know how complex will the implementation get, which is also a problem for me. Especially, because it won't probably be used, like, ever.
+
+Is this even needed for my Master's Thesis?
+
+Like, it's stupid. No one is going to use this. Like, no one is going to create recursive functions with such types. But distinguishing them like this is also kinda hard.
+
+
+-----
+
+
+Okay, I think the bottom line is Rust:
+
+```
+#[derive(Debug)]
+enum Singleton<T> {
+    Singleton(T),
+}
+
+fn inf<T>(x: T) {
+    return inf(Singleton::Singleton(x));
+}
+
+fn main() {
+    println!("{:?}", inf(1));
+}
+```
+
+ah, fuck. kinda complex. needlessly complex (like, I'll never use it, what the hell)
+
+
+
+Right now, I'll ignore it, but the solution is probably... dunno.
+
+Like, register all instantiations of a type and track environment propagation??!??!?!?!?!? Maybe!??!?!?! wtf1?!?!??!?!
+
+That's kinda bad.
+
+like, imagine the problems
+
+ff = whatever
+
+f (x a)
+	g (y b)
+		ff <= :print(x, y)
+
+	g(1)
+	g(Unit)
+
+f(69)
+f(True)
+
+ff: {[x Int, y Int], [Int, y Unit], [x Bool, y Int], [x Bool, y Unit]}
+
+wait, so is that actually a `x` operation?? i thought it wasn't, but it is here.
+
+hmm....
+
+I thought that it basically depends on the first instantiated type. But... if TVar means that it's for every function call? Maybe it is? Can I come up with a counter example?
+
+Like, is there a function, where the result is not `foldMap (x) (ftv t)`?
+Maybe in the environments?
+
+

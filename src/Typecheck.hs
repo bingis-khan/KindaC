@@ -25,7 +25,7 @@ import Control.Monad.Trans.RWS (RWST (RWST), runRWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed, hoist, project)
-import Control.Monad (replicateM, zipWithM_)
+import Control.Monad (replicateM, zipWithM_, when)
 import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold)
 import Data.Set (Set, (\\))
@@ -40,16 +40,17 @@ import qualified AST.Resolved as R
 import qualified AST.Typed as T
 
 import AST.Converged (Prelude(..), PreludeFind (..), boolFind, tlReturnFind, intFind)
-import AST.Common (TVar (TV), LitType (LInt), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon)
+import AST.Common (TVar (TV), LitType (LInt), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import AST.Typed (TyVar)
 import Text.Printf (printf)
 import Control.Applicative (liftA3)
 import Debug.Trace (traceShowWith)
 import Data.List.NonEmpty (NonEmpty)
+import Misc.Memo (memo, Memo(..))
 
 
 -- I have some goals alongside rewriting typechecking:
@@ -380,6 +381,11 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
       R.ExprStmt (expr, _) ->
         pure $ T.ExprStmt expr
 
+      R.EnvDef rfn -> do
+        fn <- inferFunction rfn
+        liftIO $ putStrLn $ "This env... " <> ctx T.tEnv fn.functionDeclaration.functionEnv
+        pure $ T.EnvDef fn.functionDeclaration.functionEnv
+
 
 
 inferExpr :: R.Expr -> Infer T.Expr
@@ -390,15 +396,13 @@ inferExpr = cata (fmap embed . inferExprType)
       -- map env
       e' <- case e of
         (R.Lam _ env args body) -> do
-          -- make env
-          fenv <- inferEnv env
 
           -- add types to lambda parameters
           argts <- traverse var args
           let args' = zip args argts
 
           -- eval body
-          body' <- body
+          (fenv, body') <- withEnv env body
 
           pure $ T.Lam fenv args' body'
 
@@ -414,8 +418,8 @@ inferExpr = cata (fmap embed . inferExprType)
         R.Con c -> T.Con <$> inferConstructor c
         R.Op l op r -> liftA2 (\l' r' -> T.Op l' op r') l r
 
-        R.Call e args -> do
-          liftA2 T.Call e (sequenceA args)
+        R.Call callee args -> do
+          liftA2 T.Call callee (sequenceA args)
 
 
       t <- inferExprLayer $ fmap (\(Fix (T.TypedExpr t _)) -> t) e'
@@ -425,7 +429,13 @@ inferExpr = cata (fmap embed . inferExprType)
     inferExprLayer = \case
       T.Lit (LInt _ ) -> findBuiltinType intFind
 
-      T.Var _ v -> instantiateVariable v
+      T.Var loc v -> do
+        t <- instantiateVariable v
+
+        when (loc == FromEnvironment) $ do
+          addEnv (T.asUniqueVar v) t
+
+        pure t
       T.Con c -> instantiateConstructor c
 
       T.Op l op r | op == NotEquals || op == Equals -> do
@@ -540,7 +550,6 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
     -- Infer function declaration.
     let rfundec = rfn.functionDeclaration
 
-    env <- inferEnv rfundec.functionEnv
     params <- for rfundec.functionParameters $ \(v, definedType) -> do
       vt <- var v
       case definedType of
@@ -560,25 +569,28 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
 
     ret <- maybe fresh inferType rfundec.functionReturnType
 
-    let fundec = T.FD env rfundec.functionId params ret
+    envID <- newEnvID
+    let recenv = T.RecursiveEnv envID (null $ R.fromEnv rfundec.functionEnv)
+    let fundec = T.FD recenv rfundec.functionId params ret
     let fun = T.Function { T.functionDeclaration = fundec, T.functionBody = body }
 
+    -- Add *ungeneralized* type.
     addMemo fun
 
     -- Infer body.
-    body <- withReturn ret $ inferStmts rfn.functionBody
+    (envc, body) <- withEnv' rfundec.functionEnv $ withReturn ret $ inferStmts rfn.functionBody
 
-    pure fun
+    -- now, replace it with a non-recursive environment.
+    let env = T.Env envID envc
+    let fundec' = fundec { T.functionEnv = env }
+    let fun' = fun { T.functionDeclaration = fundec' }
 
+    pure fun'
+
+  -- Add *generalized* version.
   addMemo fn
-  pure fn
 
-inferEnv :: R.Env -> Infer T.Env
-inferEnv (R.Env renv) = do
-  envID <- newEnvID
-  env <- for renv $ \(v, l) ->
-    (v, l,) <$> var v
-  pure $ T.Env { T.envID = envID, T.env = env }
+  pure fn
 
 
 -- Like previous `subSolve`. 
@@ -586,6 +598,7 @@ inferEnv (R.Env renv) = do
 generalize :: Infer T.Function -> Infer T.Function
 generalize fx = do
   unsuFn <- fx
+  liftIO $ putStrLn $ ctx T.tFunction unsuFn
   csu <- RWS.gets typeSubstitution
 
   -- First substitution will substitute types that are already defined.
@@ -606,6 +619,9 @@ generalize fx = do
 
   -- This one is generalized.
   let generalizedFn = subst su fn
+
+  liftIO $ putStrLn $ ctx T.tFunction generalizedFn
+  liftIO $ printf "Just generalized: %s\n" (ctx T.tEnv generalizedFn.functionDeclaration.functionEnv)
 
   pure generalizedFn
 
@@ -641,7 +657,8 @@ instantiateVariable = \case
     -- Create type from function declaration
     let fundec = fn.functionDeclaration
     fnUnion <- mkUnion fundec.functionEnv
-    let fnType = traceShowWith (ctx T.tType) $ Fix $ T.TFun fnUnion (mapTVs . snd <$> fundec.functionParameters) (mapTVs fundec.functionReturnType)
+    let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> fundec.functionParameters) (mapTVs fundec.functionReturnType)
+
     pure fnType
 
 instantiateConstructor :: T.DataCon -> Infer T.Type
@@ -661,13 +678,13 @@ instantiateConstructor = \case
       ts = mapTVs <$> usts
       ret = mapTVs $ Fix $ T.TCon dd (Fix . T.TVar <$> tvs) unions'
 
-    emptyEnv <- inferEnv $ R.Env []
+    emptyEnv <- newEmptyEnv
     union <- mkUnion emptyEnv
 
     pure $ Fix $ T.TFun union ts ret
 
 mapTVsWithMap :: Map TVar T.Type -> T.Type -> T.Type
-mapTVsWithMap tvmap = 
+mapTVsWithMap tvmap =
   let
     mapTVs :: T.Type -> T.Type
     mapTVs = cata $ (.) embed $ \case
@@ -929,6 +946,9 @@ data StatefulEnv = StatefulEnv
   , memoDataDefinition :: Memo R.DataDef T.DataDef
 
   , variables :: Map UniqueVar T.Type
+
+  -- HACK: track instantiations from environments. czy jest sens?
+  , instantiations :: Set (UniqueVar, T.Type)
   }
   -- { variables :: Map UniqueVar Scheme
   -- , constructors :: Map UniqueCon Scheme
@@ -946,6 +966,8 @@ emptySEnv = StatefulEnv
   , memoDataDefinition = Memo mempty
 
   , variables = mempty
+
+  , instantiations = mempty
   }
 --   { variables = mempty
 --   , constructors = mempty
@@ -953,22 +975,6 @@ emptySEnv = StatefulEnv
 --   , types = mempty
 --   , env = mempty
 --   }
-
-newtype Memo id a = Memo { memoToMap :: Map id a }
-
-memo :: Ord r => (StatefulEnv -> Memo r t) -> (Memo r t -> StatefulEnv -> StatefulEnv) -> (r -> (t -> Infer ()) -> Infer t) -> r -> Infer t
-memo toMemo fromMemo transform r = do
-  (Memo mem) <- RWS.gets toMemo
-  case mem !? r of
-    Just t -> pure t
-    Nothing -> do
-      -- unfortunately, we have to have this function, because we want to initialize the thunk first.
-      let addMemo t = RWS.modify $ \s ->
-            let (Memo m) = toMemo s
-                m' = Memo $ Map.insert r t m
-            in fromMemo m' s
-
-      transform r addMemo
 
 
 -- -- FUNNY!
@@ -1057,10 +1063,41 @@ emptySubst = Subst mempty mempty
 --   pure substituted
 
 
--- what the hell does this do?
+-- Constructs an environment from all the instantiations.
+--  We need the instantiations, because not all instantiations of a function can come up in the environment.
+--  But, when there is a TVar in the type, it means all instantiated types of TVars must be there.
+withEnv' :: R.Env -> Infer a -> Infer ([(UniqueVar, Locality, T.Type)], a)
+withEnv' renv x = do
+
+  -- 1. clear environment - we only collect things from this scope.
+  outOfEnvInstantiations <- RWS.gets instantiations
+
+  -- 2. execute in scope.
+  RWS.modify $ \s -> s { instantiations = Set.empty }
+  x' <- x
+  modifiedInstantiations <- RWS.gets instantiations
+
+  -- 3. then filter the stuff that actually is from the environment
+  --  TODO: this might not be needed, since we conditionally add an instantiation if it's FromEnvironment.
+  renvQuery <- Map.fromList <$> traverse (\(v, t) -> (,t) . T.asUniqueVar <$> inferVariable v) (R.fromEnv renv)
+  let newEnv = mapMaybe (\(v, t) -> Map.lookup v renvQuery <&> (v,,t)) $ Set.toList modifiedInstantiations
+
+
+  -- 4. and put that filtered stuff back.
+  let usedInstantiations = Set.fromList $ fmap (\(v, _, t) -> (v, t)) newEnv
+  RWS.modify $ \s -> s { instantiations = outOfEnvInstantiations <> usedInstantiations }
+
+  pure (newEnv, x')
+
 withEnv :: R.Env -> Infer a -> Infer (T.Env, a)
 withEnv renv x = do
-  undefined
+  (tenv, x') <- withEnv' renv x
+  envID <- newEnvID
+  pure (T.Env envID tenv, x')
+
+addEnv :: UniqueVar -> T.Type -> Infer ()
+addEnv v t = RWS.modify $ \s -> s { instantiations = Set.insert (v, t) s.instantiations }
+
   -- RWS.modify $ \s -> s { env = [] : s.env }
   -- (e, x') <- RWS.mapRWST (fmap (\(x, s@StatefulEnv { env = (e:ogenvs) }, cs) -> ((e, x), s { env = ogenvs }, cs))) x  -- we're using tail, because we want an error if something happens.
 
@@ -1152,11 +1189,11 @@ unifyFunEnv lenv@(T.EnvUnion { T.unionID = lid }) renv@(T.EnvUnion { T.unionID =
   let env = T.EnvUnion { T.unionID = unionID, T.union = funEnv }
 
   RWS.modify $ \su ->
-    let unionSubst = Subst (Map.fromList [(lid, env), (rid, env)]) Map.empty -- i don't think we need an occurs check
-    in subst unionSubst su
+    let unionSubst = Subst (Map.fromList [(lid, env), (rid, env)]) Map.empty -- i don't think we need an occurs check. BUG: we actually do, nigga.
+        Subst unions ts = subst unionSubst su  -- NOTE: technically, we don't even need to add this mapping to our global Subst, but then we would have to create a new fresh variable every time a new variable is created, or something similar (more error prone, so maybe not worth it.).
+    in Subst (Map.insert rid env $ Map.insert lid env unions) ts
   --       traceShow ("ENVUNI: " <> show lenv <> "|||||" <> show renv <> "8=====>" <> show env <> "\n") $ 
   where
-
     union2envset = Set.fromList . (\(T.EnvUnion { T.union = union }) -> union)
     envset2union = Set.toList
     funEnv = envset2union $ union2envset lenv <> union2envset renv
@@ -1284,6 +1321,7 @@ instance Substitutable T.AnnStmt where
           let cond' = subst su cond
               cases' = subst su cases
           in T.Switch cond' cases'
+        T.EnvDef env -> T.EnvDef $ subst su env
         s -> first (subst su) s
 
 instance (Substitutable expr, Substitutable stmt) => Substitutable (T.Case expr stmt) where
@@ -1306,7 +1344,13 @@ instance Substitutable (Fix T.TypedExpr) where
   subst su = hoist $ \(T.TypedExpr et ee) -> T.TypedExpr (subst su et) (case ee of
     T.As e t -> T.As e (subst su t)
     T.Lam env params body -> T.Lam (subst su env) (subst su params) body
+    T.Var loc v -> T.Var loc $ subst su v
     e -> e)
+
+instance Substitutable T.Variable where
+  ftv _ = mempty
+  subst su (T.DefinedFunction fn) = T.DefinedFunction $ subst su fn
+  subst _ x = x
 
 
 instance Substitutable UniqueVar where
@@ -1365,7 +1409,9 @@ instance Substitutable (T.EnvUnionF (Fix T.TypeF)) where
       Nothing -> T.EnvUnion uid $ subst su envs
 
 instance Substitutable (T.EnvF (Fix T.TypeF)) where
-  ftv (T.Env _ vars) = ftv $ fmap (\(_, _, t) -> t) vars
+  ftv (T.Env _ _) = mempty  -- TODO: why is this `mempty`?
+  ftv (T.RecursiveEnv _ _) = mempty
+
   subst su = fmap (subst su)
 
 
@@ -1425,6 +1471,11 @@ emptyUnion = do
   uid <- newUnionID
   pure $ T.EnvUnion uid []
 
+newEmptyEnv :: Infer T.Env
+newEmptyEnv = do
+  envID <- newEnvID
+  pure $ T.Env envID []
+
 -- singletonUnion :: Env TyVared -> Infer (EnvUnion TyVared)
 -- singletonUnion env = do
 --   uid <- newUnionID
@@ -1443,16 +1494,16 @@ emptyUnion = do
 findMap :: Eq a => a -> (b -> a) -> Map b c -> Maybe c
 findMap kk f = fmap snd . find (\(k, _) -> f k == kk). Map.toList
 
-traverse2 :: (Traversable t, Traversable t', Applicative f) => (a -> f b) -> t (t' a) -> f (t (t' b))
-traverse2 = traverse . traverse
-
 
 -- -----
 -- -- DEBUG
 -- ----
 
 dbgSubst :: Subst -> String
-dbgSubst (Subst _ ts) = unlines $ Map.toList ts <&> \(ty, t) -> printf "%s => %s" (ctx T.tTyVar ty) (ctx T.tType t)
+dbgSubst (Subst unions ts) = 
+  let tvars = Map.toList ts <&> \(ty, t) -> printf "%s => %s" (ctx T.tTyVar ty) (ctx T.tType t)
+      unionRels = Map.toList unions <&> \(uid, union) -> printf "%s => %s" (ctx ppUnionID uid) (ctx (T.tEnvUnion . fmap T.tType) union)
+  in unlines $ tvars <> ["--"] <> unionRels
 
 -- -- dbgTypecheck :: Maybe Prelude -> Module Resolved -> ([TypeError], Module Typed)
 -- -- dbgTypecheck mprelude rStmts =

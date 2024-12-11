@@ -2,7 +2,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), CtxData(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann)
+import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), CtxData(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf)
 import qualified AST.Typed as T
 
 import Data.Fix (Fix(..))
@@ -14,6 +14,7 @@ import Data.Foldable (foldl')
 import Data.Bifunctor (first)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Functor ((<&>))
+import Data.String (fromString)
 
 
 
@@ -52,7 +53,13 @@ type Type = Fix TypeF
 -- Expression --
 ----------------
 
-newtype Env = Env { fromEnv :: [(UniqueVar, Locality)]} deriving (Show, Eq, Ord)
+newtype Env = Env { fromEnv :: [(Variable, Locality)]}
+instance Eq Env where
+  Env env == Env env' = fmap (first asUniqueVar) env == fmap (first asUniqueVar) env'
+
+instance Ord Env where
+  Env env `compare` Env env' = fmap (first asUniqueVar) env `compare` fmap (first asUniqueVar) env'
+
 
 data ExprF a
   = Lit LitType
@@ -70,6 +77,13 @@ data Variable
   = DefinedVariable UniqueVar
   | DefinedFunction Function
   | ExternalFunction T.Function  -- it's only defined as external, because it's already typed. nothing else should change.
+
+asUniqueVar :: Variable -> UniqueVar
+asUniqueVar = \case
+  DefinedVariable var -> var
+  DefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
+  ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ }) -> uv
+
 
 data Constructor
   = DefinedConstructor DataCon
@@ -97,7 +111,6 @@ data Case expr a = Case
   } deriving (Functor, Foldable, Traversable)
 
 
-
 ---------------
 -- Statement --
 ---------------
@@ -115,6 +128,9 @@ data StmtF expr a
   | Switch expr (NonEmpty (Case expr a))
   | ExprStmt expr
   | Return expr
+
+  -- the place where env should be initialized.
+  | EnvDef Function
   deriving (Functor, Foldable, Traversable)
 
 type Stmt = StmtF Expr AnnStmt
@@ -196,6 +212,7 @@ tStmt stmt = case first tExpr stmt of
     ppBody tCase switch cases
   ExprStmt e -> e
   Return e -> "return" <+> e
+  EnvDef fn -> fromString $ printf "[ENV]: %s" $ tEnv fn.functionDeclaration.functionEnv
 
 tCase :: Case Context AnnStmt -> Context
 tCase kase = tBody (tDecon kase.deconstruction <+?> kase.caseCondition) kase.body
@@ -251,7 +268,7 @@ tType = cata $ \case
   TFun args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
 
 tEnv :: Env -> Context
-tEnv (Env env) = encloseSepBy "[" "{}" ", " $ env <&> \(uv, l) -> ppVar l uv
+tEnv (Env env) = encloseSepBy "[" "]" ", " $ env <&> \(uv, l) -> ppVar l $ asUniqueVar uv
 
 tBody :: Foldable f => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
@@ -260,12 +277,6 @@ asUniqueCon :: Constructor -> UniqueCon
 asUniqueCon = \case
   DefinedConstructor (DC _ uc _ _) -> uc
   ExternalConstructor (T.DC _ uc _ _) -> uc
-
-asUniqueVar :: Variable -> UniqueVar
-asUniqueVar = \case
-  DefinedVariable var -> var
-  DefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
-  ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ }) -> uv
 
 asUniqueType :: Datatype -> UniqueType
 asUniqueType (DefinedDatatype (DD ut _ _ _)) = ut

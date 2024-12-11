@@ -1,0 +1,29 @@
+Imagine this:
+
+fib (x Int)
+	bib = fib
+
+	if x == rand()
+		bib <= id  # !!!!
+
+	if x == 1
+		return 1
+	elif x == 2
+		return 2
+	else
+		return bib(x - 1) + bib(x - 2)
+
+
+A perfectly understandable use case. Sometimes we want to call a normal function instead of a recursive one (to end recursion, for example).
+However, the type will be funny.
+
+fib: [id {[], fibenv[REC]}]
+
+It will be a sort of infinite recursive type...
+What shall I do in this case?
+
+I guess I can check for infinite types, but then it will be kind of cringe. I think it's possible by somehow re-doing the environments.
+
+Yeah. Like, remove all recursive occurences from the environment type of the function, but keep them inside the function!
+
+It should work pretty smoothly! It should be covered by the union!

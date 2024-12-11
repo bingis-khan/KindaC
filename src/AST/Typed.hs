@@ -5,19 +5,22 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines')
+import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf)
 
 import Data.Eq.Deriving
+import Data.Ord.Deriving
 import Data.Fix (Fix (..))
 import Data.List.NonEmpty (NonEmpty)
 
-import Data.Bifunctor.TH (deriveBifoldable, deriveBifunctor)
-import Data.Functor.Classes (Eq1 (liftEq))
+import Data.Bifunctor.TH (deriveBifoldable, deriveBifunctor, deriveBitraversable)
+import Data.Functor.Classes (Eq1 (liftEq), Ord1 (..))
 import Control.Monad.Trans.Reader (runReader)
 import Data.Biapplicative (first)
 import Data.Functor.Foldable (cata)
 import Data.Foldable (foldl')
 import Data.Text (Text)
+import Data.String (fromString)
+import Data.Functor ((<&>))
 
 
 
@@ -31,6 +34,15 @@ data DataDef = DD UniqueType [TVar] [EnvUnion] [DataCon] [Ann]
 instance Eq DataDef where
   DD ut _ _ _ _ == DD ut' _ _ _ _ = ut == ut'
 
+instance Ord DataDef where
+  DD ut _ _ _ _ `compare` DD ut' _ _ _ _ = ut `compare` ut'
+
+instance Eq DataCon where
+  DC uc _ _ _ == DC uc' _ _ _ = uc == uc'
+
+instance Ord DataCon where
+  DC uc _ _ _ `compare` DC uc' _ _ _ = uc `compare` uc'
+
 
 ----------
 -- Type --
@@ -40,17 +52,36 @@ instance Eq DataDef where
 -- do I need ID here?
 -- reasons:
 --  - always nice to have additional information?
-data EnvF t = Env
-  { envID :: EnvID
-  , env :: [(UniqueVar, Locality, t)]  -- t is here, because of recursion schemes.
-  } deriving (Functor, Foldable, Traversable)
+data EnvF t
+  = Env EnvID [(UniqueVar, Locality, t)] -- t is here, because of recursion schemes. UniqueVar, because we don't know which environments will be used in the end. We will replace it with a `Variable` equivalent AFTER we monomorphise.
+  | RecursiveEnv EnvID IsEmpty  -- Recursive functions won't have access to their environment while typechecking... kinda stupid. ehh... but we're solving an actual issue here. `IsEmpty` is used in Mono to let us know if this function's environment was empty or not.
+  deriving (Functor, Foldable, Traversable)
 type Env = EnvF Type
 
-instance Eq (EnvF t) where
-  Env { envID = l } == Env { envID = r }  = l == r
+type IsEmpty = Bool
 
-instance Ord (EnvF t) where
-  Env { envID = l } `compare` Env { envID = r } = l `compare` r
+envID :: EnvF t -> EnvID
+envID = \case
+  Env eid _ -> eid
+  RecursiveEnv eid _ -> eid
+
+instance Eq t => Eq (EnvF t) where
+  Env lid lts == Env rid rts = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
+  l == r  = envID l == envID r
+
+instance Ord t => Ord (EnvF t) where
+  Env lid lts `compare` Env rid rts = (lid, lts <&> \(_, _, x) -> x) `compare` (rid, rts <&> \(_, _, x) -> x)
+  l `compare` r = envID l `compare` envID r
+
+instance Eq1 EnvF where
+  liftEq f (Env lid lts) (Env rid rts) = lid == rid && and (zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts)
+  liftEq _ l r = envID l == envID r
+
+instance Ord1 EnvF where
+  liftCompare f (Env lid lts) (Env rid rts) = case lid `compare` rid of
+    EQ -> mconcat $ zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts
+    ord -> ord
+  liftCompare _ l r = envID l `compare` envID r
 
 -- The Env "superposition".
 -- do I need the ID here?
@@ -63,13 +94,19 @@ data EnvUnionF t = EnvUnion
 type EnvUnion = EnvUnionF Type
 
 instance Eq1 EnvUnionF where
-  liftEq _ u u' = u.unionID == u'.unionID
+  liftEq f u u' = u.unionID == u'.unionID && and (zipWith (liftEq f) u.union u'.union)
 
-instance Eq (EnvUnionF t) where
-  EnvUnion { unionID = l } == EnvUnion { unionID = r }  = l == r
+instance Ord1 EnvUnionF where
+  liftCompare f u u' = case u.unionID `compare` u'.unionID of
+    EQ -> mconcat $ zipWith (liftCompare f) u.union u'.union
+    cmp -> cmp
 
-instance Ord (EnvUnionF t) where
-  EnvUnion { unionID = l } `compare` EnvUnion { unionID = r } = l `compare` r
+instance Eq t => Eq (EnvUnionF t) where
+  EnvUnion { unionID = l, union = lu } == EnvUnion { unionID = r, union = ru } = l == r && lu == ru
+
+instance Ord t => Ord (EnvUnionF t) where
+  EnvUnion { unionID = l, union = lu } `compare` EnvUnion { unionID = r, union = ru } = (l, lu) `compare` (r, ru)
+
 
 
 newtype TyVar = TyV { fromTyV :: Text } deriving (Eq, Ord)
@@ -79,34 +116,9 @@ data TypeF a
   | TVar TVar  -- TODO: make it unique per function scope. Should I use UniqueVar or something else?
   | TFun (EnvUnionF a) [a] a
   | TyVar TyVar
-  deriving (Eq, Functor, Foldable, Traversable)
+  deriving (Eq, Ord, Functor, Foldable, Traversable)
 type Type = Fix TypeF
 
-$(deriveEq1 ''TypeF)
-
-
-
-----------------
--- Expression --
-----------------
-
-data ExprF a
-  = Lit LitType
-  | Var Locality Variable
-  | Con DataCon
-
-  | Op a Op a
-  | Call a [a]
-  | As a Type
-  | Lam Env [(UniqueVar, Type)] a
-  deriving (Functor, Foldable, Traversable)
-
-data TypedExpr a = TypedExpr Type (ExprF a) deriving (Functor, Foldable, Traversable)
-type Expr = Fix TypedExpr
-
-data Variable
-  = DefinedVariable UniqueVar
-  | DefinedFunction Function
 
 --------------
 -- Function --
@@ -129,6 +141,38 @@ data Function = Function
 
 instance Eq Function where
   Function { functionDeclaration = fd } == Function { functionDeclaration = fd' } = fd == fd'
+
+instance Ord Function where
+  fn `compare` fn' = fn.functionDeclaration.functionId `compare` fn'.functionDeclaration.functionId
+
+
+----------------
+-- Expression --
+----------------
+
+data ExprF a
+  = Lit LitType
+  | Var Locality Variable
+  | Con DataCon
+
+  | Op a Op a
+  | Call a [a]
+  | Lam Env [(UniqueVar, Type)] a
+
+  | As a Type
+  deriving (Functor, Foldable, Traversable)
+
+data TypedExpr a = TypedExpr Type (ExprF a) deriving (Functor, Foldable, Traversable)
+type Expr = Fix TypedExpr
+
+data Variable
+  = DefinedVariable UniqueVar
+  | DefinedFunction Function
+
+asUniqueVar :: Variable -> UniqueVar
+asUniqueVar = \case
+  DefinedVariable uv -> uv
+  DefinedFunction fn -> fn.functionDeclaration.functionId
 
 
 ----------
@@ -165,6 +209,8 @@ data StmtF expr a
   | Switch expr (NonEmpty (Case expr a))
   | ExprStmt expr
   | Return expr
+
+  | EnvDef Env
   deriving (Functor, Foldable, Traversable)
 
 
@@ -175,8 +221,12 @@ type AnnStmt = Fix (Annotated :. StmtF Expr)
 
 $(deriveBifunctor ''Case)
 $(deriveBifoldable ''Case)
+$(deriveBitraversable ''Case)
 $(deriveBifoldable ''StmtF)
 $(deriveBifunctor ''StmtF)
+$(deriveBitraversable ''StmtF)
+$(deriveEq1 ''TypeF)
+$(deriveOrd1 ''TypeF)
 
 
 ---------------
@@ -224,6 +274,7 @@ tStmt stmt = case first tExpr stmt of
     ppBody tCase switch cases
   ExprStmt e -> e
   Return e -> "return" <+> e
+  EnvDef envDef -> "$$$:" <+> tEnv envDef
 
 tCase :: Case Context AnnStmt -> Context
 tCase kase = tBody (tDecon kase.deconstruction <+?> kase.caseCondition) kase.body
@@ -245,8 +296,8 @@ tExpr = cata $ \(TypedExpr et expr) ->
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
-  As x at -> x <+> "as" <+> tType at
   Lam lenv params e -> tEnv lenv <+> sepBy " " (map (\(v, t) -> ppVar Local v <+> tType t) params) <> ":" <+> e
+  As e t -> e <+> "as" <+> tType t
   where
     ppOp op = case op of
       Plus -> "+"
@@ -302,7 +353,9 @@ tEnv :: Env -> Context
 tEnv = tEnv' . fmap tType
 
 tEnv' :: EnvF Context -> Context
-tEnv' Env { envID = eid, env = vs } = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
+tEnv' = \case
+  Env eid vs -> ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
+  RecursiveEnv eid isEmpty -> fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
 
 
 tBody :: Foldable f => Context -> f AnnStmt -> Context

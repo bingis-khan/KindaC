@@ -4,3 +4,7 @@ packages:
 extra-deps:
   - git: https://github.com/joelwilliamson/bimap.git
     commit: e185286ddadf8363eee79c27d4287107a89ccd73
+
+build:
+  library-profiling: true
+  executable-profiling: true

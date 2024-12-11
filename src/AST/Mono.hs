@@ -1,0 +1,417 @@
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# HLINT ignore "Use newtype instead of data" #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+module AST.Mono (module AST.Mono) where
+
+import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar)
+import qualified AST.Typed as T
+import Control.Monad.Trans.Reader (runReader)
+import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
+import Data.Eq.Deriving (deriveEq1)
+import Data.Fix (Fix (..))
+import Data.Foldable (foldl')
+import Data.Functor.Classes (Eq1 (liftEq), Ord1 (liftCompare))
+import Data.Functor.Foldable (cata)
+import Data.List.NonEmpty (NonEmpty ((:|)))
+import qualified Data.List.NonEmpty as NonEmpty
+import Data.Ord.Deriving (deriveOrd1)
+import Data.String (fromString)
+import Data.Functor ((<&>))
+
+
+--- The two stages...
+
+-- TODO: maybe move it to a more visible place
+data IncompleteEnv  -- when it's not over
+data FullEnv        -- it's over...
+
+
+---------------------
+-- Data Definition --
+---------------------
+
+data DataCon' envtype = DC (DataDef' envtype) UniqueCon [Type' envtype] [Ann]
+type IDataCon = DataCon' IncompleteEnv
+type DataCon = DataCon' FullEnv
+
+data DataDef' envtype = DD
+  { datatypeUT :: UniqueType,
+    constructors :: [DataCon' envtype],
+    annotations :: [Ann]
+  }
+
+type IDataDef = DataDef' IncompleteEnv
+type DataDef = DataDef' FullEnv
+
+instance Eq (DataDef' envtype) where
+  DD ut _ _ == DD ut' _ _ = ut == ut'
+
+instance Ord (DataDef' envtype) where
+  DD ut _ _ `compare` DD ut' _ _ = ut `compare` ut'
+
+instance Eq (DataCon' envtype) where
+  DC uc _ _ _ == DC uc' _ _ _ = uc == uc'
+
+instance Ord (DataCon' envtype) where
+  DC uc _ _ _ `compare` DC uc' _ _ _ = uc `compare` uc'
+
+----------
+-- Type --
+----------
+
+
+type family Env' envtype
+type family Type' envtype
+
+-- I think I'll keep the separate-but-same-structure environments until codegen, because it might be nice information to have?
+-- I'll do deduplication during the codegen phase
+data EnvF t
+  = Env EnvID [(UniqueVar, Locality, t)]
+  | RecursiveEnv EnvID IsEmpty
+  deriving (Functor, Foldable, Traversable)
+
+type IEnv = EnvF IType
+type instance Env' IncompleteEnv = IEnv
+
+type Env = EnvF Type
+type instance Env' FullEnv = Env
+
+type IsEmpty = Bool
+
+envID :: EnvF t -> EnvID
+envID = \case
+  Env eid _ -> eid
+  RecursiveEnv eid _ -> eid
+
+instance Eq t => Eq (EnvF t) where
+  Env lid lts == Env rid rts = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
+  l == r = envID l == envID r
+
+instance Ord t => Ord (EnvF t) where
+  Env lid lts `compare` Env rid rts = (lid, lts <&> \(_, _, x) -> x) `compare` (rid, rts <&> \(_, _, x) -> x)
+  l `compare` r = envID l `compare` envID r
+
+instance Eq1 EnvF where
+  liftEq f (Env lid lts) (Env rid rts) = lid == rid && and (zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts)
+  liftEq _ l r = envID l == envID r
+
+instance Ord1 EnvF where
+  liftCompare f (Env lid lts) (Env rid rts) = case lid `compare` rid of
+    EQ -> mconcat $ zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts
+    ord -> ord
+  liftCompare _ l r = envID l `compare` envID r
+
+data EnvUnionF env = EnvUnion
+  { unionID :: UnionID,
+    union :: NonEmpty env
+  }
+  deriving (Functor, Foldable, Traversable)
+
+type IEnvUnion = EnvUnionF (EnvF IType)
+type EnvUnion = EnvUnionF (EnvF Type)
+
+isEnvEmpty :: EnvF t -> Bool
+isEnvEmpty = \case
+  RecursiveEnv _ isEmpty -> isEmpty
+  Env _ envs -> null envs
+
+areAllEnvsEmpty :: EnvUnionF (EnvF a) -> Bool
+areAllEnvsEmpty envUnion = all isEnvEmpty envUnion.union
+
+instance Eq (EnvUnionF t) where
+  -- special case for generated empty env function definitions
+  -- TODO: temporarily commented out
+  -- EnvUnion { union = (Env { env = [] } :| []) } == EnvUnion { union = (Env { env = [] } :| []) } = True
+
+  EnvUnion {unionID = l} == EnvUnion {unionID = r} = l == r
+
+instance Eq1 EnvUnionF where
+  liftEq _ (EnvUnion {unionID = uid}) (EnvUnion {unionID = uid'}) = uid == uid'
+
+instance Ord (EnvUnionF t) where
+  -- special case for generated empty env function definitions
+  -- EnvUnion { union = (Env { env = [] } :| []) } `compare` EnvUnion { union = (Env { env = [] } :| []) } = EQ
+
+  EnvUnion {unionID = l} `compare` EnvUnion {unionID = r} = l `compare` r
+
+instance Ord1 EnvUnionF where
+  liftCompare _ (EnvUnion {unionID = uid}) (EnvUnion {unionID = uid'}) = uid `compare` uid'
+
+data ITypeF a
+  = ITCon IDataDef [a] [EnvUnionF (EnvF a)]  -- for type mapping and later to know how to memoize
+  | ITFun (EnvUnionF (EnvF a)) [a] a
+  | ITVar TVar
+  deriving (Eq, Ord, Functor, Foldable, Traversable)
+
+
+data TypeF a
+  = TCon DataDef
+  | TFun (EnvUnionF (EnvF a)) [a] a
+  deriving (Eq, Ord, Functor, Foldable, Traversable)
+
+type IType = Fix ITypeF
+type instance Type' IncompleteEnv = IType
+
+type Type = Fix TypeF
+type instance Type' FullEnv = Type
+
+
+--------------
+-- Function --
+--------------
+
+data FunDec' envtype = FD
+  { functionEnv :: Env' envtype,
+    functionId :: UniqueVar,
+    functionParameters :: [(UniqueVar, Type' envtype)],
+    functionReturnType :: Type' envtype,  -- actually, the function might return something with a yet unknown environment type...
+    functionNeedsEnvironment :: NeedsImplicitEnvironment
+  }
+
+type IFunDec = FunDec' IncompleteEnv
+type FunDec = FunDec' FullEnv
+
+instance Eq (FunDec' envtype) where
+  FD _ uv _ _ _ == FD _ uv' _ _ _ = uv == uv'
+
+instance Ord (FunDec' envtype) where
+  FD _ uv _ _ _ `compare` FD _ uv' _ _ _ = uv `compare` uv'
+
+data Function' envtype = Function
+  { functionDeclaration :: FunDec' envtype,
+    functionBody :: NonEmpty (AnnStmt' envtype)
+  }
+
+type IFunction = Function' IncompleteEnv
+type Function = Function' FullEnv
+
+instance Eq (Function' envtype) where
+  Function {functionDeclaration = fd} == Function {functionDeclaration = fd'} = fd == fd'
+
+instance Ord (Function' envtype) where
+  Function {functionDeclaration = fd} `compare` Function {functionDeclaration = fd'} = fd `compare` fd'
+
+-- Depending on the union, functions must sometimes take an environment parameter despite them not needing an environment - this is some functions will have an environment.
+-- However, when all functions in a union don't take an environment parameter - don't create it.
+-- It's also True if only this function has a non-empty environment.
+type NeedsImplicitEnvironment = Bool
+
+----------------
+-- Expression --
+----------------
+
+data ExprF envtype a
+  = Lit LitType
+  | Var Locality (Variable' envtype)
+  | Con (DataCon' envtype)
+  | Op a Op a
+  | Call a [a]
+  | -- NOTE: We want to leave lambda for now, because it initializes its environment immediately.
+    -- just makes it simpler for now to keep it. maybe depending on other backends / optimizations we might remove it and simplify the AST.
+    Lam (Env' envtype) [(UniqueVar, Type' envtype)] a
+  deriving (Functor, Foldable, Traversable)
+
+data TypedExpr envtype a = TypedExpr (Type' envtype) (ExprF envtype a) deriving (Functor, Foldable, Traversable)
+
+type IExpr = Fix (TypedExpr IncompleteEnv)
+
+type Expr = Fix (TypedExpr FullEnv)
+
+expr2type :: Expr -> Type
+expr2type (Fix (TypedExpr t _)) = t
+
+
+
+data Variable' envtype
+  = DefinedVariable UniqueVar
+  | DefinedFunction (Function' envtype)
+
+type IVariable = Variable' IncompleteEnv
+type Variable = Variable' FullEnv
+
+asUniqueVar :: Variable -> UniqueVar
+asUniqueVar = \case
+  DefinedVariable uv -> uv
+  DefinedFunction fn -> fn.functionDeclaration.functionId
+
+----------
+-- Case --
+----------
+
+data DeconF a
+  = CaseVariable Type UniqueVar
+  | CaseConstructor Type UniqueCon [a]
+  deriving (Functor)
+
+type Decon = Fix DeconF
+
+data CaseF expr stmt = Case
+  { deconstruction :: Decon,
+    caseCondition :: Maybe expr,
+    body :: NonEmpty stmt
+  }
+  deriving (Functor, Foldable, Traversable)
+
+type Case = CaseF Expr AnnStmt
+
+---------------
+-- Statement --
+---------------
+
+-- I want to leave expr here, so we can bifold and bimap
+data StmtF envtype expr a
+  = -- Typical statements
+    Print expr
+  | Assignment UniqueVar expr
+  | Pass
+  | Mutation UniqueVar expr
+  -- TODO: we should maybe make function bodies a normal list - by then it's possible for a body to be empty.
+  | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
+  | Switch expr (NonEmpty (CaseF expr a))
+  | ExprStmt expr
+  | Return expr
+  | EnvDef (Env' envtype)
+  deriving (Functor, Foldable, Traversable)
+
+type IStmt = StmtF IncompleteEnv IExpr AnnIStmt
+type Stmt = StmtF FullEnv Expr AnnStmt
+
+type AnnStmt' envtype = Fix (Annotated :. StmtF envtype (Fix (TypedExpr envtype)))
+type AnnIStmt = Fix (Annotated :. StmtF IncompleteEnv IExpr)
+type AnnStmt = Fix (Annotated :. StmtF FullEnv Expr)
+
+$(deriveBifunctor ''CaseF)
+$(deriveBifoldable ''CaseF)
+$(deriveBitraversable ''CaseF)
+$(deriveBifunctor ''StmtF)
+$(deriveBifoldable ''StmtF)
+$(deriveBitraversable ''StmtF)
+$(deriveEq1 ''ITypeF)
+$(deriveOrd1 ''ITypeF)
+$(deriveEq1 ''TypeF)
+$(deriveOrd1 ''TypeF)
+
+---------------
+-- Module --
+---------------
+
+data Module = Mod
+  { toplevelStatements :: [AnnStmt],
+    -- not needed, only for debugging.
+    functions :: [Function],
+    datatypes :: [DataDef]
+  }
+
+--------------------------------------------------------------------------------------
+-- Printing the AST
+
+mModule :: Module -> String
+mModule m =
+  let main = comment "Main" $ tStmts m.toplevelStatements
+      funs = comment "Functions" $ ppLines tFunction m.functions
+      dds = comment "Datatypes" $ ppLines tDataDef m.datatypes
+   in show $ flip runReader CtxData $ sepBy "\n" [dds, funs, main]
+
+tStmts :: [AnnStmt] -> Context
+tStmts = ppLines tAnnStmt
+
+tAnnStmt :: AnnStmt -> Context
+tAnnStmt (Fix (O (Annotated ann stmt))) = annotate ann $ tStmt stmt
+
+tStmt :: Stmt -> Context
+tStmt stmt = case stmt of
+  Print e -> "print" <+> tExpr e
+  Assignment v e -> ppVar Local v <+> "=" <+> tExpr e
+  Pass -> "pass"
+  Mutation v e -> ppVar Local v <+> "<=" <+> tExpr e
+  If ifCond ifTrue elseIfs mElse ->
+    tBody ("if" <+> tExpr ifCond) ifTrue
+      <> foldMap
+        ( \(cond, elseIf) ->
+            tBody ("elif" <+> tExpr cond) elseIf
+        )
+        elseIfs
+      <> maybe mempty (tBody "else") mElse
+  Switch switch cases ->
+    ppBody tCase (tExpr switch) cases
+  ExprStmt e -> tExpr e
+  Return e -> "return" <+> tExpr e
+  EnvDef funEnv -> fromString $ printf "[ENV]: %s" (tEnv funEnv)
+
+tCase :: CaseF Expr AnnStmt -> Context
+tCase kase = tBody (tDecon kase.deconstruction <+?> fmap tExpr kase.caseCondition) kase.body
+
+tDecon :: Decon -> Context
+tDecon = cata $ \case
+  CaseVariable _ uv -> ppVar Local uv
+  CaseConstructor _ uc [] -> ppCon uc
+  CaseConstructor _ uc args@(_ : _) -> ppCon uc <> encloseSepBy "(" ")" ", " args
+
+tExpr :: Expr -> Context
+tExpr = cata $ \(TypedExpr t expr) ->
+  let encloseInType c = "(" <> c <+> "::" <+> tType t <> ")"
+   in encloseInType $ case expr of
+        Lit (LInt x) -> pretty x
+        Var l (DefinedVariable v) -> ppVar l v
+        Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
+        Con (DC _ uc _ _) -> ppCon uc
+        Op l op r -> l <+> ppOp op <+> r
+        Call f args -> f <> encloseSepBy "(" ")" ", " args
+        Lam lenv params e -> fromString $ printf "%s %s:%s" (tEnv lenv) (sepBy " " (map (\(v, vt) -> ppVar Local v <+> tType vt) params)) e
+  where
+    ppOp = \case
+      Plus -> "+"
+      Minus -> "-"
+      Times -> "*"
+      Divide -> "/"
+      Equals -> "=="
+      NotEquals -> "/="
+
+tFunction :: Function -> Context
+tFunction (Function fd funBody) = tBody (tFunDec fd) funBody
+
+tDataDef :: DataDef -> Context
+tDataDef (DD tid cons ann) = annotate ann $ indent (ppTypeInfo tid) $ ppLines tConDef cons
+
+tConDef :: DataCon -> Context
+tConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
+
+tFunDec :: FunDec -> Context
+tFunDec (FD funEnv v params retType needsEnv) = comment (tEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <> ((" " <>) . tType) pType) params) <> ((" " <>) . tType) retType <> (if needsEnv then " +ENV" else " -ENV")
+
+tTypes :: (Functor t) => t Type -> t Context
+tTypes = fmap $ \t@(Fix t') -> case t' of
+  TCon _ -> enclose t
+  TFun {} -> enclose t
+  where
+    enclose x = "(" <> tType x <> ")"
+
+tType :: Type -> Context
+tType = cata $ \case
+  TCon (DD tid _ _) -> ppTypeInfo tid
+  TFun funUnion args ret -> tEnvUnion (tEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+
+tEnvUnion :: EnvUnionF Context -> Context
+tEnvUnion EnvUnion {unionID = uid, union = us} = ppUnionID uid <> encloseSepBy "{" "}" ", " (NonEmpty.toList us)
+
+tEnvUnion' :: EnvUnionF Type -> Context
+tEnvUnion' = tEnvUnion . fmap tType
+
+tEnv :: EnvF Type -> Context
+tEnv = tEnv' . fmap tType
+
+tEnv' :: EnvF Context -> Context
+tEnv' (RecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
+tEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
+
+tBody :: (Foldable f) => Context -> f AnnStmt -> Context
+tBody = ppBody tAnnStmt
+

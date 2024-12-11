@@ -23,9 +23,13 @@ library
   exposed-modules:
       AST.Common
       AST.Converged
+      AST.Mono
       AST.Resolved
       AST.Typed
       AST.Untyped
+      CPrinter
+      Misc.Memo
+      Mono
       Parser
       Resolver
       Typecheck

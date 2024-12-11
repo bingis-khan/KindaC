@@ -16,6 +16,10 @@ import Data.String (IsString (..))
 import qualified Prettyprinter as PP
 import Data.Foldable (fold)
 import Data.List (intersperse)
+import qualified Text.Printf
+import Text.Printf (PrintfArg(..), formatString)
+import Data.Map (Map)
+import qualified Data.Map as Map
 
 
 -- FUTURE TODO: GHC is using type families in a MUCH SMARTER WAY:
@@ -182,6 +186,12 @@ ctx f = show . flip runReader CtxData . f
 ppBody :: Foldable t => (a -> Context) -> Context -> t a -> Context
 ppBody f header = indent header . ppLines f
 
+printf :: Text.Printf.PrintfType r => String -> r
+printf = Text.Printf.printf
+
+instance Text.Printf.PrintfArg Context where
+  formatArg = Text.Printf.formatString . ctx id
+  
 
 -- Technically should be something like Text for the annotation type, but I need to have access to context in annotations
 comment :: Context -> Context -> Context
@@ -231,6 +241,9 @@ ppUnionID = pretty . hashUnique . fromUnionID
 
 ppUnique :: Unique -> Context
 ppUnique = pretty . hashUnique
+
+ppMap :: [(Context, Context)] -> Context
+ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v) 
 
 -- ppFunEnv :: FunEnv Context -> Context
 -- ppFunEnv (FunEnv vts) = encloseSepBy "[" "]" " " (fmap (encloseSepBy "[" "]" ", " . fmap (\(v, t) -> rVar Local v <+> encloseSepBy "[" "]" " " t)) vts)

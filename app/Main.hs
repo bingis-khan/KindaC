@@ -19,9 +19,12 @@ import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import Typecheck (typecheck)
+import Mono (mono)
+import Control.Monad (when)
+import qualified AST.Mono as M
 -- import AST.Mono (mModule)
 -- import Mono (mono)
--- import CPrinter (cModule)
+import CPrinter (cModule)
 -- import AST.Converged (Prelude(..))
 
 
@@ -61,6 +64,15 @@ main = do
       putStrLn $ T.tModule tmod
       let errors = s2t rerrs ++ s2t terrs
       TextIO.putStrLn $ Text.unlines errors
+
+      when (null errors) $ do
+        mmod <- mono tmod
+        putStrLn $ M.mModule mmod
+
+        let cmod = cModule mmod
+        TextIO.putStrLn cmod
+
+        TextIO.writeFile "test.c" cmod
 
       -- case mtmod of
         -- Left tes -> 

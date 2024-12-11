@@ -1,0 +1,20 @@
+
+I have an idea for... ya guessed it... syntax.
+
+# typical single constructor datatype (as is currently)
+Tuple a b
+	Tuple a b
+
+# new proposed syntax - quick definition of single constructor types.
+Tuple a b: Tuple a b
+
+# also nice for newtype-like datatypes
+Subst: Subst (Map TVar Type)
+
+# type synonym
+MyTuple = Tuple Int String
+
+# downsides? because of type synonyms, we won't be able to destructure single-constructor types (it's pointless anyway, but still...)
+
+# maybe we can have an exception - you have to add parenthesis:
+Unit() = Unit  # empty deconstruction

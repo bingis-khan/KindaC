@@ -155,7 +155,7 @@ rStmts = traverse -- traverse through the list with Ctx
           let innerEnv = Set.delete vid $ sconcat $ fmap gatherVariables rbody
           env <- mkEnv innerEnv
 
-        pass
+        stmt $ R.EnvDef function
 
     rCase :: U.CaseF U.Expr (Ctx R.AnnStmt) -> Ctx (R.Case R.Expr R.AnnStmt)
     rCase kase = do
@@ -437,14 +437,15 @@ mkEnv innerEnv = do
   locality <- localityOfVariablesAtCurrentScope
   pure $ Env $ mapMaybe (locality !?) $ Set.toList innerEnv
 
-localityOfVariablesAtCurrentScope :: Ctx (Map UniqueVar (UniqueVar, Locality))
+localityOfVariablesAtCurrentScope :: Ctx (Map UniqueVar (R.Variable, Locality))
 localityOfVariablesAtCurrentScope = do
   allScopes <- getScopes
-  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (v, (v, locality))) $ Map.elems $ R.asUniqueVar <$> l.varScope) <> r) mempty $ (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs) allScopes
+  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (R.asUniqueVar v, (v, locality))) $ Map.elems $ l.varScope) <> r) mempty $ (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs) allScopes
 
 -- used for function definitions
 gatherVariables :: R.AnnStmt -> Set UniqueVar
 gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesFromExpr bstmt of
+  R.Mutation v expr -> Set.insert v expr
   stmt -> bifold stmt
 
 -- used for lambdas
