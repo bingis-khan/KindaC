@@ -72,37 +72,37 @@ type family Type' envtype
 
 -- I think I'll keep the separate-but-same-structure environments until codegen, because it might be nice information to have?
 -- I'll do deduplication during the codegen phase
-data EnvF t
-  = Env EnvID [(UniqueVar, Locality, t)]
+data EnvF envtype t
+  = Env EnvID [(Variable' envtype, Locality, t)]
   | RecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
 
-type IEnv = EnvF IType
+type IEnv = EnvF IncompleteEnv IType
 type instance Env' IncompleteEnv = IEnv
 
-type Env = EnvF Type
+type Env = EnvF FullEnv Type
 type instance Env' FullEnv = Env
 
 type IsEmpty = Bool
 
-envID :: EnvF t -> EnvID
+envID :: EnvF envtype t -> EnvID
 envID = \case
   Env eid _ -> eid
   RecursiveEnv eid _ -> eid
 
-instance Eq t => Eq (EnvF t) where
+instance Eq t => Eq (EnvF et t) where
   -- Env lid lts == Env rid rts = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
   l == r = envID l == envID r
 
-instance Ord t => Ord (EnvF t) where
+instance Ord t => Ord (EnvF et t) where
   -- Env lid lts `compare` Env rid rts = (lid, lts <&> \(_, _, x) -> x) `compare` (rid, rts <&> \(_, _, x) -> x)
   l `compare` r = envID l `compare` envID r
 
-instance Eq1 EnvF where
+instance Eq1 (EnvF et) where
   -- liftEq f (Env lid lts) (Env rid rts) = lid == rid && and (zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts)
   liftEq _ l r = envID l == envID r
 
-instance Ord1 EnvF where
+instance Ord1 (EnvF et) where
   -- liftCompare f (Env lid lts) (Env rid rts) = case lid `compare` rid of
   --   EQ -> mconcat $ zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts
   --   ord -> ord
@@ -114,15 +114,15 @@ data EnvUnionF env = EnvUnion
   }
   deriving (Functor, Foldable, Traversable)
 
-type IEnvUnion = EnvUnionF (EnvF IType)
-type EnvUnion = EnvUnionF (EnvF Type)
+type IEnvUnion = EnvUnionF (EnvF IncompleteEnv IType)
+type EnvUnion = EnvUnionF (EnvF FullEnv Type)
 
-isEnvEmpty :: EnvF t -> Bool
+isEnvEmpty :: EnvF envtype t -> Bool
 isEnvEmpty = \case
   RecursiveEnv _ isEmpty -> isEmpty
   Env _ envs -> null envs
 
-areAllEnvsEmpty :: EnvUnionF (EnvF a) -> Bool
+areAllEnvsEmpty :: EnvUnionF (EnvF envtype a) -> Bool
 areAllEnvsEmpty envUnion = all isEnvEmpty envUnion.union
 
 instance Eq (EnvUnionF t) where
@@ -145,15 +145,15 @@ instance Ord1 EnvUnionF where
   liftCompare _ (EnvUnion {unionID = uid}) (EnvUnion {unionID = uid'}) = uid `compare` uid'
 
 data ITypeF a
-  = ITCon IDataDef [a] [EnvUnionF (EnvF a)]  -- for type mapping and later to know how to memoize
-  | ITFun (EnvUnionF (EnvF a)) [a] a
+  = ITCon IDataDef [a] [EnvUnionF (EnvF IncompleteEnv a)]  -- for type mapping and later to know how to memoize
+  | ITFun (EnvUnionF (EnvF IncompleteEnv a)) [a] a
   | ITVar TVar
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 
 
 data TypeF a
   = TCon DataDef
-  | TFun (EnvUnionF (EnvF a)) [a] a
+  | TFun (EnvUnionF (EnvF FullEnv a)) [a] a
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 
 type IType = Fix ITypeF
@@ -405,10 +405,10 @@ tEnvUnion EnvUnion {unionID = uid, union = us} = ppUnionID uid <> encloseSepBy "
 tEnvUnion' :: EnvUnionF Type -> Context
 tEnvUnion' = tEnvUnion . fmap tType
 
-tEnv :: EnvF Type -> Context
+tEnv :: EnvF FullEnv Type -> Context
 tEnv = tEnv' . fmap tType
 
-tEnv' :: EnvF Context -> Context
+tEnv' :: EnvF FullEnv Context -> Context
 tEnv' (RecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
 tEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
 
@@ -498,19 +498,16 @@ mtTypes = fmap $ \t@(Fix t') -> case t' of
 mtType :: IType -> Context
 mtType = cata $ \case
   ITCon (DD tid _ _) _ _ -> ppTypeInfo tid
-  ITFun funUnion args ret -> tEnvUnion (tEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+  ITFun funUnion args ret -> tEnvUnion (mtEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
   ITVar (TV tv) -> pretty tv
-
-mtEnvUnion :: EnvUnionF Context -> Context
-mtEnvUnion EnvUnion {unionID = uid, union = us} = ppUnionID uid <> encloseSepBy "{" "}" ", " (NonEmpty.toList us)
 
 mtEnvUnion' :: EnvUnionF Type -> Context
 mtEnvUnion' = tEnvUnion . fmap tType
 
-mtEnv :: EnvF IType -> Context
-mtEnv = tEnv' . fmap mtType
+mtEnv :: EnvF IncompleteEnv IType -> Context
+mtEnv = mtEnv' . fmap mtType
 
-mtEnv' :: EnvF Context -> Context
+mtEnv' :: EnvF IncompleteEnv Context -> Context
 mtEnv' (RecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
 mtEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
 

@@ -70,23 +70,23 @@ rStmts = traverse -- traverse through the list with Ctx
       Pass -> stmt R.Pass
       Mutation name e -> do
         re <- rExpr e
-        (_, vf) <- resolveVar name
+        (loc, vf) <- resolveVar name
 
         case vf of
           R.DefinedVariable vid ->
-            stmt $ R.Mutation vid re
+            stmt $ R.Mutation vid loc re
 
           R.DefinedFunction fun -> do
             err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
 
             vid <- generateVar name
-            stmt $ R.Mutation vid re
+            stmt $ R.Mutation vid Local re
             
           R.ExternalFunction fun -> do
             err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
 
             vid <- generateVar name
-            stmt $ R.Mutation vid re
+            stmt $ R.Mutation vid Local re
 
 
       If cond ifTrue elseIfs elseBody -> do
@@ -445,7 +445,7 @@ localityOfVariablesAtCurrentScope = do
 -- used for function definitions
 gatherVariables :: R.AnnStmt -> Set UniqueVar
 gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesFromExpr bstmt of
-  R.Mutation v expr -> Set.insert v expr
+  R.Mutation v _ expr -> Set.insert v expr
   stmt -> bifold stmt
 
 -- used for lambdas

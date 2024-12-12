@@ -122,7 +122,7 @@ data StmtF expr a
   | Assignment UniqueVar expr
   | Pass
 
-  | Mutation UniqueVar expr
+  | Mutation UniqueVar Locality expr
 
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
   | Switch expr (NonEmpty (Case expr a))
@@ -205,7 +205,7 @@ tStmt stmt = case first tExpr stmt of
   Print e -> "print" <+> e
   Assignment v e -> ppVar Local v <+> "=" <+> e
   Pass -> "pass"
-  Mutation v e -> ppVar Local v <+> "<=" <+> e
+  Mutation v loc e -> ppVar loc v <+> "<=" <+> e
   If ifCond ifTrue elseIfs mElse ->
     tBody ("if" <+> ifCond ) ifTrue <>
     foldMap (\(cond, elseIf) ->

@@ -35,6 +35,8 @@ Either e a
 	Left e
 	Right a
 
+uni (l asd, b asd)
+	return
 
 ff = id
 
@@ -44,7 +46,7 @@ some (x a)
 		print n
 		return n
 
-	ff <= printn
+	uni (ff, printn)
 	return
 
 some(69)

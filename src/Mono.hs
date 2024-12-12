@@ -127,7 +127,7 @@ mAnnStmt = cata (fmap embed . f) where
       T.ExprStmt expr -> mann $ M.ExprStmt expr
       T.Assignment vid expr -> mann $ M.Assignment vid expr
       T.Print expr -> mann $ M.Print expr
-      T.Mutation vid expr -> mann $ M.Mutation vid expr
+      T.Mutation vid loc expr -> mann $ M.Mutation vid loc expr
       T.If cond ifTrue elseIfs else' -> mann $ M.If cond ifTrue elseIfs else'
       T.Switch switch cases -> mann . M.Switch switch $ mCase <$> cases
       T.Return ete -> mann $ M.Return ete
@@ -813,7 +813,7 @@ mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)
     M.ExprStmt e -> s $ M.ExprStmt e
     M.Assignment vid expr -> s $ M.Assignment vid expr
     M.Print e -> s $ M.Print e
-    M.Mutation vid e -> s $ M.Mutation vid e
+    M.Mutation vid loc e -> s $ M.Mutation vid loc e
     M.If cond ifTrue elseIfs else' -> s $ M.If cond (body ifTrue) (fmap2 body elseIfs) (body <$> else')
     M.Switch _ _ -> undefined
     M.Return e -> s $ M.Return e
@@ -838,7 +838,7 @@ mfExpr expr = flip cata expr $ \(M.TypedExpr imt imexpr) -> do
     M.Call c args -> M.Call <$> c <*> sequenceA args
 
 
-mfEnv :: M.EnvF (EnvContext M.Type) -> EnvContext M.Env
+mfEnv :: M.EnvF M.IncompleteEnv (EnvContext M.Type) -> EnvContext M.Env
 mfEnv (M.RecursiveEnv eid isEmpty) = pure $ M.RecursiveEnv eid isEmpty
 mfEnv (M.Env eid envparams) = do
   menvparams <- sequenceA2 envparams
@@ -859,7 +859,7 @@ mfType = para $ fmap embed . \case
   M.ITVar tv -> error $ printf "[COMPILER ERROR]: TVar %s not matched - types not applied correctly?" (show tv)
 
 
-mfUnion :: M.EnvUnionF (M.EnvF (M.IType, EnvContext M.Type)) -> EnvContext M.EnvUnion
+mfUnion :: M.EnvUnionF (M.EnvF M.IncompleteEnv (M.IType, EnvContext M.Type)) -> EnvContext M.EnvUnion
 mfUnion union = do
   usedEnvs <- filterEnvs $ NonEmpty.toList union.union
 
@@ -956,7 +956,7 @@ ftvButIgnoreUnions = cata $ \case
   M.ITFun _ args ret -> mconcat args <> ret
 
 
-filterEnvs :: [M.EnvF a] -> EnvContext [M.EnvF a]
+filterEnvs :: [M.EnvF envtype a] -> EnvContext [M.EnvF envtype a]
 filterEnvs envs = do
   envIds <- RWS.asks usedEnvs
 
