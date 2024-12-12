@@ -2,7 +2,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), CtxData(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf)
+import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), CtxData(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines')
 import qualified AST.Typed as T
 
 import Data.Fix (Fix(..))
@@ -189,7 +189,10 @@ $(deriveBitraversable ''StmtF)
 ----------------------
 
 pModule :: Module -> String
-pModule = show . flip runReader CtxData . tStmts . toplevel
+pModule mod = show . flip runReader CtxData $ ppLines'
+  [ ppLines tFunction mod.functions
+  , tStmts mod.toplevel
+  ]
 
 tStmts :: [AnnStmt] -> Context
 tStmts = ppLines tAnnStmt
@@ -251,6 +254,9 @@ tConDef (DC _ g t anns) = annotate anns $ foldl' (<+>) (ppCon g) $ tTypes t
 
 tFunDec :: FunDec -> Context
 tFunDec (FD fenv v params retType) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <+?> fmap tType pType) params) <+?> fmap tType retType
+
+tFunction :: Function -> Context
+tFunction fn = tBody (tFunDec fn.functionDeclaration) fn.functionBody
 
 tTypes :: Functor t => t Type -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of

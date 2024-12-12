@@ -39,12 +39,12 @@ Either e a
 ff = id
 
 some (x a)
-	printn (n Int)
+	printn (n)
 		print x
 		print n
 		return n
-	
-	printn(123)
+
+	ff <= printn
 	return
 
 some(69)

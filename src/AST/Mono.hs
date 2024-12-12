@@ -11,8 +11,7 @@
 
 module AST.Mono (module AST.Mono) where
 
-import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar)
-import qualified AST.Typed as T
+import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (TV))
 import Control.Monad.Trans.Reader (runReader)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Eq.Deriving (deriveEq1)
@@ -92,21 +91,21 @@ envID = \case
   RecursiveEnv eid _ -> eid
 
 instance Eq t => Eq (EnvF t) where
-  Env lid lts == Env rid rts = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
+  -- Env lid lts == Env rid rts = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
   l == r = envID l == envID r
 
 instance Ord t => Ord (EnvF t) where
-  Env lid lts `compare` Env rid rts = (lid, lts <&> \(_, _, x) -> x) `compare` (rid, rts <&> \(_, _, x) -> x)
+  -- Env lid lts `compare` Env rid rts = (lid, lts <&> \(_, _, x) -> x) `compare` (rid, rts <&> \(_, _, x) -> x)
   l `compare` r = envID l `compare` envID r
 
 instance Eq1 EnvF where
-  liftEq f (Env lid lts) (Env rid rts) = lid == rid && and (zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts)
+  -- liftEq f (Env lid lts) (Env rid rts) = lid == rid && and (zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts)
   liftEq _ l r = envID l == envID r
 
 instance Ord1 EnvF where
-  liftCompare f (Env lid lts) (Env rid rts) = case lid `compare` rid of
-    EQ -> mconcat $ zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts
-    ord -> ord
+  -- liftCompare f (Env lid lts) (Env rid rts) = case lid `compare` rid of
+  --   EQ -> mconcat $ zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts
+  --   ord -> ord
   liftCompare _ l r = envID l `compare` envID r
 
 data EnvUnionF env = EnvUnion
@@ -272,7 +271,7 @@ data StmtF envtype expr a
     Print expr
   | Assignment UniqueVar expr
   | Pass
-  | Mutation UniqueVar expr
+  | Mutation UniqueVar Locality expr
   -- TODO: we should maybe make function bodies a normal list - by then it's possible for a body to be empty.
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
   | Switch expr (NonEmpty (CaseF expr a))
@@ -310,6 +309,7 @@ data Module = Mod
     datatypes :: [DataDef]
   }
 
+
 --------------------------------------------------------------------------------------
 -- Printing the AST
 
@@ -331,7 +331,7 @@ tStmt stmt = case stmt of
   Print e -> "print" <+> tExpr e
   Assignment v e -> ppVar Local v <+> "=" <+> tExpr e
   Pass -> "pass"
-  Mutation v e -> ppVar Local v <+> "<=" <+> tExpr e
+  Mutation v l e -> ppVar l v <+> "<=" <+> tExpr e
   If ifCond ifTrue elseIfs mElse ->
     tBody ("if" <+> tExpr ifCond) ifTrue
       <> foldMap
@@ -415,3 +415,104 @@ tEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t
 tBody :: (Foldable f) => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
 
+
+
+--------------------------------------------------------------------------------------
+-- Printing the AST (cucked version)
+
+mtStmts :: [AnnIStmt] -> Context
+mtStmts = ppLines mtAnnStmt
+
+mtAnnStmt :: AnnIStmt -> Context
+mtAnnStmt (Fix (O (Annotated ann stmt))) = annotate ann $ mtStmt stmt
+
+mtStmt :: IStmt -> Context
+mtStmt stmt = case stmt of
+  Print e -> "print" <+> mtExpr e
+  Assignment v e -> ppVar Local v <+> "=" <+> mtExpr e
+  Pass -> "pass"
+  Mutation v l e -> ppVar l v <+> "<=" <+> mtExpr e
+  If ifCond ifTrue elseIfs mElse ->
+    mtBody ("if" <+> mtExpr ifCond) ifTrue
+      <> foldMap
+        ( \(cond, elseIf) ->
+            mtBody ("elif" <+> mtExpr cond) elseIf
+        )
+        elseIfs
+      <> maybe mempty (mtBody "else") mElse
+  Switch switch cases ->
+    ppBody mtCase (mtExpr switch) cases
+  ExprStmt e -> mtExpr e
+  Return e -> "return" <+> mtExpr e
+  EnvDef funEnv -> fromString $ printf "[ENV]: %s" (mtEnv funEnv)
+
+mtCase :: CaseF IExpr AnnIStmt -> Context
+mtCase kase = mtBody (mtDecon kase.deconstruction <+?> fmap mtExpr kase.caseCondition) kase.body
+
+mtDecon :: Decon -> Context
+mtDecon = cata $ \case
+  CaseVariable _ uv -> ppVar Local uv
+  CaseConstructor _ uc [] -> ppCon uc
+  CaseConstructor _ uc args@(_ : _) -> ppCon uc <> encloseSepBy "(" ")" ", " args
+
+mtExpr :: IExpr -> Context
+mtExpr = cata $ \(TypedExpr t expr) ->
+  let encloseInType c = "(" <> c <+> "::" <+> mtType t <> ")"
+   in encloseInType $ case expr of
+        Lit (LInt x) -> pretty x
+        Var l (DefinedVariable v) -> ppVar l v
+        Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
+        Con (DC _ uc _ _) -> ppCon uc
+        Op l op r -> l <+> ppOp op <+> r
+        Call f args -> f <> encloseSepBy "(" ")" ", " args
+        Lam lenv params e -> fromString $ printf "%s %s:%s" (mtEnv lenv) (sepBy " " (map (\(v, vt) -> ppVar Local v <+> mtType vt) params)) e
+  where
+    ppOp = \case
+      Plus -> "+"
+      Minus -> "-"
+      Times -> "*"
+      Divide -> "/"
+      Equals -> "=="
+      NotEquals -> "/="
+
+mtFunction :: IFunction -> Context
+mtFunction (Function fd funBody) = mtBody (mtFunDec fd) funBody
+
+mtDataDef :: DataDef -> Context
+mtDataDef (DD tid cons ann) = annotate ann $ indent (ppTypeInfo tid) $ ppLines tConDef cons
+
+mtConDef :: DataCon -> Context
+mtConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
+
+mtFunDec :: IFunDec -> Context
+mtFunDec (FD funEnv v params retType needsEnv) = comment (mtEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <> ((" " <>) . mtType) pType) params) <> ((" " <>) . mtType) retType <> (if needsEnv then " +ENV" else " -ENV")
+
+mtTypes :: (Functor t) => t IType -> t Context
+mtTypes = fmap $ \t@(Fix t') -> case t' of
+  ITCon {} -> enclose t
+  ITFun {} -> enclose t
+  _ -> mtType t
+  where
+    enclose x = "(" <> mtType x <> ")"
+
+mtType :: IType -> Context
+mtType = cata $ \case
+  ITCon (DD tid _ _) _ _ -> ppTypeInfo tid
+  ITFun funUnion args ret -> tEnvUnion (tEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+  ITVar (TV tv) -> pretty tv
+
+mtEnvUnion :: EnvUnionF Context -> Context
+mtEnvUnion EnvUnion {unionID = uid, union = us} = ppUnionID uid <> encloseSepBy "{" "}" ", " (NonEmpty.toList us)
+
+mtEnvUnion' :: EnvUnionF Type -> Context
+mtEnvUnion' = tEnvUnion . fmap tType
+
+mtEnv :: EnvF IType -> Context
+mtEnv = tEnv' . fmap mtType
+
+mtEnv' :: EnvF Context -> Context
+mtEnv' (RecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
+mtEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
+
+mtBody :: (Foldable f) => Context -> f AnnIStmt -> Context
+mtBody = ppBody mtAnnStmt

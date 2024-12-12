@@ -305,6 +305,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
       R.Mutation v (expr, t) -> do
         vt <- var v
         vt `uni` t
+        addEnv v vt
         pure $ T.Mutation v expr
 
       R.If (cond, condt) ifTrue elseIfs ifFalse -> do

@@ -34,7 +34,7 @@ import Data.Functor.Identity (Identity(..))
 import Data.Set (Set)
 import Control.Monad (void, unless, join, (<=<))
 import Data.Semigroup (sconcat)
-import Misc.Memo (Memo (..), emptyMemo, memo, memoToMap, memo')
+import Misc.Memo (Memo (..), emptyMemo, memo, memoToMap, memo', isMemoed)
 import Data.Monoid (Any (Any, getAny))
 import Data.Foldable (find)
 import Control.Monad.Trans.RWS (RWS)
@@ -48,8 +48,16 @@ data Context' = Context
   , memoEnv :: Memo (T.EnvF M.IType) M.IEnv
   , memoUnion :: Memo (T.EnvUnionF M.IType) M.IEnvUnion
 
-  , envUsage :: Set M.IEnv
-  , instantiationUsage :: Map TVar (Set TypeMap)
+  -- SPECIAL ENVIRONMENTS!!!
+  , cuckedUnions :: Memo UnionID M.IEnvUnion  -- this tracks which environments couldn't be resolved. then, any time this environment is encountered, use this instead of `memoUnion`.
+  -- we have to use EnvID, as the default comparator for Env checks arguments.
+  -- TODO: all of this is todo. there might a better way, which only traverses everything once. (maybe? we still have to substitute remaining tvars in scope.)
+  -- TODO: update above comments for Unions instead of Envs.
+
+  -- burh, this is shit, literally
+  -- like, maybe env usage can be merged into that kekekek.
+  , envInstantiations :: Map EnvID (Set M.IEnv)
+  -- , instantiationUsage :: Map TVar (Set TypeMap)  -- kind of wasteful? we only need to track TVars which could not be solved before.
   }
 type Context = StateT Context' IO
 
@@ -62,17 +70,24 @@ mono mod = do
   let (Memo fm) = ctx.memoFunction
   let ifns = Map.elems fm
 
-  let (Memo dm) = ctx.memoDatatype
-  let idds = map fst $ Map.elems dm
+  -- let (Memo dm) = ctx.memoDatatype
+  -- let idds = map fst $ Map.elems dm
 
 
   -- REMEMBER TO
   -- 1. substitute environments
   -- 2. check function usage and remove unused EnvDefs
   --      note, that EnvDefs might monomorphize unused functions. Thus, you should keep environments Typed, filter EnvDefs and then substitute environments. Maybe actually do it in the same step. Empty Unions would be removed also.
+  liftIO $ for_ ifns $ \ifn -> putStrLn $ Common.ctx M.mtFunction ifn
+  liftIO $ putStrLn $ Common.ctx M.mtStmts mistmts
+  liftIO $ do
+    putStrLn "Env Inst"
+    for_ (Map.toList ctx.envInstantiations) $ \(eid, envs) ->
+      putStrLn $ "  " <> show eid <> " => " <> show (M.envID <$> (Set.toList envs))
 
 
-  let (mstmts, dds, fns) = withEnvContext ctx.envUsage ctx.instantiationUsage $ do
+  let envUsage = Map.keysSet ctx.envInstantiations
+  let (mstmts, dds, fns) = withEnvContext envUsage ctx.envInstantiations $ do
         mstmts <- mfAnnStmts mistmts
         fns <- traverse mfFunction ifns
 
@@ -185,17 +200,24 @@ variable (T.DefinedFunction vfn) et = do
       pure (menv, mbody)
 
     -- remember to add this environment to the "used" environments.
-    registerEnvUsage env
+    registerEnvMono (T.envID vfn.functionDeclaration.functionEnv) env
+
     pure fn
 
-registerEnvUsage :: M.IEnv -> Context ()
-registerEnvUsage env = State.modify $ \c -> c { envUsage = Set.insert env c.envUsage }
+-- this is so bad ongggggggg, like literally.
+--  but maybe it'll work.
+registerEnvMono :: EnvID -> M.IEnv -> Context ()
+registerEnvMono oldEID nuEnv | null (ftvEnvButIgnoreUnions nuEnv) = State.modify $ \ctx -> ctx { envInstantiations = Map.insertWith (<>) (M.envID nuEnv) (Set.singleton nuEnv) (Map.insertWith (<>) oldEID (Set.singleton nuEnv) ctx.envInstantiations) }
 
-registerTypeMapUsage :: TypeMap -> Context ()
-registerTypeMapUsage tm@(TypeMap mt) = do
-  let tvars = Map.keys mt
-      newAdditions = Map.fromList $ tvars <&> (,Set.singleton tm)
-  State.modify $ \ctx -> ctx { instantiationUsage = Map.unionWith (<>) newAdditions ctx.instantiationUsage }
+-- ignore when the environment has TVars...???? i guess...
+registerEnvMono _ _ = pure ()
+
+
+-- registerTypeMapUsage :: TypeMap -> Context ()
+-- registerTypeMapUsage tm@(TypeMap mt) = do
+--   let tvars = Map.keys mt
+--       newAdditions = Map.fromList $ tvars <&> (,Set.singleton tm)
+--   State.modify $ \ctx -> ctx { instantiationUsage = Map.unionWith (<>) newAdditions ctx.instantiationUsage }
 
 constructor :: T.DataCon -> T.Type -> Context M.IDataCon
 constructor tdc@(T.DC dd _ _ _) et = do
@@ -288,7 +310,7 @@ retrieveTV tv = do
 withTypeMap :: [(TVar, M.IType)] -> Context a -> Context a
 withTypeMap tmv a = do
   let tm = TypeMap $ Map.fromList tmv
-  registerTypeMapUsage tm
+  -- registerTypeMapUsage tm
 
   ogTM <- State.gets tvarMap
   x <- State.withStateT (\s -> s { tvarMap = tm <> s.tvarMap }) a
@@ -298,15 +320,33 @@ withTypeMap tmv a = do
 
 mUnion :: T.EnvUnionF (Context M.IType) -> Context M.IEnvUnion
 mUnion tunion = do
-  tunion' <- sequenceA tunion
-  memo' memoUnion (\mem ctx -> ctx { memoUnion = mem }) tunion' $ \tunion _ -> do
-    menvs <- traverse mEnv tunion.union
-    case menvs of
-      [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
+  cuckedMemo <- State.gets cuckedUnions
+  case isMemoed tunion.unionID cuckedMemo of
+    Just mu -> pure mu
+    Nothing -> do
+      tunion' <- sequenceA tunion
+      let unionFTV = foldMap ftvButIgnoreUnions tunion'
+      if not (null unionFTV)
+        then
+          memo' cuckedUnions (\mem ctx -> ctx { cuckedUnions = mem }) tunion'.unionID $ \eid _ -> do
+            menvs <- traverse mEnv tunion'.union
+            case menvs of
+              (e:es) -> do
+                -- preserve ID!!!!
+                pure $ M.EnvUnion { M.unionID = eid, M.union = e :| es }
 
-      (e:es) -> do
-        nuid <- newUnionID
-        pure $ M.EnvUnion { M.unionID = nuid, M.union = e :| es }
+              -- literally impossible as there would be no FTVs otherwise...
+              [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
+
+        else
+          memo' memoUnion (\mem ctx -> ctx { memoUnion = mem }) tunion' $ \tunion _ -> do
+            menvs <- traverse mEnv tunion.union
+            case menvs of
+              [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
+
+              (e:es) -> do
+                nuid <- newUnionID
+                pure $ M.EnvUnion { M.unionID = nuid, M.union = e :| es }
 
 mEnv' :: T.EnvF T.Type -> Context M.IEnv
 mEnv' env = do
@@ -314,11 +354,37 @@ mEnv' env = do
   mEnv env'
 
 mEnv :: T.EnvF M.IType -> Context M.IEnv
-mEnv = memo memoEnv (\mem ctx -> ctx { memoEnv = mem }) $ \env _ -> case env of
-    T.RecursiveEnv eid isEmpty -> pure $ M.RecursiveEnv eid isEmpty
-    T.Env eid params -> do
-      newEID <- newEnvID
-      pure $ M.Env newEID params
+mEnv env = do
+  -- check if this is the special env (note that by now, TVars might be substituted, so we have to check first)
+  -- cuckedMemo <- State.gets cuckedEnvs
+  -- case isMemoed (T.envID env) cuckedMemo of
+  --   Just menv -> pure menv
+  --   Nothing -> do
+
+  --     -- If not "cucked", check if this environment has any FTVs. If it has, it's our special cucked environment.
+  --     let envFTV = foldMap ftv env
+  --     if not (null envFTV)
+  --       then
+  --         memo' cuckedUnions (\mem ctx -> ctx { cuckedUnions = mem }) (T.envID env) $ \_ _ -> case env of
+  --           -- can't even happen, but handle it.
+  --           -- TODO: is this good?
+  --           T.RecursiveEnv eid isEmpty -> pure $ M.RecursiveEnv eid isEmpty
+  --           T.Env eid params -> do
+  --             -- preserve ID! we don't need to create a new one, because they will all be the same environment!
+  --             pure $ M.Env eid params
+
+  --       -- If not, it's a normal environment.
+  --       else 
+          memo' memoEnv (\mem ctx -> ctx { memoEnv = mem }) env $ \env _ -> case env of
+            T.RecursiveEnv eid isEmpty -> pure $ M.RecursiveEnv eid isEmpty
+
+            -- xdddd, we don't create a new env id when it has shit inside.
+            T.Env eid params | not (null (foldMap (\(_, _, t) -> ftvButIgnoreUnions t) params)) -> pure $ M.Env eid params
+
+            T.Env _ params -> do
+              newEID <- newEnvID
+              pure $ M.Env newEID params
+
   -- env' <- for env $ \(v, loc, ctxt) -> do
   --   ctxt' <- ctxt
 
@@ -683,8 +749,9 @@ startingContext = Context
   , memoEnv = emptyMemo
   , memoUnion = emptyMemo
 
-  , envUsage = mempty
-  , instantiationUsage = mempty
+  , cuckedUnions = emptyMemo
+  , envInstantiations = mempty
+  -- , instantiationUsage = mempty
   }
 
 
@@ -696,32 +763,29 @@ startingContext = Context
 type EnvContext = RWS EnvContextUse () EnvMemo
 data EnvContextUse = EnvContextUse -- bruh, i dunno
   { usedEnvs :: Set EnvID
-  , allInsts :: Map TVar (Set TypeMap)
+  , allInsts :: Map EnvID (Set M.IEnv)
 
   -- this changes with withInstantiation
-  , currentInst :: TypeMap
+  -- , currentInst :: TypeMap
   }
 
 data EnvMemo = EnvMemo
   { memoIDatatype :: Memo (M.IDataDef, [M.EnvUnion]) (M.DataDef, Map M.IDataCon M.DataCon)
   }
 
-withEnvContext :: Set M.IEnv -> Map TVar (Set TypeMap) -> EnvContext a -> a
+withEnvContext :: Set EnvID -> Map EnvID (Set M.IEnv) -> EnvContext a -> a
 withEnvContext envs allInstantiations x = fst $ RWS.evalRWS x envUse envMemo
   where
     envUse = EnvContextUse
       { usedEnvs = envIDs
       , allInsts = allInstantiations
-      , currentInst = mempty
       }
 
     envMemo = EnvMemo
       { memoIDatatype = emptyMemo
       }
 
-    envIDs = flip Set.map envs $ \case
-      M.Env eid _ -> eid
-      M.RecursiveEnv eid _ -> eid
+    envIDs = envs
 
 
 mfAnnStmts :: [M.AnnIStmt] -> EnvContext [M.AnnStmt]
@@ -792,18 +856,24 @@ mfType = para $ fmap embed . \case
     mret <- ret
     pure $ M.TFun munion margs mret
 
-  M.ITVar tv -> project <$> findTV tv
+  M.ITVar tv -> error $ printf "[COMPILER ERROR]: TVar %s not matched - types not applied correctly?" (show tv)
+
 
 mfUnion :: M.EnvUnionF (M.EnvF (M.IType, EnvContext M.Type)) -> EnvContext M.EnvUnion
 mfUnion union = do
   usedEnvs <- filterEnvs $ NonEmpty.toList union.union
 
   mappedEnvs <- fmap concat $ for usedEnvs $ \env -> do
-    let tvs = ftvEnv $ fst <$> env
-    insts <- instantiations tvs
+    -- let tvs = ftvEnv $ fst <$> env
+    -- insts <- instantiations tvs
 
-    for (Set.toList insts) $ \inst -> do
-      withInstantiation inst $ mfEnv $ snd <$> env
+    -- for (Set.toList insts) $ \inst -> do
+    --   withInstantiation inst $ mfEnv $ snd <$> env
+    if null (ftvEnvButIgnoreUnions $ fst <$> env)
+      then fmap (:[]) $ mfEnv $ snd <$> env
+      else do
+        envMap <- RWS.asks allInsts
+        traverse (mfEnv . fmap mfType) $ Set.toList $ Map.findWithDefault Set.empty (M.envID env) envMap
 
   let mUsedEnvs = case mappedEnvs of
         [] -> error "[COMPILER ERROR] Empty union encountered... wut!??!??!?!? Woah.1>!>!>!>!>>!"
@@ -870,8 +940,20 @@ ftv :: M.IType -> Set TVar
 ftv = cata $ \case
   M.ITVar tv -> Set.singleton tv
 
-  M.ITCon _ ts _ -> mconcat ts
+  M.ITCon _ ts _ -> mconcat ts  -- TODO: bug? why am I ignoring union here?
   M.ITFun union args ret -> foldMap fold union <> mconcat args <> ret
+
+-- special ftv
+ftvEnvButIgnoreUnions :: M.IEnv -> Set TVar
+ftvEnvButIgnoreUnions = \case
+  M.RecursiveEnv _ _ -> Set.empty
+  M.Env _ ts -> foldMap (\(_, _, t) -> ftvButIgnoreUnions t) ts
+
+ftvButIgnoreUnions :: M.IType -> Set TVar
+ftvButIgnoreUnions = cata $ \case
+  M.ITVar tv -> Set.singleton tv
+  M.ITCon _ ts _ -> mconcat ts
+  M.ITFun _ args ret -> mconcat args <> ret
 
 
 filterEnvs :: [M.EnvF a] -> EnvContext [M.EnvF a]
@@ -883,34 +965,34 @@ filterEnvs envs = do
   pure $ filter f envs
 
 
-instantiations :: Set TVar -> EnvContext (Set TypeMap)
-instantiations tvs | null tvs = pure $ Set.singleton mempty  -- no need to instantiate anything.
-instantiations tvs = do
-  insts <- RWS.asks allInsts
-  let findInst tv = fromMaybe Set.empty (insts !? tv)
-      separateInsts = Set.map findInst tvs
+-- instantiations :: Set TVar -> EnvContext (Set TypeMap)
+-- instantiations tvs | null tvs = pure $ Set.singleton mempty  -- no need to instantiate anything.
+-- instantiations tvs = do
+--   insts <- RWS.asks allInsts
+--   let findInst tv = fromMaybe Set.empty (insts !? tv)
+--       separateInsts = Set.map findInst tvs
 
-  -- now we need to do a cartesian product of those fuken tings
-  let cartesianJoin :: Set TypeMap -> Set TypeMap -> Set TypeMap
-      cartesianJoin l r = Set.map (uncurry (<>)) $ Set.cartesianProduct l r
+--   -- now we need to do a cartesian product of those fuken tings
+--   let cartesianJoin :: Set TypeMap -> Set TypeMap -> Set TypeMap
+--       cartesianJoin l r = Set.map (uncurry (<>)) $ Set.cartesianProduct l r
 
-      cartesiand = foldr1 cartesianJoin separateInsts
+--       cartesiand = foldr1 cartesianJoin separateInsts
 
-  pure cartesiand
+--   pure cartesiand
 
 
-withInstantiation :: TypeMap -> EnvContext a -> EnvContext a
-withInstantiation newInsts = do
-  -- Map.union t1 t2 prefers t1 keys. So, put newInst on the left.
-  RWS.withRWS $ \ectx s -> (ectx { currentInst = newInsts <> ectx.currentInst }, s)
+-- withInstantiation :: TypeMap -> EnvContext a -> EnvContext a
+-- withInstantiation newInsts = do
+--   -- Map.union t1 t2 prefers t1 keys. So, put newInst on the left.
+--   RWS.withRWS $ \ectx s -> (ectx { currentInst = newInsts <> ectx.currentInst }, s)
 
-findTV :: TVar -> EnvContext M.Type
-findTV tv = do
-  TypeMap insts <- RWS.asks currentInst
-  case insts !? tv of
-    Just t -> mfType t
+-- findTV :: TVar -> EnvContext M.Type
+-- findTV tv = do
+--   TypeMap insts <- RWS.asks currentInst
+--   case insts !? tv of
+--     Just t -> mfType t
 
-    Nothing -> error $ printf "[COMPILER ERROR]: TVar %s not matched - types not applied correctly?" (show tv)
+--     Nothing -> error $ printf "[COMPILER ERROR]: TVar %s not matched - types not applied correctly?" (show tv)
 
 
 traverse2 :: (Traversable t1, Traversable t2, Applicative f) => (a -> f b) -> t1 (t2 a) -> f (t1 (t2 b))
@@ -930,3 +1012,4 @@ instance Traversable ((,,) a b) where
 fmap2 :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
 fmap2 = fmap . fmap
 -- fmap3 = fmap . fmap . fmap
+

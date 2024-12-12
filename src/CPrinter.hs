@@ -89,8 +89,11 @@ cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
       bareExpr = statement . (enclose "(" ")" "void" §)
   M.Assignment uv e -> do
     statement $ cDefinition (M.expr2type e) (cVar Local uv) § "=" § cExpr e
-  M.Mutation uv e -> do
+  M.Mutation uv Local e -> do
     statement $ cVar Local uv § "=" § cExpr e
+  M.Mutation uv FromEnvironment e -> do
+    pl "// ERROR: we don't handle references yet!"
+    statement $ cVar FromEnvironment uv § "=" § cExpr e
   M.ExprStmt e -> statement $ cExpr e
   M.Return e ->
     statement $ "return" § cExpr e
@@ -233,7 +236,7 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo (ctx, lines) -> (ctx { compiledEnvs
     M.Env eid vars -> do
       -- safety measure for bugs
       when (null env) $
-        error "[COMPILER ERROR]: Called `cEnv` with an empty environment. I can ignore it, but this is probably a bug. This should be checked beforehand btw."
+        error "[COMPILER ERROR]: Called `cEnv` with an empty environment. I can ignore it, but this is probably a bug. This should be checked beforehand btw. Why? sometimes, it requires special handling, so making it an error kind of makes me aware of this."
 
       let varTypes =
             vars <&> \(v, _, t) -> do
@@ -259,9 +262,13 @@ cFunction fun' =
     let funref = cVar Local fd.functionId
     let cparams = fd.functionParameters <&> \(uv, t) -> cDefinition t (cVar Local uv)
     let envparam = do
-          -- cEnv will return "void" if the environment is empty.
-          envNames <- cEnv fd.functionEnv
-          cPtr envNames.envType § "env"
+          let envtype = if null fd.functionEnv
+              then "void*"
+              else do
+                envNames <- cEnv fd.functionEnv
+                cPtr envNames.envType
+
+          envtype § "env"
 
     let ccparams =
           if not fd.functionNeedsEnvironment
