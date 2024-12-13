@@ -58,8 +58,8 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
     T.DefinedFunction fun -> do
       -- when a function is directly referenced, we know it's reachable inside its current scope, so we add it as used
       usedInsideFunction <- rFunction fun
-      (usedInsideFunction <>) <$> used fun.functionDeclaration.functionId t
-    T.DefinedVariable uv -> if loc == FromEnvironment then used uv t else pure Set.empty
+      (usedInsideFunction <>) <$> used (T.DefinedFunction fun) t
+    T.DefinedVariable uv -> if loc == FromEnvironment then used (T.DefinedVariable uv) t else pure Set.empty
 
   T.Lam env _ ret -> withEnv env ret
 
@@ -69,7 +69,7 @@ rFunction :: T.Function -> Reach
 rFunction fun = withEnv fun.functionDeclaration.functionEnv $ rScope fun.functionBody
 
 
-used :: UniqueVar -> T.Type -> Reach
+used :: T.Variable -> T.Type -> Reach
 used v t = pure $ Set.singleton (v, t)
 
 withEnv :: T.Env -> Reach -> Reach
@@ -85,7 +85,7 @@ withEnv env r = do
   pure usedVars
 
 
-type Reach = State (Map EnvID T.Env) (Set (UniqueVar, T.Type))
+type Reach = State (Map EnvID T.Env) (Set (T.Variable, T.Type))
 
 
 --- PHASE 2: Substitute them

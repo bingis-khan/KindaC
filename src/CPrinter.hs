@@ -241,7 +241,7 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo (ctx, lines) -> (ctx { compiledEnvs
       let varTypes =
             vars <&> \(v, _, t) -> do
               statement $ do
-                cDefinition t (cVar Local v)
+                cDefinition t (cVar Local (M.asUniqueVar v))
 
       let etype = "struct" § "et" & pls (hashUnique eid.fromEnvID)
       let env = etype <§ cBlock varTypes §> ";"
@@ -249,7 +249,7 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo (ctx, lines) -> (ctx { compiledEnvs
 
 
       let name = "et" & pls (hashUnique eid.fromEnvID) & "s"
-      let cvarInsts = vars <&> \(v, loc, _) -> "." & cVar Local v § "=" § cVar loc v
+      let cvarInsts = vars <&> \(v, loc, _) -> "." & cVar Local (M.asUniqueVar v) § "=" § cVar loc (M.asUniqueVar v)
       let inst = enclose "{ " " }" $ sepBy ", " cvarInsts
       pure EnvNames { envType = etype, envName = name, envInstantiation = inst }
 
@@ -391,12 +391,12 @@ cTypeFun ret cargs v = cDefinition ret (cCall (enclose "(*" ")" v) cargs)
 cType :: M.Type -> PL
 cType (Fix t) = case t of
   M.TCon dd -> cDataType dd
-  M.TFun union args ret ->
-      let cargs =
-            if M.areAllEnvsEmpty union
-              then cType <$> args
-              else cUnion args ret union : (cType <$> args)
-       in cDefinition ret (cCall "(*)" cargs)
+  M.TFun union args ret | M.areAllEnvsEmpty union -> 
+    let cargs = cType <$> args
+    in cDefinition ret (cCall "(*)" cargs)
+
+  M.TFun union args ret -> cUnion args ret union
+
 
 cDataType :: M.DataDef -> PL
 cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo (ctx, lines) -> (ctx { compiledTypes = memo }, lines)) dd' $ \dd addMemo -> do

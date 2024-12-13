@@ -92,6 +92,7 @@ data UniqueType = TI
   -- add info about structure for later compilation
   }
 
+data VariableType = IsFunction | IsVariable  -- used to preserve if the function is a variable or a function. TODO: this might not be needed and I might instead of the "Variable" type. Note the comment near `Env` - I'm not sure what I had in mind. When I'll start cleaning up, I'll see what it's about.
 
 -- type instances for the small datatypes
 
@@ -244,6 +245,12 @@ ppUnique = pretty . hashUnique
 
 ppMap :: [(Context, Context)] -> Context
 ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v) 
+
+ppVariableType :: VariableType -> Context
+ppVariableType = \case
+  IsFunction -> "[f]"
+  IsVariable -> "[v]"
+
 
 -- ppFunEnv :: FunEnv Context -> Context
 -- ppFunEnv (FunEnv vts) = encloseSepBy "[" "]" " " (fmap (encloseSepBy "[" "]" ", " . fmap (\(v, t) -> rVar Local v <+> encloseSepBy "[" "]" " " t)) vts)

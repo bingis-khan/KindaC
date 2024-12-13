@@ -35,12 +35,22 @@ Either e a
 	Left e
 	Right a
 
-f ()
-	g ()
-		print id(Unit)
-		return
+ff = id
 
-	print id(1)
+uni (l asd, r asd)
 	return
 
-f()
+some (x a)
+	printn (n Int)
+		print x
+		print n
+		return 1
+
+	uni(ff, printn)
+
+	return
+
+some(69)
+some(Unit)
+print ff as Int -> Int
+print ff(123)

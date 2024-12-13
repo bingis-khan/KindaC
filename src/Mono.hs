@@ -377,15 +377,17 @@ mEnv env = do
 
   --       -- If not, it's a normal environment.
   --       else 
+          let mapParams = traverse $ \(v, loc, t) -> (,loc,t) <$> variable v t
           memo' memoEnv (\mem ctx -> ctx { memoEnv = mem }) env $ \env _ -> case env of
             T.RecursiveEnv eid isEmpty -> pure $ M.RecursiveEnv eid isEmpty
 
             -- xdddd, we don't create a new env id when it has shit inside.
-            T.Env eid params | not (null (foldMap (\(_, _, t) -> ftvButIgnoreUnions t) params)) -> pure $ M.Env eid params
+            T.Env eid params | not (null (foldMap (\(_, _, t) -> ftvButIgnoreUnions t) params)) -> do
+              M.Env eid <$> mapParams params
 
             T.Env _ params -> do
               newEID <- newEnvID
-              pure $ M.Env newEID params
+              M.Env newEID <$> mapParams params
 
   -- env' <- for env $ \(v, loc, ctxt) -> do
   --   ctxt' <- ctxt
@@ -825,10 +827,7 @@ mfExpr :: M.IExpr -> EnvContext M.Expr
 mfExpr expr = flip cata expr $ \(M.TypedExpr imt imexpr) -> do
   mt <- mfType imt
   fmap (embed . M.TypedExpr mt) $ case imexpr of
-    M.Var loc (M.DefinedVariable uv) -> pure $ M.Var loc (M.DefinedVariable uv)
-    M.Var loc (M.DefinedFunction fun) -> do
-      mfun <- mfFunction fun
-      pure $ M.Var loc (M.DefinedFunction mfun)
+    M.Var loc v -> M.Var loc <$> mfVariable v
     M.Lam env args ret -> do
       margs <- traverse2 mfType args
       menv <- mfEnv $ mfType <$> env
@@ -840,11 +839,18 @@ mfExpr expr = flip cata expr $ \(M.TypedExpr imt imexpr) -> do
     M.Op l op r -> M.Op <$> l <*> pure op <*> r
     M.Call c args -> M.Call <$> c <*> sequenceA args
 
+mfVariable :: M.IVariable -> EnvContext M.Variable
+mfVariable = \case
+  M.DefinedVariable uv -> pure $ M.DefinedVariable uv
+  M.DefinedFunction fun -> do
+    mfun <- mfFunction fun
+    pure $ M.DefinedFunction mfun
+
 
 mfEnv :: M.EnvF M.IncompleteEnv (EnvContext M.Type) -> EnvContext M.Env
 mfEnv (M.RecursiveEnv eid isEmpty) = pure $ M.RecursiveEnv eid isEmpty
 mfEnv (M.Env eid envparams) = do
-  menvparams <- sequenceA2 envparams
+  menvparams <- traverse (\(v, loc, t) -> liftA2 (,loc,) (mfVariable v) t) envparams
   pure $ M.Env eid menvparams
 
 mfType :: M.IType -> EnvContext M.Type

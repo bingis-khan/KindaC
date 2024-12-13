@@ -305,7 +305,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
       R.Mutation v loc (expr, t) -> do
         vt <- var v
         vt `uni` t
-        addEnv v vt
+        addEnv (T.DefinedVariable v) vt
         pure $ T.Mutation v loc expr
 
       R.If (cond, condt) ifTrue elseIfs ifFalse -> do
@@ -434,7 +434,7 @@ inferExpr = cata (fmap embed . inferExprType)
         t <- instantiateVariable v
 
         when (loc == FromEnvironment) $ do
-          addEnv (T.asUniqueVar v) t
+          addEnv v t
 
         pure t
       T.Con c -> instantiateConstructor c
@@ -949,7 +949,7 @@ data StatefulEnv = StatefulEnv
   , variables :: Map UniqueVar T.Type
 
   -- HACK: track instantiations from environments. czy jest sens?
-  , instantiations :: Set (UniqueVar, T.Type)
+  , instantiations :: Set (T.Variable, T.Type)
   }
   -- { variables :: Map UniqueVar Scheme
   -- , constructors :: Map UniqueCon Scheme
@@ -1067,7 +1067,7 @@ emptySubst = Subst mempty mempty
 -- Constructs an environment from all the instantiations.
 --  We need the instantiations, because not all instantiations of a function can come up in the environment.
 --  But, when there is a TVar in the type, it means all instantiated types of TVars must be there.
-withEnv' :: R.Env -> Infer a -> Infer ([(UniqueVar, Locality, T.Type)], a)
+withEnv' :: R.Env -> Infer a -> Infer ([(T.Variable, Locality, T.Type)], a)
 withEnv' renv x = do
 
   -- 1. clear environment - we only collect things from this scope.
@@ -1080,7 +1080,7 @@ withEnv' renv x = do
 
   -- 3. then filter the stuff that actually is from the environment
   --  TODO: this might not be needed, since we conditionally add an instantiation if it's FromEnvironment.
-  renvQuery <- Map.fromList <$> traverse (\(v, t) -> (,t) . T.asUniqueVar <$> inferVariable v) (R.fromEnv renv)
+  renvQuery <- Map.fromList <$> traverse (\(v, t) -> (,t) <$> inferVariable v) (R.fromEnv renv)
   let newEnv = mapMaybe (\(v, t) -> Map.lookup v renvQuery <&> (v,,t)) $ Set.toList modifiedInstantiations
 
 
@@ -1096,7 +1096,7 @@ withEnv renv x = do
   envID <- newEnvID
   pure (T.Env envID tenv, x')
 
-addEnv :: UniqueVar -> T.Type -> Infer ()
+addEnv :: T.Variable -> T.Type -> Infer ()
 addEnv v t = RWS.modify $ \s -> s { instantiations = Set.insert (v, t) s.instantiations }
 
   -- RWS.modify $ \s -> s { env = [] : s.env }

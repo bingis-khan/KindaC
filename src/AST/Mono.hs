@@ -73,7 +73,7 @@ type family Type' envtype
 -- I think I'll keep the separate-but-same-structure environments until codegen, because it might be nice information to have?
 -- I'll do deduplication during the codegen phase
 data EnvF envtype t
-  = Env EnvID [(UniqueVar, Locality, t)]
+  = Env EnvID [(Variable' envtype, Locality, t)]
   | RecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
 
@@ -236,7 +236,7 @@ data Variable' envtype
 type IVariable = Variable' IncompleteEnv
 type Variable = Variable' FullEnv
 
-asUniqueVar :: Variable -> UniqueVar
+asUniqueVar :: Variable' envtype -> UniqueVar
 asUniqueVar = \case
   DefinedVariable uv -> uv
   DefinedFunction fn -> fn.functionDeclaration.functionId
@@ -410,7 +410,7 @@ tEnv = tEnv' . fmap tType
 
 tEnv' :: EnvF FullEnv Context -> Context
 tEnv' (RecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
-tEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
+tEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (asUniqueVar v) <+> t) vs)
 
 tBody :: (Foldable f) => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
@@ -509,7 +509,7 @@ mtEnv = mtEnv' . fmap mtType
 
 mtEnv' :: EnvF IncompleteEnv Context -> Context
 mtEnv' (RecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
-mtEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc v <+> t) vs)
+mtEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (asUniqueVar v) <+> t) vs)
 
 mtBody :: (Foldable f) => Context -> f AnnIStmt -> Context
 mtBody = ppBody mtAnnStmt
