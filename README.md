@@ -81,3 +81,36 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 ## thoughts???
 - should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?
 
+## Design Choices
+
+### `<=` on a variable from the environment
+
+```
+f ()
+  x = 123
+
+  add1 ()
+    x <= x + 1
+
+  add1()
+  add1()
+
+# vs
+
+f ()
+  x =& 123
+
+  add1 ()
+    x <&= x + 1
+
+  add1()
+  add1()
+```
+
+The alternative is to explicitly take a reference and assign to that reference.
+
+I'm not exactly sure if it should stay allowed. When it's from the environment, it causes *the reference* of the variable to be taken and used. If `<=` appears anywhere in the nested function, then, if the function exits, it might reference invalid memory.
+
+However, it's easier to copy code around without changing stuff. In most cases, user's won't return functions, so it's kinda nice to write like this.
+
+I haven't exactly decided. I want to explicitly pass stuff like the allocator, so "hidden" behavior like this might not fit the "feel" of the language...
