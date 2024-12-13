@@ -253,6 +253,9 @@ tModule m =
     , tStmts m.toplevelStatements
     ]
 
+tStmtsOnly :: [AnnStmt] -> String
+tStmtsOnly = show . flip runReader CtxData . tStmts
+
 tStmts :: [AnnStmt] -> Context
 tStmts = ppLines tAnnStmt
 

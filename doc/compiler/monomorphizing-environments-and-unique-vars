@@ -1,0 +1,71 @@
+Currently we monomorphize environments (nice).
+
+However, because we store only UniqueVars inside environments. However, we want to remove unused functions!
+Again, we'll only be removing functions, so maybe we should explicitly annotate the thing in the environment.
+Apparently, it's easier if I keep them UniqueVar according to one comment!?!!? I'll listen to my past self for now.
+
+
+So, we leave all UniqueVars belonging to variables.
+
+But how do we know which functions were used?? !!!!!!
+
+variables in the environments have their types! So I can match on the memoed functions and remove them.
+
+So, the algorithm:
+
+1. Keep all variables (track if a UniqueVar is a function or a variable)
+2. Match on the type and check if it was memoized.
+
+
+But that's not all....
+Ah fuk, it's harder than I thought. Look.
+
+
+id (x): x
+
+f ()
+	unused-fun ()
+		print id as Int -> Int
+
+f() # call f, but it does not call unused-fun
+
+id(1) as Int -> Int
+
+
+Notice, that id: Int -> Int is memoized/monomorphized, but NOT in that function. but with the current algorithm, we would keep it... bad.
+	
+Also, we should not always keep variables. If they are used in a function, they should also be removed.
+
+So, we have two problems: change UniqueVars and remove unused variables.
+
+We solved the first one.
+
+
+Okay, so. I might make a separate phase AFTER typechecking but before monomorphizing. Since we've taken care of all the errors (actually, monomorphization can also error out, but whatever.), we can remove unused functions/variables.
+But, maybe I should do it during monomorphization? Because I want to also remove unused constructors.
+
+Also, I mean... there is another "problem" of different unions (but equivalent, eg. an union with only a single, empty environment) entering the same environment.
+Like I mentioned in the comment there, I want to keep those, as they mean different "lifetimes", however during codegen, I should absolutely merge them.
+
+Also... I don't think there is any problem with leaving UniqueVars in Mono?? Like, i dunno.
+
+
+So, the revised algorithm:
+
+Part 1: Remove unused functions/variables
+
+removeUnused :: [T.AnnStmt] -> [T.AnnStmt]
+
+gather variables and whenether they are coming through a function definition, alter it.
+(remember to keep the type tho, that's how we define equality.)
+I also have to remember to memo-map these functiosn,
+
+
+Part 2: Change unchanged variables from environments. I might do it without actually on the first "pass" in monomorphization.
+
+just remember to also map the environment. since we have UniqueVars, we might memo on UniqueVars. However, we might just add actual Variable types to the environment.
+
+
+Part 3: Remove essentially duplicate unions during codegen.
+
+Just, like, merge the type with the same union!

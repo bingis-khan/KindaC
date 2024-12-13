@@ -73,7 +73,7 @@ type family Type' envtype
 -- I think I'll keep the separate-but-same-structure environments until codegen, because it might be nice information to have?
 -- I'll do deduplication during the codegen phase
 data EnvF envtype t
-  = Env EnvID [(Variable' envtype, Locality, t)]
+  = Env EnvID [(UniqueVar, Locality, t)]
   | RecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
 

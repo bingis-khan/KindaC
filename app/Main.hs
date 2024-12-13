@@ -25,6 +25,7 @@ import qualified AST.Mono as M
 -- import AST.Mono (mModule)
 -- import Mono (mono)
 import CPrinter (cModule)
+import RemoveUnused (removeUnused)
 -- import AST.Converged (Prelude(..))
 
 
@@ -66,7 +67,9 @@ main = do
       TextIO.putStrLn $ Text.unlines errors
 
       when (null errors) $ do
-        mmod <- mono tmod
+        let removedUnused = removeUnused tmod.toplevelStatements
+        putStrLn $ T.tStmtsOnly removedUnused
+        mmod <- mono removedUnused
         putStrLn $ M.mModule mmod
 
         let cmod = cModule mmod

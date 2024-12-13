@@ -58,13 +58,15 @@ data Context' = Context
   -- like, maybe env usage can be merged into that kekekek.
   , envInstantiations :: Map EnvID (Set M.IEnv)
   -- , instantiationUsage :: Map TVar (Set TypeMap)  -- kind of wasteful? we only need to track TVars which could not be solved before.
+
+  -- HACK: Map old unique var + types to 
   }
 type Context = StateT Context' IO
 
 
-mono :: T.Module -> IO M.Module
+mono :: [T.AnnStmt] -> IO M.Module
 mono mod = do
-  (mistmts, ctx) <- flip State.runStateT startingContext $ mStmts mod.toplevelStatements
+  (mistmts, ctx) <- flip State.runStateT startingContext $ mStmts mod
   -- let mtypeIDs = Map.elems ctx.typeFind
 
   let (Memo fm) = ctx.memoFunction
@@ -801,6 +803,7 @@ mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)
         (st:sts) -> st :| sts
 
   fmap (embed . O . Annotated anns) <$> case stmt' of
+    -- TODO: this case is not needed anymore, because of RemoveUnused.
     M.EnvDef env -> do
       envl <- filterEnvs [env]
       case envl of
