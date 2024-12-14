@@ -285,6 +285,13 @@ addTopLevel tl = do
   tl' <- asTopLevel tl
   PL $ RWS.modify $ \(ctx, lines) -> (ctx { topLevelBlocks = tl' : ctx.topLevelBlocks }, lines)
 
+addIncludeIfPresent :: [Ann] -> PL
+addIncludeIfPresent anns = 
+  for_ includes $ \lib ->
+    include lib
+  where
+    includes = mapMaybe (\case { Common.ACStdInclude inclname -> Just inclname; _ -> Nothing }) anns
+
 include :: Text -> PL
 include lib = addHeading $ "#include <" <> lib <> ">"
 
@@ -399,7 +406,10 @@ cType (Fix t) = case t of
 
 
 cDataType :: M.DataDef -> PL
-cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo (ctx, lines) -> (ctx { compiledTypes = memo }, lines)) dd' $ \dd addMemo -> do
+cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo (ctx, lines) -> (ctx { compiledTypes = memo }, lines)) dd' $ \dd@(M.DD _ _ anns) addMemo -> do
+  -- don't forget to add a required library
+  addIncludeIfPresent anns
+
   let representsBuiltin = find (\case { ACType con -> Just con; _ -> Nothing }) dd.annotations
       ut = dd.datatypeUT
   case representsBuiltin of
@@ -546,7 +556,8 @@ pl (PL p) = do
   PP $ RWS.put context'
 
   sequenceA_ $ reverse precedingLines
-  PP $ RWS.tell [line]
+  when (length tokens > 0) $ do
+    PP $ RWS.tell [line]
 
   pure x
 

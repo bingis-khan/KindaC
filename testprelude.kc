@@ -16,41 +16,18 @@ Bool
 #[ctype 'int']
 Int  # Make sure this is parsed as DataDefinition with zero constructors instead of ExprType in the compiler.
 
-# #[ctype 'uint8_t', cstdinclude 'stdint.h']
-# U8
+x = False
+if x
+	print x
 
-# #[ctype 'int8_t', cstdinclude 'stdint.h']
-# I8
-
-id (x)
-	return x
-
-
-Maybe a
-	Just a
-	Nothing
-
-
-Either e a
-	Left e
-	Right a
-
-ff = id
-
-uni (l asd, r asd)
-	return
-
-some (x a)
-	printn (n Int)
+	f (n a)
 		print x
 		print n
-		return 1
+		print n
+		return
 
-	uni(ff, printn)
-
-	return
-
-some(69)
-some(Unit)
-print ff as Int -> Int
-print ff(123)
+	f(Unit)
+	f(69)
+	f(False)
+else
+	print 123

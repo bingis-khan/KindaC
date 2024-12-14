@@ -26,6 +26,7 @@ import qualified AST.Mono as M
 -- import Mono (mono)
 import CPrinter (cModule)
 import RemoveUnused (removeUnused)
+import Data.Char (toUpper)
 -- import AST.Converged (Prelude(..))
 
 
@@ -58,20 +59,26 @@ main = do
   case emod of
     Left err -> TextIO.putStrLn err
     Right mod -> do
+      phase "resolving"
       (rerrs, mod') <- resolve Nothing mod
       putStrLn $ R.pModule mod'
 
+      phase "typechecking"
       (terrs, tmod) <- typecheck Nothing mod'
       putStrLn $ T.tModule tmod
       let errors = s2t rerrs ++ s2t terrs
       TextIO.putStrLn $ Text.unlines errors
 
       when (null errors) $ do
+        phase "removing unused"
         let removedUnused = removeUnused tmod.toplevelStatements
         putStrLn $ T.tStmtsOnly removedUnused
+
+        phase "monomorphizing"
         mmod <- mono removedUnused
         putStrLn $ M.mModule mmod
 
+        phase "c-ing"
         let cmod = cModule mmod
         TextIO.putStrLn cmod
 
@@ -87,6 +94,11 @@ main = do
 
 s2t :: (Functor f, Show a) => f a -> f Text
 s2t = fmap (Text.pack . show)
+
+phase :: String -> IO ()
+phase text = 
+  let n = 10
+  in putStrLn $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
 
 -- Misc for testing
 parseModule :: FilePath -> IO (Either Text U.Module)

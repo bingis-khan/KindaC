@@ -38,10 +38,10 @@ instance Ord DataDef where
   DD ut _ _ _ _ `compare` DD ut' _ _ _ _ = ut `compare` ut'
 
 instance Eq DataCon where
-  DC uc _ _ _ == DC uc' _ _ _ = uc == uc'
+  DC _ uc _ _ == DC _ uc' _ _ = uc == (uc' :: UniqueCon)
 
 instance Ord DataCon where
-  DC uc _ _ _ `compare` DC uc' _ _ _ = uc `compare` uc'
+  DC _ uc _ _ `compare` DC _ uc' _ _ = uc `compare` (uc' :: UniqueCon)
 
 
 ----------

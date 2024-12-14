@@ -236,10 +236,11 @@ constructor tdc@(T.DC dd _ _ _) et = do
 
   (_, dcQuery) <- mDataDef (dd, mtypes, munions)
   liftIO $ putStrLn $ ctx T.tConDef tdc
+  liftIO $ print $ bimap (\(T.DC _ uc _ _) -> uc) (\(M.DC _ uc _ _) -> uc) <$> Map.toList dcQuery
   -- liftIO $ putStrLn $ ctx M.tDataDef mdc
   -- liftIO $ putStrLn $ ctx (ppMap . fmap (bimap T.tConDef M.tConDef) . Map.toList) dcQuery
   let mdc = fromJust $ dcQuery !? tdc
-  -- liftIO $ putStrLn $ ctx M.tConDef mdc
+  liftIO $ putStrLn $ ctx Common.ppCon $ (\(M.DC _ uc _ _) -> uc) mdc
   pure mdc
 
 mType :: T.Type -> Context M.IType
@@ -291,11 +292,13 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut tv
     mdcts <- traverse mType ts
     pure $ M.DC mdd nuc mdcts dcann
 
-  -- liftIO $ putStrLn "======"
-  -- liftIO $ putStrLn $ ctx (ppLines T.tConDef) tdcs
-  -- liftIO $ putStrLn "------"
-  -- liftIO $ putStrLn $ ctx (ppLines T.tConDef) strippedDCs
-  -- liftIO $ putStrLn "======"
+  liftIO $ putStrLn "======"
+  liftIO $ putStrLn $ ctx (ppLines T.tConDef) tdcs
+  liftIO $ putStrLn "------"
+  liftIO $ putStrLn $ ctx (ppLines T.tConDef) strippedDCs
+  liftIO $ putStrLn ",,,,,,"
+  liftIO $ putStrLn $ ctx (ppLines (\(M.DC _ uc _ _) -> Common.ppCon uc)) dcs
+  liftIO $ putStrLn "======"
   let dcQuery = Map.fromList $ zip strippedDCs dcs
 
   pure (mdd, dcQuery)
