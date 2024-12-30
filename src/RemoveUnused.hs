@@ -31,6 +31,10 @@ import Debug.Trace (traceShow, trace)
 import Data.Bifunctor (bimap)
 
 
+-- 30.12.24: wait, what did i need it for??? i forgot...
+-- ah, right. if a function is not called (not reachable) remove other variables (from the environment) that are refernced only by unused functions
+--  we do this by remapping environments.
+
 removeUnused :: [T.AnnStmt] -> [T.AnnStmt]
 removeUnused stmts =
   -- phase 1: create new environments.
@@ -60,6 +64,11 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
       usedInsideFunction <- rFunction fun
       (usedInsideFunction <>) <$> used (T.DefinedFunction fun) t
     T.DefinedVariable uv -> if loc == FromEnvironment then used (T.DefinedVariable uv) t else pure Set.empty
+
+  T.Con envID _ -> do 
+    let emptyEnv = T.Env envID []
+    State.modify $ Map.insert envID emptyEnv
+    pure mempty
 
   T.Lam env _ ret -> withEnv env ret
 
@@ -117,7 +126,7 @@ sExpr = transverse $ \(T.TypedExpr t expr) -> do
     T.Var loc v -> T.Var loc <$> sVariable v
     T.Lam env params ret -> liftA3 T.Lam (mustReplace env) (traverse2 sType params) ret
     T.As e at -> liftA2 T.As e (sType at)
-    T.Con con -> T.Con <$> sDataCon con
+    T.Con envID con -> T.Con envID <$> sDataCon con
     e -> sequenceA e
 
 sType :: Mem T.Type
@@ -151,9 +160,8 @@ sBody stmts = do
 
 
 sDataDef :: Mem T.DataDef
-sDataDef = memo id const $ \(T.DD uv tvs unions dcs anns) addMemo -> mdo
-  unions' <- traverse sUnion unions
-  let dd = T.DD uv tvs unions' dcs' anns
+sDataDef = memo id const $ \(T.DD uv tvs dcs anns) addMemo -> mdo
+  let dd = T.DD uv tvs dcs' anns
   addMemo dd
 
   dcs' <- for dcs $ \(T.DC _ uc ts canns) -> do
@@ -164,7 +172,7 @@ sDataDef = memo id const $ \(T.DD uv tvs unions dcs anns) addMemo -> mdo
 
 sDataCon :: Mem T.DataCon
 sDataCon (T.DC dd uc _ _) = do
-  (T.DD _ _ _ cons _) <- sDataDef dd
+  (T.DD _ _ cons _) <- sDataDef dd
   pure $ fromJust $ find (\(T.DC _ suc _ _) -> suc == uc) cons
 
 

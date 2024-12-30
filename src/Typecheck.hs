@@ -12,7 +12,9 @@
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE RecursiveDo #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# HLINT ignore "Use <$>" #-}
+{-# OPTIONS_GHC -Wno-ambiguous-fields #-}
 
 module Typecheck (typecheck, TypeError(..)) where
 
@@ -24,8 +26,8 @@ import qualified Data.Map as Map
 import Control.Monad.Trans.RWS (RWST (RWST), runRWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
-import Data.Functor.Foldable (Base, cata, embed, hoist, project)
-import Control.Monad (replicateM, zipWithM_, when)
+import Data.Functor.Foldable (Base, cata, embed, hoist, project, transverse)
+import Control.Monad (replicateM, zipWithM_, when, join)
 import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold)
 import Data.Set (Set, (\\))
@@ -63,7 +65,7 @@ typecheck mprelude rStmts = do
     -- let env = mkContext mprelude  -- extract from Prelude unchanging things about the environment, like predefined types, including the return value.
     --     senv = makeSEnv mprelude  -- we should generate senv here....
 
-    let env = Ctx { prelude = Nothing, returnType = Nothing }
+    let env = Ctx { prelude = mprelude, returnType = Nothing }
     let senv = pure emptySEnv
     (tStmts, su, errs) <- generateSubstitution env senv rStmts
 
@@ -161,11 +163,13 @@ generateSubstitution env senv rModule = do
       RWS.put =<< senv
 
 
-      dds <- inferDatatypes (R.datatypes rModule)
-      fns <- inferFunctions (R.functions rModule)
-      tls <- inferTopLevel (R.toplevel rModule)
+      dds <- inferDatatypes rModule.datatypes
+      fns <- inferFunctions rModule.functions
+      tls <- inferTopLevel rModule.toplevel
+      exs <- inferExports rModule.exports
       pure $ T.Mod
         { T.toplevelStatements = tls
+        , T.exports = exs
         , T.functions = fns
         , T.datatypes = dds
         }
@@ -416,7 +420,7 @@ inferExpr = cata (fmap embed . inferExprType)
         R.Var l v -> do
           T.Var l <$> inferVariable v
 
-        R.Con c -> T.Con <$> inferConstructor c
+        R.Con c -> T.Con <$> newEnvID <*> inferConstructor c  -- NOTE: for `newEnvID`, see note in AST.Typed near this constructor.
         R.Op l op r -> liftA2 (\l' r' -> T.Op l' op r') l r
 
         R.Call callee args -> do
@@ -437,7 +441,7 @@ inferExpr = cata (fmap embed . inferExprType)
           addEnv v t
 
         pure t
-      T.Con c -> instantiateConstructor c
+      T.Con env c -> instantiateConstructor env c
 
       T.Op l op r | op == NotEquals || op == Equals -> do
         l `uni` r
@@ -481,7 +485,7 @@ inferConstructor :: R.Constructor -> Infer T.DataCon
 inferConstructor = \case
   R.ExternalConstructor c -> pure c
   R.DefinedConstructor (R.DC rdd uc _ _) -> do
-    (T.DD _ _ _ cons _) <- inferDataDef rdd
+    (T.DD _ _ cons _) <- inferDataDef rdd
 
     -- HACK?: Find constructor through memoized DataDefinition.
     let dc =  fromMaybe (error $ printf "[Compiler Error] Could not find constructor %s." (ctx ppCon uc)) $ find (\(T.DC _ uc' _ _) -> uc == uc') cons
@@ -492,13 +496,15 @@ inferConstructor = \case
 inferType :: R.Type -> Infer T.Type
 inferType = cata $ (.) (fmap embed) $ \case
   R.TCon (R.DefinedDatatype rdd) rparams -> do
-    dd@(T.DD _ _ unions _ _) <- inferDataDef rdd
+    dd <- inferDataDef rdd
     params <- sequenceA rparams
+    let unions = extractUnionsFromDataType dd
     pure $ T.TCon dd params unions
 
   R.TCon (R.ExternalDatatype dd) rparams -> do
     params <- sequenceA rparams
-    pure $ T.TCon dd params undefined
+    let unions = extractUnionsFromDataType dd
+    pure $ T.TCon dd params unions
 
   R.TVar tv -> pure $ T.TVar tv
 
@@ -512,33 +518,29 @@ inferDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }
 
     rec
       -- TVar correctness should be checked in Resolver!
-      let dd = T.DD ut tvars unions dcs anns
+      let dd = T.DD ut tvars dcs anns
 
       addMemo dd
-
-      let
-        unions = concatMap mapUnion dcTypes
-        dcTypes = concatMap (\(T.DC _ _ ts _) -> ts) dcs
-
-        mapUnion :: T.Type -> [T.EnvUnion]
-        mapUnion (Fix t) = case t of
-          -- TODO: explain what I'm doing - somehow verify if it's correct (with the unions - should types like `Proxy (Int -> Int)` store its union in conUnions? or `Ptr (Int -> Int)`?).
-          T.TCon (T.DD tut _ _ _ _) paramts conUnions
-            -- breaks cycle with self referential datatypes.
-            | tut == ut -> concatMap mapUnion paramts
-            | otherwise -> conUnions <> concatMap mapUnion paramts
-
-          T.TFun u args ret -> [u] <> concatMap mapUnion args <> mapUnion ret
-          T.TVar _ -> []
-          T.TyVar _ -> []
 
       dcs <- for rdcs $ \(R.DC _ uc rts dcAnn)-> do
         ts <- traverse inferType rts
         let dc = T.DC dd uc ts dcAnn
         pure dc
 
-
     pure dd
+
+-- TODO: clean up all the mapUnion shit. think about proper structure.
+mapUnion :: UniqueType -> T.Type -> [T.EnvUnion]
+mapUnion ut (Fix t) = case t of
+  -- TODO: explain what I'm doing - somehow verify if it's correct (with the unions - should types like `Proxy (Int -> Int)` store its union in conUnions? or `Ptr (Int -> Int)`?).
+  T.TCon (T.DD tut _ _ _) paramts conUnions
+    -- breaks cycle with self referential datatypes.
+    | tut == ut -> concatMap (mapUnion ut) paramts
+    | otherwise -> conUnions <> concatMap (mapUnion ut) paramts
+
+  T.TFun u args ret -> [u] <> concatMap (mapUnion ut) args <> mapUnion ut ret
+  T.TVar _ -> []
+  T.TyVar _ -> []
 
 
 inferFunction :: R.Function -> Infer T.Function
@@ -594,6 +596,17 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
   pure fn
 
 
+inferExports :: R.Exports -> Infer T.Exports
+inferExports e = do
+  dts <- traverse inferDataDef e.datatypes
+  fns <- traverse inferFunction e.functions
+  pure $ T.Exports
+    { variables = e.variables
+    , functions = fns
+    , datatypes = dts
+    }
+
+
 -- Like previous `subSolve`. 
 -- Preemptively (tFunDec fn.functionDeclarationitutes the result of the computation.
 generalize :: Infer T.Function -> Infer T.Function
@@ -621,8 +634,15 @@ generalize fx = do
   -- This one is generalized.
   let generalizedFn = subst su fn
 
+  -- Also, remember the substitution! (tvars might escape the environment)
+  --  TODO: not sure if that's the best way. check it.
+  substituting $ do
+    for_ (Set.toList scheme) $ \tv ->
+      bind tv (asTVar tv)
+
   liftIO $ putStrLn $ ctx T.tFunction generalizedFn
   liftIO $ printf "Just generalized: %s\n" (ctx T.tEnv generalizedFn.functionDeclaration.functionEnv)
+  liftIO $ printf "Types from declaration: %s\n" (show $ fmap (ctx T.tTyVar) $ Set.toList typesFromDeclaration)
 
   pure generalizedFn
 
@@ -662,27 +682,55 @@ instantiateVariable = \case
 
     pure fnType
 
-instantiateConstructor :: T.DataCon -> Infer T.Type
-instantiateConstructor = \case
-  T.DC dd@(T.DD _ tvs unions _ _) _ [] _ -> do
+instantiateConstructor :: EnvID -> T.DataCon -> Infer T.Type
+instantiateConstructor envID = \case
+  T.DC dd@(T.DD _ tvs _ _) _ [] _ -> do
     itvs <- traverse (const fresh) tvs
+    let unions = extractUnionsFromDataType dd
     unions' <- cloneUnions unions
     pure $ Fix $ T.TCon dd itvs unions'
 
-  T.DC dd@(T.DD _ tvs unions _ _) _ usts@(_:_) _ -> do
+  dc@(T.DC dd@(T.DD ut tvs cons _) _ usts@(_:_) _) -> do
     tvmap <- Map.fromList <$> traverse (\tv -> (tv,) <$> fresh) tvs
-    unions' <- cloneUnions unions
+
+    -- let unions = extractUnionsFromDataType dd
+    let cons2newUnions = cloneUnions . concatMap extractUnionsFromConstructor
+    unionsBeforeConstructor <- cons2newUnions $ takeWhile (/=dc) cons
+    unionsAfterConstructor <- cons2newUnions $ drop 1 $ dropWhile (/=dc) cons
+
 
     let
       mapTVs = mapTVsWithMap tvmap
 
       ts = mapTVs <$> usts
-      ret = mapTVs $ Fix $ T.TCon dd (Fix . T.TVar <$> tvs) unions'
 
-    emptyEnv <- newEmptyEnv
+    tsWithClonedUnions <- traverse (cloneUnionInType ut) ts
+
+    let
+      unionsInConstructor = concatMap (mapUnion ut) tsWithClonedUnions
+      allUnions = unionsBeforeConstructor <> unionsInConstructor <> unionsAfterConstructor
+
+      ret = mapTVs $ Fix $ T.TCon dd (Fix . T.TVar <$> tvs) allUnions
+
+    liftIO $ do
+      putStrLn "Fuck you"
+      putStrLn $ ctx T.tUnions unionsBeforeConstructor
+      putStrLn $ ctx T.tUnions unionsAfterConstructor
+      putStrLn $ ctx T.tUnions unionsInConstructor
+
+
+    -- unify unions in the declaration.
+    --   important: how are unions ordered wrt. constructors.
+    -- TODO: this is very bad. depends on arbitrary order. at least create a function that would take care of it??? or simply remove unions from declarations or just turn them into normal generics.
+
+    -- first, unify current constructor
+
+
+    -- then recreate the unions, but subst
+    let emptyEnv = T.Env envID []
     union <- mkUnion emptyEnv
 
-    pure $ Fix $ T.TFun union ts ret
+    pure $ Fix $ T.TFun union tsWithClonedUnions ret
 
 mapTVsWithMap :: Map TVar T.Type -> T.Type -> T.Type
 mapTVsWithMap tvmap =
@@ -904,8 +952,10 @@ findBuiltinType (PF tc pf) = do
     Nothing -> do
       ts <- RWS.gets $ memoToMap . memoDataDefinition
       case findMap tc (\(R.DD ut _ _ _) -> ut.typeName) ts of
-        Just dd@(T.DD _ tvs tunions _ _) -> do
+        Just dd@(T.DD _ tvs _ _) -> do
           itvs <- traverse (const fresh) tvs
+          let tunions = extractUnionsFromDataType dd
+          -- nocheckin: we also do union instantiation here
           unions <- cloneUnions tunions
           pure $ Fix $ T.TCon dd itvs unions
         Nothing -> error $ "[COMPILER ERROR]: Could not find inbuilt type '" <> show tc <> "'."
@@ -1308,9 +1358,15 @@ instance Substitutable T.Module  where
   ftv m = ftv m.toplevelStatements <> ftv m.functions -- <> ftv m.datatypes
   subst su m = T.Mod
     { T.toplevelStatements = subst su <$> m.toplevelStatements
+    , T.exports = subst su m.exports
+
     , T.functions = subst su <$> m.functions
     , T.datatypes = m.datatypes -- subst su <$> m.datatypes
     }
+
+instance Substitutable T.Exports where
+  ftv e = ftv e.functions
+  subst su e = e { T.functions = subst su e.functions }
 
 instance Substitutable T.AnnStmt where
   ftv = cata $ \(O (Annotated _ stmt)) -> bifold $ first ftv stmt
@@ -1391,7 +1447,7 @@ instance Substitutable (Fix T.TypeF) where
         Just t -> project t
 
     -- we might need to substitute the union thing
-    T.TFun ogUnion@(T.EnvUnion { T.unionID = uid }) ts t ->
+    T.TFun ogUnion ts t ->
 
       -- might need to replace the union
       let union = subst su ogUnion
@@ -1458,10 +1514,30 @@ instance Substitutable a => Substitutable (Maybe a) where
 --   T.TFun union args ret -> Ty.TFun (reunion' union) args ret
 --   T.TVar tv -> Ty.TVar tv
 
-cloneUnions :: [T.EnvUnion] -> Infer [T.EnvUnion]
+extractUnionsFromDataType :: T.DataDef -> [T.EnvUnion]
+extractUnionsFromDataType (T.DD _ _ dcs _) =
+  concatMap extractUnionsFromConstructor dcs
+
+extractUnionsFromConstructor :: T.DataCon -> [T.EnvUnion]
+extractUnionsFromConstructor (T.DC (T.DD ut _ _ _) _ ts _) = concatMap (mapUnion ut) ts
+
+-- Clones unions in a type.
+--   Because we always use it in contexts where we know the type and we want to avoid infinite recursion,
+--    `UniqueType` is provided to stop such recursion.
+--  TODO: right now, we don't care if some union repeats. Is it even possible? Prove me wrong.
+cloneUnionInType :: UniqueType -> T.Type -> Infer T.Type
+cloneUnionInType baseUT = transverse $ \case
+  T.TCon dd@(T.DD ut _ _ _) ts unions
+    | ut == baseUT -> T.TCon dd <$> sequenceA ts <*> sequenceA2 unions
+    | otherwise -> T.TCon dd <$> sequenceA ts <*> (cloneUnions =<< sequenceA2 unions)
+  T.TFun union ts ret -> T.TFun <$> (cloneUnion =<< sequenceA union) <*> sequenceA ts <*> ret
+
+  t -> sequenceA t
+
+cloneUnions :: [T.EnvUnionF a] -> Infer [T.EnvUnionF a]
 cloneUnions = traverse cloneUnion
 
-cloneUnion :: T.EnvUnion -> Infer T.EnvUnion
+cloneUnion :: T.EnvUnionF a -> Infer (T.EnvUnionF a)
 cloneUnion union = do
   uid <- newUnionID
   pure $ union { T.unionID = uid }
@@ -1501,7 +1577,7 @@ findMap kk f = fmap snd . find (\(k, _) -> f k == kk). Map.toList
 -- ----
 
 dbgSubst :: Subst -> String
-dbgSubst (Subst unions ts) = 
+dbgSubst (Subst unions ts) =
   let tvars = Map.toList ts <&> \(ty, t) -> printf "%s => %s" (ctx T.tTyVar ty) (ctx T.tType t)
       unionRels = Map.toList unions <&> \(uid, union) -> printf "%s => %s" (ctx ppUnionID uid) (ctx (T.tEnvUnion . fmap T.tType) union)
   in unlines $ tvars <> ["--"] <> unionRels
@@ -1550,10 +1626,13 @@ dbgSubst (Subst unions ts) =
 -- -- dbgt = undefined
 -- -- dbgt = cata $ \(TF' t) -> case t of
 -- --   Left tyv -> "#" <> show tyv
--- --   Right rt -> case rt of
--- --     TCon ti apps -> "(" <> show ti <> unwords apps <> ")"
+-- --   Right rt -> cloneUnionInTypee rt of
+-- --     TCon ti cloneUnionInType-> "(" <> show ti <> unwords apps <> ")"
 -- --     TFun env args ret -> dbgenv env <> "(" <> intercalate ", " args <> ") -> " <> ret
 -- --     TVar tv -> show tv
 
 -- -- dbgenv :: TyFunEnv' String -> String
--- -- dbgenv (TyFunEnv envid (FunEnv fe)) = "#" <> show envid <> "[" <> unwords (fmap (\env -> "[" <> intercalate ", " (fmap (\(v, t) -> show v <> " " <> ("[" <> unwords (fmap show fe) <> "]")) env) <> "]") fe) <> "]"
+-- -- dbgenv (TyFunEnv envid (FunEnv fe)) = "#" <> show envid <> "[" <> unwords (fmap (\env -> "[" <> intercalate ", " (fmap (\(v, t) -> show v <> " " <> ("[" <> unwords sequenceA2 unions <> "]")) env) <> "]") fe) <> 
+
+
+sequenceA2 = traverse sequenceA

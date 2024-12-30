@@ -186,7 +186,7 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
         -- we don't - just reference the function
         then cFunction fun
 
-        -- there is an environment - either this function's env or some other environment. If it's not out function's, then we don't need to initialize it.
+        -- there is an environment - either this function's env or some other environment. If it's not our function's, then we don't need to initialize it.
         else if null fun.functionDeclaration.functionEnv
           then do
             "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) § "}"
@@ -195,9 +195,7 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
             envNames <- cEnv fun.functionDeclaration.functionEnv
             "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) & "," § ".env." & envNames.envName § "=" § envNames.envName § "}"
 
-    M.Con uc -> case t of
-      Fix (M.TFun {}) -> cCon uc
-      Fix (M.TCon {}) -> cCon uc
+    M.Con uc -> cCon uc
     M.Op l op r -> enclose "(" ")" $ l § cOp op § r
     _ -> undefined
 

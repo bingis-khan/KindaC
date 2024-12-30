@@ -2,6 +2,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
@@ -29,13 +30,13 @@ import Data.Functor ((<&>))
 ---------------------
 
 data DataCon = DC DataDef UniqueCon [Type] [Ann]
-data DataDef = DD UniqueType [TVar] [EnvUnion] [DataCon] [Ann]
+data DataDef = DD UniqueType [TVar] [DataCon] [Ann]
 
 instance Eq DataDef where
-  DD ut _ _ _ _ == DD ut' _ _ _ _ = ut == ut'
+  DD ut _ _ _ == DD ut' _ _ _ = ut == ut'
 
 instance Ord DataDef where
-  DD ut _ _ _ _ `compare` DD ut' _ _ _ _ = ut `compare` ut'
+  DD ut _ _ _ `compare` DD ut' _ _ _ = ut `compare` ut'
 
 instance Eq DataCon where
   DC _ uc _ _ == DC _ uc' _ _ = uc == (uc' :: UniqueCon)
@@ -153,7 +154,7 @@ instance Ord Function where
 data ExprF a
   = Lit LitType
   | Var Locality Variable
-  | Con DataCon
+  | Con EnvID DataCon -- NOTE: `Env` here is supposed to be an empty environment that was generated during instantiation. It used in RemoveUnused. This is bad and not typesafe, but whatever!
 
   | Op a Op a
   | Call a [a]
@@ -236,11 +237,45 @@ $(deriveOrd1 ''TypeF)
 
 data Module = Mod
   { toplevelStatements :: [AnnStmt]
+  , exports :: Exports
   
-  -- probably not needed, used for printing the AST.
+  -- not needed, used for printing the AST.
   , functions :: [Function]
   , datatypes :: [DataDef]
   }
+
+data Exports = Exports
+  { variables :: [UniqueVar]
+  , functions :: [Function]
+  , datatypes :: [DataDef]
+  }
+
+
+
+--------------------
+-- Utility
+
+
+extractUnionsFromDataType :: DataDef -> [EnvUnion]
+extractUnionsFromDataType (DD _ _ dcs _) =
+  concatMap extractUnionsFromConstructor dcs
+
+extractUnionsFromConstructor :: DataCon -> [EnvUnion]
+extractUnionsFromConstructor (DC (DD ut _ _ _) _ ts _) = concatMap (mapUnion ut) ts
+
+-- TODO: clean up all the mapUnion shit. think about proper structure.
+mapUnion :: UniqueType -> Type -> [EnvUnion]
+mapUnion ut (Fix t) = case t of
+  -- TODO: explain what I'm doing - somehow verify if it's correct (with the unions - should types like `Proxy (Int -> Int)` store its union in conUnions? or `Ptr (Int -> Int)`?).
+  TCon (DD tut _ _ _) paramts conUnions
+    -- breaks cycle with self referential datatypes.
+    | tut == ut -> concatMap (mapUnion ut) paramts
+    | otherwise -> conUnions <> concatMap (mapUnion ut) paramts
+
+  TFun u args ret -> [u] <> concatMap (mapUnion ut) args <> mapUnion ut ret
+  TVar _ -> []
+  TyVar _ -> []
+
 
 
 --------------------------------------------------------------------------------------
@@ -296,7 +331,7 @@ tExpr = cata $ \(TypedExpr et expr) ->
   Lit (LInt x) -> pretty x
   Var l (DefinedVariable v) -> ppVar l v
   Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
-  Con (DC _ uc _ _) -> ppCon uc
+  Con _ (DC _ uc _ _) -> ppCon uc
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
@@ -313,7 +348,7 @@ tExpr = cata $ \(TypedExpr et expr) ->
 
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs unions cons _) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs <+> tUnions unions) $ ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
+tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
 
 tConDef :: DataCon -> Context
 tConDef (DC _ g t _) = foldl' (<+>) (ppCon g) $ tTypes t
@@ -334,7 +369,7 @@ tTypes = fmap $ \t@(Fix t') -> case t' of
 
 tType :: Type -> Context
 tType = cata $ \case
-  TCon (DD ut _ _ _ _) params unions ->
+  TCon (DD ut _ _ _) params unions ->
     let conunion = case unions of
           [] -> []
           tunions -> "|" : (tEnvUnion <$> tunions)

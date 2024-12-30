@@ -162,8 +162,13 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
       mv <- variable v mt
       pure $ M.Var locality mv
 
-    T.Con c -> do
+    T.Con eid c -> do
       mc <- constructor c t
+
+      -- don't forget to register usage.
+      emptyEnv <- mEnv $ T.Env eid []
+      registerEnvMono eid emptyEnv
+
       pure $ M.Con mc
 
     T.Lit lit -> pure $ M.Lit lit
@@ -197,7 +202,7 @@ variable (T.DefinedFunction vfn) et = do
     let fn = M.Function { M.functionDeclaration = fundec, M.functionBody = body } :: M.IFunction
     addMemo fn
 
-    (env, body) <- withTypeMap (mapTypes (snd <$> tfn.functionDeclaration.functionParameters) ts <> mapType tfn.functionDeclaration.functionReturnType ret) $ do
+    (env, body) <- withTypeMap (mapTypes (snd <$> tfn.functionDeclaration.functionParameters) ts <> mapType tfn.functionDeclaration.functionReturnType ret) [] $ do
       mbody <- mStmts tfn.functionBody
       pure (menv, mbody)
 
@@ -222,7 +227,7 @@ registerEnvMono _ _ = pure ()
 --   State.modify $ \ctx -> ctx { instantiationUsage = Map.unionWith (<>) newAdditions ctx.instantiationUsage }
 
 constructor :: T.DataCon -> T.Type -> Context M.IDataCon
-constructor tdc@(T.DC dd _ _ _) et = do
+constructor tdc@(T.DC dd@(T.DD ut _ _ _) _ _ _) et = do
   -- Extract type. Pretty bad, but should just work.
   let (ttypes, tunions) = case project et of
         T.TCon _ tts unions -> (tts, unions)
@@ -239,7 +244,9 @@ constructor tdc@(T.DC dd _ _ _) et = do
   liftIO $ print $ bimap (\(T.DC _ uc _ _) -> uc) (\(M.DC _ uc _ _) -> uc) <$> Map.toList dcQuery
   -- liftIO $ putStrLn $ ctx M.tDataDef mdc
   -- liftIO $ putStrLn $ ctx (ppMap . fmap (bimap T.tConDef M.tConDef) . Map.toList) dcQuery
-  let mdc = fromJust $ dcQuery !? tdc
+  let mdc = case dcQuery !? tdc of
+        Just m -> m
+        Nothing -> error $ "[COMPILER ERROR]: Failed to query an existing constructor for type " <> show ut.typeName.fromTC
   liftIO $ putStrLn $ ctx Common.ppCon $ (\(M.DC _ uc _ _) -> uc) mdc
   pure mdc
 
@@ -265,17 +272,23 @@ mType = cata $ \case
     T.TyVar tv -> error $ printf "[COMPILER ERROR]: Encountered TyVar %s." (T.tTyVar tv)
 
 mDataDef :: (T.DataDef, [M.IType], [M.IEnvUnion]) -> Context (M.IDataDef, Map T.DataCon M.IDataCon)
-mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut tvs _ tdcs ann, mts, _) addMemo -> withTypeMap (zip tvs mts) $ mdo
+mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(dd@(T.DD ut tvs tdcs ann), mts, unions) addMemo -> withTypeMap (zip tvs mts) (zip (T.extractUnionsFromDataType dd) unions) $ mdo
   nut <- newUniqueType ut
   let mdd = M.DD nut dcs ann
   addMemo (mdd, dcQuery)
 
   -- Strip constructors with empty unions.
   -- NOTE: This might be done in Typecheck, because we might strip constructors there as we want to typecheck things like: printLeft(Left(2)) (here, in Either e a, a is undefined and throws an error. Haskell doesn't care, so should I)
+
+  let unionMap = Map.fromList (zip (map T.unionID (T.extractUnionsFromDataType dd)) unions)
   let strippedDCs = flip filter tdcs $ \(T.DC _ _ conTs _) ->
         let
           isUnionEmpty :: T.EnvUnionF a -> Any
-          isUnionEmpty union = Any $ null union.union
+          isUnionEmpty union = 
+            -- NOTE: we must first replace it. also, HACK: it's retarded. TODO: make it better.
+            case unionMap !? union.unionID of
+              Just eu -> Any $ null eu.union
+              Nothing -> Any $ null union.union
 
           hasEmptyUnions :: T.Type -> Any
           hasEmptyUnions = cata $ \case
@@ -292,6 +305,7 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut tv
     mdcts <- traverse mType ts
     pure $ M.DC mdd nuc mdcts dcann
 
+  liftIO $ putStrLn $ "Mono: " <> show ut.typeName.fromTC
   liftIO $ putStrLn "======"
   liftIO $ putStrLn $ ctx (ppLines T.tConDef) tdcs
   liftIO $ putStrLn "------"
@@ -305,16 +319,16 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut tv
 
 retrieveTV :: TVar -> Context M.IType
 retrieveTV tv = do
-  TypeMap typeMap <- State.gets tvarMap
+  TypeMap typeMap _ <- State.gets tvarMap
   pure $ case typeMap !? tv of
     Just t -> t
 
     -- this will happen (provided no compiler error) when an environment is outside of its scope.
     Nothing -> Fix $ M.ITVar tv
 
-withTypeMap :: [(TVar, M.IType)] -> Context a -> Context a
-withTypeMap tmv a = do
-  let tm = TypeMap $ Map.fromList tmv
+withTypeMap :: [(TVar, M.IType)] -> [(T.EnvUnion, M.IEnvUnion)] -> Context a -> Context a
+withTypeMap tmv tmenv a = do
+  let tm = TypeMap (Map.fromList tmv) (Map.fromList ((map . first) T.unionID tmenv))
   -- registerTypeMapUsage tm
 
   ogTM <- State.gets tvarMap
@@ -325,33 +339,39 @@ withTypeMap tmv a = do
 
 mUnion :: T.EnvUnionF (Context M.IType) -> Context M.IEnvUnion
 mUnion tunion = do
-  cuckedMemo <- State.gets cuckedUnions
-  case isMemoed tunion.unionID cuckedMemo of
-    Just mu -> pure mu
+  
+  -- NOTE: check `TypeMap` definition as to why its needed *and* retarded.
+  TypeMap _ envMap <- State.gets tvarMap
+  case envMap !? tunion.unionID of
+    Just mru -> pure mru
     Nothing -> do
-      tunion' <- sequenceA tunion
-      let unionFTV = foldMap ftvButIgnoreUnions tunion'
-      if not (null unionFTV)
-        then
-          memo' cuckedUnions (\mem ctx -> ctx { cuckedUnions = mem }) tunion'.unionID $ \eid _ -> do
-            menvs <- traverse mEnv tunion'.union
-            case menvs of
-              (e:es) -> do
-                -- preserve ID!!!!
-                pure $ M.EnvUnion { M.unionID = eid, M.union = e :| es }
+      cuckedMemo <- State.gets cuckedUnions
+      case isMemoed tunion.unionID cuckedMemo of
+        Just mu -> pure mu
+        Nothing -> do
+          tunion' <- sequenceA tunion
+          let unionFTV = foldMap ftvButIgnoreUnions tunion'
+          if not (null unionFTV)
+            then
+              memo' cuckedUnions (\mem ctx -> ctx { cuckedUnions = mem }) tunion'.unionID $ \eid _ -> do
+                menvs <- traverse mEnv tunion'.union
+                case menvs of
+                  (e:es) -> do
+                    -- preserve ID!!!!
+                    pure $ M.EnvUnion { M.unionID = eid, M.union = e :| es }
 
-              -- literally impossible as there would be no FTVs otherwise...
-              [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
+                  -- literally impossible as there would be no FTVs otherwise...
+                  [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
 
-        else
-          memo' memoUnion (\mem ctx -> ctx { memoUnion = mem }) tunion' $ \tunion _ -> do
-            menvs <- traverse mEnv tunion.union
-            case menvs of
-              [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
+            else
+              memo' memoUnion (\mem ctx -> ctx { memoUnion = mem }) tunion' $ \tunion _ -> do
+                menvs <- traverse mEnv tunion.union
+                case menvs of
+                  [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
 
-              (e:es) -> do
-                nuid <- newUnionID
-                pure $ M.EnvUnion { M.unionID = nuid, M.union = e :| es }
+                  (e:es) -> do
+                    nuid <- newUnionID
+                    pure $ M.EnvUnion { M.unionID = nuid, M.union = e :| es }
 
 mEnv' :: T.EnvF T.Type -> Context M.IEnv
 mEnv' env = do
@@ -692,7 +712,14 @@ mEnv env = do
 
 -- TypeMap stuff
 
-newtype TypeMap = TypeMap (Map TVar M.IType) deriving (Eq, Ord, Semigroup, Monoid)
+-- HACK: EnvUnions are only needed when monomorphizing types. However, it's slightly easier right now to add this field. This should probably change later.
+data TypeMap = TypeMap (Map TVar M.IType) (Map UnionID M.IEnvUnion) deriving (Eq, Ord)
+
+instance Semigroup TypeMap where
+  TypeMap l1 l2 <> TypeMap r1 r2 = TypeMap (l1 <> r1) (l2 <> r2)
+
+instance Monoid TypeMap where
+  mempty = TypeMap mempty mempty
 
 -- ahhh, i hate it. TODO: try to figure out if there is a way to do it without doing this mapping.
 mapType :: T.Type -> M.IType -> [(TVar, M.IType)]
@@ -888,7 +915,7 @@ mfUnion union = do
         traverse (mfEnv . fmap mfType) $ Set.toList $ Map.findWithDefault Set.empty (M.envID env) envMap
 
   let mUsedEnvs = case mappedEnvs of
-        [] -> error "[COMPILER ERROR] Empty union encountered... wut!??!??!?!? Woah.1>!>!>!>!>>!"
+        [] -> error $ "[COMPILER ERROR] Empty union (" <> show union.unionID <> ") encountered... wut!??!??!?!? Woah.1>!>!>!>!>>!"
         (x:xs) -> x :| xs
 
   pure $ M.EnvUnion { M.unionID = union.unionID, M.union = mUsedEnvs }

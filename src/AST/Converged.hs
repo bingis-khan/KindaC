@@ -21,24 +21,22 @@ import Data.Fix (Fix(..))
 data Prelude = Prelude
   { tpModule       :: T.Module
 
+  -- extra stuff for resolving/typechecking that is always needed.
   , unitValue      :: T.DataCon
   , toplevelReturn :: T.Expr -- includes the type one should refer to. should be Int (later U8)
   , boolType       :: T.Type
   , intType        :: T.Type
-
-  , varNames       :: Map VarName (Either (UniqueVar, T.Type) T.Function)
-  , conNames       :: Map ConName T.DataCon
-  , tyNames        :: Map TCon T.DataDef
   }
 
 
 unitName :: ConName
 unitName = CN "Unit"
 
-tlReturnTypeName, boolTypeName, intTypeName :: TCon
+tlReturnTypeName, boolTypeName, intTypeName, unitTypeName :: TCon
 tlReturnTypeName = TC "Int"  -- later U8
 intTypeName      = TC "Int"  -- later a typeclass?
 boolTypeName     = TC "Bool"
+unitTypeName     = TC "Unit"
 
 
 -- Kinda of a weird solution. This "pack" describes the way a type could be found without Prelude.

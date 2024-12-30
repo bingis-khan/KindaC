@@ -35,7 +35,7 @@ f (x a) -> Unit
 			print y
 			return
 
-		uni(ff, printn)
+		ff <= printn
 		return
 
 	g(Unit)

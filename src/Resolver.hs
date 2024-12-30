@@ -2,6 +2,8 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use <$>" #-}
 {-# LANGUAGE TupleSections #-}
+{-# OPTIONS_GHC -Wno-ambiguous-fields #-}
+{-# HLINT ignore "Use concatMap" #-}
 module Resolver (resolve, ResolveError) where
 
 import Data.Unique (newUnique)
@@ -25,7 +27,7 @@ import AST.Converged (Prelude(..))
 import qualified AST.Converged as Prelude
 import AST.Untyped (StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..))
 import qualified AST.Untyped as U
-import AST.Resolved (Env (..))
+import AST.Resolved (Env (..), Exports (..), Variable (..), Datatype (..))
 import qualified AST.Resolved as R
 import qualified AST.Typed as T
 import Data.Fix (Fix(..))
@@ -45,7 +47,10 @@ resolve mPrelude (U.Mod ustmts) = do
   let newState = maybe emptyState mkState mPrelude
   (rstmts, state, errs) <- RWST.runRWST (rStmts ustmts) () newState
 
-  let rmod = R.Mod { toplevel = rstmts, functions = state.functions, datatypes = state.datatypes }
+  let topLevelScope = NonEmpty.head state.scopes
+  let moduleExports = scopeToExports topLevelScope
+
+  let rmod = R.Mod { toplevel = rstmts, exports = moduleExports, functions = state.functions, datatypes = state.datatypes }
 
   return (errs, rmod)
 
@@ -236,6 +241,7 @@ scope x = do
 
   return x'
 
+-- TODO: right now, it's the same as scope, as i removed the immutability requirement
 closure :: Ctx a -> Ctx a
 closure x = do
   oldScope <- RWST.get          -- enter scope
@@ -286,13 +292,21 @@ mkState prel = CtxState
   , functions = mempty
   , datatypes = mempty
   } where
+
+    -- convert prelude to a scope
     initialScope = Scope
-      { varScope = prel.varNames <&> \case
-          Right fun -> R.ExternalFunction fun
-          Left (uv, _) -> R.DefinedVariable uv
-      , conScope = R.ExternalConstructor <$> prel.conNames
-      , tyScope = R.ExternalDatatype <$> prel.tyNames
+      { varScope = exportedVariables <> exportedFunctions
+
+      , conScope = Map.fromList $ concat $ preludeExports.datatypes <&> \(T.DD _ _ dcs _) -> dcs <&> \dc@(T.DC _ uc _ _) -> (uc.conName, R.ExternalConstructor dc)
+      , tyScope  = Map.fromList $ preludeExports.datatypes <&> \dd@(T.DD ut _ _ _) -> (ut.typeName, R.ExternalDatatype dd)
       }
+
+    exportedVariables = Map.fromList $ preludeExports.variables <&> \uv -> 
+      (uv.varName, DefinedVariable uv)
+    exportedFunctions = Map.fromList $ preludeExports.functions <&> \fn -> 
+      (fn.functionDeclaration.functionId.varName, ExternalFunction fn)
+
+    preludeExports = prel.tpModule.exports
 
 generateVar :: VarName -> Ctx UniqueVar
 generateVar name = do
@@ -446,6 +460,10 @@ localityOfVariablesAtCurrentScope = do
 gatherVariables :: R.AnnStmt -> Set UniqueVar
 gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesFromExpr bstmt of
   R.Mutation v _ expr -> Set.insert v expr
+  R.EnvDef fn -> 
+    let dec = fn.functionDeclaration
+        envVars = Set.fromList $ R.asUniqueVar . fst <$> dec.functionEnv.fromEnv
+    in envVars
   stmt -> bifold stmt
 
 -- used for lambdas
@@ -455,3 +473,15 @@ gatherVariablesFromExpr = cata $ \case
                                 --   Update: I don't understand the comment above.
   expr -> fold expr
 
+
+scopeToExports :: Scope -> Exports
+scopeToExports sc = Exports
+  { variables = vars
+  , functions = funs
+  , datatypes = dts
+  } where
+    vars = mapMaybe (\case { DefinedVariable var -> Just var; _ -> Nothing }) $ Map.elems sc.varScope
+
+    funs = mapMaybe (\case { DefinedFunction fun -> Just fun; _ -> Nothing }) $ Map.elems sc.varScope
+
+    dts = mapMaybe (\case { DefinedDatatype dt -> Just dt; _ -> Nothing }) $ Map.elems sc.tyScope

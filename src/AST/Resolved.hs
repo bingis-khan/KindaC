@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, UndecidableInstances, LambdaCase, OverloadedStrings, OverloadedRecordDot #-}
+{-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, UndecidableInstances, LambdaCase, OverloadedStrings, OverloadedRecordDot, DuplicateRecordFields #-}
 {-# LANGUAGE TypeOperators #-}
 module AST.Resolved (module AST.Resolved) where
 
@@ -169,6 +169,15 @@ instance Ord Function where
 
 data Module = Mod
   { toplevel :: [AnnStmt]
+  , exports :: Exports
+
+  -- we must also typecheck functions / datatypes that were not referenced!!!
+  , functions :: [Function]
+  , datatypes :: [DataDef]
+  }
+
+data Exports = Exports
+  { variables :: [UniqueVar]
   , functions :: [Function]
   , datatypes :: [DataDef]
   }
@@ -286,4 +295,4 @@ asUniqueCon = \case
 
 asUniqueType :: Datatype -> UniqueType
 asUniqueType (DefinedDatatype (DD ut _ _ _)) = ut
-asUniqueType (ExternalDatatype (T.DD ut _ _ _ _)) = ut
+asUniqueType (ExternalDatatype (T.DD ut _ _ _)) = ut
