@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ppVariableType, VariableType)
+import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ppVariableType, VariableType, ctx)
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -281,16 +281,16 @@ mapUnion ut (Fix t) = case t of
 --------------------------------------------------------------------------------------
 -- Printing the AST
 
-tModule :: Module -> String
+tModule :: Module -> Context
 tModule m = 
-  show . flip runReader CtxData $ ppLines'
+  ppLines'
     [ ppLines tDataDef m.datatypes
     , ppLines tFunction m.functions
     , tStmts m.toplevelStatements
     ]
 
 tStmtsOnly :: [AnnStmt] -> String
-tStmtsOnly = show . flip runReader CtxData . tStmts
+tStmtsOnly = ctx tStmts
 
 tStmts :: [AnnStmt] -> Context
 tStmts = ppLines tAnnStmt

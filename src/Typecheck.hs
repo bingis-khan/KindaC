@@ -42,7 +42,7 @@ import qualified AST.Resolved as R
 import qualified AST.Typed as T
 
 import AST.Converged (Prelude(..), PreludeFind (..), boolFind, tlReturnFind, intFind)
-import AST.Common (TVar (TV), LitType (LInt), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID)
+import AST.Common (TVar (TV), LitType (LInt), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint')
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
@@ -69,8 +69,11 @@ typecheck mprelude rStmts = do
     let senv = pure emptySEnv
     (tStmts, su, errs) <- generateSubstitution env senv rStmts
 
+    phase "Typechecking (Before substitution)"
+    ctxPrint T.tModule tStmts
+
     let tStmts' = subst su tStmts
-    liftIO $ putStrLn $ dbgSubst su
+    -- liftIO $ putStrLn $ dbgSubst su
     let errs' = errs <> (AmbiguousType <$> Set.toList (ftv tStmts'))
     pure (errs', tStmts')
 
@@ -388,7 +391,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
 
       R.EnvDef rfn -> do
         fn <- inferFunction rfn
-        liftIO $ putStrLn $ "This env... " <> ctx T.tEnv fn.functionDeclaration.functionEnv
+        -- liftIO $ putStrLn $ "This env... " <> ctx T.tEnv fn.functionDeclaration.functionEnv
         pure $ T.EnvDef fn.functionDeclaration.functionEnv
 
 
@@ -612,7 +615,7 @@ inferExports e = do
 generalize :: Infer T.Function -> Infer T.Function
 generalize fx = do
   unsuFn <- fx
-  liftIO $ putStrLn $ ctx T.tFunction unsuFn
+  -- liftIO $ putStrLn $ ctx T.tFunction unsuFn
   csu <- RWS.gets typeSubstitution
 
   -- First substitution will substitute types that are already defined.
@@ -640,9 +643,9 @@ generalize fx = do
     for_ (Set.toList scheme) $ \tv ->
       bind tv (asTVar tv)
 
-  liftIO $ putStrLn $ ctx T.tFunction generalizedFn
-  liftIO $ printf "Just generalized: %s\n" (ctx T.tEnv generalizedFn.functionDeclaration.functionEnv)
-  liftIO $ printf "Types from declaration: %s\n" (show $ fmap (ctx T.tTyVar) $ Set.toList typesFromDeclaration)
+  -- liftIO $ putStrLn $ ctx T.tFunction generalizedFn
+  -- liftIO $ printf "Just generalized: %s\n" (ctx T.tEnv generalizedFn.functionDeclaration.functionEnv)
+  -- liftIO $ printf "Types from declaration: %s\n" (show $ fmap (ctx T.tTyVar) $ Set.toList typesFromDeclaration)
 
   pure generalizedFn
 
@@ -672,7 +675,8 @@ instantiateVariable = \case
       scheme = foldMap (tvars . snd) decl.functionParameters <> tvars decl.functionReturnType
 
     -- substitute with fresh ones
-    tvmap <- fmap (traceShowWith (fmap (ctx T.tType)) . Map.fromList) $ traverse (\tv -> (,) tv <$> fresh) $ Set.toList scheme
+    -- fmap (traceShowWith (fmap (ctx T.tType)) . 
+    tvmap <- fmap (Map.fromList) $ traverse (\tv -> (,) tv <$> fresh) $ Set.toList scheme
     let mapTVs = mapTVsWithMap tvmap
 
     -- Create type from function declaration
@@ -712,11 +716,11 @@ instantiateConstructor envID = \case
 
       ret = mapTVs $ Fix $ T.TCon dd (Fix . T.TVar <$> tvs) allUnions
 
-    liftIO $ do
-      putStrLn "Fuck you"
-      putStrLn $ ctx T.tUnions unionsBeforeConstructor
-      putStrLn $ ctx T.tUnions unionsAfterConstructor
-      putStrLn $ ctx T.tUnions unionsInConstructor
+    -- liftIO $ do
+    --   putStrLn "Fuck you"
+    --   putStrLn $ ctx T.tUnions unionsBeforeConstructor
+    --   putStrLn $ ctx T.tUnions unionsAfterConstructor
+    --   putStrLn $ ctx T.tUnions unionsInConstructor
 
 
     -- unify unions in the declaration.
@@ -749,14 +753,14 @@ mkUnion env = do
 
 uni :: T.Type -> T.Type -> Infer ()
 uni t1 t2 = do
-  liftIO $ putStrLn $ printf "%s :: %s" (ctx T.tType t1) (ctx T.tType t2)
+  -- liftIO $ putStrLn $ printf "%s :: %s" (ctx T.tType t1) (ctx T.tType t2)
 
   substituting $ do
     su <- RWS.get
     let (t1', t2') = subst su (t1, t2)
     unify t1' t2'
 
-  liftIO . putStrLn . dbgSubst =<< RWS.gets typeSubstitution
+  -- liftIO . putStrLn . dbgSubst =<< RWS.gets typeSubstitution
 
   -- HACK: Doing it this way simplifies the algorithm, but it's not very parallelizable tho.
   -- TODO: Lookup cool unification algorithms?

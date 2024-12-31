@@ -13,10 +13,11 @@ import qualified Data.List.NonEmpty as NonEmpty
 import AST.Converged (Prelude (..), unitTypeName, boolTypeName, intTypeName)
 import qualified AST.Resolved as R
 import qualified AST.Typed as T
+import qualified AST.Mono as M
 import Data.Char (toUpper)
 import Mono (mono)
 import CPrinter (cModule)
-import AST.Common (TCon, Result (..), fromResult, typeName, LitType (..), ctx)
+import AST.Common (TCon, Result (..), fromResult, typeName, LitType (..), ctx, ctxPrint', ctxPrint, phase)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Fix (Fix(..))
 import qualified Data.Map as Map
@@ -26,7 +27,6 @@ import Data.Foldable (find)
 import Data.Functor ((<&>))
 -- import ASTPrettyPrinter (tModule, rModule, mModule)
 -- import Mono (monoModule)
-
 
 
 compile :: Prelude -> T.Module -> IO Text
@@ -44,17 +44,16 @@ loadModule mPrelude filename = do
   case parse filename source of
     Left err -> pure $ Left err
     Right ast -> do
-      -- print ast
       phase "Resolving"
       (rerrs, rmod) <- resolve mPrelude ast
-      putStrLn $ R.pModule rmod
+      ctxPrint R.pModule rmod
 
       
-      -- print rmod
-
       phase "Typechecking"
       (terrs, tmod) <- typecheck mPrelude rmod
-      putStrLn $ T.tModule tmod
+
+      phase "Typechecking (After Substitution)"
+      ctxPrint T.tModule tmod
 
       let errors = s2t rerrs ++ s2t terrs
       pure $ case errors of
@@ -146,20 +145,15 @@ finalizeModule prel mod = do
 
   phase "Removing Unused"
   let removedUnused = removeUnused joinedStatements
-  putStrLn $ ctx T.tStmts removedUnused
+  ctxPrint T.tStmts removedUnused
 
   phase "Monomorphizing"
   mmod <- mono removedUnused
+  ctxPrint M.mModule mmod
 
   phase "C-ing"
   let cmod = cModule mmod
   pure cmod
-
-
-phase :: String -> IO ()
-phase text =
-  let n = 10
-  in putStrLn $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
 
 
 -- dbgLoadModule :: Maybe Prelude -> FilePath -> IO Text

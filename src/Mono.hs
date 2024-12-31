@@ -7,7 +7,7 @@
 module Mono (mono) where
 
 import AST.Converged (Prelude(..))
-import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, TCon (..), UnionID (..), Ann, EnvID (..), VarName (..), (<+>), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines)
+import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, TCon (..), UnionID (..), Ann, EnvID (..), VarName (..), (<+>), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint)
 import qualified AST.Typed as T
 import qualified AST.Mono as M
 import qualified AST.Common as Common
@@ -39,6 +39,7 @@ import Data.Monoid (Any (Any, getAny))
 import Data.Foldable (find)
 import Control.Monad.Trans.RWS (RWS)
 import qualified Control.Monad.Trans.RWS as RWS
+import Debug.Trace (traceShowWith)
 
 
 data Context' = Context
@@ -80,12 +81,12 @@ mono mod = do
   -- 1. substitute environments
   -- 2. check function usage and remove unused EnvDefs
   --      note, that EnvDefs might monomorphize unused functions. Thus, you should keep environments Typed, filter EnvDefs and then substitute environments. Maybe actually do it in the same step. Empty Unions would be removed also.
-  liftIO $ for_ ifns $ \ifn -> putStrLn $ Common.ctx M.mtFunction ifn
-  liftIO $ putStrLn $ Common.ctx M.mtStmts mistmts
-  liftIO $ do
-    putStrLn "Env Inst"
-    for_ (Map.toList ctx.envInstantiations) $ \(eid, envs) ->
-      putStrLn $ "  " <> show eid <> " => " <> show (M.envID <$> (Set.toList envs))
+  -- liftIO $ for_ ifns $ \ifn -> putStrLn $ Common.ctx M.mtFunction ifn
+  -- liftIO $ putStrLn $ Common.ctx M.mtStmts mistmts
+  -- liftIO $ do
+  --   putStrLn "Env Inst"
+  --   for_ (Map.toList ctx.envInstantiations) $ \(eid, envs) ->
+  --     putStrLn $ "  " <> show eid <> " => " <> show (M.envID <$> (Set.toList envs))
 
 
   let envUsage = Map.keysSet ctx.envInstantiations
@@ -112,7 +113,7 @@ mStmts :: Traversable f => f T.AnnStmt -> Context (f M.AnnIStmt)
 mStmts = traverse mAnnStmt
 
 mAnnStmt :: T.AnnStmt -> Context M.AnnIStmt
-mAnnStmt = cata (fmap embed . f) where
+mAnnStmt tstmt = cata (fmap embed . f) (traceShowWith (("stmt: "<>) . ctx T.tAnnStmt) tstmt) where
   f :: (:.) Annotated (T.StmtF T.Expr) (Context M.AnnIStmt) -> Context ((:.) Annotated (M.StmtF M.IncompleteEnv M.IExpr) M.AnnIStmt)
   f (O (Annotated ann stmt)) = do
     stmt' <- bitraverse mExpr id stmt
@@ -180,6 +181,8 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
     T.Lam env args ret -> do
       margs <- traverse2 mType args
       menv <- mEnv' env
+      registerEnvMono (T.envID env) menv
+
       pure $ M.Lam menv margs ret
 
   pure $ M.TypedExpr mt mexpr
@@ -240,18 +243,19 @@ constructor tdc@(T.DC dd@(T.DD ut _ _ _) _ _ _) et = do
   munions <- traverse (mUnion . fmap mType) tunions
 
   (_, dcQuery) <- mDataDef (dd, mtypes, munions)
-  liftIO $ putStrLn $ ctx T.tConDef tdc
-  liftIO $ print $ bimap (\(T.DC _ uc _ _) -> uc) (\(M.DC _ uc _ _) -> uc) <$> Map.toList dcQuery
+  -- liftIO $ putStrLn $ ctx T.tConDef tdc
+  -- liftIO $ print $ bimap (\(T.DC _ uc _ _) -> uc) (\(M.DC _ uc _ _) -> uc) <$> Map.toList dcQuery
   -- liftIO $ putStrLn $ ctx M.tDataDef mdc
   -- liftIO $ putStrLn $ ctx (ppMap . fmap (bimap T.tConDef M.tConDef) . Map.toList) dcQuery
   let mdc = case dcQuery !? tdc of
         Just m -> m
         Nothing -> error $ "[COMPILER ERROR]: Failed to query an existing constructor for type " <> show ut.typeName.fromTC
-  liftIO $ putStrLn $ ctx Common.ppCon $ (\(M.DC _ uc _ _) -> uc) mdc
+  -- liftIO $ putStrLn $ ctx Common.ppCon $ (\(M.DC _ uc _ _) -> uc) mdc
   pure mdc
 
 mType :: T.Type -> Context M.IType
-mType = cata $ \case
+mType t = 
+  flip cata (traceShowWith (ctx T.tType) t) $ \case
     T.TCon dd pts unions -> do
       params <- sequenceA pts
       -- unions' <- mUnion `traverse` filter (\(T.EnvUnion _ ts) -> not $ null ts) unions  -- very hacky, but should work. I think it echoes the need for a datatype that correctly represents what we're seeing here - a possible environment definition, which might not be initialized.
@@ -305,14 +309,14 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(dd@(T.DD u
     mdcts <- traverse mType ts
     pure $ M.DC mdd nuc mdcts dcann
 
-  liftIO $ putStrLn $ "Mono: " <> show ut.typeName.fromTC
-  liftIO $ putStrLn "======"
-  liftIO $ putStrLn $ ctx (ppLines T.tConDef) tdcs
-  liftIO $ putStrLn "------"
-  liftIO $ putStrLn $ ctx (ppLines T.tConDef) strippedDCs
-  liftIO $ putStrLn ",,,,,,"
-  liftIO $ putStrLn $ ctx (ppLines (\(M.DC _ uc _ _) -> Common.ppCon uc)) dcs
-  liftIO $ putStrLn "======"
+  ctxPrint' $ "Mono: " <> show ut.typeName.fromTC
+  ctxPrint' "======"
+  ctxPrint (ppLines T.tConDef) tdcs
+  ctxPrint' "------"
+  ctxPrint (ppLines T.tConDef) strippedDCs
+  ctxPrint' ",,,,,,"
+  ctxPrint (ppLines (\(M.DC _ uc _ _) -> Common.ppCon uc)) dcs
+  ctxPrint' "======"
   let dcQuery = Map.fromList $ zip strippedDCs dcs
 
   pure (mdd, dcQuery)

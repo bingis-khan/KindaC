@@ -13,8 +13,7 @@ import Data.Text (Text)
 import System.Process (readProcessWithExitCode)
 import System.FilePath ((</>), takeBaseName)
 import System.Exit (ExitCode(..))
-import Std (preparePrelude)
-import Pipeline (loadModule)
+import Pipeline (loadPrelude, loadModule, finalizeModule)
 import Mono (mono)
 import CPrinter (cModule)
 import qualified Data.Text.IO as TextIO
@@ -33,7 +32,7 @@ testdir = "test/data/expect"
 expect :: IO ()
 expect = do
   tests <- sort <$> listDirectory testdir
-  prelude <- preparePrelude
+  prelude <- loadPrelude
 
   withTempDirectory "." "intermediate-test-outputs" $ \dir ->
     hspec $ parallel $ do
@@ -109,10 +108,9 @@ compileAndOutputFile prelude filepath outdirpath = do
         case etmod of
           Left err -> pure $ Left err
           Right tmod -> do
-            mmod <- mono prelude tmod
-            let cout = cModule mmod
+            cmod <- finalizeModule prelude tmod
             let outpath = outdirpath </> takeBaseName filepath <> ".c"
-            TextIO.writeFile outpath cout
+            TextIO.writeFile outpath cmod
             pure $ Right outpath
   catch compile $ \e -> pure $ Left $ Text.pack $ "(exception)\n" <> show (e :: SomeException)
 

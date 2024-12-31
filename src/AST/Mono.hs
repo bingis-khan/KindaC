@@ -11,7 +11,7 @@
 
 module AST.Mono (module AST.Mono) where
 
-import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (TV))
+import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (TV), ctx)
 import Control.Monad.Trans.Reader (runReader)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Eq.Deriving (deriveEq1)
@@ -313,12 +313,12 @@ data Module = Mod
 --------------------------------------------------------------------------------------
 -- Printing the AST
 
-mModule :: Module -> String
+mModule :: Module -> Context
 mModule m =
   let main = comment "Main" $ tStmts m.toplevelStatements
       funs = comment "Functions" $ ppLines tFunction m.functions
       dds = comment "Datatypes" $ ppLines tDataDef m.datatypes
-   in show $ flip runReader CtxData $ sepBy "\n" [dds, funs, main]
+   in sepBy "\n" [dds, funs, main]
 
 tStmts :: [AnnStmt] -> Context
 tStmts = ppLines tAnnStmt

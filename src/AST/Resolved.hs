@@ -2,7 +2,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), CtxData(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines')
+import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), CtxData(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ctx)
 import qualified AST.Typed as T
 
 import Data.Fix (Fix(..))
@@ -197,8 +197,8 @@ $(deriveBitraversable ''StmtF)
 -- Printing the AST --
 ----------------------
 
-pModule :: Module -> String
-pModule mod = show . flip runReader CtxData $ ppLines'
+pModule :: Module -> Context
+pModule mod = ppLines'
   [ ppLines tFunction mod.functions
   , tStmts mod.toplevel
   ]

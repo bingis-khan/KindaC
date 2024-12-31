@@ -42,7 +42,7 @@ removeUnused stmts =
 
   -- phase 2: substitute environments.
       (nuStmts, _) = RWS.evalRWS (sScope stmts) envs emptyMemo
-  in trace (ctx ppMap $ bimap ppEnvID T.tEnv <$> Map.toList envs)  nuStmts
+  in nuStmts --trace (ctx ppMap $ bimap ppEnvID T.tEnv <$> Map.toList envs)  nuStmts
 
 
 --- PHASE 1: Create filtered environments.

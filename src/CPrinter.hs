@@ -26,6 +26,7 @@ import Data.Functor.Foldable (cata, project, para)
 import Data.Functor.Identity (Identity(..))
 import Data.Functor ((<&>))
 import Data.Bifunctor (first, second)
+import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.String (IsString)
@@ -84,7 +85,7 @@ cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
                   if M.areAllEnvsEmpty union
                     then e
                     else e & ".fun"
-             in statement $ cPrintf (Common.ctx M.tType (Fix (M.TFun union args ret)) <> " at %p\\n") [enclose "(" ")" "void*" § e']
+             in statement $ cPrintf (visibleType (Fix (M.TFun union args ret)) <> " at %p\\n") [enclose "(" ")" "void*" § e']
     where
       bareExpr = statement . (enclose "(" ")" "void" §)
   M.Assignment uv e -> do
@@ -197,6 +198,7 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
 
     M.Con uc -> cCon uc
     M.Op l op r -> enclose "(" ")" $ l § cOp op § r
+    M.Lam env params body -> cLambda env params t body
     _ -> undefined
 
 
@@ -250,6 +252,47 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo (ctx, lines) -> (ctx { compiledEnvs
       let cvarInsts = vars <&> \(v, loc, _) -> "." & cVar Local (M.asUniqueVar v) § "=" § cVar loc (M.asUniqueVar v)
       let inst = enclose "{ " " }" $ sepBy ", " cvarInsts
       pure EnvNames { envType = etype, envName = name, envInstantiation = inst }
+
+
+cLambda :: M.Env -> [(UniqueVar, M.Type)] -> M.Type -> PL -> PL
+cLambda env params lamType lamBody = do
+  tmp <- nextTemp
+
+  -- type safety fans are SEETHING rn (#2)
+  let (needsEnv, union, ret) = case project lamType of
+       M.TFun munion _ ret ->
+        (not $ M.areAllEnvsEmpty munion, cUnion (snd <$> params) ret munion, ret)
+       M.TCon _ -> undefined
+
+  let funref = tmp <> "_lambda"
+  let cbody = [statement $ "return" § lamBody]
+  let cparams = params <&> \(uv, t) -> cDefinition t (cVar Local uv)
+  let ccparams = if not needsEnv
+      then cparams
+      else 
+        let envparam = if M.isEnvEmpty env
+            then "void*"
+            else do
+              envNames <- cEnv env
+              cPtr envNames.envType
+        in (envparam § "env") : cparams
+
+  addTopLevel $ ccFunction funref ret ccparams cbody
+
+  -- initialize union
+  -- duplicated from cExpr... TODO: cleanup
+  if not needsEnv
+    -- we don't - just reference the function
+    then funref
+
+    -- there is an environment - either this function's env or some other environment. If it's not our function's, then we don't need to initialize it.
+    else if M.isEnvEmpty env
+      then do
+        "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : cparams) "") funref § "}"
+
+      else do
+        envNames <- cEnv env
+        "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : cparams) "") funref & "," § ".env." & envNames.envName § "=" § envNames.envInstantiation § "}"
 
 
 cFunction :: M.Function -> PL
@@ -387,6 +430,7 @@ cDefinition :: M.Type -> PL -> PL
 cDefinition (Fix t) v = case t of
   M.TCon dd -> cDataType dd § v
   M.TFun union args ret | not (M.areAllEnvsEmpty union) -> cUnion args ret union § v
+
   M.TFun _ args ret -> cTypeFun ret (cType <$> args) v
 
 -- Function printing logic (i had to use it in two places and I *really* don't want to duplicate this behavior.)
@@ -665,6 +709,12 @@ find f = listToMaybe . mapMaybe f
 unpack :: PPL PL -> PL
 unpack = join
 
+
+visibleType :: M.Type -> String
+visibleType = cata $ \case
+  M.TFun _ [arg] ret -> printf "%s -> %s" arg ret
+  M.TFun _ ts ret -> printf "(%s) -> %s" (intercalate ", " ts) ret
+  M.TCon dd    -> Text.unpack dd.datatypeUT.typeName.fromTC
 
 
 -- (((polyfill)))

@@ -55,14 +55,20 @@ main = do
   --       else do
   --         TextIO.putStrLn cout
 
+  (filename, outputC) <- parseArgs
+
   -- first, get dat prelude
   prelude <- loadPrelude
-  emod <- loadModule (Just prelude) "test.kc"
+  emod <- loadModule (Just prelude) filename
   case emod of
     Left errs -> TextIO.putStrLn errs
     Right mod -> do
       cmod <- finalizeModule prelude mod
-      TextIO.writeFile "test.c" cmod
+
+      if outputC 
+        then TextIO.writeFile "test.c" cmod
+        else do
+          TextIO.putStrLn cmod
 
       -- case mtmod of
         -- Left tes -> 

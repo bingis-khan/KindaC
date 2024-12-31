@@ -3,8 +3,7 @@ import Test.Hspec (hspec, describe, parallel, it, runIO, shouldReturn, shouldSat
 import System.Directory (listDirectory)
 import Data.Foldable (for_)
 import Data.Maybe (listToMaybe, isJust)
-import Pipeline (loadModule)
-import Std (preparePrelude)
+import Pipeline (loadPrelude, loadModule)
 import AST.Converged (Prelude)
 import Data.Either (isRight)
 import Data.Functor ((<&>))
@@ -21,7 +20,7 @@ yesno :: IO ()
 yesno = do
   yesnames <- listDirectory yespath
   nonames <- listDirectory nopath
-  prelude <- preparePrelude
+  prelude <- loadPrelude
 
   hspec $ parallel $ do
     describe "Programs that should compile OK" $ do

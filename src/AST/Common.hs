@@ -20,6 +20,16 @@ import qualified Text.Printf
 import Text.Printf (PrintfArg(..), formatString)
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Control.Monad.IO.Class (MonadIO (..))
+import Control.Monad (when, unless)
+import Data.Char (toUpper)
+
+
+-- set printing config
+defaultContext :: CtxData
+defaultContext = CtxData 
+  { silent = False
+  }
 
 
 -- FUTURE TODO: GHC is using type families in a MUCH SMARTER WAY:
@@ -69,7 +79,7 @@ data Ann  -- or should this be a Map or something?
   | ACLit Text
   | ACStdInclude Text
   deriving (Show, Eq, Ord)
-  
+
 -- Decorator thing.
 data Annotated a = Annotated [Ann] a deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
@@ -109,7 +119,7 @@ instance Show UniqueVar where
 
 instance Show UniqueCon where
   show (CI { conID = cid, conName = name }) = show name <> "@" <> show (hashUnique cid)
-  
+
 instance Eq UniqueCon where
   CI { conID = l } == CI { conID = r } = l == r
 
@@ -126,7 +136,7 @@ instance Eq UniqueType where
 instance Ord UniqueType where
   TI { typeID = l } `compare` TI { typeID = r } = l `compare` r
 
-  
+
 -- ...plus additional tags
 data Locality = Local | FromEnvironment deriving (Show, Eq, Ord)
 
@@ -180,9 +190,24 @@ instance Semigroup e => Applicative (Result e) where
 -- Context that stores the pretty printer Doc + data + help with, for example, names.
 type Context = Reader CtxData (Doc ())  -- I guess I can add syntax coloring or something with the annotation (the () in Doc)
 data CtxData = CtxData  -- basically stuff like printing options or something (eg. don't print types)
+  { silent :: Bool
+  }
+
+ctxPrint :: MonadIO io => (a -> Context) -> a -> io ()
+ctxPrint f x = unless defaultContext.silent $ liftIO $ putStrLn $ ctx f x
+
+ctxPrint' :: MonadIO io => String -> io ()
+ctxPrint' = unless defaultContext.silent . liftIO . putStrLn
+
+phase :: String -> IO ()
+phase text =
+  let n = 10
+  in ctxPrint' $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
 
 ctx :: (a -> Context) -> a -> String
-ctx f = show . flip runReader CtxData . f
+ctx f = if defaultContext.silent
+  then mempty
+  else show . flip runReader defaultContext . f
 
 ppBody :: Foldable t => (a -> Context) -> Context -> t a -> Context
 ppBody f header = indent header . ppLines f
@@ -192,7 +217,7 @@ printf = Text.Printf.printf
 
 instance Text.Printf.PrintfArg Context where
   formatArg = Text.Printf.formatString . ctx id
-  
+
 
 -- Technically should be something like Text for the annotation type, but I need to have access to context in annotations
 comment :: Context -> Context -> Context
@@ -244,7 +269,7 @@ ppUnique :: Unique -> Context
 ppUnique = pretty . hashUnique
 
 ppMap :: [(Context, Context)] -> Context
-ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v) 
+ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v)
 
 ppVariableType :: VariableType -> Context
 ppVariableType = \case
