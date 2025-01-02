@@ -1473,7 +1473,9 @@ instance Substitutable (T.EnvF (Fix T.TypeF)) where
   ftv (T.Env _ _) = mempty  -- TODO: why is this `mempty`?
   ftv (T.RecursiveEnv _ _) = mempty
 
-  subst su = fmap (subst su)
+  -- redundant work. memoize this shit also.
+  subst su (T.Env eid env) = T.Env eid ((\(v, l, t) -> (subst su v, l, subst su t)) <$> env)
+  subst su env = fmap (subst su) env
 
 
 instance Substitutable a => Substitutable [a] where

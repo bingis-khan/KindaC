@@ -113,7 +113,7 @@ mStmts :: Traversable f => f T.AnnStmt -> Context (f M.AnnIStmt)
 mStmts = traverse mAnnStmt
 
 mAnnStmt :: T.AnnStmt -> Context M.AnnIStmt
-mAnnStmt tstmt = cata (fmap embed . f) (traceShowWith (("stmt: "<>) . ctx T.tAnnStmt) tstmt) where
+mAnnStmt = cata (fmap embed . f) where
   f :: (:.) Annotated (T.StmtF T.Expr) (Context M.AnnIStmt) -> Context ((:.) Annotated (M.StmtF M.IncompleteEnv M.IExpr) M.AnnIStmt)
   f (O (Annotated ann stmt)) = do
     stmt' <- bitraverse mExpr id stmt
@@ -190,6 +190,7 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
 variable :: T.Variable -> M.IType -> Context M.IVariable
 variable (T.DefinedVariable uv) _ = pure $ M.DefinedVariable uv
 variable (T.DefinedFunction vfn) et = do
+  ctxPrint' "in function..."
   -- Unsound deconstruction...
   let (tts, tret, envEmptiness) = case project et of
         M.ITFun union mts mret -> (mts, mret, not $ M.areAllEnvsEmpty union)
@@ -254,8 +255,7 @@ constructor tdc@(T.DC dd@(T.DD ut _ _ _) _ _ _) et = do
   pure mdc
 
 mType :: T.Type -> Context M.IType
-mType t = 
-  flip cata (traceShowWith (ctx T.tType) t) $ \case
+mType = cata $ \case
     T.TCon dd pts unions -> do
       params <- sequenceA pts
       -- unions' <- mUnion `traverse` filter (\(T.EnvUnion _ ts) -> not $ null ts) unions  -- very hacky, but should work. I think it echoes the need for a datatype that correctly represents what we're seeing here - a possible environment definition, which might not be initialized.
@@ -278,7 +278,7 @@ mType t =
 mDataDef :: (T.DataDef, [M.IType], [M.IEnvUnion]) -> Context (M.IDataDef, Map T.DataCon M.IDataCon)
 mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(dd@(T.DD ut tvs tdcs ann), mts, unions) addMemo -> withTypeMap (zip tvs mts) (zip (T.extractUnionsFromDataType dd) unions) $ mdo
   nut <- newUniqueType ut
-  let mdd = M.DD nut dcs ann
+  let mdd = M.DD nut dcs ann mts
   addMemo (mdd, dcQuery)
 
   -- Strip constructors with empty unions.
@@ -926,7 +926,8 @@ mfUnion union = do
 
 mfDataDef :: (M.IDataDef, [M.EnvUnion]) -> EnvContext (M.DataDef, Map M.IDataCon M.DataCon)
 mfDataDef = memo memoIDatatype (\mem s -> s { memoIDatatype = mem }) $ \(idd, _) addMemo -> mdo
-  let dd = M.DD idd.datatypeUT cons idd.annotations
+  mfAppliedTypes <- traverse mfType idd.appliedTypes
+  let dd = M.DD idd.thisType cons idd.annotations mfAppliedTypes
   addMemo (dd, dcQuery)
 
   cons <- for idd.constructors $ \(M.DC _ uc imts ann) -> do

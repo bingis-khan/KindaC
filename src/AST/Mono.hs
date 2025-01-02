@@ -12,7 +12,7 @@
 module AST.Mono (module AST.Mono) where
 
 import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (TV), ctx)
-import Control.Monad.Trans.Reader (runReader)
+import Control.Monad.Trans.Reader (runReader, ask)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Eq.Deriving (deriveEq1)
 import Data.Fix (Fix (..))
@@ -42,19 +42,22 @@ type IDataCon = DataCon' IncompleteEnv
 type DataCon = DataCon' FullEnv
 
 data DataDef' envtype = DD
-  { datatypeUT :: UniqueType,
-    constructors :: [DataCon' envtype],
-    annotations :: [Ann]
+  { thisType :: UniqueType
+  , constructors :: [DataCon' envtype]
+  , annotations :: [Ann]
+
+    -- used only for displaying type information to the USER!
+  , appliedTypes :: [Type' envtype]
   }
 
 type IDataDef = DataDef' IncompleteEnv
 type DataDef = DataDef' FullEnv
 
 instance Eq (DataDef' envtype) where
-  DD ut _ _ == DD ut' _ _ = ut == ut'
+  DD ut _ _ _ == DD ut' _ _ _ = ut == ut'
 
 instance Ord (DataDef' envtype) where
-  DD ut _ _ `compare` DD ut' _ _ = ut `compare` ut'
+  DD ut _ _ _ `compare` DD ut' _ _ _ = ut `compare` ut'
 
 instance Eq (DataCon' envtype) where
   DC _ uc _ _ == DC _ uc' _ _ = uc == (uc' :: UniqueCon)
@@ -379,7 +382,7 @@ tFunction :: Function -> Context
 tFunction (Function fd funBody) = tBody (tFunDec fd) funBody
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid cons ann) = annotate ann $ indent (ppTypeInfo tid) $ ppLines tConDef cons
+tDataDef (DD tid cons ann _) = annotate ann $ indent (ppTypeInfo tid) $ ppLines tConDef cons
 
 tConDef :: DataCon -> Context
 tConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
@@ -389,6 +392,7 @@ tFunDec (FD funEnv v params retType needsEnv) = comment (tEnv funEnv) $ ppVar Lo
 
 tTypes :: (Functor t) => t Type -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of
+  TCon (DD _ _ _ []) -> tType t
   TCon _ -> enclose t
   TFun {} -> enclose t
   where
@@ -396,7 +400,11 @@ tTypes = fmap $ \t@(Fix t') -> case t' of
 
 tType :: Type -> Context
 tType = cata $ \case
-  TCon (DD tid _ _) -> ppTypeInfo tid
+  TCon (DD tid _ _ ts) -> do
+    c <- ask
+    if c.displayTypeParameters && not (null ts)
+      then ppTypeInfo tid <+> sepBy " " (tTypes ts)
+      else ppTypeInfo tid
   TFun funUnion args ret -> tEnvUnion (tEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
 
 tEnvUnion :: EnvUnionF Context -> Context
@@ -479,7 +487,7 @@ mtFunction :: IFunction -> Context
 mtFunction (Function fd funBody) = mtBody (mtFunDec fd) funBody
 
 mtDataDef :: DataDef -> Context
-mtDataDef (DD tid cons ann) = annotate ann $ indent (ppTypeInfo tid) $ ppLines tConDef cons
+mtDataDef (DD tid cons ann _) = annotate ann $ indent (ppTypeInfo tid) $ ppLines tConDef cons
 
 mtConDef :: DataCon -> Context
 mtConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
@@ -497,7 +505,7 @@ mtTypes = fmap $ \t@(Fix t') -> case t' of
 
 mtType :: IType -> Context
 mtType = cata $ \case
-  ITCon (DD tid _ _) _ _ -> ppTypeInfo tid
+  ITCon (DD tid _ _ _) _ _ -> ppTypeInfo tid
   ITFun funUnion args ret -> tEnvUnion (mtEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
   ITVar (TV tv) -> pretty tv
 

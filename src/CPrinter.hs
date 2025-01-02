@@ -8,7 +8,7 @@
 
 module CPrinter (cModule) where
 
-import AST.Common (Annotated (..), Ann (ACType, ACLit), UniqueType (typeName), (:.) (..), TCon (..), UniqueVar, Op (..), Locality (Local, FromEnvironment), UniqueCon)
+import AST.Common (Annotated (..), Ann (ACType, ACLit), UniqueType (typeName), (:.) (..), TCon (..), UniqueVar, Op (..), Locality (Local, FromEnvironment), UniqueCon, ctx', silent, defaultContext, printIdentifiers, displayTypeParameters)
 import Misc.Memo (Memo, Memoizable)
 import qualified Misc.Memo as Memo
 import qualified AST.Common as Common
@@ -79,7 +79,7 @@ cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
             statement $ cPrintf "()\\n" []
           CustomType dd -> do
             bareExpr e
-            statement $ cPrintf (Common.ctx M.tType (Fix (M.TCon dd)) <> "\\n") []
+            statement $ cPrintf (ctx' (defaultContext { silent = False, printIdentifiers = False, displayTypeParameters = True }) M.tType (Fix (M.TCon dd)) <> "\\n") []
           Function union args ret ->
             let e' =
                   if M.areAllEnvsEmpty union
@@ -89,12 +89,12 @@ cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
     where
       bareExpr = statement . (enclose "(" ")" "void" §)
   M.Assignment uv e -> do
-    statement $ cDefinition (M.expr2type e) (cVar Local uv) § "=" § cExpr e
+    statement $ cDefinition (M.expr2type e) (cVarName uv) § "=" § cExpr e
   M.Mutation uv Local e -> do
-    statement $ cVar Local uv § "=" § cExpr e
+    statement $ cVarName uv § "=" § cExpr e
   M.Mutation uv FromEnvironment e -> do
     pl "// ERROR: we don't handle references yet!"
-    statement $ cVar FromEnvironment uv § "=" § cExpr e
+    statement $ cVarName uv § "=" § cExpr e
   M.ExprStmt e -> statement $ cExpr e
   M.Return e ->
     statement $ "return" § cExpr e
@@ -174,28 +174,7 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
     M.Lit (Common.LInt x) -> pls x
 
     -- here, referencing a normal variable. no need to do anything special.
-    M.Var loc (M.DefinedVariable uv) -> cVar loc uv
-    M.Var FromEnvironment (M.DefinedFunction fun) -> "env->" & cFunction fun
-    M.Var Local (M.DefinedFunction fun) -> do
-      -- type safety fans are SEETHING rn
-      let (union, args, ret) = case project t of
-           M.TFun munion args ret -> (cUnion args ret munion, args, ret)
-           M.TCon _ -> undefined
-
-      -- check if we even need an environment
-      if not fun.functionDeclaration.functionNeedsEnvironment
-        -- we don't - just reference the function
-        then cFunction fun
-
-        -- there is an environment - either this function's env or some other environment. If it's not our function's, then we don't need to initialize it.
-        else if null fun.functionDeclaration.functionEnv
-          then do
-            "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) § "}"
-
-          else do
-            envNames <- cEnv fun.functionDeclaration.functionEnv
-            "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) & "," § ".env." & envNames.envName § "=" § envNames.envName § "}"
-
+    M.Var loc v -> cVar t loc v
     M.Con uc -> cCon uc
     M.Op l op r -> enclose "(" ")" $ l § cOp op § r
     M.Lam env params body -> cLambda env params t body
@@ -241,7 +220,7 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo (ctx, lines) -> (ctx { compiledEnvs
       let varTypes =
             vars <&> \(v, _, t) -> do
               statement $ do
-                cDefinition t (cVar Local (M.asUniqueVar v))
+                cDefinition t $ cVarName $ M.asUniqueVar v
 
       let etype = "struct" § "et" & pls (hashUnique eid.fromEnvID)
       let env = etype <§ cBlock varTypes §> ";"
@@ -249,7 +228,7 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo (ctx, lines) -> (ctx { compiledEnvs
 
 
       let name = "et" & pls (hashUnique eid.fromEnvID) & "s"
-      let cvarInsts = vars <&> \(v, loc, _) -> "." & cVar Local (M.asUniqueVar v) § "=" § cVar loc (M.asUniqueVar v)
+      let cvarInsts = vars <&> \(v, loc, t) -> "." & cVarName (M.asUniqueVar v) § "=" § cVar t loc v
       let inst = enclose "{ " " }" $ sepBy ", " cvarInsts
       pure EnvNames { envType = etype, envName = name, envInstantiation = inst }
 
@@ -266,7 +245,7 @@ cLambda env params lamType lamBody = do
 
   let funref = tmp <> "_lambda"
   let cbody = [statement $ "return" § lamBody]
-  let cparams = params <&> \(uv, t) -> cDefinition t (cVar Local uv)
+  let cparams = params <&> \(uv, t) -> cDefinition t (cVarName uv)
   let ccparams = if not needsEnv
       then cparams
       else 
@@ -300,8 +279,8 @@ cFunction fun' =
   unpack $ Memo.memo' (compiledFunctions . fst) (\memo (ctx, lines) -> (ctx { compiledFunctions = memo }, lines)) fun' $ \fun addMemo -> do
     let fd = fun.functionDeclaration
 
-    let funref = cVar Local fd.functionId
-    let cparams = fd.functionParameters <&> \(uv, t) -> cDefinition t (cVar Local uv)
+    let funref = cVarName fd.functionId
+    let cparams = fd.functionParameters <&> \(uv, t) -> cDefinition t (cVarName uv)
     let envparam = do
           let envtype = if null fd.functionEnv
               then "void*"
@@ -448,12 +427,12 @@ cType (Fix t) = case t of
 
 
 cDataType :: M.DataDef -> PL
-cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo (ctx, lines) -> (ctx { compiledTypes = memo }, lines)) dd' $ \dd@(M.DD _ _ anns) addMemo -> do
+cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo (ctx, lines) -> (ctx { compiledTypes = memo }, lines)) dd' $ \dd@(M.DD _ _ anns _) addMemo -> do
   -- don't forget to add a required library
   addIncludeIfPresent anns
 
   let representsBuiltin = find (\case { ACType con -> Just con; _ -> Nothing }) dd.annotations
-      ut = dd.datatypeUT
+      ut = dd.thisType
   case representsBuiltin of
     Just t -> pure $ plt t
     Nothing -> do
@@ -462,16 +441,16 @@ cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo (ctx, lines) ->
 
       case dd of
         -- 0. No constructors (empty, TODO probably impossible?)
-        M.DD _ [] _ -> 
+        M.DD _ [] _ _ -> 
           pure mempty
 
         -- 1. enum
-        M.DD _ dc _
+        M.DD _ dc _ _
           | all (\(M.DC _ _ args _) -> null args) dc -> do
             addTopLevel $ "typedef" § "enum" <§ cBlock (pl . cCon <$> dc) §> dataTypeName & ";"
 
         -- 2. struct
-        M.DD _ [dc@(M.DC _ uc ts _)] _ -> do
+        M.DD _ [dc@(M.DC _ uc ts _)] _ _ -> do
           addTopLevel $ "typedef" <§ cStruct dc §> dataTypeName & ";"
 
           -- then, create a data constructor function
@@ -482,7 +461,7 @@ cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo (ctx, lines) ->
 
 
         -- 3. ADT
-        M.DD ut dcs _ -> do
+        M.DD ut dcs _ _ -> do
           addTopLevel $ undefined
 
       pure dataTypeName
@@ -494,9 +473,29 @@ cStruct (M.DC _ uc ts _) = "struct" <§ cBlock
     member t i = 
       statement $ cDefinition t (cConMember uc i)
 
-cVar :: Locality -> UniqueVar -> PL
-cVar Local uv = cVarName uv
-cVar FromEnvironment uv = "env->" & cVarName uv
+cVar :: M.Type -> Locality -> M.Variable -> PL
+cVar _ Local (M.DefinedVariable uv) = cVarName uv
+cVar _ FromEnvironment (M.DefinedVariable uv) = "env->" <> cVarName uv
+cVar _ FromEnvironment (M.DefinedFunction fun) = "env->" & cFunction fun
+cVar t Local (M.DefinedFunction fun) = do
+  -- type safety fans are SEETHING rn
+  let (union, args, ret) = case project t of
+       M.TFun munion args ret -> (cUnion args ret munion, args, ret)
+       M.TCon _ -> undefined
+
+  -- check if we even need an environment
+  if not fun.functionDeclaration.functionNeedsEnvironment
+    -- we don't - just reference the function
+    then cFunction fun
+
+    -- there is an environment - either this function's env or some other environment. If it's not our function's, then we don't need to initialize it.
+    else if null fun.functionDeclaration.functionEnv
+      then do
+        "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) § "}"
+
+      else do
+        envNames <- cEnv fun.functionDeclaration.functionEnv
+        "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) & "," § ".env." & envNames.envName § "=" § envNames.envName § "}"
 
 cVarName :: UniqueVar -> PL
 cVarName v = plt (sanitize v.varName.fromVN) & "__" & pls (hashUnique v.varID)
@@ -698,9 +697,9 @@ typeFromExpr (Fix (M.TypedExpr t _)) = do
     M.TFun union ts ret -> Function union ts ret
     -- Brittle, but it's temporary anyway.
     M.TCon dd
-      | dd.datatypeUT.typeName == TC "Bool" -> Bool
-      | dd.datatypeUT.typeName == TC "Int" -> Integer
-      | dd.datatypeUT.typeName == TC "Unit" -> Unit
+      | dd.thisType.typeName == TC "Bool" -> Bool
+      | dd.thisType.typeName == TC "Int" -> Integer
+      | dd.thisType.typeName == TC "Unit" -> Unit
       | otherwise -> CustomType dd
 
 find :: (a -> Maybe b) -> [a] -> Maybe b
@@ -714,7 +713,7 @@ visibleType :: M.Type -> String
 visibleType = cata $ \case
   M.TFun _ [arg] ret -> printf "%s -> %s" arg ret
   M.TFun _ ts ret -> printf "(%s) -> %s" (intercalate ", " ts) ret
-  M.TCon dd    -> Text.unpack dd.datatypeUT.typeName.fromTC
+  M.TCon dd    -> Text.unpack dd.thisType.typeName.fromTC
 
 
 -- (((polyfill)))

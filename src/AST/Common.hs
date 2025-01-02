@@ -10,7 +10,7 @@ module AST.Common (module AST.Common) where
 import Data.Text (Text)
 import Data.Unique (Unique, hashUnique)
 import qualified Data.Text as Text
-import Control.Monad.Trans.Reader (Reader, runReader)
+import Control.Monad.Trans.Reader (Reader, runReader, ask)
 import Prettyprinter (Doc)
 import Data.String (IsString (..))
 import qualified Prettyprinter as PP
@@ -28,7 +28,9 @@ import Data.Char (toUpper)
 -- set printing config
 defaultContext :: CtxData
 defaultContext = CtxData 
-  { silent = False
+  { silent = True
+  , printIdentifiers = True
+  , displayTypeParameters = False
   }
 
 
@@ -152,6 +154,7 @@ instance Show EnvID where
   show = show . hashUnique . fromEnvID
 
 
+
 ---------------------
 
 ----------------
@@ -191,6 +194,8 @@ instance Semigroup e => Applicative (Result e) where
 type Context = Reader CtxData (Doc ())  -- I guess I can add syntax coloring or something with the annotation (the () in Doc)
 data CtxData = CtxData  -- basically stuff like printing options or something (eg. don't print types)
   { silent :: Bool
+  , printIdentifiers :: Bool
+  , displayTypeParameters :: Bool
   }
 
 ctxPrint :: MonadIO io => (a -> Context) -> a -> io ()
@@ -205,9 +210,12 @@ phase text =
   in ctxPrint' $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
 
 ctx :: (a -> Context) -> a -> String
-ctx f = if defaultContext.silent
+ctx = ctx' defaultContext
+
+ctx' :: CtxData -> (a -> Context) -> a -> String
+ctx' c f = if c.silent
   then mempty
-  else show . flip runReader defaultContext . f
+  else show . flip runReader c . f
 
 ppBody :: Foldable t => (a -> Context) -> Context -> t a -> Context
 ppBody f header = indent header . ppLines f
@@ -243,7 +251,7 @@ ppLines' :: Foldable t => t Context -> Context
 ppLines' = foldMap (<> "\n")
 
 ppVar :: Locality -> UniqueVar -> Context
-ppVar l v = localTag <?+> pretty (fromVN v.varName) <> "$" <> pretty (hashUnique v.varID)
+ppVar l v = localTag <?+> pretty (fromVN v.varName) <> ppIdent ("$" <> pretty (hashUnique v.varID))
   where
     localTag = case l of
       Local -> Nothing
@@ -254,10 +262,10 @@ ppTCon :: TCon -> Context
 ppTCon = pretty . fromTC
 
 ppCon :: UniqueCon -> Context
-ppCon con = "@" <> pretty (fromCN con.conName) <> "$" <> pretty (hashUnique con.conID)
+ppCon con = "@" <> pretty (fromCN con.conName) <> ppIdent ("$" <> pretty (hashUnique con.conID))
 
 ppTypeInfo :: UniqueType -> Context
-ppTypeInfo t = pretty (fromTC t.typeName) <> "$" <> pretty (hashUnique t.typeID)
+ppTypeInfo t = pretty (fromTC t.typeName) <> ppIdent ("$" <> pretty (hashUnique t.typeID))
 
 ppEnvID :: EnvID -> Context
 ppEnvID = pretty . hashUnique . fromEnvID
@@ -310,6 +318,12 @@ ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
 
     quote = pure . PP.squotes . PP.pretty
 
+ppIdent :: Context -> Context
+ppIdent ident = do
+  c <- ask
+  if c.printIdentifiers
+    then ident
+    else ""
 
 infixr 6 <+>
 (<+>) :: Context -> Context -> Context
