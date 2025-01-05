@@ -255,6 +255,9 @@ data Exports = Exports
 --------------------
 -- Utility
 
+isUnionEmpty :: EnvUnionF t -> Bool
+isUnionEmpty (EnvUnion _ []) = True
+isUnionEmpty _ = False
 
 extractUnionsFromDataType :: DataDef -> [EnvUnion]
 extractUnionsFromDataType (DD _ _ dcs _) =

@@ -520,9 +520,6 @@ mtType = cata $ \case
   ITFun funUnion args ret -> tEnvUnion (mtEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
   ITVar (TV tv) -> pretty tv
 
-mtEnvUnion' :: EnvUnionF Type -> Context
-mtEnvUnion' = tEnvUnion . fmap tType
-
 mtEnv :: EnvF IncompleteEnv IType -> Context
 mtEnv = mtEnv' . fmap mtType
 

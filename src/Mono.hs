@@ -40,12 +40,13 @@ import Data.Foldable (find)
 import Control.Monad.Trans.RWS (RWS)
 import qualified Control.Monad.Trans.RWS as RWS
 import Debug.Trace (traceShowWith)
+import Data.Bool (bool)
 
 
 data Context' = Context
   { tvarMap :: TypeMap  -- this describes the temporary mapping of tvars while monomorphizing.
   , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.NeedsImplicitEnvironment) M.IFunction
-  , memoDatatype :: Memo (T.DataDef, [M.IType], [M.IEnvUnion]) (M.IDataDef, Map T.DataCon M.IDataCon)
+  , memoDatatype :: Memo (T.DataDef, [M.IType], [Maybe M.IEnvUnion]) (M.IDataDef, Map T.DataCon M.IDataCon)
   , memoEnv :: Memo (T.EnvF M.IType) M.IEnv
   , memoUnion :: Memo (T.EnvUnionF M.IType) M.IEnvUnion
 
@@ -246,7 +247,7 @@ constructor tdc@(T.DC dd@(T.DD ut _ _ _) _ _ _) et = do
         _ -> error $ printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%s)." (T.tType et)
 
   mtypes <- traverse mType ttypes
-  munions <- traverse (mUnion . fmap mType) tunions
+  munions <- traverse2 (mUnion . fmap mType) $ (\eu -> if not (T.isUnionEmpty eu) then Just eu else Nothing) <$> tunions  -- ISSUE(constructor-deduplication): filters unions kind of randomly. We expect that it's because a constructor is unused and not because of some other issue.
 
   (_, dcQuery) <- mDataDef (dd, mtypes, munions)
   -- liftIO $ putStrLn $ ctx T.tConDef tdc
@@ -263,10 +264,11 @@ mType :: T.Type -> Context M.IType
 mType = cata $ \case
     T.TCon dd pts unions -> do
       params <- sequenceA pts
-      -- unions' <- mUnion `traverse` filter (\(T.EnvUnion _ ts) -> not $ null ts) unions  -- very hacky, but should work. I think it echoes the need for a datatype that correctly represents what we're seeing here - a possible environment definition, which might not be initialized.
-      munions <- traverse mUnion unions
+      munions <- mUnion `traverse2` ((\eu -> if not (T.isUnionEmpty eu) then Just eu else Nothing) <$> unions)  -- ISSUE(constructor-deduplication): very hacky, but should work. I think it echoes the need for a datatype that correctly represents what we're seeing here - a possible environment definition, which might not be initialized.
+      -- we need to represent this shit differently.
+      -- munions <- traverse mUnion unions
       (mdd, _) <- mDataDef (dd, params, munions)
-      let mt = Fix $ M.ITCon mdd params munions
+      let mt = Fix $ M.ITCon mdd params (catMaybes munions)
       pure mt
 
     T.TFun union params ret -> do
@@ -280,8 +282,8 @@ mType = cata $ \case
 
     T.TyVar tv -> error $ printf "[COMPILER ERROR]: Encountered TyVar %s." (T.tTyVar tv)
 
-mDataDef :: (T.DataDef, [M.IType], [M.IEnvUnion]) -> Context (M.IDataDef, Map T.DataCon M.IDataCon)
-mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(dd@(T.DD ut tvs tdcs ann), mts, unions) addMemo -> withTypeMap (zip tvs mts) (zip (T.extractUnionsFromDataType dd) unions) $ mdo
+mDataDef :: (T.DataDef, [M.IType], [Maybe M.IEnvUnion]) -> Context (M.IDataDef, Map T.DataCon M.IDataCon)
+mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(dd@(T.DD ut tvs tdcs ann), mts, unions) addMemo -> withTypeMap (zip tvs mts) (mapMaybe sequenceA $ zip (T.extractUnionsFromDataType dd) unions) $ mdo
   nut <- newUniqueType ut
   let mdd = M.DD nut dcs ann mts
   addMemo (mdd, dcQuery)
@@ -289,7 +291,7 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(dd@(T.DD u
   -- Strip constructors with empty unions.
   -- NOTE: This might be done in Typecheck, because we might strip constructors there as we want to typecheck things like: printLeft(Left(2)) (here, in Either e a, a is undefined and throws an error. Haskell doesn't care, so should I)
 
-  let unionMap = Map.fromList (zip (map T.unionID (T.extractUnionsFromDataType dd)) unions)
+  let unionMap = Map.fromList (mapMaybe sequenceA $ zip (map T.unionID (T.extractUnionsFromDataType dd)) unions)
   let strippedDCs = flip filter tdcs $ \(T.DC _ _ conTs _) ->
         let
           isUnionEmpty :: T.EnvUnionF a -> Any
@@ -337,6 +339,10 @@ retrieveTV tv = do
 
 withTypeMap :: [(TVar, M.IType)] -> [(T.EnvUnion, M.IEnvUnion)] -> Context a -> Context a
 withTypeMap tmv tmenv a = do
+  ctxPrint' "Type map:"
+  ctxPrint (ppMap . fmap (bimap (Common.pretty . Common.fromTV) M.mtType)) tmv
+  ctxPrint (ppMap . fmap (bimap (T.tEnvUnion . fmap T.tType) (M.tEnvUnion . fmap M.mtEnv))) tmenv
+
   let tm = TypeMap (Map.fromList tmv) (Map.fromList ((map . first) T.unionID tmenv))
   -- registerTypeMapUsage tm
 
