@@ -72,8 +72,21 @@ typecheck mprelude rStmts = do
     phase "Typechecking (Before substitution)"
     ctxPrint T.tModule tStmts
 
-    let tStmts' = subst su tStmts
-    -- liftIO $ putStrLn $ dbgSubst su
+    phase "Typechecking (og subst)"
+    ctxPrint' $ dbgSubst su
+
+    -- HACK: I didn't check it when that happens, so I'll do it at the end.
+    --  Unions that are to be substituted may have unsubstituted parameters. This should quickly fix that. However, I'm not sure where this happens. So, this is a TODO to figure out why this happens and when.
+    let Subst suUnions suTVs = su
+    let suNoUnions = Subst mempty suTVs
+    let suUnions' = subst suNoUnions <$> suUnions
+    let su' = Subst suUnions' suTVs
+
+    phase "Typechecking (fixed subst)"
+    ctxPrint' $ dbgSubst su'
+    
+    let tStmts' = subst su' tStmts
+
     let errs' = errs <> (AmbiguousType <$> Set.toList (ftv tStmts'))
     pure (errs', tStmts')
 
@@ -681,7 +694,7 @@ instantiateVariable = \case
 
     -- Create type from function declaration
     let fundec = fn.functionDeclaration
-    fnUnion <- mkUnion fundec.functionEnv
+    fnUnion <- mkUnion (mapTVs <$> fundec.functionEnv)
     let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> fundec.functionParameters) (mapTVs fundec.functionReturnType)
 
     pure fnType

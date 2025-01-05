@@ -26,10 +26,18 @@ import Data.Char (toUpper)
 
 
 -- set printing config
-defaultContext :: CtxData
-defaultContext = CtxData 
-  { silent = True
+defaultContext, debugContext, runtimeContext :: CtxData
+defaultContext = runtimeContext 
+
+debugContext = CtxData
+  { silent = False
   , printIdentifiers = True
+  , displayTypeParameters = False
+  }
+
+runtimeContext = CtxData
+  { silent = True
+  , printIdentifiers = False
   , displayTypeParameters = False
   }
 

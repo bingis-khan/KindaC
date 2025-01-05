@@ -143,11 +143,12 @@ cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
     --       statement $ cCall "exit" ["1"]
     --     ]
 
-  M.EnvDef env ->
-    unless (null env) $
-      statement $ do
-        envNames <- cEnv env
-        envNames.envType § envNames.envName § "=" § envNames.envInstantiation
+  M.EnvDef envs ->
+    for_ envs $ \env ->
+      unless (null env) $
+        statement $ do
+          envNames <- cEnv env
+          envNames.envType § envNames.envName § "=" § envNames.envInstantiation
 
 cExpr :: M.Expr -> PL
 cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type) e of
@@ -159,14 +160,18 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
             else do
               v <- createIntermediateVariable t' e
               cCall (v & ".fun") $ ("&" & v & ".env") : fmap snd args
-  M.Op (lt, le) Equals (rt, re) | not (isBuiltinType t)-> do
+  M.Op (lt, le) Equals (rt, re) | not (isBuiltinType lt)-> do
     le' <- createIntermediateVariable lt le
     re' <- createIntermediateVariable rt re
+
+    include "string.h"
     enclose "(" ")" $ "0" § "==" § cCall "memcmp" [cRef le', cRef re', cSizeOf lt]
 
-  M.Op (lt, le) NotEquals (rt, re) | not (isBuiltinType t)-> do
+  M.Op (lt, le) NotEquals (rt, re) | not (isBuiltinType lt)-> do
     le' <- createIntermediateVariable lt le
     re' <- createIntermediateVariable rt re
+
+    include "string.h"
     enclose "(" ")" $ "0" § "!=" § cCall "memcmp" [cRef le', cRef re', cSizeOf lt]
 
   -- no need for typing
@@ -363,7 +368,7 @@ cCast :: PL -> PL -> PL
 cCast t x = enclose "(" ")" t § x
 
 cSizeOf :: M.Type -> PL
-cSizeOf = undefined
+cSizeOf t = "sizeof" & enclose "(" ")" (cType t)
 
 cComment :: String -> PL
 cComment s = "/*" § fromString s § "*/"
@@ -461,13 +466,36 @@ cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo (ctx, lines) ->
 
 
         -- 3. ADT
-        M.DD ut dcs _ _ -> do
-          addTopLevel $ undefined
+        M.DD _ dcs _ _ -> do
+          let tags = cTag <$> dcs
+          addTopLevel $ "typedef" § "struct" <§ cBlock
+            [ "enum" <§ cBlock [pl $ sepBy ", " tags] §> "tag;"
+            , "union" <§ cBlock [cStruct dc §> cConStruct dc & ";" | dc@(M.DC _ _ (_:_) _) <- dcs ] §> "env;"
+            ] §> dataTypeName & ";"
+
+          -- also, generate accessors
+          for_ dcs $ \case
+            -- for a constructor with no arguments....... generate preprocessor directives (TODO: bad.) try to make a better hierarchy of unique names. less functions, etc.
+            dc@(M.DC _ _ [] _) -> do
+              addTopLevel $ pl $ 
+                "#define" § cCon dc § enclose "(" ")"
+                  (enclose "(" ")" dataTypeName § "{" § ".tag" § "=" § cTag dc § "}")
+
+            dc@(M.DC _ uc ts@(_:_) _) -> do
+              addTopLevel $ ccFunction (cCon dc) (Fix $ M.TCon dd) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
+                [
+                  statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", "
+                    [ ".tag" § "=" § cTag dc
+                    , ".env." & cConStruct dc § "=" § "{" § sepBy ", " ["." & cConMember uc i § "=" § cConMember uc i | (_, i) <- zip ts [1 :: Int ..]] § "}"
+                    ]
+                    § "}"
+                ]
 
       pure dataTypeName
 
 cStruct :: M.DataCon -> PP
-cStruct (M.DC _ uc ts _) = "struct" <§ cBlock 
+cStruct (M.DC _ _ [] _) = mempty  -- this might be called by the ADT part of `cDataType`.
+cStruct (M.DC _ uc ts@(_:_) _) = "struct" <§ cBlock 
   [member t i | (t, i) <- zip ts [1 :: Int ..]]
   where
     member t i = 
@@ -509,7 +537,7 @@ sanitize = Text.concatMap $ \case
 
 -- supposed to be the definitie source for unique names.
 cCon :: M.DataCon -> PL
--- type constructor with arguments - treat is as a function
+-- type constructor with arguments - treat it as a function
 cCon (M.DC _ c (_:_) _) = plt c.conName.fromCN & "__" & pls (hashUnique c.conID) & "f"
 -- enum type constructor (refer to actual datatype)
 cCon (M.DC _ c [] anns) =
@@ -518,9 +546,15 @@ cCon (M.DC _ c [] anns) =
     Just t -> plt t
     Nothing -> plt c.conName.fromCN & "__" & pls (hashUnique c.conID)
 
+cTag :: M.DataCon -> PL
+cTag (M.DC _ c _ _) = plt c.conName.fromCN & "__" & pls (hashUnique c.conID) <> "t"
+
 -- defines names of constructor members for functions to synchronize between each other.
 cConMember :: UniqueCon -> Int -> PL
 cConMember uc i = "c" & plt uc.conName.fromCN & "__" & pls (hashUnique uc.conID) & "__" & pls i
+
+cConStruct :: M.DataCon -> PL
+cConStruct (M.DC _ uc _ _) = "c" & plt uc.conName.fromCN & "__" & pls (hashUnique uc.conID) & "s"
 
 isBuiltinType :: M.Type -> Bool
 isBuiltinType (Fix (M.TCon dd)) = any (\case { ACType _ -> True; _ -> False }) dd.annotations

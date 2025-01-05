@@ -7,7 +7,7 @@
 module Mono (mono) where
 
 import AST.Converged (Prelude(..))
-import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, TCon (..), UnionID (..), Ann, EnvID (..), VarName (..), (<+>), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint)
+import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, TCon (..), UnionID (..), Ann, EnvID (..), VarName (..), (<+>), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase)
 import qualified AST.Typed as T
 import qualified AST.Mono as M
 import qualified AST.Common as Common
@@ -44,7 +44,7 @@ import Debug.Trace (traceShowWith)
 
 data Context' = Context
   { tvarMap :: TypeMap  -- this describes the temporary mapping of tvars while monomorphizing.
-  , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.NeedsImplicitEnvironment, M.IEnv) M.IFunction
+  , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.NeedsImplicitEnvironment) M.IFunction
   , memoDatatype :: Memo (T.DataDef, [M.IType], [M.IEnvUnion]) (M.IDataDef, Map T.DataCon M.IDataCon)
   , memoEnv :: Memo (T.EnvF M.IType) M.IEnv
   , memoUnion :: Memo (T.EnvUnionF M.IType) M.IEnvUnion
@@ -88,11 +88,15 @@ mono mod = do
   --   for_ (Map.toList ctx.envInstantiations) $ \(eid, envs) ->
   --     putStrLn $ "  " <> show eid <> " => " <> show (M.envID <$> (Set.toList envs))
 
+  phase "Monomorphisation (env instantiations)"
+  ctxPrint (Common.ppMap . fmap (bimap Common.ppEnvID (Common.encloseSepBy "[" "]" ", " . fmap M.mtEnv . Set.toList)) . Map.toList) ctx.envInstantiations
+
 
   let envUsage = Map.keysSet ctx.envInstantiations
   let (mstmts, dds, fns) = withEnvContext envUsage ctx.envInstantiations $ do
         mstmts <- mfAnnStmts mistmts
-        fns <- traverse mfFunction ifns
+        -- fns <- traverse mfFunction ifns
+        let fns = undefined
 
         -- retrieve datatypes
         mapDDs <- RWS.gets memoIDatatype
@@ -135,8 +139,8 @@ mAnnStmt = cata (fmap embed . f) where
       T.Switch switch cases -> mann . M.Switch switch $ mCase <$> cases
       T.Return ete -> mann $ M.Return ete
       T.EnvDef env -> do
-        menv <- mEnv' env
-        noann $ M.EnvDef menv
+        let envID = T.envID env
+        noann $ M.EnvDef envID
 
 mCase :: T.Case M.IExpr M.AnnIStmt -> M.CaseF M.IExpr M.AnnIStmt
 mCase kase = undefined -- M.Case <$> mDecon kase.deconstruction <*> sequenceA kase.caseCondition <*> sequenceA kase.body
@@ -190,16 +194,16 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
 variable :: T.Variable -> M.IType -> Context M.IVariable
 variable (T.DefinedVariable uv) _ = pure $ M.DefinedVariable uv
 variable (T.DefinedFunction vfn) et = do
-  ctxPrint' "in function..."
+  ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
   -- Unsound deconstruction...
   let (tts, tret, envEmptiness) = case project et of
         M.ITFun union mts mret -> (mts, mret, not $ M.areAllEnvsEmpty union)
         _ -> undefined
 
   -- OUTSIDE of withTypeMap... is this correct? I mean, these variables are only outside.
-  menv <- mEnv' vfn.functionDeclaration.functionEnv
+  -- TODO: this was related to env. it's possible for it to contain declaration vars. I'm not sure this is necessarily correct.
 
-  fmap M.DefinedFunction $ flip (memo memoFunction (\mem s -> s { memoFunction = mem })) (vfn, tts, tret, envEmptiness, menv) $ \(tfn, ts, ret, needsEnv, _) addMemo -> mdo
+  fmap M.DefinedFunction $ flip (memo memoFunction (\mem s -> s { memoFunction = mem })) (vfn, tts, tret, envEmptiness) $ \(tfn, ts, ret, needsEnv) addMemo -> mdo
     uv <- newUniqueVar tfn.functionDeclaration.functionId
 
     let fundec = M.FD env uv (zipWith (\mt (pv, _) -> (pv, mt)) ts tfn.functionDeclaration.functionParameters) ret needsEnv :: M.IFunDec
@@ -207,6 +211,7 @@ variable (T.DefinedFunction vfn) et = do
     addMemo fn
 
     (env, body) <- withTypeMap (mapTypes (snd <$> tfn.functionDeclaration.functionParameters) ts <> mapType tfn.functionDeclaration.functionReturnType ret) [] $ do
+      menv <- mEnv' vfn.functionDeclaration.functionEnv
       mbody <- mStmts tfn.functionBody
       pure (menv, mbody)
 
@@ -288,7 +293,7 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(dd@(T.DD u
   let strippedDCs = flip filter tdcs $ \(T.DC _ _ conTs _) ->
         let
           isUnionEmpty :: T.EnvUnionF a -> Any
-          isUnionEmpty union = 
+          isUnionEmpty union =
             -- NOTE: we must first replace it. also, HACK: it's retarded. TODO: make it better.
             case unionMap !? union.unionID of
               Just eu -> Any $ null eu.union
@@ -343,7 +348,7 @@ withTypeMap tmv tmenv a = do
 
 mUnion :: T.EnvUnionF (Context M.IType) -> Context M.IEnvUnion
 mUnion tunion = do
-  
+
   -- NOTE: check `TypeMap` definition as to why its needed *and* retarded.
   TypeMap _ envMap <- State.gets tvarMap
   case envMap !? tunion.unionID of
@@ -795,12 +800,12 @@ startingContext = Context
 
 
 --------------------------------------------------------
--- THIS IS TYPESAFE BUT BAD. WE BASICALLY ARE REDOING MONOMORPHIZATION IN THE SAME AMOUNT OF LINES. Maybe a less typesafe data structure would be better, as it would cut down on half the file. Or somehow do it in real time check when the scope exits and the map the instances.
+-- THIS IS TYPESAFE BUT BAD. WE BASICALLY ARE REDOING MONOMORPHIZATION IN THE SAME AMOUNT OF LINES. Maybe a less typesafe data structure would be better, as it would cut down on half the file. Or somehow do it in real time - check when the scope exits and the map the instances.
 --------------------------------------------------------
 
 type EnvContext = RWS EnvContextUse () EnvMemo
 data EnvContextUse = EnvContextUse -- bruh, i dunno
-  { usedEnvs :: Set EnvID
+  { usedEnvs :: Set EnvID  -- keysSet of `allInsts` - maybe just call keysSet each time.
   , allInsts :: Map EnvID (Set M.IEnv)
 
   -- this changes with withInstantiation
@@ -840,13 +845,19 @@ mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)
 
   fmap (embed . O . Annotated anns) <$> case stmt' of
     -- TODO: this case is not needed anymore, because of RemoveUnused.
-    M.EnvDef env -> do
-      envl <- filterEnvs [env]
-      case envl of
-        [] -> pure Nothing
-        _ -> do
-          menv <- mfEnv $ mfType <$> env
-          pure $ Just $ M.EnvDef menv
+    --  TODO: really?????
+    M.EnvDef envID -> do
+      envs <- expandEnvironments [envID]
+      case envs of
+        [] -> error "wtffff. no envs left in EnvDef in Mono"
+          -- pure Nothing
+        (e:es) -> s $ M.EnvDef (e :| es)
+      -- envl <- filterEnvs [env]
+      -- case envl of
+      --   [] -> pure Nothing
+      --   _ -> do
+      --     menv <- mfEnv $ mfType <$> env
+      --     pure $ Just $ M.EnvDef menv
 
     M.Pass -> s M.Pass
     M.ExprStmt e -> s $ M.ExprStmt e
@@ -916,6 +927,7 @@ mfUnion union = do
       then fmap (:[]) $ mfEnv $ snd <$> env
       else do
         envMap <- RWS.asks allInsts
+        -- TODO: bruh, why don't we just mfType it then??
         traverse (mfEnv . fmap mfType) $ Set.toList $ Map.findWithDefault Set.empty (M.envID env) envMap
 
   let mUsedEnvs = case mappedEnvs of
@@ -923,6 +935,15 @@ mfUnion union = do
         (x:xs) -> x :| xs
 
   pure $ M.EnvUnion { M.unionID = union.unionID, M.union = mUsedEnvs }
+
+expandEnvironments :: [EnvID] -> EnvContext [M.Env]
+expandEnvironments envIDs = do
+  envInsts <- RWS.asks allInsts
+  fmap concat $ for envIDs $ \envID ->
+    case envInsts !? envID of
+      Just envs -> do
+        traverse (mfEnv . fmap mfType) $ Set.toList envs
+      Nothing -> pure []
 
 mfDataDef :: (M.IDataDef, [M.EnvUnion]) -> EnvContext (M.DataDef, Map M.IDataCon M.DataCon)
 mfDataDef = memo memoIDatatype (\mem s -> s { memoIDatatype = mem }) $ \(idd, _) addMemo -> mdo

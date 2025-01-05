@@ -1,0 +1,16 @@
+
+f = :123
+
+g (x, y)
+	print x
+	print y
+	return 1
+
+ff (x a, y b) -> Unit
+
+	f <= :g(x, y)
+	return
+
+ff(True, Unit)
+ff(123, False)
+ff(Unit, Unit)

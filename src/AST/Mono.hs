@@ -280,8 +280,13 @@ data StmtF envtype expr a
   | Switch expr (NonEmpty (CaseF expr a))
   | ExprStmt expr
   | Return expr
-  | EnvDef (Env' envtype)
+  | EnvDef (EnvDef envtype)
   deriving (Functor, Foldable, Traversable)
+
+-- sheeehs wtfff
+type family EnvDef envtype
+type instance EnvDef IncompleteEnv = EnvID
+type instance EnvDef FullEnv = NonEmpty Env
 
 type IStmt = StmtF IncompleteEnv IExpr AnnIStmt
 type Stmt = StmtF FullEnv Expr AnnStmt
@@ -319,9 +324,9 @@ data Module = Mod
 mModule :: Module -> Context
 mModule m =
   let main = comment "Main" $ tStmts m.toplevelStatements
-      funs = comment "Functions" $ ppLines tFunction m.functions
-      dds = comment "Datatypes" $ ppLines tDataDef m.datatypes
-   in sepBy "\n" [dds, funs, main]
+      -- funs = comment "Functions" $ ppLines tFunction m.functions
+      -- dds = comment "Datatypes" $ ppLines tDataDef m.datatypes
+   in sepBy "\n" [main]
 
 tStmts :: [AnnStmt] -> Context
 tStmts = ppLines tAnnStmt
@@ -347,7 +352,10 @@ tStmt stmt = case stmt of
     ppBody tCase (tExpr switch) cases
   ExprStmt e -> tExpr e
   Return e -> "return" <+> tExpr e
-  EnvDef funEnv -> fromString $ printf "[ENV]: %s" (tEnv funEnv)
+  EnvDef funEnv -> fromString $ printf "[ENV]: %s" (tEnvDef funEnv)
+
+tEnvDef :: EnvDef FullEnv -> Context
+tEnvDef = encloseSepBy "[" "]" ", " . NonEmpty.toList . fmap tEnv
 
 tCase :: CaseF Expr AnnStmt -> Context
 tCase kase = tBody (tDecon kase.deconstruction <+?> fmap tExpr kase.caseCondition) kase.body
@@ -452,7 +460,10 @@ mtStmt stmt = case stmt of
     ppBody mtCase (mtExpr switch) cases
   ExprStmt e -> mtExpr e
   Return e -> "return" <+> mtExpr e
-  EnvDef funEnv -> fromString $ printf "[ENV]: %s" (mtEnv funEnv)
+  EnvDef funEnv -> fromString $ printf "[ENV]: %s" (mtEnvDef funEnv)
+
+mtEnvDef :: EnvDef IncompleteEnv -> Context
+mtEnvDef = ppEnvID
 
 mtCase :: CaseF IExpr AnnIStmt -> Context
 mtCase kase = mtBody (mtDecon kase.deconstruction <+?> fmap mtExpr kase.caseCondition) kase.body

@@ -179,11 +179,15 @@ sDataCon (T.DC dd uc _ _) = do
 mustReplace :: Mem T.Env
 mustReplace = fmap fromJust . replace
 
+-- TODO: i modified it. I should add test cases for why I implemented this module. (See my master's thesis. i literally forgot kekekkekekekekkekekekek i wanna kms)
 replace :: T.Env -> Mem' (Maybe T.Env)
 replace env = do
   let eid = T.envID env
   envs <- RWS.ask
   pure $ envs !? eid
+  -- case envs !? eid of
+  --   Nothing -> pure Nothing
+  --   Just nuEnv -> undefined
 
 
 type Mem t = t -> Mem' t
