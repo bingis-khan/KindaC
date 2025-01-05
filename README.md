@@ -56,6 +56,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - why are parameters being unified???
 - [??] super slow on nested functions: `::::::::::::::::1`
   - not currently! but when I change something minor, it happened? so kinda weird. might be a laziness problem.
+  - yeah, even with the rewrite, it became slow for some reason. why? it shouldn't be slow now.
 - mark unused variables and modify the generated code to not generate warnings in C.
 - do branching analysis to check if a code path does not return a value.
   - also add a `#[noreturn]` to mark a function that does not return (eg. `exit()`)
