@@ -42,7 +42,7 @@ import qualified AST.Resolved as R
 import qualified AST.Typed as T
 
 import AST.Converged (Prelude(..), PreludeFind (..), boolFind, tlReturnFind, intFind)
-import AST.Common (TVar (TV), LitType (LInt), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint')
+import AST.Common (TVar (TV), LitType (LInt), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..))
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
@@ -77,6 +77,7 @@ typecheck mprelude rStmts = do
 
     -- HACK: I didn't check it when that happens, so I'll do it at the end.
     --  Unions that are to be substituted may have unsubstituted parameters. This should quickly fix that. However, I'm not sure where this happens. So, this is a TODO to figure out why this happens and when.
+    -- ISSUE(function-tvars-in-its-env)
     let Subst suUnions suTVs = su
     let suNoUnions = Subst mempty suTVs
     let suUnions' = subst suNoUnions <$> suUnions
@@ -405,7 +406,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the list (effectively)
       R.EnvDef rfn -> do
         fn <- inferFunction rfn
         -- liftIO $ putStrLn $ "This env... " <> ctx T.tEnv fn.functionDeclaration.functionEnv
-        pure $ T.EnvDef fn.functionDeclaration.functionEnv
+        pure $ T.EnvDef fn
 
 
 
@@ -643,7 +644,7 @@ generalize fx = do
     scheme = typesFromDeclaration \\ typesFromOutside
 
     -- Then substitute it.
-    asTVar (T.TyV tyname) = Fix $ T.TVar $ TV tyname
+    asTVar (T.TyV tyname) = Fix $ T.TVar $ TV tyname (BindByVar fn.functionDeclaration.functionId)
 
     su = Subst mempty $ Map.fromSet asTVar scheme
 

@@ -4,6 +4,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-ambiguous-fields #-}
 {-# HLINT ignore "Use concatMap" #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Resolver (resolve, ResolveError) where
 
 import Data.Unique (newUnique)
@@ -22,21 +23,22 @@ import Data.Set (Set)
 import Data.Bifoldable (bifold)
 import qualified Data.Set as Set
 
-import AST.Common (UniqueVar (..), UniqueCon (..), UniqueType (..), Locality (..), VarName (..), TCon, ConName, Annotated (..), (:.) (..))
+import AST.Common (UniqueVar (..), UniqueCon (..), UniqueType (..), Locality (..), VarName (..), TCon (..), ConName (..), Annotated (..), (:.) (..), UnboundTVar (..), TVar (..), Binding (..), bindTVar)
 import AST.Converged (Prelude(..))
 import qualified AST.Converged as Prelude
 import AST.Untyped (StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..))
 import qualified AST.Untyped as U
-import AST.Resolved (Env (..), Exports (..), Variable (..), Datatype (..))
+import AST.Resolved (Env (..), Exports (..), Variable (..), Datatype (..), Constructor (..))
 import qualified AST.Resolved as R
 import qualified AST.Typed as T
 import Data.Fix (Fix(..))
 import Data.Functor ((<&>))
 import Data.Biapplicative (first)
 import qualified Data.Text as Text
-import Data.Maybe (mapMaybe)
+import Data.Maybe (mapMaybe, catMaybes)
 import Data.Semigroup (sconcat)
 import Data.Traversable (for)
+import qualified Control.Monad.Trans.RWS as RWS
 
 
 
@@ -119,33 +121,43 @@ rStmts = traverse -- traverse through the list with Ctx
             pure $ Fix (R.Con uc)
 
         stmt $ R.Return re
-      DataDefinition (DD tyName tyParams cons) -> mdo
+      DataDefinition (DD tyName unboundTyParams cons) -> mdo
         tid <- generateType tyName
         -- tying the knot for the datatype definition
 
-        let dataDef = R.DD tid tyParams rCons anns
+        let dataDef = R.DD tid tvars rCons anns
         registerDatatype dataDef
 
-        rCons <- for cons $ \(Annotated conAnns (DC cname ctys)) -> do
-          cid <- generateCon cname
+        let tvars = mkTVars (BindByType tid) unboundTyParams
+        rCons <- bindTVars tvars $ do
+          for cons $ \(Annotated conAnns (DC cname ctys)) -> do
+            cid <- generateCon cname
 
-          -- TODO: throw an error if there is more than one constructor with the same name in the same datatype.
-          -- TODO: also, can we redeclare constructors (in another datatype in the same scope?)
-          rConTys <- traverse rType ctys
-          let rCon = R.DC dataDef cid rConTys conAnns
-          newCon rCon
+            -- TODO: throw an error if there is more than one constructor with the same name in the same datatype.
+            -- TODO: also, can we redeclare constructors (in another datatype in the same scope?)
+            rConTys <- traverse rType ctys
+            let rCon = R.DC dataDef cid rConTys conAnns
+            newCon rCon
 
-          pure rCon
+            pure rCon
         pass
 
       FunctionDefinition (FD name params ret) body -> do
         vid <- generateVar name
 
+        -- get all unbound tvars
+        let allTypes = catMaybes $ ret : (snd <$> params)
+        tvars <- fmap mconcat $ for allTypes $ cata $ \case
+              TVar utv -> tryResolveTVar utv <&> \case
+                Just _ ->  Set.empty  -- don't rebind existing tvars.
+                Nothing -> Set.singleton $ bindTVar (BindByVar vid) utv
+              t -> fold <$> sequenceA t
+
         rec
           let function = R.Function (R.FD env vid rparams rret) rbody
           newFunction function
 
-          (rparams, rret, rbody) <- closure $ do
+          (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure $ do
             rparams' <- traverse (\(n, t) -> do
               rn <- newVar n
               rt <- traverse rType t
@@ -157,7 +169,7 @@ rStmts = traverse -- traverse through the list with Ctx
           -- set the environment
           --   NOTE: don't forget to remove self reference - it does not need to be in the environment.
           -- TODO: maybe just make it a part of 'closure'?
-          let innerEnv = Set.delete vid $ sconcat $ fmap gatherVariables rbody
+          let innerEnv = Set.delete vid $ sconcat $ gatherVariables <$> rbody
           env <- mkEnv innerEnv
 
         stmt $ R.EnvDef function
@@ -221,7 +233,9 @@ rType = transverse $ \case
     rt <- resolveType t
     rtApps <- sequenceA tapps
     pure $ R.TCon rt rtApps
-  TVar v -> pure $ R.TVar v
+  TVar v -> do
+    tv <- resolveTVar v
+    pure $ R.TVar tv
   TFun args ret -> do
     rArgs <- sequence args
     rret <- ret
@@ -234,21 +248,18 @@ rType = transverse $ \case
 
 scope :: Ctx a -> Ctx a
 scope x = do
-  -- Enter scope
   oldScope <- RWST.get  -- enter scope
   x' <- x               -- evaluate body
   RWST.put oldScope     -- exit scope
 
   return x'
 
--- TODO: right now, it's the same as scope, as i removed the immutability requirement
+-- TODO: right now, it only creates a new scope... so it's a bit of a misnomer.
 closure :: Ctx a -> Ctx a
 closure x = do
   oldScope <- RWST.get          -- enter scope
 
-  RWST.modify $ \state@(CtxState { scopes = scopes' }) -> state { scopes = emptyScope <| fmap (\sc -> sc -- set all reachable variables as immutable
-    { varScope = sc.varScope
-    }) scopes' }
+  RWST.modify $ \state@(CtxState { scopes = scopes' }) -> state { scopes = emptyScope <| scopes' }
   x' <- x                       -- evaluate body
   RWST.put oldScope             -- exit scope
 
@@ -260,6 +271,8 @@ type Ctx = RWST () [ResolveError] CtxState IO  -- I might add additional context
 data CtxState = CtxState
   { scopes :: NonEmpty Scope
   , inLambda :: Bool  -- hack to check if we're in a lambda currently. the when the lambda is not in another lambda, we put "Local" locality.
+  , tvarBindings :: Map UnboundTVar TVar
+
   , prelude :: Maybe Prelude  -- Only empty when actually parsing prelude.
 
   -- we need to keep track of each defiend function to actually typecheck it.
@@ -275,7 +288,7 @@ data Scope = Scope
 
 emptyState :: CtxState
 emptyState =
-  CtxState { scopes = NonEmpty.singleton emptyScope, prelude = Nothing, inLambda = False, functions = mempty, datatypes = mempty }
+  CtxState { scopes = NonEmpty.singleton emptyScope, tvarBindings = mempty, prelude = Nothing, inLambda = False, functions = mempty, datatypes = mempty }
 
 emptyScope :: Scope
 emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty }
@@ -287,6 +300,7 @@ getScopes = RWST.gets scopes
 mkState :: Prelude -> CtxState
 mkState prel = CtxState
   { scopes = NonEmpty.singleton initialScope
+  , tvarBindings = mempty
   , prelude = Just prel
   , inLambda = False
   , functions = mempty
@@ -342,9 +356,7 @@ resolveVar name = do
       (Local,) . R.DefinedVariable <$> placeholderVar name
 
 placeholderVar :: VarName -> Ctx UniqueVar
-placeholderVar name = do
-  vid <- liftIO newUnique
-  pure $ VI { varID = vid, varName = name }  -- mutable, because we it might be a placeholder of a mutable assignment
+placeholderVar = generateVar
 
 
 generateCon :: ConName -> Ctx UniqueCon
@@ -370,8 +382,12 @@ placeholderCon :: ConName -> Ctx R.Constructor
 placeholderCon name = do
   uc <- generateCon name
 
+  ti <- generateType $ TC $ "PlaceholderTypeForCon" <> name.fromCN
+
   -- fill in later with a placeholder type.
-  undefined
+  let dc = R.DC dd uc [] []
+      dd = R.DD ti [] [dc] []
+  pure $ DefinedConstructor dc
 
 
 -- Generate a new unique type.
@@ -396,6 +412,42 @@ registerDatatype dd@(R.DD ut _ _ _) = do
   RWST.modify $ \s -> s { datatypes = dd : s.datatypes }
   pure ()
 
+mkTVars :: Binding -> [UnboundTVar] -> [TVar]
+mkTVars b = fmap $ bindTVar b
+
+bindTVars :: [TVar] -> Ctx a -> Ctx a
+bindTVars tvs cx = do
+    oldBindings <- RWS.gets tvarBindings
+
+    -- make bindings and merge them with previous bindings
+    let bindings = Map.fromList $ fmap (\tv -> (UTV tv.fromTV, tv)) tvs
+    RWS.modify $ \ctx -> ctx { tvarBindings = bindings <> ctx.tvarBindings }
+
+    x <- cx
+
+    RWS.modify $ \ctx -> ctx { tvarBindings = oldBindings }
+
+    pure x
+
+tryResolveTVar :: UnboundTVar -> Ctx (Maybe TVar)
+tryResolveTVar utv = do
+  tvs <- RWS.gets tvarBindings
+  pure $ tvs !? utv
+
+resolveTVar :: UnboundTVar -> Ctx TVar
+resolveTVar utv = do
+  mtv <- tryResolveTVar utv
+  case mtv of
+    Just tv -> pure tv
+    Nothing -> do
+      err $ UnboundTypeVariable utv
+      placeholderTVar utv
+
+placeholderTVar :: UnboundTVar -> Ctx TVar
+placeholderTVar utv = do
+  var <- generateVar $ VN $ "placeholderVarForTVar" <> utv.fromUTV
+  pure $ bindTVar (BindByVar var) utv
+
 resolveType :: TCon -> Ctx R.Datatype
 resolveType name = do
   allScopes <- getScopes
@@ -407,9 +459,11 @@ resolveType name = do
 
 placeholderType :: TCon -> Ctx R.Datatype
 placeholderType name = do
-  tid <- generateType name
   -- generate a placeholder type.
-  undefined
+  ti <- generateType $ TC $ "PlaceholderType" <> name.fromTC
+
+  let dd = R.DD ti [] [] []
+  pure $ DefinedDatatype dd
 
 modifyThisScope :: (Scope -> Scope) -> Ctx ()
 modifyThisScope f =
@@ -440,6 +494,7 @@ data ResolveError
   = UndefinedVariable VarName
   | UndefinedConstructor ConName
   | UndefinedType TCon
+  | UnboundTypeVariable UnboundTVar
   | TypeRedeclaration TCon
   | CannotMutateFunctionDeclaration VarName
   deriving Show

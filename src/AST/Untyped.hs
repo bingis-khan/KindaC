@@ -1,7 +1,5 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TypeOperators #-}
@@ -9,7 +7,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module AST.Untyped (module AST.Untyped) where
 
-import AST.Common (LitType, Op, Annotated, TCon (..), TVar (..), ConName, VarName, (:.), (<+>), Context, pretty, ppTCon, encloseSepBy)
+import AST.Common (LitType, Op, Annotated, TCon (..), ConName, VarName, (:.), (<+>), Context, pretty, ppTCon, encloseSepBy, UnboundTVar (..))
 
 import Data.Eq.Deriving
 import Data.Fix (Fix)
@@ -25,7 +23,7 @@ import Data.Functor.Foldable (cata)
 
 data TypeF a
   = TCon TCon [a]
-  | TVar TVar
+  | TVar UnboundTVar
   | TFun [a] a
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 type Type = Fix TypeF
@@ -58,7 +56,7 @@ $(deriveEq1 ''ExprF)
 ---------------------
 
 data DataCon = DC ConName [Type] deriving Eq
-data DataDef = DD TCon [TVar] [Annotated DataCon] deriving Eq
+data DataDef = DD TCon [UnboundTVar] [Annotated DataCon] deriving Eq
 
 
 --------------
@@ -134,5 +132,5 @@ uType :: Type -> Context
 uType = cata $ \case
   TCon con params -> 
     foldl' (<+>) (ppTCon con) params
-  TVar (TV tv) -> pretty tv
+  TVar (UTV tv) -> pretty tv
   TFun args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret

@@ -2,7 +2,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), CtxData(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ctx)
+import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), CtxData(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ctx, ppTVar)
 import qualified AST.Typed as T
 
 import Data.Fix (Fix(..))
@@ -256,7 +256,7 @@ tExpr = cata $ \case
 
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines tConDef cons
+tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y _) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines tConDef cons
 
 tConDef :: DataCon -> Context
 tConDef (DC _ g t anns) = annotate anns $ foldl' (<+>) (ppCon g) $ tTypes t
@@ -279,7 +279,7 @@ tType :: Type -> Context
 tType = cata $ \case
   TCon con params -> 
     foldl' (<+>) (ppTypeInfo (asUniqueType con)) params
-  TVar (TV tv) -> pretty tv
+  TVar tv -> ppTVar tv
   TFun args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
 
 tEnv :: Env -> Context

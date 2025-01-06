@@ -64,7 +64,7 @@ unO (O gfa) = gfa
 
 
 -- Type safety definitions
-newtype TVar = TV { fromTV :: Text } deriving (Show, Eq, Ord)
+newtype UnboundTVar = UTV { fromUTV :: Text } deriving (Show, Eq, Ord)
 newtype TCon = TC { fromTC :: Text } deriving (Show, Eq, Ord)
 newtype ConName = CN { fromCN :: Text } deriving (Show, Eq, Ord)
 newtype VarName = VN { fromVN :: Text } deriving (Show, Eq, Ord)
@@ -113,6 +113,20 @@ data UniqueType = TI
   }
 
 data VariableType = IsFunction | IsVariable  -- used to preserve if the function is a variable or a function. TODO: this might not be needed and I might instead of the "Variable" type. Note the comment near `Env` - I'm not sure what I had in mind. When I'll start cleaning up, I'll see what it's about.
+
+data Binding
+  = BindByType UniqueType
+  | BindByVar  UniqueVar
+  deriving (Eq, Ord)
+
+data TVar = TV
+  { fromTV :: Text
+  , binding :: Binding
+  } deriving (Eq, Ord)
+
+bindTVar :: Binding -> UnboundTVar -> TVar
+bindTVar b (UTV tvname) = TV tvname b
+
 
 -- type instances for the small datatypes
 
@@ -257,6 +271,13 @@ ppLines f = foldMap ((<>"\n") . f)
 
 ppLines' :: Foldable t => t Context -> Context
 ppLines' = foldMap (<> "\n")
+
+ppTVar :: TVar -> Context
+ppTVar (TV tv b) = 
+  let bindingCtx = case b of
+        BindByType ut -> ppTypeInfo ut
+        BindByVar uv -> ppVar Local uv
+  in pretty tv <> "<" <> bindingCtx <> ">"
 
 ppVar :: Locality -> UniqueVar -> Context
 ppVar l v = localTag <?+> pretty (fromVN v.varName) <> ppIdent ("$" <> pretty (hashUnique v.varID))

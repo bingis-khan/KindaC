@@ -1,0 +1,25 @@
+#$ Basic TVar binding and reoccuring names.
+# 123
+# 123
+# ()
+# ()
+# True
+# ()
+# True
+# 69
+# 69
+# 69
+
+something (x a) -> a
+	print x
+	return x
+
+elsthing (n a, m b) -> a
+	print n
+	print m
+	return n
+
+print something(123)
+print something(Unit)
+print elsthing(True, Unit)
+print elsthing(69 ,69)

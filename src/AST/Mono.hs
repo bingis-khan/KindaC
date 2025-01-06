@@ -11,7 +11,7 @@
 
 module AST.Mono (module AST.Mono) where
 
-import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (TV), ctx)
+import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (TV), ctx, ppTVar)
 import Control.Monad.Trans.Reader (runReader, ask)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Eq.Deriving (deriveEq1)
@@ -518,7 +518,7 @@ mtType :: IType -> Context
 mtType = cata $ \case
   ITCon (DD tid _ _ _) _ _ -> ppTypeInfo tid
   ITFun funUnion args ret -> tEnvUnion (mtEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
-  ITVar (TV tv) -> pretty tv
+  ITVar tv -> ppTVar tv
 
 mtEnv :: EnvF IncompleteEnv IType -> Context
 mtEnv = mtEnv' . fmap mtType

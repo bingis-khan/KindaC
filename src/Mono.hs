@@ -7,7 +7,7 @@
 module Mono (mono) where
 
 import AST.Converged (Prelude(..))
-import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, TCon (..), UnionID (..), Ann, EnvID (..), VarName (..), (<+>), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase)
+import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, TCon (..), UnionID (..), Ann, EnvID (..), VarName (..), (<+>), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, ppTVar)
 import qualified AST.Typed as T
 import qualified AST.Mono as M
 import qualified AST.Common as Common
@@ -139,7 +139,8 @@ mAnnStmt = cata (fmap embed . f) where
       T.If cond ifTrue elseIfs else' -> mann $ M.If cond ifTrue elseIfs else'
       T.Switch switch cases -> mann . M.Switch switch $ mCase <$> cases
       T.Return ete -> mann $ M.Return ete
-      T.EnvDef env -> do
+      T.EnvDef fn -> do
+        let env = fn.functionDeclaration.functionEnv
         let envID = T.envID env
         noann $ M.EnvDef envID
 
@@ -916,7 +917,7 @@ mfType = para $ fmap embed . \case
     mret <- ret
     pure $ M.TFun munion margs mret
 
-  M.ITVar tv -> error $ printf "[COMPILER ERROR]: TVar %s not matched - types not applied correctly?" (show tv)
+  M.ITVar tv -> error $ printf "[COMPILER ERROR]: TVar %s not matched - types not applied correctly?" (ctx ppTVar tv)
 
 
 mfUnion :: M.EnvUnionF (M.EnvF M.IncompleteEnv (M.IType, EnvContext M.Type)) -> EnvContext M.EnvUnion

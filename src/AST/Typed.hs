@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ppVariableType, VariableType, ctx)
+import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ppVariableType, VariableType, ctx, ppTVar)
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -212,7 +212,7 @@ data StmtF expr a
   | ExprStmt expr
   | Return expr
 
-  | EnvDef Env
+  | EnvDef Function
   deriving (Functor, Foldable, Traversable)
 
 
@@ -316,7 +316,10 @@ tStmt stmt = case first tExpr stmt of
     ppBody tCase switch cases
   ExprStmt e -> e
   Return e -> "return" <+> e
-  EnvDef envDef -> "$$$:" <+> tEnv envDef
+  EnvDef fn -> ppLines'
+    [ "$$$:" <+> tEnv fn.functionDeclaration.functionEnv
+    , tFunction fn
+    ]
 
 tCase :: Case Context AnnStmt -> Context
 tCase kase = tBody (tDecon kase.deconstruction <+?> kase.caseCondition) kase.body
@@ -351,7 +354,7 @@ tExpr = cata $ \(TypedExpr et expr) ->
 
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
+tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y _) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
 
 tConDef :: DataCon -> Context
 tConDef (DC _ g t _) = foldl' (<+>) (ppCon g) $ tTypes t
@@ -377,7 +380,7 @@ tType = cata $ \case
           [] -> []
           tunions -> "|" : (tEnvUnion <$> tunions)
     in foldl' (<+>) (ppTypeInfo ut) (params ++ conunion)
-  TVar (TV tv) -> pretty tv
+  TVar tv -> ppTVar tv
   TFun fenv args ret -> tEnvUnion fenv <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
   TyVar ty -> tTyVar ty
 

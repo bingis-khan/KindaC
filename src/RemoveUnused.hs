@@ -111,7 +111,7 @@ sScope stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)) ->
         (x:xs) -> x :| xs
 
   fmap2 (embed . O . Annotated anns) $ case stmt' of
-    T.EnvDef env -> fmap2 T.EnvDef $ replace env
+    T.EnvDef fn -> fmap2 (T.EnvDef . (\env -> fn {T.functionDeclaration = fn.functionDeclaration { T.functionEnv = env }})) $ replace fn.functionDeclaration.functionEnv
 
     -- we have to take care of eliminating stuff from bodies.
     T.If e ifTrue elseIfs else' -> pure $ Just $ T.If e (body ifTrue) (fmap2 body elseIfs) (body <$> else')

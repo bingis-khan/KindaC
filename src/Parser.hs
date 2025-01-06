@@ -26,7 +26,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Common (Ann (..), TVar (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx)
+import AST.Common (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..))
 import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case)
 
 
@@ -388,8 +388,8 @@ typeName = do
     xs <- many identifierChar
     pure $ TC $ T.pack (x:xs)
 
-generic :: Parser TVar
-generic = TV <$> identifier
+generic :: Parser UnboundTVar
+generic = UTV <$> identifier
 
 variable :: Parser VarName
 variable = VN <$> identifier
