@@ -23,6 +23,8 @@ import qualified Data.Map as Map
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad (when, unless)
 import Data.Char (toUpper)
+import Data.Set (Set)
+import qualified Data.Set as Set
 
 
 -- set printing config
@@ -307,6 +309,9 @@ ppUnique = pretty . hashUnique
 
 ppMap :: [(Context, Context)] -> Context
 ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v)
+
+ppSet :: (a -> Context) -> Set a -> Context
+ppSet f = encloseSepBy "{" "}" ", " . fmap f . Set.toList
 
 ppVariableType :: VariableType -> Context
 ppVariableType = \case

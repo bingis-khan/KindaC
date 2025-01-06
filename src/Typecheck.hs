@@ -53,6 +53,7 @@ import Control.Applicative (liftA3)
 import Debug.Trace (traceShowWith)
 import Data.List.NonEmpty (NonEmpty)
 import Misc.Memo (memo, Memo(..))
+import qualified AST.Common as Common
 
 
 -- I have some goals alongside rewriting typechecking:
@@ -647,6 +648,10 @@ generalize fx = do
     asTVar (T.TyV tyname) = Fix $ T.TVar $ TV tyname (BindByVar fn.functionDeclaration.functionId)
 
     su = Subst mempty $ Map.fromSet asTVar scheme
+
+  ctxPrint' $ "Generalizing " <> ctx (Common.ppVar Local) fn.functionDeclaration.functionId
+  ctxPrint' $ printf "%s => %s" (T.tEnv fn.functionDeclaration.functionEnv) (Common.ppSet T.tTyVar typesFromOutside)
+  ctxPrint (Common.ppSet T.tTyVar) typesFromDeclaration
 
   -- This one is generalized.
   let generalizedFn = subst su fn
@@ -1484,7 +1489,7 @@ instance Substitutable (T.EnvUnionF (Fix T.TypeF)) where
       Nothing -> T.EnvUnion uid $ subst su envs
 
 instance Substitutable (T.EnvF (Fix T.TypeF)) where
-  ftv (T.Env _ _) = mempty  -- TODO: why is this `mempty`?
+  ftv (T.Env _ vars) = foldMap (\(_, _, t) -> ftv t) vars
   ftv (T.RecursiveEnv _ _) = mempty
 
   -- redundant work. memoize this shit also.
