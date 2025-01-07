@@ -29,6 +29,7 @@ import Data.List (find)
 import qualified Control.Monad.Trans.RWS as RWS
 import Debug.Trace (traceShow, trace)
 import Data.Bifunctor (bimap)
+import Data.Functor ((<&>))
 
 
 -- 30.12.24: wait, what did i need it for??? i forgot...
@@ -66,8 +67,8 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
     T.DefinedVariable uv -> if loc == FromEnvironment then used (T.DefinedVariable uv) t else pure Set.empty
 
   T.Con envID _ -> do 
-    let emptyEnv = T.Env envID []
-    State.modify $ Map.insert envID emptyEnv
+    let emptyEnvMask = []
+    State.modify $ Map.insert envID emptyEnvMask
     pure mempty
 
   T.Lam env _ ret -> withEnv env ret
@@ -84,17 +85,22 @@ used v t = pure $ Set.singleton (v, t)
 withEnv :: T.Env -> Reach -> Reach
 withEnv env r = do
   usedVars <- r
-  let nuEnv = case env of
+  let (eid, mask) = case env of
         -- we can let it go, but it shouldn't happen!!
         T.RecursiveEnv eid _ -> error $ "[COMPILER ERROR] An environment assigned to a function was a recursive env. Technically shouldn't happen! [EnvID: " <> show eid <> "]"
         T.Env eid envContent -> do
-          T.Env eid (filter (\(v, _, t) -> Set.member (v, t) usedVars) envContent)  -- we may optionally filter variables here to decrease the Set size.
+          (eid, envContent <&> \(v, _, t) -> Set.member (v, t) usedVars)
 
-  State.modify $ Map.insert (T.envID nuEnv) nuEnv
+  State.modify $ Map.insert eid mask
   pure usedVars
 
 
-type Reach = State (Map EnvID T.Env) (Set (T.Variable, T.Type))
+type Reach = State (Map EnvID EnvMask) (Set (T.Variable, T.Type))
+
+-- KEKEKEKEKEKKEK THIS IS SO RETARDED BUT IT MIGHT JUST WORK
+-- because environments can escape out of the context, mapping them is the wrong way to go, because they might be instantiated.
+-- instead, create a "BitMask" to know which parts of the environment to remove.
+type EnvMask = [Bool]
 
 
 --- PHASE 2: Substitute them
@@ -111,6 +117,7 @@ sScope stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)) ->
         (x:xs) -> x :| xs
 
   fmap2 (embed . O . Annotated anns) $ case stmt' of
+    -- if an environment is not used, remote it.
     T.EnvDef fn -> fmap2 (T.EnvDef . (\env -> fn {T.functionDeclaration = fn.functionDeclaration { T.functionEnv = env }})) $ replace fn.functionDeclaration.functionEnv
 
     -- we have to take care of eliminating stuff from bodies.
@@ -184,14 +191,17 @@ replace :: T.Env -> Mem' (Maybe T.Env)
 replace env = do
   let eid = T.envID env
   envs <- RWS.ask
-  pure $ envs !? eid
-  -- case envs !? eid of
-  --   Nothing -> pure Nothing
-  --   Just nuEnv -> undefined
+  pure $ applyEnvMask env <$> (envs !? eid)
+
+applyEnvMask :: T.Env -> EnvMask -> T.Env
+applyEnvMask (T.RecursiveEnv _ _) _ = error "[COMPILER ERROR: RemoveUnused] Recursive envs not yet supported (probably a noop in the future!)"
+applyEnvMask (T.Env eid content) mask = 
+  let maskedContent = map fst $ filter snd $ zip content mask
+  in T.Env eid maskedContent
 
 
 type Mem t = t -> Mem' t
-type Mem' = RWS (Map EnvID T.Env) () (Memo T.DataDef T.DataDef)
+type Mem' = RWS (Map EnvID EnvMask) () (Memo T.DataDef T.DataDef)
 
 
 fmap2 :: (Functor f1, Functor f2) => (a -> b) -> f1 (f2 a) -> f1 (f2 b)

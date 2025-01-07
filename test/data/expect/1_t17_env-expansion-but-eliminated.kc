@@ -1,0 +1,26 @@
+#$ Env expansion is not done, because the nested 'gg' function is not called.
+# 123
+
+
+uni (l a, r a) -> Unit
+	return
+
+f = :123
+
+ff (x) -> Unit
+	gg (y) -> Unit
+		sumtin ()
+			print x
+			print y
+			return 123
+
+		uni(f, sumtin)
+		return
+
+	return
+
+ff(123)
+ff(True)
+ff(Unit)
+
+print f()

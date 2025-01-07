@@ -1,0 +1,15 @@
+#$ Inner function not generalizing over TVar that is its return value (with explicitly defined parameters) ((scoped parameters!!!!!))
+# 69
+# ()
+
+outer (n a) -> () -> a
+	inner () -> a
+			return n
+
+	return inner
+
+g = outer(69)
+h = outer(Unit)
+
+print g()
+print h()

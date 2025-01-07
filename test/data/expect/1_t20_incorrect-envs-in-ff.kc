@@ -1,0 +1,24 @@
+#$ I don't remember what test this was for, but it had incorrect results, so I'm including it here.
+# 123
+
+
+f = :123
+
+uni (l n, r n)
+	return
+
+g (x, y)
+	print x
+	print y
+	return 1
+
+ff (x a, y b) -> Unit
+
+	uni(f, :g(x, y))
+	return
+
+ff(True, Unit)
+ff(123, False)
+ff(Unit, Unit)
+
+print f()

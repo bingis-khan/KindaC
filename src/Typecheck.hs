@@ -26,7 +26,7 @@ import qualified Data.Map as Map
 import Control.Monad.Trans.RWS (RWST (RWST), runRWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
-import Data.Functor.Foldable (Base, cata, embed, hoist, project, transverse)
+import Data.Functor.Foldable (Base, cata, embed, hoist, project, transverse, para)
 import Control.Monad (replicateM, zipWithM_, when, join)
 import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold)
@@ -47,7 +47,7 @@ import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
 import Data.Maybe (fromMaybe, mapMaybe)
-import AST.Typed (TyVar)
+import AST.Typed (TyVar, Scheme (..), Variable)
 import Text.Printf (printf)
 import Control.Applicative (liftA3)
 import Debug.Trace (traceShowWith)
@@ -86,7 +86,7 @@ typecheck mprelude rStmts = do
 
     phase "Typechecking (fixed subst)"
     ctxPrint' $ dbgSubst su'
-    
+
     let tStmts' = subst su' tStmts
 
     let errs' = errs <> (AmbiguousType <$> Set.toList (ftv tStmts'))
@@ -563,9 +563,6 @@ mapUnion ut (Fix t) = case t of
 
 inferFunction :: R.Function -> Infer T.Function
 inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn addMemo -> do
-
-  -- must substitute the function
-  -- TODO: should this maybe be in "instantiateVariable"? It will be more correct, but we will have to repeat the computation each time.
   fn <- generalize $ mdo
 
     -- Infer function declaration.
@@ -592,7 +589,8 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
 
     envID <- newEnvID
     let recenv = T.RecursiveEnv envID (null $ R.fromEnv rfundec.functionEnv)
-    let fundec = T.FD recenv rfundec.functionId params ret
+    let noGeneralizationScheme = Scheme Set.empty Set.empty
+    let fundec = T.FD recenv rfundec.functionId params ret noGeneralizationScheme
     let fun = T.Function { T.functionDeclaration = fundec, T.functionBody = body }
 
     -- Add *ungeneralized* type.
@@ -630,6 +628,10 @@ inferExports e = do
 generalize :: Infer T.Function -> Infer T.Function
 generalize fx = do
   unsuFn <- fx
+
+  ctxPrint' "Unsubstituted function:"
+  ctxPrint T.tFunction unsuFn
+
   -- liftIO $ putStrLn $ ctx T.tFunction unsuFn
   csu <- RWS.gets typeSubstitution
 
@@ -637,36 +639,77 @@ generalize fx = do
   -- What's left will be TyVars that are in the definition.
   let fn = subst csu unsuFn
 
+  ------- FIND OUT THE SCHEME FOR THIS FUNCTION
+  -- TODO: cleanup real bad. + add comments, because I will forget for sure.
+  let digOutTyVarsAndUnionsFromType :: T.Type -> (Set TyVar, Set T.EnvUnion)
+      digOutTyVarsAndUnionsFromType = para $ \case
+        T.TyVar tyv -> (Set.singleton tyv, mempty)
+        T.TFun union ts t -> (mempty, Set.singleton (fst <$> union)) <> foldMap snd ts <> snd t
+        T.TCon _ ts unis -> foldMap snd ts <> foldMap ((mempty,) . Set.singleton . fmap fst) unis
+        t -> foldMap snd t
+
+      -- IMPORTANT! We only extract types from non-instantiated! The instantiated type might/will contain types from our function and we don't won't that. We only want to know which types are from outside.
+      -- So, for a function, use its own type.
+      -- For a variable, use the actual type as nothing is instantiated!
+      digOutTyVarsAndUnionsFromEnv :: T.Env -> (Set TyVar, Set T.EnvUnion)
+      digOutTyVarsAndUnionsFromEnv (T.RecursiveEnv _ _) = mempty
+      digOutTyVarsAndUnionsFromEnv (T.Env _ env) = foldMap (\(v, _ ,t) -> digThroughVar t v) env
+        where
+          digThroughVar :: T.Type -> T.Variable -> (Set TyVar, Set T.EnvUnion)
+          digThroughVar t = \case
+            T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
+            T.DefinedFunction f -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
+
+      (tyVarsOutside, unionsOutside) = digOutTyVarsAndUnionsFromEnv fn.functionDeclaration.functionEnv
+      (tyVarsDeclaration, unionsDeclaration) = foldMap (digOutTyVarsAndUnionsFromType . snd) fn.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType fn.functionDeclaration.functionReturnType
+
+      tyVarsOnlyFromHere = tyVarsDeclaration \\ tyVarsOutside
+      unionsOnlyFromHere = unionsDeclaration \\ unionsOutside
+      -- scheme = Set.filter (not . isTyVarOlderThan tvg) typesFromDeclaration -- \\ typesFromOutside
+
+      -- goes trhough the type and finds tvars that are defined for this function.
+      definedTVars :: T.Type -> Set TVar
+      definedTVars = cata $ \case
+        T.TVar tv@(TV _ (BindByVar varid)) | varid == fn.functionDeclaration.functionId -> Set.singleton tv
+        t -> fold t
+
+      tvarsDefinedForThisFunction = foldMap (definedTVars . snd) fn.functionDeclaration.functionParameters <> definedTVars fn.functionDeclaration.functionReturnType
+
   let
     -- gather tvars defined ONLY in this function
     -- the theory is that any external variables have types from the function environment only.
-    typesFromOutside = ftv fn.functionDeclaration.functionEnv
-    typesFromDeclaration = ftv (snd <$> fn.functionDeclaration.functionParameters) <> ftv fn.functionDeclaration.functionReturnType
-    scheme = typesFromDeclaration \\ typesFromOutside
 
     -- Then substitute it.
     asTVar (T.TyV tyname) = Fix $ T.TVar $ TV tyname (BindByVar fn.functionDeclaration.functionId)
 
-    su = Subst mempty $ Map.fromSet asTVar scheme
+    su = Subst mempty $ Map.fromSet asTVar tyVarsOnlyFromHere
+    unionsOnlyFromHereWithTVars = Set.map (subst su) unionsOnlyFromHere
 
   ctxPrint' $ "Generalizing " <> ctx (Common.ppVar Local) fn.functionDeclaration.functionId
-  ctxPrint' $ printf "%s => %s" (T.tEnv fn.functionDeclaration.functionEnv) (Common.ppSet T.tTyVar typesFromOutside)
-  ctxPrint (Common.ppSet T.tTyVar) typesFromDeclaration
+  ctxPrint' $ printf "TyVars only from here: %s" (Common.ppSet T.tTyVar tyVarsOnlyFromHere)
+  ctxPrint' $ printf "TVars only from here: %s" (Common.ppSet Common.ppTVar tvarsDefinedForThisFunction)
+  -- ctxPrint' $ printf "TyVars only from here: %s" (Common.ppSet T.tTyVar tyVarsOnlyFromHere)
+  -- ctxPrint' $ printf "%s => %s" (T.tEnv fn.functionDeclaration.functionEnv) (Common.ppSet T.tTyVar typesFromOutside)
+  -- ctxPrint' $ printf "(%s -> %s) => %s" (Common.encloseSepBy "(" ")" ", " $ (T.tType . snd) <$> fn.functionDeclaration.functionParameters) (T.tType fn.functionDeclaration.functionReturnType) (Common.ppSet T.tTyVar typesFromDeclaration)
 
   -- This one is generalized.
-  let generalizedFn = subst su fn
+  let tvarsFromTyVars = Set.map (\(T.TyV tyname) -> TV tyname (BindByVar fn.functionDeclaration.functionId)) tyVarsOnlyFromHere  -- TODO: cleanup.
+  let scheme = Scheme (tvarsFromTyVars <> tvarsDefinedForThisFunction) unionsOnlyFromHereWithTVars
 
+  ctxPrint' $ printf "Scheme: %s" (T.tScheme scheme)
+  let generalizedFn = subst su fn 
+  let generalizedFnWithScheme = generalizedFn { T.functionDeclaration = generalizedFn.functionDeclaration { T.functionScheme = scheme } }
   -- Also, remember the substitution! (tvars might escape the environment)
   --  TODO: not sure if that's the best way. check it.
   substituting $ do
-    for_ (Set.toList scheme) $ \tv ->
+    for_ (Set.toList tyVarsOnlyFromHere) $ \tv ->
       bind tv (asTVar tv)
 
   -- liftIO $ putStrLn $ ctx T.tFunction generalizedFn
   -- liftIO $ printf "Just generalized: %s\n" (ctx T.tEnv generalizedFn.functionDeclaration.functionEnv)
   -- liftIO $ printf "Types from declaration: %s\n" (show $ fmap (ctx T.tTyVar) $ Set.toList typesFromDeclaration)
 
-  pure generalizedFn
+  pure generalizedFnWithScheme
 
 
 -- Substitute return type for function.
@@ -684,24 +727,53 @@ instantiateVariable = \case
   T.DefinedVariable v -> var v
   T.DefinedFunction fn -> do
     let
-      tvars :: T.Type -> Set TVar
-      tvars = cata $ \case
-        T.TVar tv -> Set.singleton tv
-        t -> fold t
-
       decl = fn.functionDeclaration
 
-      scheme = foldMap (tvars . snd) decl.functionParameters <> tvars decl.functionReturnType
+
+      -- tvars :: T.Type -> Set TVar
+      -- tvars = cata $ \case
+      --   T.TVar tv -> Set.singleton tv
+      --   t -> fold t
+
+
+      -- -- TODO: this caused a bug. There should be only one way to make a scheme. See generalization - it's basically the same.
+      -- -- scheme = foldMap (tvars . snd) decl.functionParameters <> tvars decl.functionReturnType
+      -- tvarsFromOutside = foldMap tvars fn.functionDeclaration.functionEnv
+      -- tvarsFromDeclaration = foldMap (tvars . snd) decl.functionParameters <> tvars decl.functionReturnType
+      -- scheme = tvarsFromDeclaration \\ tvarsFromOutside
+
+      -- -- now, the same thing for unions
+      -- unions :: T.Type -> Set T.EnvUnion
+      -- unions = para $ \case
+      --   T.TFun union ts t -> Set.singleton (fst <$> union) <> foldMap snd ts <> snd t
+      --   T.TCon _ ts unis -> foldMap snd ts <> foldMap (Set.singleton . fmap fst) unis
+      --   t -> foldMap snd t
+
+      -- unionsFromOutside = foldMap unions fn.functionDeclaration.functionEnv
+      -- unionsFromDeclaration = foldMap (unions . snd) decl.functionParameters <> unions decl.functionReturnType
+      -- unionScheme = unionsFromDeclaration \\ unionsFromOutside
 
     -- substitute with fresh ones
     -- fmap (traceShowWith (fmap (ctx T.tType)) . 
-    tvmap <- fmap (Map.fromList) $ traverse (\tv -> (,) tv <$> fresh) $ Set.toList scheme
-    let mapTVs = mapTVsWithMap tvmap
+    let (Scheme schemeTVars schemeUnions) = fn.functionDeclaration.functionScheme
+    tvmap <- fmap Map.fromList $ traverse (\tv -> (,) tv <$> fresh) $ Set.toList schemeTVars  -- scheme
+
+    -- TODO: kinda bad!!! basically we want to map found unions with these types. should I split mapTVs? or something else??
+    let mapOnlyTVsForUnions = mapTVsWithMap tvmap mempty
+    unionmap <- fmap Map.fromList $ traverse (\union -> (,) union.unionID <$> cloneUnion (mapOnlyTVsForUnions <$> union)) $ Set.toList schemeUnions
+
+    let mapTVs = mapTVsWithMap tvmap unionmap
+
+    ctxPrint' $ printf "Instantiation of %s" (show fn.functionDeclaration.functionId.varName)
+    ctxPrint (Common.ppMap . fmap (bimap Common.ppTVar T.tType) . Map.toList) tvmap
+    ctxPrint (Common.ppMap . fmap (bimap Common.ppUnionID (T.tEnvUnion . fmap T.tType)) . Map.toList) unionmap
 
     -- Create type from function declaration
     let fundec = fn.functionDeclaration
     fnUnion <- mkUnion (mapTVs <$> fundec.functionEnv)
     let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> fundec.functionParameters) (mapTVs fundec.functionReturnType)
+
+    ctxPrint' $ printf "After instantiation: %s" (T.tType fnType)
 
     pure fnType
 
@@ -723,7 +795,7 @@ instantiateConstructor envID = \case
 
 
     let
-      mapTVs = mapTVsWithMap tvmap
+      mapTVs = mapTVsWithMap tvmap mempty  -- TODO: we might use the mapunion property to map unions in types.
 
       ts = mapTVs <$> usts
 
@@ -755,12 +827,14 @@ instantiateConstructor envID = \case
 
     pure $ Fix $ T.TFun union tsWithClonedUnions ret
 
-mapTVsWithMap :: Map TVar T.Type -> T.Type -> T.Type
-mapTVsWithMap tvmap =
+mapTVsWithMap :: Map TVar T.Type -> Map UnionID T.EnvUnion -> T.Type -> T.Type
+mapTVsWithMap tvmap unionmap =
   let
     mapTVs :: T.Type -> T.Type
     mapTVs = cata $ (.) embed $ \case
       t@(T.TVar tv) -> maybe t project (tvmap !? tv)
+      T.TFun union ts tret -> T.TFun (fromMaybe union (unionmap !? union.unionID)) ts tret
+      T.TCon dd ts unions -> T.TCon dd ts $ unions <&> \union -> fromMaybe union (unionmap !? union.unionID)
       t -> t
   in mapTVs
 
@@ -961,11 +1035,10 @@ freshTyvar :: Infer TyVar
 freshTyvar = do
   TVG nextVar <- RWS.gets tvargen
   RWS.modify $ \s -> s { tvargen = TVG (nextVar + 1) }
-  pure $ T.TyV $ letters !! nextVar
+  pure $ T.TyV (letters !! nextVar)
 
 letters :: [Text]
 letters = map (Text.pack . ('\'':)) $ [1..] >>= flip replicateM ['a'..'z']
-
 
 findBuiltinType :: PreludeFind -> Infer T.Type
 findBuiltinType (PF tc pf) = do
@@ -1444,8 +1517,8 @@ instance Substitutable T.Function where
   subst su fn = T.Function { T.functionDeclaration = subst su fn.functionDeclaration, T.functionBody = subst su fn.functionBody }
 
 instance Substitutable T.FunDec where
-  ftv (T.FD _ _ params ret) = ftv params <> ftv ret -- <> ftv env  -- TODO: env ignored here, because we expect these variables to be defined outside. If it's undefined, it'll come up in ftv from the function body. 
-  subst su (T.FD env fid params ret) = T.FD (subst su env) fid (subst su params) (subst su ret)
+  ftv (T.FD _ _ params ret _) = ftv params <> ftv ret -- <> ftv env  -- TODO: env ignored here, because we expect these variables to be defined outside. If it's undefined, it'll come up in ftv from the function body. 
+  subst su (T.FD env fid params ret scheme) = T.FD (subst su env) fid (subst su params) (subst su ret) scheme
 
 -- -- here we treat the type as if it was a normal type
 -- instance Substitutable UnstantiatedType where
@@ -1538,6 +1611,7 @@ instance Substitutable a => Substitutable (Maybe a) where
 --   T.TCon ut apps union -> Ty.TCon ut apps (reunion' <$> union)
 --   T.TFun union args ret -> Ty.TFun (reunion' union) args ret
 --   T.TVar tv -> Ty.TVar tv
+
 
 extractUnionsFromDataType :: T.DataDef -> [T.EnvUnion]
 extractUnionsFromDataType (T.DD _ _ dcs _) =

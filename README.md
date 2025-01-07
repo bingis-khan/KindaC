@@ -17,12 +17,11 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 ## todo
 
-### todo BIG ASS BUGS and DESIGN MISTAKES
-- make declared tvars (ex. fun (x a, y b), etc.) have a UNIQUE ID, because right now it's possible to confuse the compiler (during environment resolution!! in the Env Union, 'a's from different functions might meet and it would be annoying to distinguish them (it's possible: use function ID + tvar))
-- resolving environments in previously declared tvars (before the struct declaration) is broken.
-  - !!!! instead of using an ID with Maps, just actually replace them with the objects (they are going to be pointers anyway.) Make 'Eq' and 'Ord' still use the ID. Win-Win!
-- resolving environments in previously declared tvars (in ANOTHER module) will be broken.
-- !!!! Fix union instantiation (see 1. REQUIRED of doc/compiler-construction/problems)
+### todo BIG ASS BUGS
+
+- REGRESSION: env expansion is broken. sometimes, tvars declared inside a function appear in the environment when some other polymorphic function is instantiated to these tvars outside. seems to be the whole problem. have to find some other way to know which tvars were declared inside and which ones were not.
+- clash with RemoveUnused. it uses only EnvIDs (and ignores types), which is incorrect? however, how did it work? I didn't document it enough...
+
 
 ### todo misc
 - parse pattern matching

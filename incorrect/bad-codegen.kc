@@ -1,20 +1,4 @@
-
-# void type
-Unit
-	Unit
-
-# cstdinclude includes the module if the type is used. it will also enclose the name in "<" and ">" - that's because I might want to include custom c modules.
-#[ctype 'bool', cstdinclude 'stdbool.h']
-Bool
-	#[clit 'false']
-	False
-
-	#[clit 'true']
-	True
-
-# Temporary, as I will use 'U32', 'I32', etc. types in code and there will be no "default" Int
-#[ctype 'int']
-Int  # Make sure this is parsed as DataDefinition with zero constructors instead of ExprType in the compiler.
+#$ This is related to the issue of mutating outside of closure. The only problem here is that I don't yet support mutation outside of closures. Whether I add it is also up for debate.
 
 id (x)
 	return x

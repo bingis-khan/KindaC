@@ -37,15 +37,16 @@ import Data.Semigroup (sconcat)
 import Misc.Memo (Memo (..), emptyMemo, memo, memoToMap, memo', isMemoed)
 import Data.Monoid (Any (Any, getAny))
 import Data.Foldable (find)
-import Control.Monad.Trans.RWS (RWS)
+import Control.Monad.Trans.RWS (RWS, RWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Debug.Trace (traceShowWith)
 import Data.Bool (bool)
+import GHC.IO (unsafePerformIO)
 
 
 data Context' = Context
   { tvarMap :: TypeMap  -- this describes the temporary mapping of tvars while monomorphizing.
-  , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.NeedsImplicitEnvironment) M.IFunction
+  , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.IEnv, M.NeedsImplicitEnvironment) M.IFunction
   , memoDatatype :: Memo (T.DataDef, [M.IType], [Maybe M.IEnvUnion]) (M.IDataDef, Map T.DataCon M.IDataCon)
   , memoEnv :: Memo (T.EnvF M.IType) M.IEnv
   , memoUnion :: Memo (T.EnvUnionF M.IType) M.IEnvUnion
@@ -58,7 +59,7 @@ data Context' = Context
 
   -- burh, this is shit, literally
   -- like, maybe env usage can be merged into that kekekek.
-  , envInstantiations :: Map EnvID (Set M.IEnv)
+  , envInstantiations :: Map EnvID (Set EnvUse)
   -- , instantiationUsage :: Map TVar (Set TypeMap)  -- kind of wasteful? we only need to track TVars which could not be solved before.
 
   -- HACK: Map old unique var + types to 
@@ -90,11 +91,14 @@ mono mod = do
   --     putStrLn $ "  " <> show eid <> " => " <> show (M.envID <$> (Set.toList envs))
 
   phase "Monomorphisation (env instantiations)"
-  ctxPrint (Common.ppMap . fmap (bimap Common.ppEnvID (Common.encloseSepBy "[" "]" ", " . fmap M.mtEnv . Set.toList)) . Map.toList) ctx.envInstantiations
+  ctxPrint (Common.ppMap . fmap (bimap Common.ppEnvID (Common.encloseSepBy "[" "]" ", " . fmap (\(EnvUse _ env) -> M.mtEnv env) . Set.toList)) . Map.toList) ctx.envInstantiations
+
+  phase "Monomorphisation (first part)"
+  ctxPrint M.mtStmts mistmts
 
 
   let envUsage = Map.keysSet ctx.envInstantiations
-  let (mstmts, dds, fns) = withEnvContext envUsage ctx.envInstantiations $ do
+  (mstmts, dds, fns) <- withEnvContext envUsage ctx.envInstantiations $ do
         mstmts <- mfAnnStmts mistmts
         -- fns <- traverse mfFunction ifns
         let fns = undefined
@@ -174,7 +178,7 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
 
       -- don't forget to register usage.
       emptyEnv <- mEnv $ T.Env eid []
-      registerEnvMono eid emptyEnv
+      registerEnvMono Nothing eid emptyEnv
 
       pure $ M.Con mc
 
@@ -187,7 +191,7 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
     T.Lam env args ret -> do
       margs <- traverse2 mType args
       menv <- mEnv' env
-      registerEnvMono (T.envID env) menv
+      registerEnvMono Nothing (T.envID env) menv
 
       pure $ M.Lam menv margs ret
 
@@ -204,31 +208,35 @@ variable (T.DefinedFunction vfn) et = do
 
   -- OUTSIDE of withTypeMap... is this correct? I mean, these variables are only outside.
   -- TODO: this was related to env. it's possible for it to contain declaration vars. I'm not sure this is necessarily correct.
+  let (mappedTs, mappedUs) = mapTypes (snd <$> vfn.functionDeclaration.functionParameters) tts <> mapType vfn.functionDeclaration.functionReturnType tret
 
-  fmap M.DefinedFunction $ flip (memo memoFunction (\mem s -> s { memoFunction = mem })) (vfn, tts, tret, envEmptiness) $ \(tfn, ts, ret, needsEnv) addMemo -> mdo
-    uv <- newUniqueVar tfn.functionDeclaration.functionId
+  ctxPrint' $ printf "Decl (nomemo): %s -> %s" (Common.encloseSepBy "(" ")" ", " $ M.mtType <$> tts) (M.mtType tret)
+  withTypeMap mappedTs mappedUs $ do
+    menv <- mEnv' vfn.functionDeclaration.functionEnv
 
-    let fundec = M.FD env uv (zipWith (\mt (pv, _) -> (pv, mt)) ts tfn.functionDeclaration.functionParameters) ret needsEnv :: M.IFunDec
-    let fn = M.Function { M.functionDeclaration = fundec, M.functionBody = body } :: M.IFunction
-    addMemo fn
+    fmap M.DefinedFunction $ flip (memo memoFunction (\mem s -> s { memoFunction = mem })) (vfn, tts, tret, menv, envEmptiness) $ \(tfn, ts, ret, env, needsEnv) addMemo -> mdo
+      uv <- newUniqueVar tfn.functionDeclaration.functionId
 
-    (env, body) <- withTypeMap (mapTypes (snd <$> tfn.functionDeclaration.functionParameters) ts <> mapType tfn.functionDeclaration.functionReturnType ret) [] $ do
-      menv <- mEnv' vfn.functionDeclaration.functionEnv
-      mbody <- mStmts tfn.functionBody
-      pure (menv, mbody)
+      let fundec = M.FD env uv (zipWith (\mt (pv, _) -> (pv, mt)) ts tfn.functionDeclaration.functionParameters) ret needsEnv :: M.IFunDec
+      ctxPrint' $ printf "Decl: %s -> %s" (Common.encloseSepBy "(" ")" ", " $ M.mtType <$> ts) (M.mtType ret)
+      let fn = M.Function { M.functionDeclaration = fundec, M.functionBody = body } :: M.IFunction
+      addMemo fn
 
-    -- remember to add this environment to the "used" environments.
-    registerEnvMono (T.envID vfn.functionDeclaration.functionEnv) env
+      ctxPrint' $ printf "M function: %s" (Common.ppVar Local fundec.functionId)
+      body <- mStmts tfn.functionBody
 
-    pure fn
+      -- remember to add this environment to the "used" environments.
+      registerEnvMono (Just fn) (T.envID vfn.functionDeclaration.functionEnv) env
+
+      pure fn
 
 -- this is so bad ongggggggg, like literally.
 --  but maybe it'll work.
-registerEnvMono :: EnvID -> M.IEnv -> Context ()
-registerEnvMono oldEID nuEnv | null (ftvEnvButIgnoreUnions nuEnv) = State.modify $ \ctx -> ctx { envInstantiations = Map.insertWith (<>) (M.envID nuEnv) (Set.singleton nuEnv) (Map.insertWith (<>) oldEID (Set.singleton nuEnv) ctx.envInstantiations) }
+registerEnvMono :: Maybe M.IFunction -> EnvID -> M.IEnv -> Context ()
+registerEnvMono mvar oldEID nuEnv | null (ftvEnvButIgnoreUnions nuEnv) = State.modify $ \ctx -> ctx { envInstantiations = Map.insertWith (<>) (M.envID nuEnv) (Set.singleton (EnvUse mvar nuEnv)) (Map.insertWith (<>) oldEID (Set.singleton (EnvUse mvar nuEnv)) ctx.envInstantiations) }
 
 -- ignore when the environment has TVars...???? i guess...
-registerEnvMono _ _ = pure ()
+registerEnvMono _ _ _ = pure ()
 
 
 -- registerTypeMapUsage :: TypeMap -> Context ()
@@ -738,17 +746,18 @@ instance Monoid TypeMap where
   mempty = TypeMap mempty mempty
 
 -- ahhh, i hate it. TODO: try to figure out if there is a way to do it without doing this mapping.
-mapType :: T.Type -> M.IType -> [(TVar, M.IType)]
+mapType :: T.Type -> M.IType -> ([(TVar, M.IType)], [(T.EnvUnion, M.IEnvUnion)])
 mapType tt mt = case (project tt, project mt) of
-  (T.TFun _ tts tret, M.ITFun _ mts mret) -> mapTypes tts mts <> mapType tret mret
-  (T.TCon _ tts _, M.ITCon _ mts _) -> mapTypes tts mts
-  (T.TVar tv, t) -> [(tv, embed t)]
+  (T.TFun tu tts tret, M.ITFun mu mts mret) -> mapTypes tts mts <> mapType tret mret <> ([], [(tu, mu)])
+  (T.TCon _ tts tus, M.ITCon _ mts mus) -> mapTypes tts mts <> ([], zip tus mus)
+  (T.TVar tv, t) -> ([(tv, embed t)], [])
 
   _ -> error $ printf "[COMPILER ERROR]: Fuck."
 
 
-mapTypes :: [T.Type] -> [M.IType] -> [(TVar, M.IType)]
-mapTypes tts mts = concat $ zipWith mapType tts mts
+-- TODO: maybe make a custom datatype from this, since it literally outputs `withTypeMap` arguments.
+mapTypes :: [T.Type] -> [M.IType] -> ([(TVar, M.IType)], [(T.EnvUnion, M.IEnvUnion)])
+mapTypes tts mts = mconcat $ zipWith mapType tts mts
 
 -- lookupTVarMap :: TypeMap -> TVar -> Maybe (Type)
 -- lookupTVarMap (TypeMap tvars _) tvar = tvars !? tvar
@@ -810,21 +819,31 @@ startingContext = Context
 -- THIS IS TYPESAFE BUT BAD. WE BASICALLY ARE REDOING MONOMORPHIZATION IN THE SAME AMOUNT OF LINES. Maybe a less typesafe data structure would be better, as it would cut down on half the file. Or somehow do it in real time - check when the scope exits and the map the instances.
 --------------------------------------------------------
 
-type EnvContext = RWS EnvContextUse () EnvMemo
+type EnvContext = RWST EnvContextUse () EnvMemo IO  -- TEMP: IO temporarily for debugging. should not be used for anything else.
 data EnvContextUse = EnvContextUse -- bruh, i dunno
   { usedEnvs :: Set EnvID  -- keysSet of `allInsts` - maybe just call keysSet each time.
-  , allInsts :: Map EnvID (Set M.IEnv)
+  , allInsts :: Map EnvID (Set EnvUse)
 
   -- this changes with withInstantiation
   -- , currentInst :: TypeMap
   }
 
+data EnvUse = EnvUse (Maybe M.IFunction) M.IEnv
+
+instance Eq EnvUse where
+  EnvUse _ le == EnvUse _ re = le == re
+
+instance Ord EnvUse where
+  EnvUse _ le `compare` EnvUse _ re = le `compare` re
+
+
+
 data EnvMemo = EnvMemo
   { memoIDatatype :: Memo (M.IDataDef, [M.EnvUnion]) (M.DataDef, Map M.IDataCon M.DataCon)
   }
 
-withEnvContext :: Set EnvID -> Map EnvID (Set M.IEnv) -> EnvContext a -> a
-withEnvContext envs allInstantiations x = fst $ RWS.evalRWS x envUse envMemo
+withEnvContext :: Set EnvID -> Map EnvID (Set EnvUse) -> EnvContext a -> IO a
+withEnvContext envs allInstantiations x = fst <$> RWS.evalRWST x envUse envMemo
   where
     envUse = EnvContextUse
       { usedEnvs = envIDs
@@ -935,7 +954,7 @@ mfUnion union = do
       else do
         envMap <- RWS.asks allInsts
         -- TODO: bruh, why don't we just mfType it then??
-        traverse (mfEnv . fmap mfType) $ Set.toList $ Map.findWithDefault Set.empty (M.envID env) envMap
+        traverse (mfEnv . fmap mfType . (\(EnvUse _ env) -> env)) $ Set.toList $ Map.findWithDefault Set.empty (M.envID env) envMap
 
   let mUsedEnvs = case mappedEnvs of
         [] -> error $ "[COMPILER ERROR] Empty union (" <> show union.unionID <> ") encountered... wut!??!??!?!? Woah.1>!>!>!>!>>!"
@@ -943,13 +962,13 @@ mfUnion union = do
 
   pure $ M.EnvUnion { M.unionID = union.unionID, M.union = mUsedEnvs }
 
-expandEnvironments :: [EnvID] -> EnvContext [M.Env]
+expandEnvironments :: [EnvID] -> EnvContext [(M.Function, M.Env)]
 expandEnvironments envIDs = do
   envInsts <- RWS.asks allInsts
   fmap concat $ for envIDs $ \envID ->
     case envInsts !? envID of
       Just envs -> do
-        traverse (mfEnv . fmap mfType) $ Set.toList envs
+        traverse (bitraverse mfFunction (mfEnv . fmap mfType)) $ mapMaybe (\(EnvUse fn env) -> fn <&> (,env)) $ Set.toList envs
       Nothing -> pure []
 
 mfDataDef :: (M.IDataDef, [M.EnvUnion]) -> EnvContext (M.DataDef, Map M.IDataCon M.DataCon)
@@ -967,6 +986,9 @@ mfDataDef = memo memoIDatatype (\mem s -> s { memoIDatatype = mem }) $ \(idd, _)
 
 mfFunction :: M.IFunction -> EnvContext M.Function
 mfFunction fun = do
+  ctxPrint' $ printf "MF function %s" (Common.ppVar Local fun.functionDeclaration.functionId)
+  ctxPrint M.mtFunction fun
+
   -- i dunno if i have to do something stupid here.
   let fundec = fun.functionDeclaration
   env <- mfEnv $ mfType <$> fundec.functionEnv

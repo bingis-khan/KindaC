@@ -144,7 +144,7 @@ cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
     --     ]
 
   M.EnvDef envs ->
-    for_ envs $ \env ->
+    for_ envs $ \(_, env) ->
       unless (null env) $
         statement $ do
           envNames <- cEnv env

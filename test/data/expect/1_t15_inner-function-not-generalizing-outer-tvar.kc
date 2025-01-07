@@ -2,6 +2,7 @@
 # 69
 # 69
 # 420
+# ()
 
 outer (n)
 	inner ()
@@ -11,7 +12,9 @@ outer (n)
 
 f = outer(69)
 g = outer(420)
+h = outer(Unit)
 
 print f()
 print f()
 print g()
+print h()

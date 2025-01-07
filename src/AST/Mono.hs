@@ -11,7 +11,7 @@
 
 module AST.Mono (module AST.Mono) where
 
-import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (TV), ctx, ppTVar)
+import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (TV), ctx, ppTVar, ppLines')
 import Control.Monad.Trans.Reader (runReader, ask)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Eq.Deriving (deriveEq1)
@@ -286,7 +286,7 @@ data StmtF envtype expr a
 -- sheeehs wtfff
 type family EnvDef envtype
 type instance EnvDef IncompleteEnv = EnvID
-type instance EnvDef FullEnv = NonEmpty Env
+type instance EnvDef FullEnv = NonEmpty (Function, Env)
 
 type IStmt = StmtF IncompleteEnv IExpr AnnIStmt
 type Stmt = StmtF FullEnv Expr AnnStmt
@@ -355,7 +355,8 @@ tStmt stmt = case stmt of
   EnvDef funEnv -> fromString $ printf "[ENV]: %s" (tEnvDef funEnv)
 
 tEnvDef :: EnvDef FullEnv -> Context
-tEnvDef = encloseSepBy "[" "]" ", " . NonEmpty.toList . fmap tEnv
+tEnvDef envdef = ppLines' $
+  (encloseSepBy "[" "]" ", " . NonEmpty.toList $ tEnv . snd <$> envdef) : NonEmpty.toList (tFunction . fst <$> envdef)
 
 tCase :: CaseF Expr AnnStmt -> Context
 tCase kase = tBody (tDecon kase.deconstruction <+?> fmap tExpr kase.caseCondition) kase.body

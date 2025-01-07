@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ppVariableType, VariableType, ctx, ppTVar)
+import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ppVariableType, VariableType, ctx, ppTVar, ppSet)
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -22,6 +22,7 @@ import Data.Foldable (foldl')
 import Data.Text (Text)
 import Data.String (fromString)
 import Data.Functor ((<&>))
+import Data.Set (Set)
 
 
 
@@ -94,6 +95,8 @@ data EnvUnionF t = EnvUnion
   } deriving (Functor, Foldable, Traversable)
 type EnvUnion = EnvUnionF Type
 
+
+-- TODO: wait, why did I need comparing of parameters in unions?!?!?!?!?
 instance Eq1 EnvUnionF where
   liftEq f u u' = u.unionID == u'.unionID && and (zipWith (liftEq f) u.union u'.union)
 
@@ -130,10 +133,11 @@ data FunDec = FD
   , functionId :: UniqueVar
   , functionParameters :: [(UniqueVar, Type)]
   , functionReturnType :: Type
+  , functionScheme :: Scheme
   }
 
 instance Eq FunDec where
-  FD _ uv _ _ == FD _ uv' _ _ = uv == uv'
+  FD _ uv _ _ _ == FD _ uv' _ _ _ = uv == uv'
 
 data Function = Function
   { functionDeclaration :: FunDec
@@ -154,7 +158,7 @@ instance Ord Function where
 data ExprF a
   = Lit LitType
   | Var Locality Variable
-  | Con EnvID DataCon -- NOTE: `Env` here is supposed to be an empty environment that was generated during instantiation. It used in RemoveUnused. This is bad and not typesafe, but whatever!
+  | Con EnvID DataCon -- NOTE: `Env` here is supposed to be an empty environment that was generated during instantiation. It is used in RemoveUnused. This is bad and not typesafe, but whatever!
 
   | Op a Op a
   | Call a [a]
@@ -171,10 +175,15 @@ data Variable
   | DefinedFunction Function
   deriving (Eq, Ord)
 
+
 asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
   DefinedVariable uv -> uv
   DefinedFunction fn -> fn.functionDeclaration.functionId
+
+
+-- scheme for both mapping tvars and unions
+data Scheme = Scheme (Set TVar) (Set EnvUnion)
 
 
 ----------
@@ -288,7 +297,7 @@ tModule :: Module -> Context
 tModule m = 
   ppLines'
     [ ppLines tDataDef m.datatypes
-    , ppLines tFunction m.functions
+    -- , ppLines tFunction m.functions
     , tStmts m.toplevelStatements
     ]
 
@@ -363,7 +372,10 @@ tFunction :: Function -> Context
 tFunction fn = tBody (tFunDec fn.functionDeclaration) fn.functionBody
 
 tFunDec :: FunDec -> Context
-tFunDec (FD fenv v params retType) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType
+tFunDec (FD fenv v params retType scheme) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType <+> tScheme scheme
+
+tScheme :: Scheme -> Context
+tScheme (Scheme tvars unions) = ppSet ppTVar tvars <+> ppSet (tEnvUnion . fmap tType) unions
 
 tTypes :: Functor t => t Type -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of

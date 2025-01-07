@@ -82,7 +82,7 @@ asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
   DefinedVariable var -> var
   DefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
-  ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ }) -> uv
+  ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ }) -> uv
 
 
 data Constructor

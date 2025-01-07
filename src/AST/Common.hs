@@ -28,7 +28,7 @@ import qualified Data.Set as Set
 
 
 -- set printing config
-defaultContext, debugContext, runtimeContext :: CtxData
+defaultContext, debugContext, runtimeContext, showContext :: CtxData
 defaultContext = runtimeContext 
 
 debugContext = CtxData
@@ -41,6 +41,12 @@ runtimeContext = CtxData
   { silent = True
   , printIdentifiers = False
   , displayTypeParameters = False
+  }
+
+showContext = CtxData
+  { silent = False
+  , printIdentifiers = False
+  , displayTypeParameters = True
   }
 
 
