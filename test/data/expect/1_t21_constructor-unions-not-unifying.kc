@@ -1,4 +1,4 @@
-#$ I don't remember what this was for, but it's name (error name) is "constructor unions not unifying".
+#$ I don't remember what this was for, but its name (error name) was "constructor unions not unifying".
 
 id (x)
 	return x
