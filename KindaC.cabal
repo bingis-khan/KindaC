@@ -44,7 +44,6 @@ library
       HUnit
     , base >=4.7 && <5
     , bifunctors
-    , bimap
     , containers
     , data-fix
     , deriving-compat
@@ -56,7 +55,6 @@ library
     , prettyprinter
     , process
     , recursion-schemes
-    , split
     , temporary
     , text
     , transformers
@@ -74,7 +72,6 @@ executable kc
     , KindaC
     , base >=4.7 && <5
     , bifunctors
-    , bimap
     , containers
     , data-fix
     , deriving-compat
@@ -86,7 +83,6 @@ executable kc
     , prettyprinter
     , process
     , recursion-schemes
-    , split
     , temporary
     , text
     , transformers
@@ -108,7 +104,6 @@ test-suite all
     , KindaC
     , base >=4.7 && <5
     , bifunctors
-    , bimap
     , containers
     , data-fix
     , deriving-compat
@@ -120,7 +115,6 @@ test-suite all
     , prettyprinter
     , process
     , recursion-schemes
-    , split
     , temporary
     , text
     , transformers

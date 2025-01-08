@@ -18,10 +18,8 @@ import Data.Foldable (fold)
 import Data.List (intersperse)
 import qualified Text.Printf
 import Text.Printf (PrintfArg(..), formatString)
-import Data.Map (Map)
-import qualified Data.Map as Map
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad (when, unless)
+import Control.Monad (unless)
 import Data.Char (toUpper)
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -31,18 +29,21 @@ import qualified Data.Set as Set
 defaultContext, debugContext, runtimeContext, showContext :: CtxData
 defaultContext = runtimeContext 
 
+-- context for debugging with all messages enabled.
 debugContext = CtxData
   { silent = False
   , printIdentifiers = True
   , displayTypeParameters = False
   }
 
+-- disable debug messages for "runtime".
 runtimeContext = CtxData
   { silent = True
   , printIdentifiers = False
   , displayTypeParameters = False
   }
 
+-- show types and stuffi for the user (display types accurately to their definition, etc.)
 showContext = CtxData
   { silent = False
   , printIdentifiers = False
@@ -50,20 +51,9 @@ showContext = CtxData
   }
 
 
--- FUTURE TODO: GHC is using type families in a MUCH SMARTER WAY:
--- data Expr phase
---   | ELit (Lit phase)  -- this is also a type family
-
---   -- some other stuff
---   | EExtraCons (ExCons phase)  -- not enough / wrong constructors? no problem! just move them in the extra field and use a separate datatype
--- in short, more type families, but they provide a stable tree. same amount of expressiveness and type safety as separate ASTs!
--- the only problem i see is incomprehensible error messages (but much better than what I had before with a single AST...)
---   also, I can't show stuff. but it's good!! I should not use show with custom datatypes. instead, I should use custom printing functions.
---   in the near future, I'll remove all Show/Show1 instances.
--- same amount of mapping tho. it's not that big of a deal, to be honest. just, if I want to add/remove some feature, it'll take more code in my current design, but I don't really mind that now.
-
 -- General composition operator (easier Fix usage)
 --  copied from TypeCompose package (I didn't need the whole thing, so I just copied the definition)
+--  Now you can use type composition.
 infixl 9 :.
 newtype (g :. f) a = O (g (f a)) deriving (Eq, Ord, Functor, Foldable, Traversable)
 
@@ -88,17 +78,22 @@ data Op
   deriving (Eq, Ord, Show)
 
 data LitType
-  = LInt Int
+  -- Number types. They have infinite precision, because I don't want to lose the information and give the appropriate message.
+  = LInt Integer
+  | LFloat Rational
+
+  -- | LString Text
   deriving (Eq, Ord, Show)
 
-
-data Ann  -- or should this be a Map or something?
+-- Different annotation types.
+-- TODO: right now they are parsed and typed properly. But they don't really have to be.
+data Ann
   = ACType Text
   | ACLit Text
   | ACStdInclude Text
   deriving (Show, Eq, Ord)
 
--- Decorator thing.
+-- Annotation decorator thing.
 data Annotated a = Annotated [Ann] a deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 -- Variable uniqueness
@@ -119,8 +114,6 @@ data UniqueType = TI
   , typeName :: TCon
   -- add info about structure for later compilation
   }
-
-data VariableType = IsFunction | IsVariable  -- used to preserve if the function is a variable or a function. TODO: this might not be needed and I might instead of the "Variable" type. Note the comment near `Env` - I'm not sure what I had in mind. When I'll start cleaning up, I'll see what it's about.
 
 data Binding
   = BindByType UniqueType
@@ -215,10 +208,19 @@ instance Semigroup e => Applicative (Result e) where
   pure = Success
 
 
+------------------
+-- More Useful Stuff
+----------------
+
+mustOr :: String -> Maybe a -> a
+mustOr err Nothing = error err
+mustOr _ (Just x) = x
+
+
+
 -----------------
 -- Printing stuff
 -----------------
-
 
 -- Context that stores the pretty printer Doc + data + help with, for example, names.
 type Context = Reader CtxData (Doc ())  -- I guess I can add syntax coloring or something with the annotation (the () in Doc)
@@ -316,34 +318,8 @@ ppUnique = pretty . hashUnique
 ppMap :: [(Context, Context)] -> Context
 ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v)
 
-ppSet :: (a -> Context) -> Set a -> Context
-ppSet f = encloseSepBy "{" "}" ", " . fmap f . Set.toList
-
-ppVariableType :: VariableType -> Context
-ppVariableType = \case
-  IsFunction -> "[f]"
-  IsVariable -> "[v]"
-
-
--- ppFunEnv :: FunEnv Context -> Context
--- ppFunEnv (FunEnv vts) = encloseSepBy "[" "]" " " (fmap (encloseSepBy "[" "]" ", " . fmap (\(v, t) -> rVar Local v <+> encloseSepBy "[" "]" " " t)) vts)
-
--- ppEnv :: Env Context -> Context
--- ppEnv (Env env) = "%" <> encloseSepBy "$[" "]" " " (NonEmpty.toList $ fmap (encloseSepBy "[" "]" " ") env)
-
--- ppTypedEnv :: (t -> Context) -> TypedEnv VarInfo t -> Context
--- ppTypedEnv = ppTypedEnv' (rVar Local)
-
--- ppTypedEnv' :: (v -> Context) -> (t -> Context) -> TypedEnv v t -> Context
--- ppTypedEnv' fv ft env =
---   let (TypedEnv vts) = fmap ft env
---   in encloseSepBy "$#[" "]" " " $ fmap (\(v, ts) -> fv v <+> encloseSepBy "[" "]" " " ts) vts
-
--- ppVarEnv :: VarEnv VarInfo t -> Context
--- ppVarEnv (VarEnv vs) = encloseSepBy "$[" "]" " " (fmap (rVar Local) vs)
-
--- ppNoEnv :: NoEnv a -> Context
--- ppNoEnv _ = "[<no env>]"
+ppSet :: (a -> Context) -> [a] -> Context
+ppSet f = encloseSepBy "{" "}" ", " . fmap f
 
 
 ppAnn :: [Ann] -> Context

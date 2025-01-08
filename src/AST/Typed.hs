@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, CtxData (..), ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ppVariableType, VariableType, ctx, ppTVar, ppSet)
+import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet)
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -15,14 +15,12 @@ import Data.List.NonEmpty (NonEmpty)
 
 import Data.Bifunctor.TH (deriveBifoldable, deriveBifunctor, deriveBitraversable)
 import Data.Functor.Classes (Eq1 (liftEq), Ord1 (..))
-import Control.Monad.Trans.Reader (runReader)
 import Data.Biapplicative (first)
 import Data.Functor.Foldable (cata)
 import Data.Foldable (foldl')
 import Data.Text (Text)
 import Data.String (fromString)
 import Data.Functor ((<&>))
-import Data.Set (Set)
 
 
 
@@ -31,7 +29,7 @@ import Data.Set (Set)
 ---------------------
 
 data DataCon = DC DataDef UniqueCon [Type] [Ann]
-data DataDef = DD UniqueType [TVar] [DataCon] [Ann]
+data DataDef = DD UniqueType Scheme [DataCon] [Ann]
 
 instance Eq DataDef where
   DD ut _ _ _ == DD ut' _ _ _ = ut == ut'
@@ -170,6 +168,10 @@ data ExprF a
 data TypedExpr a = TypedExpr Type (ExprF a) deriving (Functor, Foldable, Traversable)
 type Expr = Fix TypedExpr
 
+getType :: Expr -> Type
+getType (Fix (TypedExpr t _)) = t
+
+
 data Variable
   = DefinedVariable UniqueVar
   | DefinedFunction Function
@@ -183,7 +185,7 @@ asUniqueVar = \case
 
 
 -- scheme for both mapping tvars and unions
-data Scheme = Scheme (Set TVar) (Set EnvUnion)
+data Scheme = Scheme [TVar] [EnvUnion]
 
 
 ----------
@@ -202,6 +204,11 @@ data Case expr a = Case
   , body :: NonEmpty a
   } deriving (Functor, Foldable, Traversable)
 
+
+decon2type :: Decon -> Type
+decon2type (Fix dec) = case dec of
+  CaseVariable t _ -> t
+  CaseConstructor t _ _ -> t
 
 
 ---------------
@@ -268,6 +275,10 @@ isUnionEmpty :: EnvUnionF t -> Bool
 isUnionEmpty (EnvUnion _ []) = True
 isUnionEmpty _ = False
 
+
+-- This is currently how we extract unions from types.
+-- This needs to be done, because custom types need to track which unions were used.
+-- TODO: this should probably be made better. Maybe store those unions in DataDef?
 extractUnionsFromDataType :: DataDef -> [EnvUnion]
 extractUnionsFromDataType (DD _ _ dcs _) =
   concatMap extractUnionsFromConstructor dcs
@@ -344,6 +355,7 @@ tExpr = cata $ \(TypedExpr et expr) ->
   let encloseInType c = "(" <> c <+> "::" <+> tType et <> ")"
   in encloseInType $ case expr of
   Lit (LInt x) -> pretty x
+  Lit (LFloat fl) -> pretty $ show fl
   Var l (DefinedVariable v) -> ppVar l v
   Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
   Con _ (DC _ uc _ _) -> ppCon uc
@@ -363,7 +375,7 @@ tExpr = cata $ \(TypedExpr et expr) ->
 
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y _) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
+tDataDef (DD tid tvs cons _) = indent (ppTypeInfo tid <+> tScheme tvs) $ ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
 
 tConDef :: DataCon -> Context
 tConDef (DC _ g t _) = foldl' (<+>) (ppCon g) $ tTypes t

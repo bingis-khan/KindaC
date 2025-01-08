@@ -10,7 +10,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
 
-import AST.Converged (Prelude (..), unitTypeName, boolTypeName, intTypeName)
+import AST.Converged (Prelude (..), unitTypeName, boolTypeName, intTypeName, floatTypeName)
 import qualified AST.Resolved as R
 import qualified AST.Typed as T
 import qualified AST.Mono as M
@@ -25,8 +25,6 @@ import Data.Maybe (mapMaybe, listToMaybe)
 import System.Exit (exitFailure)
 import Data.Foldable (find)
 import Data.Functor ((<&>))
--- import ASTPrettyPrinter (tModule, rModule, mModule)
--- import Mono (monoModule)
 
 
 compile :: Prelude -> T.Module -> IO Text
@@ -75,11 +73,12 @@ loadPrelude = do
       exitFailure
 
     Right pmod -> do
-      let mkPrelude uv bt it tlr = Prelude
+      let mkPrelude uv bt it ft tlr = Prelude
             { tpModule = pmod
             , unitValue = uv
             , boolType = bt
             , intType = it
+            , floatType = ft
             , toplevelReturn = tlr
             }
 
@@ -91,7 +90,7 @@ loadPrelude = do
       --       don't fear duplication, but i want it to be readable.
       let findUnit :: PreludeErr T.DataCon
           findUnit = 
-            let mdd (T.DD ut [] [con] _) | ut.typeName == unitTypeName = Just con
+            let mdd (T.DD ut (T.Scheme [] []) [con] _) | ut.typeName == unitTypeName = Just con
                 mdd _ = Nothing
 
                 mdc   = listToMaybe $ mapMaybe mdd pmod.exports.datatypes
@@ -101,7 +100,7 @@ loadPrelude = do
 
           findBoolType :: PreludeErr T.Type
           findBoolType =
-            let isCorrectBool (T.DD ut [] _ _) = ut.typeName == boolTypeName
+            let isCorrectBool (T.DD ut (T.Scheme [] []) _ _) = ut.typeName == boolTypeName
                 isCorrectBool _ = False
 
                 mdd   = find isCorrectBool pmod.exports.datatypes
@@ -113,7 +112,7 @@ loadPrelude = do
 
           findIntType :: PreludeErr T.Type
           findIntType =
-            let isCorrectInt (T.DD ut [] _ _) = ut.typeName == intTypeName
+            let isCorrectInt (T.DD ut (T.Scheme [] []) _ _) = ut.typeName == intTypeName
                 isCorrectInt _ = False
 
                 mdd   = find isCorrectInt pmod.exports.datatypes
@@ -123,12 +122,24 @@ loadPrelude = do
                 in pure bt
               Nothing -> Failure $ ne "[Prelude: Int] Could not find suitable Int type (Int type name + no tvars)"
 
+          findFloatType :: PreludeErr T.Type
+          findFloatType =
+            let isCorrectFloat (T.DD ut (T.Scheme [] []) _ _) = ut.typeName == floatTypeName
+                isCorrectFloat _ = False
+
+                mdd   = find isCorrectFloat pmod.exports.datatypes
+            in case mdd of
+              Just dd -> 
+                let bt = Fix $ T.TCon dd [] []
+                in pure bt
+              Nothing -> Failure $ ne "[Prelude: Float] Could not find suitable Int type (Int type name + no tvars)"
+
           findTopLevelReturn :: PreludeErr T.Expr
           findTopLevelReturn = findIntType <&> \t ->
             let lit = T.Lit (LInt 0)
             in Fix $ T.TypedExpr t lit
 
-      let eprelude = mkPrelude <$> findUnit <*> findBoolType <*> findIntType <*> findTopLevelReturn
+      let eprelude = mkPrelude <$> findUnit <*> findBoolType <*> findIntType <*> findFloatType <*> findTopLevelReturn
       case eprelude of
         Failure errs -> do
           putStrLn "[PRELUDE ERROR]: There were errors while compiling prelude."

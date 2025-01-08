@@ -69,7 +69,7 @@ data ExprF a
   | Op a Op a
   | Call a [a]
   | As a Type
-  | Lam UniqueVar Env [UniqueVar] a
+  | Lam UniqueVar Env [UniqueVar] a  -- dafuq do we need the UniqueVar in lambda for????
   deriving (Functor, Foldable, Traversable)
 type Expr = Fix ExprF
 

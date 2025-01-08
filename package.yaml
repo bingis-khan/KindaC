@@ -22,11 +22,10 @@ dependencies:
   - parser-combinators
   - deriving-compat
   - bifunctors
-  - prettyprinter
   - process
-  - bimap
-  - split
   - text
+  - prettyprinter  # I wanted to throw out pretty printer, but it simplifies nesting. Since CPrinter does not use that pretty printer, I might be able to generalize that one to be used for printing (they are pretty similar, so... yknow).
+                   # but then I might as well download a dependency kek
 
   # https://discourse.haskell.org/t/recompilation-issue-with-stack-test/10120/11
   # Test packages. The thing is, when they are only in `tests`, it triggers recompilation, which is slow.

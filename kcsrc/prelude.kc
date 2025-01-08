@@ -17,6 +17,10 @@ Bool
 #[ctype 'int']
 Int  # Make sure this is parsed as DataDefinition with zero constructors instead of ExprType in the compiler.
 
+#[ctype 'float']
+Float
+
+
 # #[ctype 'uint8_t', cstdinclude 'stdint.h']
 # U8
 

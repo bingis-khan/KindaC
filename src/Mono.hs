@@ -292,7 +292,7 @@ mType = cata $ \case
     T.TyVar tv -> error $ printf "[COMPILER ERROR]: Encountered TyVar %s." (T.tTyVar tv)
 
 mDataDef :: (T.DataDef, [M.IType], [Maybe M.IEnvUnion]) -> Context (M.IDataDef, Map T.DataCon M.IDataCon)
-mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(dd@(T.DD ut tvs tdcs ann), mts, unions) addMemo -> withTypeMap (zip tvs mts) (mapMaybe sequenceA $ zip (T.extractUnionsFromDataType dd) unions) $ mdo
+mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(dd@(T.DD ut (T.Scheme tvs ogUnions) tdcs ann), mts, unions) addMemo -> withTypeMap (zip tvs mts) (mapMaybe sequenceA $ zip ogUnions unions) $ mdo
   nut <- newUniqueType ut
   let mdd = M.DD nut dcs ann mts
   addMemo (mdd, dcQuery)

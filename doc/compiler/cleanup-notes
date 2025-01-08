@@ -1,0 +1,25 @@
+Another cleanup. This time, it should be final... (for now).
+
+what I want to do is remove shit code, commented out code and add appropriate comments for stuff I shouldn't question (eg. monomorphise environments for functions, because they be the only thing that's different, ref. t18 or something)
+
+Also, add tests if I see some weird spots?
+Factor stuff out also.
+
+Also, remove old dependencies.
+
+
+Taken from AST.Common - might be worth remembering.
+
+```
+-- FUTURE TODO: GHC is using type families in a MUCH SMARTER WAY:
+-- data Expr phase
+--   | ELit (Lit phase)  -- this is also a type family
+
+--   -- some other stuff
+--   | EExtraCons (ExCons phase)  -- not enough / wrong constructors? no problem! just move them in the extra field and use a separate datatype
+-- in short, more type families, but they provide a stable tree. same amount of expressiveness and type safety as separate ASTs!
+-- the only problem i see is incomprehensible error messages (but much better than what I had before with a single AST...)
+--   also, I can't show stuff. but it's good!! I should not use show with custom datatypes. instead, I should use custom printing functions.
+--   in the near future, I'll remove all Show/Show1 instances.
+-- same amount of mapping tho. it's not that big of a deal, to be honest. just, if I want to add/remove some feature, it'll take more code in my current design, but I don't really mind that now.
+```
