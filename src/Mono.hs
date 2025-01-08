@@ -300,7 +300,7 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(dd@(T.DD u
   -- Strip constructors with empty unions.
   -- NOTE: This might be done in Typecheck, because we might strip constructors there as we want to typecheck things like: printLeft(Left(2)) (here, in Either e a, a is undefined and throws an error. Haskell doesn't care, so should I)
 
-  let unionMap = Map.fromList (mapMaybe sequenceA $ zip (map T.unionID (T.extractUnionsFromDataType dd)) unions)
+  let unionMap = Map.fromList $ mapMaybe sequenceA $ zip (T.unionID <$> ogUnions) unions
   let strippedDCs = flip filter tdcs $ \(T.DC _ _ conTs _) ->
         let
           isUnionEmpty :: T.EnvUnionF a -> Any
