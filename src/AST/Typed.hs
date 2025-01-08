@@ -48,10 +48,6 @@ instance Ord DataCon where
 -- Type --
 ----------
 
--- Env without this "superposition" - present when defining functions and lambdas.
--- do I need ID here?
--- reasons:
---  - always nice to have additional information?
 data EnvF t
   = Env EnvID [(Variable, Locality, t)] -- t is here, because of recursion schemes. UniqueVar, because we don't know which environments will be used in the end. We will replace it with a `Variable` equivalent AFTER we monomorphise.
   | RecursiveEnv EnvID IsEmpty  -- Recursive functions won't have access to their environment while typechecking... kinda stupid. ehh... but we're solving an actual issue here. `IsEmpty` is used in Mono to let us know if this function's environment was empty or not.
@@ -64,6 +60,7 @@ envID :: EnvF t -> EnvID
 envID = \case
   Env eid _ -> eid
   RecursiveEnv eid _ -> eid
+
 
 instance Eq t => Eq (EnvF t) where
   Env lid lts == Env rid rts = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
@@ -83,10 +80,7 @@ instance Ord1 EnvF where
     ord -> ord
   liftCompare _ l r = envID l `compare` envID r
 
--- The Env "superposition".
--- do I need the ID here?
--- reasons:
---  - always nice to have additional information?
+
 data EnvUnionF t = EnvUnion
   { unionID :: UnionID
   , union :: [EnvF t]  -- List can be empty for types written by the programmer (which also don't have any other function's environment yet). This is okay, because functions are not yet monomorphised.
@@ -95,6 +89,7 @@ type EnvUnion = EnvUnionF Type
 
 
 -- TODO: wait, why did I need comparing of parameters in unions?!?!?!?!?
+-- TODO later: uhhhhhhh
 instance Eq1 EnvUnionF where
   liftEq f u u' = u.unionID == u'.unionID && and (zipWith (liftEq f) u.union u'.union)
 
@@ -115,11 +110,12 @@ newtype TyVar = TyV { fromTyV :: Text } deriving (Eq, Ord)
 
 data TypeF a
   = TCon DataDef [a] [EnvUnionF a]
-  | TVar TVar  -- TODO: make it unique per function scope. Should I use UniqueVar or something else?
+  | TVar TVar
   | TFun (EnvUnionF a) [a] a
   | TyVar TyVar
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 type Type = Fix TypeF
+
 
 
 --------------
@@ -149,6 +145,7 @@ instance Ord Function where
   fn `compare` fn' = fn.functionDeclaration.functionId `compare` fn'.functionDeclaration.functionId
 
 
+
 ----------------
 -- Expression --
 ----------------
@@ -156,7 +153,7 @@ instance Ord Function where
 data ExprF a
   = Lit LitType
   | Var Locality Variable
-  | Con EnvID DataCon -- NOTE: `Env` here is supposed to be an empty environment that was generated during instantiation. It is used in RemoveUnused. This is bad and not typesafe, but whatever!
+  | Con EnvID DataCon -- NOTE: EnvID is an ID of an *empty* environment. All constructors have an empty environment, so when an environment is needed, use this.
 
   | Op a Op a
   | Call a [a]
@@ -188,6 +185,7 @@ asUniqueVar = \case
 data Scheme = Scheme [TVar] [EnvUnion]
 
 
+
 ----------
 -- Case --
 ----------
@@ -209,6 +207,7 @@ decon2type :: Decon -> Type
 decon2type (Fix dec) = case dec of
   CaseVariable t _ -> t
   CaseConstructor t _ _ -> t
+
 
 
 ---------------
@@ -245,6 +244,7 @@ $(deriveBifunctor ''StmtF)
 $(deriveBitraversable ''StmtF)
 $(deriveEq1 ''TypeF)
 $(deriveOrd1 ''TypeF)
+
 
 
 ---------------
