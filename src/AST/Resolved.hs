@@ -1,13 +1,11 @@
-{-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, UndecidableInstances, LambdaCase, OverloadedStrings, OverloadedRecordDot, DuplicateRecordFields #-}
-{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, UndecidableInstances, LambdaCase, OverloadedStrings, OverloadedRecordDot, DuplicateRecordFields, TypeOperators #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), CtxData(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ctx, ppTVar)
+import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar)
 import qualified AST.Typed as T
 
 import Data.Fix (Fix(..))
 import Data.List.NonEmpty (NonEmpty)
-import Control.Monad.Trans.Reader (runReader)
 import Data.Functor.Foldable (cata)
 import Data.Foldable (foldl')
 
@@ -15,6 +13,7 @@ import Data.Bifunctor (first)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Functor ((<&>))
 import Data.String (fromString)
+
 
 
 
@@ -73,10 +72,12 @@ data ExprF a
   deriving (Functor, Foldable, Traversable)
 type Expr = Fix ExprF
 
+
 data Variable
   = DefinedVariable UniqueVar
   | DefinedFunction Function
   | ExternalFunction T.Function  -- it's only defined as external, because it's already typed. nothing else should change.
+
 
 asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
@@ -94,6 +95,7 @@ data Datatype
   | ExternalDatatype T.DataDef
 
 
+
 ----------
 -- Case --
 ----------
@@ -104,11 +106,12 @@ data DeconF a
   deriving (Functor)
 type Decon = Fix DeconF
 
-data Case expr a = Case 
+data Case expr a = Case
   { deconstruction :: Decon
   , caseCondition :: Maybe expr
   , body :: NonEmpty a
   } deriving (Functor, Foldable, Traversable)
+
 
 
 ---------------
@@ -137,6 +140,7 @@ type Stmt = StmtF Expr AnnStmt
 type AnnStmt = Fix (Annotated :. StmtF Expr)
 
 
+
 --------------
 -- Function --
 --------------
@@ -161,6 +165,7 @@ instance Eq Function where
 
 instance Ord Function where
   fn `compare` fn' = fn.functionDeclaration.functionId `compare` fn'.functionDeclaration.functionId
+
 
 
 ---------------
@@ -193,14 +198,16 @@ $(deriveBifunctor ''StmtF)
 $(deriveBitraversable ''StmtF)
 
 
+
+
 ----------------------
 -- Printing the AST --
 ----------------------
 
 pModule :: Module -> Context
-pModule mod = ppLines'
-  [ ppLines tFunction mod.functions
-  , tStmts mod.toplevel
+pModule modul = ppLines'
+  [ ppLines tFunction modul.functions
+  , tStmts modul.toplevel
   ]
 
 tStmts :: [AnnStmt] -> Context
@@ -220,7 +227,7 @@ tStmt stmt = case first tExpr stmt of
     foldMap (\(cond, elseIf) ->
         tBody ("elif" <+> cond) elseIf) elseIfs <>
     maybe mempty (tBody "else") mElse
-  Switch switch cases -> 
+  Switch switch cases ->
     ppBody tCase switch cases
   ExprStmt e -> e
   Return e -> "return" <+> e
@@ -238,13 +245,14 @@ tDecon = cata $ \case
 tExpr :: Expr -> Context
 tExpr = cata $ \case
   Lit (LInt x) -> pretty x
+  Lit (LFloat f) -> pretty $ show f
   Var l v -> ppVar l (asUniqueVar v)
   Con c -> ppCon (asUniqueCon c)
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
   As x at -> x <+> "as" <+> tType at
-  Lam uv lenv params e -> ppVar Local uv <> tEnv lenv <+> sepBy " " (map (\v -> ppVar Local v) params) <> ":" <+> e
+  Lam uv lenv params e -> ppVar Local uv <> tEnv lenv <+> sepBy " " (map (ppVar Local) params) <> ":" <+> e
   where
     ppOp op = case op of
       Plus -> "+"
@@ -277,7 +285,7 @@ tTypes = fmap $ \t@(Fix t') -> case t' of
 
 tType :: Type -> Context
 tType = cata $ \case
-  TCon con params -> 
+  TCon con params ->
     foldl' (<+>) (ppTypeInfo (asUniqueType con)) params
   TVar tv -> ppTVar tv
   TFun args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
@@ -287,6 +295,7 @@ tEnv (Env env) = encloseSepBy "[" "]" ", " $ env <&> \(uv, l) -> ppVar l $ asUni
 
 tBody :: Foldable f => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
+
 
 asUniqueCon :: Constructor -> UniqueCon
 asUniqueCon = \case

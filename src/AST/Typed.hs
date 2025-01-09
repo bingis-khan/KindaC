@@ -426,6 +426,5 @@ tEnv' = \case
   Env eid vs -> ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (asUniqueVar v) <+> t) vs)
   RecursiveEnv eid isEmpty -> fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
 
-
 tBody :: Foldable f => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
