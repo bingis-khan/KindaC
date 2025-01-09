@@ -21,8 +21,6 @@ import Text.Printf (PrintfArg(..), formatString)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad (unless)
 import Data.Char (toUpper)
-import Data.Set (Set)
-import qualified Data.Set as Set
 
 
 -- set printing config

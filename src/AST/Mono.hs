@@ -310,11 +310,8 @@ $(deriveOrd1 ''TypeF)
 -- Module --
 ---------------
 
-data Module = Mod
-  { toplevelStatements :: [AnnStmt],
-    -- not needed, only for debugging.
-    functions :: [Function],
-    datatypes :: [DataDef]
+newtype Module = Mod
+  { toplevelStatements :: [AnnStmt]
   }
 
 

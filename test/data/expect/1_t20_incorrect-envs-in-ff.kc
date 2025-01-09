@@ -1,4 +1,4 @@
-#$ I don't remember what test this was for, but it had incorrect results, so I'm including it here.
+#$ I don't remember what test this was for, but it had incorrect results, so I'm including it here. If I monomorphize my environment without the function's TypeMap, this test breaks.
 # 123
 
 
