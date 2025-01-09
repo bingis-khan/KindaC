@@ -376,3 +376,10 @@ fromEither :: Either a a -> a
 fromEither = \case
   Left x -> x
   Right x -> x
+
+
+fmap2 :: (Functor f1, Functor f2) => (a -> b) -> f1 (f2 a) -> f1 (f2 b)
+fmap2 = fmap . fmap
+
+traverse2 :: (Applicative f, Traversable t1, Traversable t2) => (a -> f b) -> t1 (t2 a) -> f (t1 (t2 b))
+traverse2 = traverse . traverse

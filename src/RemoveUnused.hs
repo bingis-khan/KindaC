@@ -10,7 +10,7 @@ import Control.Monad.Trans.State (State)
 import qualified Control.Monad.Trans.State as State
 import Data.Functor.Foldable (transverse, cata, embed)
 import Data.Bitraversable (bitraverse)
-import AST.Common (Annotated(..), type (:.) (..), Locality (..), UniqueVar, EnvID, ctx, ppMap, ppEnvID)
+import AST.Common (Annotated(..), type (:.) (..), Locality (..), EnvID, fmap2, traverse2)
 import Data.Set (Set)
 import Data.Bifoldable (bifold)
 import Data.Foldable (Foldable(..))
@@ -27,9 +27,8 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Fix (Fix(..))
 import Data.List (find)
 import qualified Control.Monad.Trans.RWS as RWS
-import Debug.Trace (traceShow, trace)
-import Data.Bifunctor (bimap)
 import Data.Functor ((<&>))
+
 
 
 -- 30.12.24: wait, what did i need it for??? i forgot...
@@ -46,16 +45,19 @@ removeUnused stmts =
   in nuStmts --trace (ctx ppMap $ bimap ppEnvID T.tEnv <$> Map.toList envs)  nuStmts
 
 
+
 --- PHASE 1: Create filtered environments.
 
 rScope :: Traversable t => t T.AnnStmt -> Reach
 rScope = fmap fold <$> traverse rStmt
+
 
 rStmt :: T.AnnStmt -> Reach
 rStmt = cata $ \(O (Annotated _ stmt)) -> do
   stmt' <- bitraverse rExpr id stmt
   let ss = bifold stmt'
   pure ss
+
 
 rExpr :: T.Expr -> Reach
 rExpr = cata $ \(T.TypedExpr t te) -> case te of
@@ -75,8 +77,10 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
 
   e -> fold <$> sequenceA e
 
+
 rFunction :: T.Function -> Reach
 rFunction fun = withEnv fun.functionDeclaration.functionEnv $ rScope fun.functionBody
+
 
 
 used :: T.Variable -> T.Type -> Reach
@@ -87,9 +91,9 @@ withEnv env r = do
   usedVars <- r
   let (eid, mask) = case env of
         -- we can let it go, but it shouldn't happen!!
-        T.RecursiveEnv eid _ -> error $ "[COMPILER ERROR] An environment assigned to a function was a recursive env. Technically shouldn't happen! [EnvID: " <> show eid <> "]"
-        T.Env eid envContent -> do
-          (eid, envContent <&> \(v, _, t) -> Set.member (v, t) usedVars)
+        T.RecursiveEnv teid _ -> error $ "[COMPILER ERROR] An environment assigned to a function was a recursive env. Technically shouldn't happen! [EnvID: " <> show teid <> "]"
+        T.Env teid envContent -> do
+          (teid, envContent <&> \(v, _, t) -> Set.member (v, t) usedVars)
 
   State.modify $ Map.insert eid mask
   pure usedVars
@@ -103,6 +107,7 @@ type Reach = State (Map EnvID EnvMask) (Set (T.Variable, T.Type))
 type EnvMask = [Bool]
 
 
+
 --- PHASE 2: Substitute them
 
 sScope :: Mem [T.AnnStmt]
@@ -111,8 +116,8 @@ sScope stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)) ->
   let 
     body :: NonEmpty (Maybe T.AnnStmt) -> NonEmpty T.AnnStmt
     body b = 
-      let stmts = catMaybes $ NonEmpty.toList b
-      in case stmts of
+      let bstmts = catMaybes $ NonEmpty.toList b
+      in case bstmts of
         [] -> Fix (O (Annotated [] T.Pass)) :| []
         (x:xs) -> x :| xs
 
@@ -126,6 +131,7 @@ sScope stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)) ->
 
     s -> pure $ sequenceA s
 
+
 sExpr :: Mem T.Expr
 sExpr = transverse $ \(T.TypedExpr t expr) -> do
   t' <- sType t
@@ -136,20 +142,24 @@ sExpr = transverse $ \(T.TypedExpr t expr) -> do
     T.Con envID con -> T.Con envID <$> sDataCon con
     e -> sequenceA e
 
+
 sType :: Mem T.Type
 sType = cata $ fmap embed . \case
   T.TCon dd params unions -> liftA3 T.TCon (sDataDef dd) (sequenceA params) (traverse (sUnion <=< sequenceA) unions)
   T.TFun union args ret -> liftA3 T.TFun ((sUnion <=< sequenceA) union) (sequenceA args) ret
   t -> sequenceA t
 
+
 sUnion :: Mem T.EnvUnion
 sUnion union = do
   nuEnvs <- catMaybes <$> traverse replace union.union
   pure $ union { T.union = nuEnvs }
 
+
 sVariable :: Mem T.Variable
 sVariable (T.DefinedVariable v) = pure $ T.DefinedVariable v
 sVariable (T.DefinedFunction fn) = T.DefinedFunction <$> liftA2 T.Function (sFunDec fn.functionDeclaration) (sBody fn.functionBody)
+
 
 sFunDec :: Mem T.FunDec
 sFunDec fd = do
@@ -158,12 +168,14 @@ sFunDec fd = do
   ret <- sType fd.functionReturnType
   pure $ fd { T.functionEnv = env, T.functionParameters = params, T.functionReturnType = ret }
 
+
 sBody :: Mem (NonEmpty T.AnnStmt)
 sBody stmts = do
   stmts' <- sScope $ NonEmpty.toList stmts
   pure $ case stmts' of
     [] -> Fix (O (Annotated [] T.Pass)) :| []
     (x:xs) -> x :| xs
+
 
 
 sDataDef :: Mem T.DataDef
@@ -177,10 +189,12 @@ sDataDef = memo id const $ \(T.DD uv tvs dcs anns) addMemo -> mdo
 
   pure dd
 
+
 sDataCon :: Mem T.DataCon
 sDataCon (T.DC dd uc _ _) = do
   (T.DD _ _ cons _) <- sDataDef dd
   pure $ fromJust $ find (\(T.DC _ suc _ _) -> suc == uc) cons
+
 
 
 mustReplace :: Mem T.Env
@@ -193,6 +207,7 @@ replace env = do
   envs <- RWS.ask
   pure $ applyEnvMask env <$> (envs !? eid)
 
+
 applyEnvMask :: T.Env -> EnvMask -> T.Env
 applyEnvMask (T.RecursiveEnv _ _) _ = error "[COMPILER ERROR: RemoveUnused] Recursive envs not yet supported (probably a noop in the future!)"
 applyEnvMask (T.Env eid content) mask = 
@@ -200,12 +215,8 @@ applyEnvMask (T.Env eid content) mask =
   in T.Env eid maskedContent
 
 
+
 type Mem t = t -> Mem' t
 type Mem' = RWS (Map EnvID EnvMask) () (Memo T.DataDef T.DataDef)
 
 
-fmap2 :: (Functor f1, Functor f2) => (a -> b) -> f1 (f2 a) -> f1 (f2 b)
-fmap2 = fmap . fmap
-
-traverse2 :: (Applicative f, Traversable t1, Traversable t2) => (a -> f b) -> t1 (t2 a) -> f (t1 (t2 b))
-traverse2 = traverse . traverse
