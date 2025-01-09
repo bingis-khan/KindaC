@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase, OverloadedRecordDot, DuplicateRecordFields, OverloadedStrings, RecursiveDo, TupleSections #-}
 {-# OPTIONS_GHC -Wno-orphans #-}  -- we implement basic instances (Foldable, Travesable) for Tuple.
+
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}  -- for HLINT kekek
 {-# HLINT ignore "Use <$>" #-}
 {-# HLINT ignore "Redundant pure" #-}  -- this is retarded. it sometimes increases readability with that extra pure.
@@ -14,7 +15,7 @@ import Data.Functor.Foldable (embed, cata, para, project)
 import Data.Bitraversable (bitraverse)
 import Data.Biapplicative (first, bimap)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Map (Map, (!?))
+import Data.Map (Map, (!?), (!))
 import Control.Monad.Trans.State (StateT)
 import qualified Control.Monad.Trans.State as State
 import qualified Data.Map as Map
@@ -31,6 +32,7 @@ import Misc.Memo (Memo (..), emptyMemo, memo, memo', isMemoed)
 import Data.Monoid (Any (Any, getAny))
 import Control.Monad.Trans.RWS (RWST)
 import qualified Control.Monad.Trans.RWS as RWS
+
 
 
 
@@ -57,8 +59,7 @@ mono tmod = do
   -- 1. substitute environments
   -- 2. check function usage and remove unused EnvDefs
 
-  let envUsage = Map.keysSet monoCtx.envInstantiations
-  mmod <- withEnvContext envUsage monoCtx.envInstantiations $ do
+  mmod <- withEnvContext monoCtx.envInstantiations $ do
     mstmts <- mfAnnStmts mistmts
     pure $ M.Mod { M.toplevelStatements = mstmts }
 
@@ -79,7 +80,7 @@ mAnnStmt = cata (fmap embed . f) where
       mann = pure . O . Annotated ann
       noann = pure . O . Annotated []
 
-    -- TODO: this is just remapping.......
+    -- NOTE: this is just remapping.......
     case stmt' of
       T.Pass -> mann M.Pass
       T.ExprStmt expr -> mann $ M.ExprStmt expr
@@ -165,9 +166,9 @@ variable (T.DefinedFunction vfn) et = do
 
 
   -- creates a type mapping for this function.
-  let scheme = mapTypes (snd <$> vfn.functionDeclaration.functionParameters) tts <> mapType vfn.functionDeclaration.functionReturnType tret
+  let typemap = mapTypes (snd <$> vfn.functionDeclaration.functionParameters) tts <> mapType vfn.functionDeclaration.functionReturnType tret
 
-  withTypeMap scheme $ do
+  withTypeMap typemap $ do
     -- NOTE: Env must be properly monomorphised with the type map though albeit.
     menv <- mEnv' vfn.functionDeclaration.functionEnv
 
@@ -178,26 +179,25 @@ variable (T.DefinedFunction vfn) et = do
 
       let fundec = M.FD env uv (zipWith (\mt (pv, _) -> (pv, mt)) ts tfn.functionDeclaration.functionParameters) ret needsEnv :: M.IFunDec
 
+
       -- DEBUG: when in the process of memoization, show dis.
       ctxPrint' $ printf "Decl: %s -> %s" (Common.encloseSepBy "(" ")" ", " $ M.mtType <$> ts) (M.mtType ret)
       ctxPrint' $ printf "M function: %s" (Common.ppVar Local fundec.functionId)
 
 
+      -- add memo, THEN traverse body.
       let fn = M.Function { M.functionDeclaration = fundec, M.functionBody = body } :: M.IFunction
       addMemo fn
-
       body <- mStmts tfn.functionBody
 
-      -- NOTE: remember to add this environment to the "used" environments.
+      -- Then add this environment to the "used" environments for step 2.
       registerEnvMono (Just fn) (T.envID vfn.functionDeclaration.functionEnv) env
 
       pure fn
 
 
 
--- this is so bad ongggggggg, like literally.
---  but maybe it'll work.
--- It *did* work!
+-- Registers a single environment monomorphization. later used to track which environments monomoprhised to what.
 registerEnvMono :: Maybe M.IFunction -> EnvID -> M.IEnv -> Context ()
 registerEnvMono mvar oldEID nuEnv | null (ftvEnvButIgnoreUnions nuEnv) = State.modify $ \mctx -> mctx { envInstantiations = Map.insertWith (<>) (M.envID nuEnv) (Set.singleton (EnvUse mvar nuEnv)) (Map.insertWith (<>) oldEID (Set.singleton (EnvUse mvar nuEnv)) mctx.envInstantiations) }
 
@@ -221,7 +221,8 @@ constructor tdc@(T.DC dd@(T.DD ut _ _ _) _ _ _) et = do
   -- TODO: also, in this place, we should eliminate unused constructors. (either here or in mfDataDef!)
 
   -- Like in typechecking, find this constructor by performing an unsafe lookup!
-  (_, dcQuery) <- mDataDef (dd, mtypes, munions)
+  let tm = typeMapFromDataDef dd mtypes munions
+  (_, dcQuery) <- mDataDef (dd, tm)
   let mdc = case dcQuery !? tdc of
         Just m -> m
         Nothing -> error $ "[COMPILER ERROR]: Failed to query an existing constructor for type " <> show ut.typeName.fromTC
@@ -237,7 +238,8 @@ mType = cata $ \case
       munions <- mUnion `traverse2` hideEmptyUnions unions  -- ISSUE(unused-constructor-elimination): very hacky, but should work. I think it echoes the need for a datatype that correctly represents what we're seeing here - a possible environment definition, which might not be initialized.
       -- we need to represent this shit differently.
 
-      (mdd, _) <- mDataDef (dd, params, munions)
+      let tm = typeMapFromDataDef dd params munions
+      (mdd, _) <- mDataDef (dd, tm)
       let mt = Fix $ M.ITCon mdd params (catMaybes munions)
       pure mt
 
@@ -252,25 +254,26 @@ mType = cata $ \case
 
     T.TyVar tv -> error $ printf "[COMPILER ERROR]: Encountered TyVar %s." (T.tTyVar tv)
 
+
 hideEmptyUnions :: [T.EnvUnionF a] -> [Maybe (T.EnvUnionF a)]
 hideEmptyUnions = fmap $ \u -> if not (T.isUnionEmpty u)
   then Just u
   else Nothing
 
 
-
-mDataDef :: (T.DataDef, [M.IType], [Maybe M.IEnvUnion]) -> Context (M.IDataDef, Map T.DataCon M.IDataCon)
-mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut (T.Scheme tvs ogUnions) tdcs ann, mts, unions) addMemo -> withTypeMap (Scheme (zip tvs mts) (mapMaybe sequenceA $ zip ogUnions unions)) $ mdo
+-- (TypeMap (Map.fromList $ zip tvs mts) (Map.fromList $ fmap (first T.unionID) $ mapMaybe sequenceA $ zip ogUnions unions))
+mDataDef :: (T.DataDef, TypeMap) -> Context (M.IDataDef, Map T.DataCon M.IDataCon)
+mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut (T.Scheme tvs _) tdcs ann, tm@(TypeMap tvmap unionMap)) addMemo -> withTypeMap tm $ mdo
 
   nut <- newUniqueType ut
+
+  let mts = tvs <&> \tv -> tvmap ! tv
   let mdd = M.DD nut dcs ann mts
   addMemo (mdd, dcQuery)
 
 
   -- Strip "unused" constructors. Currently, these are constructors that contain empty unions.
   -- TEMP: This is not finished - it only cares about unions, but a more thorough solution would track which constructors of a particular type were actually used.
-  let unionMap = Map.fromList $ mapMaybe sequenceA $ zip (T.unionID <$> ogUnions) unions
-
   let strippedDCs = flip filter tdcs $ \(T.DC _ _ conTs _) ->
         let
           isUnionEmpty :: T.EnvUnionF a -> Any
@@ -295,6 +298,7 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut (T
     mdcts <- traverse mType ts
     pure $ M.DC mdd nuc mdcts dcann
 
+
   -- DEBUG: how datatypes are transformed.
   ctxPrint' $ printf "Mono: %s" (Common.ppTypeInfo ut)
   ctxPrint' "======"
@@ -317,21 +321,19 @@ retrieveTV tv = do
   pure $ case typeMap !? tv of
     Just t -> t
 
-    -- this will happen (provided no compiler error) when an environment is outside of its scope.
+    -- this will happen (provided no compiler error happens) when an environment is outside of its scope.
     Nothing -> Fix $ M.ITVar tv
 
 
 
-withTypeMap :: Scheme -> Context a -> Context a
-withTypeMap (Scheme tmv tmenv) a = do
+withTypeMap :: TypeMap -> Context a -> Context a
+withTypeMap tm@(TypeMap tmv tmenv) a = do
 
   -- DEBUG: check typemap.
   ctxPrint' "Type map:"
-  ctxPrint (ppMap . fmap (bimap (Common.pretty . Common.fromTV) M.mtType)) tmv
-  ctxPrint (ppMap . fmap (bimap (T.tEnvUnion . fmap T.tType) (M.tEnvUnion . fmap M.mtEnv))) tmenv
+  ctxPrint (ppMap . fmap (bimap (Common.pretty . Common.fromTV) M.mtType) . Map.toList) tmv
+  ctxPrint (ppMap . fmap (bimap Common.ppUnionID (M.tEnvUnion . fmap M.mtEnv)) . Map.toList) tmenv
 
-
-  let tm = TypeMap (Map.fromList tmv) (Map.fromList ((map . first) T.unionID tmenv))
 
   -- temporarily set merge type maps, then restore the original one.
   ogTM <- State.gets tvarMap
@@ -339,16 +341,6 @@ withTypeMap (Scheme tmv tmenv) a = do
   State.modify $ \s -> s { tvarMap = ogTM }
 
   pure x
-
-
--- TODO: literally the same as TypeMap.
-data Scheme = Scheme [(TVar, M.IType)] [(T.EnvUnion, M.IEnvUnion)]
-
-instance Semigroup Scheme where
-  Scheme lt lu <> Scheme rt ru = Scheme (lt <> rt) (lu <> ru)
-
-instance Monoid Scheme where
-  mempty = Scheme mempty mempty
 
 
 
@@ -402,6 +394,7 @@ mEnv' env = do
   mEnv env'
 
 
+
 mEnv :: T.EnvF M.IType -> Context M.IEnv
 mEnv env' = do
   let mapParams = traverse $ \(v, loc, t) -> (,loc,t) <$> variable v t
@@ -417,10 +410,15 @@ mEnv env' = do
       M.Env newEID <$> mapParams params
 
 
+
+------------------------
+-- Step 1 Type Definitions!
+----------------------
+
 data Context' = Context
   { tvarMap :: TypeMap  -- this describes the temporary mapping of tvars while monomorphizing.
   , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.IEnv, M.NeedsImplicitEnvironment) M.IFunction
-  , memoDatatype :: Memo (T.DataDef, [M.IType], [Maybe M.IEnvUnion]) (M.IDataDef, Map T.DataCon M.IDataCon)
+  , memoDatatype :: Memo (T.DataDef, TypeMap) (M.IDataDef, Map T.DataCon M.IDataCon)
   , memoEnv :: Memo (T.EnvF M.IType) M.IEnv
   , memoUnion :: Memo (T.EnvUnionF M.IType) M.IEnvUnion
 
@@ -433,63 +431,6 @@ data Context' = Context
   , envInstantiations :: Map EnvID (Set EnvUse)
   }
 type Context = StateT Context' IO
-
-
--- -- <---------8
-
-
-
--- TypeMap stuff
-
--- HACK: EnvUnions are only needed when monomorphizing types. However, it's slightly easier right now to add this field. This should probably change later.
-data TypeMap = TypeMap (Map TVar M.IType) (Map UnionID M.IEnvUnion) deriving (Eq, Ord)
-
-instance Semigroup TypeMap where
-  TypeMap l1 l2 <> TypeMap r1 r2 = TypeMap (l1 <> r1) (l2 <> r2)
-
-instance Monoid TypeMap where
-  mempty = TypeMap mempty mempty
-
--- ahhh, i hate it. TODO: try to figure out if there is a way to do it without doing this time consuming and error prone mapping.
-mapType :: T.Type -> M.IType -> Scheme
-mapType tt mt = case (project tt, project mt) of
-  (T.TFun tu tts tret, M.ITFun mu mts mret) -> mapTypes tts mts <> mapType tret mret <> Scheme [] [(tu, mu)]
-  (T.TCon _ tts tus, M.ITCon _ mts mus) -> mapTypes tts mts <> Scheme [] (zip tus mus)
-  (T.TVar tv, t) -> Scheme [(tv, embed t)] []
-
-  _ -> error $ printf "[COMPILER ERROR]: Fuck."
-
-
--- TODO: maybe make a custom datatype from this, since it literally outputs `withTypeMap` arguments.
-mapTypes :: [T.Type] -> [M.IType] -> Scheme
-mapTypes tts mts = mconcat $ zipWith mapType tts mts
-
-
-newUniqueType :: UniqueType -> Context UniqueType
-newUniqueType ut = do
-  tid <- liftIO newUnique
-  pure $ ut { typeID = tid }
-
-newUniqueCon :: UniqueCon -> Context UniqueCon
-newUniqueCon uc = do
-  cid <- liftIO newUnique
-  pure $ uc { conID = cid }
-
-newUniqueVar :: UniqueVar -> Context UniqueVar
-newUniqueVar uv = do
-  vid <- liftIO newUnique
-  pure $ uv { varID = vid }
-
-newEnvID :: Context EnvID
-newEnvID = do
-  eid <- liftIO newUnique
-  pure $ EnvID { fromEnvID = eid }
-
-newUnionID :: Context UnionID
-newUnionID = do
-  eid <- liftIO newUnique
-  pure $ UnionID { fromUnionID = eid }
-
 
 startingContext :: Context'
 startingContext = Context
@@ -505,48 +446,88 @@ startingContext = Context
   }
 
 
+-----------------------
+-- TypeMap stuff
+----------------------
+
+-- HACK: EnvUnions are only needed when monomorphizing types. However, it's slightly easier right now to add this field. This should probably change later.
+--  TODO: what did I mean???
+data TypeMap = TypeMap (Map TVar M.IType) (Map UnionID M.IEnvUnion) deriving (Eq, Ord)
+
+instance Semigroup TypeMap where
+  TypeMap l1 l2 <> TypeMap r1 r2 = TypeMap (l1 <> r1) (l2 <> r2)
+
+instance Monoid TypeMap where
+  mempty = TypeMap mempty mempty
+
+
+typeMapFromDataDef :: T.DataDef -> [M.IType] -> [Maybe M.IEnvUnion] -> TypeMap
+typeMapFromDataDef (T.DD _ (T.Scheme tvs unions) _ _) mts munions =
+  TypeMap (Map.fromList $ zip tvs mts) (Map.fromList $ fmap (first T.unionID) $ mapMaybe sequenceA $ zip unions munions)
+
+
+-- ahhh, i hate it. TODO: try to figure out if there is a way to do it without doing this time consuming and error prone mapping.
+mapType :: T.Type -> M.IType -> TypeMap
+mapType tt mt = case (project tt, project mt) of
+  (T.TFun tu tts tret, M.ITFun mu mts mret) -> mapTypes tts mts <> mapType tret mret <> TypeMap mempty (Map.singleton tu.unionID mu)
+  (T.TCon _ tts tus, M.ITCon _ mts mus) -> mapTypes tts mts <> TypeMap mempty (Map.fromList $ zip (T.unionID <$> tus) mus)
+  (T.TVar tv, t) -> TypeMap (Map.singleton tv (embed t)) mempty
+
+  _ -> error $ printf "[COMPILER ERROR]: Fuck."
+
+mapTypes :: [T.Type] -> [M.IType] -> TypeMap
+mapTypes tts mts = mconcat $ zipWith mapType tts mts
+
+
+
+newUniqueType :: UniqueType -> Context UniqueType
+newUniqueType ut = do
+  tid <- liftIO newUnique
+  pure $ ut { typeID = tid }
+
+
+newUniqueCon :: UniqueCon -> Context UniqueCon
+newUniqueCon uc = do
+  cid <- liftIO newUnique
+  pure $ uc { conID = cid }
+
+
+newUniqueVar :: UniqueVar -> Context UniqueVar
+newUniqueVar uv = do
+  vid <- liftIO newUnique
+  pure $ uv { varID = vid }
+
+
+newEnvID :: Context EnvID
+newEnvID = do
+  eid <- liftIO newUnique
+  pure $ EnvID { fromEnvID = eid }
+
+
+newUnionID :: Context UnionID
+newUnionID = do
+  eid <- liftIO newUnique
+  pure $ UnionID { fromUnionID = eid }
+
+
+
 
 --------------------------------------------------------
 -- STEP 2: Map missing shit.
 -- NOTE: THIS IS TYPESAFE BUT BAD. WE BASICALLY ARE REDOING MONOMORPHIZATION IN THE SAME AMOUNT OF LINES. Maybe a less typesafe data structure would be better, as it would cut down on half the file. Or somehow do it in real time - check when the scope exits and then map the instances.
 --------------------------------------------------------
 
-type EnvContext = RWST EnvContextUse () EnvMemo IO  -- TEMP: IO temporarily for debugging. should not be used for anything else.
-data EnvContextUse = EnvContextUse -- bruh, i dunno
-  { usedEnvs :: Set EnvID  -- keysSet of `allInsts` - maybe just call keysSet each time.
-  , allInsts :: Map EnvID (Set EnvUse)
 
-  -- this changes with withInstantiation
-  -- , currentInst :: TypeMap
-  }
-
-data EnvUse = EnvUse (Maybe M.IFunction) M.IEnv
-
-instance Eq EnvUse where
-  EnvUse _ le == EnvUse _ re = le == re
-
-instance Ord EnvUse where
-  EnvUse _ le `compare` EnvUse _ re = le `compare` re
-
-
-
-data EnvMemo = EnvMemo
-  { memoIDatatype :: Memo (M.IDataDef, [M.EnvUnion]) (M.DataDef, Map M.IDataCon M.DataCon)
-  }
-
-withEnvContext :: Set EnvID -> Map EnvID (Set EnvUse) -> EnvContext a -> IO a
-withEnvContext envs allInstantiations x = fst <$> RWS.evalRWST x envUse envMemo
+withEnvContext :: Map EnvID (Set EnvUse) -> EnvContext a -> IO a
+withEnvContext allInstantiations x = fst <$> RWS.evalRWST x envUse envMemo
   where
     envUse = EnvContextUse
-      { usedEnvs = envIDs
-      , allInsts = allInstantiations
+      { allInsts = allInstantiations
       }
 
     envMemo = EnvMemo
       { memoIDatatype = emptyMemo
       }
-
-    envIDs = envs
 
 
 mfAnnStmts :: [M.AnnIStmt] -> EnvContext [M.AnnStmt]
@@ -555,8 +536,8 @@ mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)
   let s = pure . Just
   let
     body :: NonEmpty (Maybe M.AnnStmt) -> NonEmpty M.AnnStmt
-    body stmts =
-      let eliminated = catMaybes $ NonEmpty.toList stmts
+    body bstmts =
+      let eliminated = catMaybes $ NonEmpty.toList bstmts
       in case eliminated of
         [] -> Fix (O (Annotated [] M.Pass)) :| []
         (st:sts) -> st :| sts
@@ -635,8 +616,7 @@ mfUnion union = do
       then fmap (:[]) $ mfEnv $ snd <$> env
       else do
         envMap <- RWS.asks allInsts
-        -- TODO: bruh, why don't we just mfType it then??
-        traverse (mfEnv . fmap mfType . (\(EnvUse _ env) -> env)) $ Set.toList $ Map.findWithDefault Set.empty (M.envID env) envMap
+        traverse (mfEnv . fmap mfType . (\(EnvUse _ envInstantiation) -> envInstantiation)) $ Set.toList $ Map.findWithDefault Set.empty (M.envID env) envMap
 
 
   -- NOTE: I HATE THIS FUCKING ERROR LIKE YOU WOULDN'T BELIEVE.
@@ -679,7 +659,7 @@ mfFunction fun = do
   ctxPrint' $ printf "MF function %s" (Common.ppVar Local fun.functionDeclaration.functionId)
   ctxPrint M.mtFunction fun
 
-  -- i dunno if i have to do something stupid here.
+  -- just map everything.
   let fundec = fun.functionDeclaration
   env <- mfEnv $ mfType <$> fundec.functionEnv
   params <- traverse2 mfType fundec.functionParameters
@@ -690,6 +670,7 @@ mfFunction fun = do
   body <- mfAnnStmts $ NonEmpty.toList fun.functionBody
   let completedBody = case body of
         [] ->
+          -- TODO: we need to automatically insert return values based on flow analysis (but that should be part of typechecking?)
           let pass = Fix (O (Annotated [] M.Pass))
           in pass :| []
 
@@ -707,19 +688,17 @@ mfConstructor dc@(M.DC dd _ _ _) imt = do
         M.ITFun _ _ (Fix (M.ITCon _ _ unions)) -> unions
 
         -- COMPILER ERROR
-        _ -> error $ printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%s)." (M.tType undefined)
+        _ -> error $ printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%s)." (M.mtType imt)
 
   -- mtypes <- traverse mfType ttypes
   munions <- traverse (mfUnion . fmap2 (\t -> (t, mfType t))) imunions
 
   (_, dcQuery) <- mfDataDef (dd, munions)
   let mdc = fromJust $ dcQuery !? dc
-  -- liftIO $ putStrLn $ ctx M.tConDef mdc
   pure mdc
 
 
 
--- special ftv
 ftvEnvButIgnoreUnions :: M.IEnv -> Set TVar
 ftvEnvButIgnoreUnions = \case
   M.RecursiveEnv _ _ -> Set.empty
@@ -735,20 +714,46 @@ ftvButIgnoreUnions = cata $ \case
 
 filterEnvs :: [M.EnvF envtype a] -> EnvContext [M.EnvF envtype a]
 filterEnvs envs = do
-  envIds <- RWS.asks usedEnvs
+  envIds <- RWS.asks allInsts
 
-  let f (M.RecursiveEnv eid _) = Set.member eid envIds
-      f (M.Env eid _) = Set.member eid envIds
+  let f (M.RecursiveEnv eid _) = Map.member eid envIds
+      f (M.Env eid _) = Map.member eid envIds
   pure $ filter f envs
 
 
 
+-------------------------
+-- Step 2 Type defs!
+------------------------
 
-traverse2 :: (Traversable t1, Traversable t2, Applicative f) => (a -> f b) -> t1 (t2 a) -> f (t1 (t2 b))
-traverse2 = traverse . traverse
+
+type EnvContext = RWST EnvContextUse () EnvMemo IO  -- TEMP: IO temporarily for debugging. should not be used for anything else.
+-- Stores environment instantiations. 
+--   NOTE: In the future, maybe more stuff (like which constructors were used!)
+newtype EnvContextUse = EnvContextUse
+  { allInsts :: Map EnvID (Set EnvUse)
+  }
+
+data EnvUse = EnvUse (Maybe M.IFunction) M.IEnv
+
+instance Eq EnvUse where
+  EnvUse _ le == EnvUse _ re = le == re
+
+instance Ord EnvUse where
+  EnvUse _ le `compare` EnvUse _ re = le `compare` re
 
 
--- fokin instances
+newtype EnvMemo = EnvMemo
+  { memoIDatatype :: Memo (M.IDataDef, [M.EnvUnion]) (M.DataDef, Map M.IDataCon M.DataCon)
+  }
+
+
+
+
+----------------------
+-- UNRELATED MISC
+----------------------
+
 instance Foldable ((,,) a b) where
   foldr f x (_, _, y) = f y x
 
@@ -758,3 +763,5 @@ instance Traversable ((,,) a b) where
 fmap2 :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
 fmap2 = fmap . fmap
 
+traverse2 :: (Traversable t1, Traversable t2, Applicative f) => (a -> f b) -> t1 (t2 a) -> f (t1 (t2 b))
+traverse2 = traverse . traverse
