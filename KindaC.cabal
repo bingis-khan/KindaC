@@ -93,8 +93,6 @@ test-suite all
   main-is: Spec.hs
   other-modules:
       Expect
-      Specific
-      YesNo
       Paths_KindaC
   hs-source-dirs:
       test/src

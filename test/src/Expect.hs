@@ -4,21 +4,18 @@ module Expect (expect) where
 import Data.List ( isPrefixOf, find, sort )
 import Data.Functor ((<&>))
 import Data.Char (isSpace)
-import Data.Foldable (for_, traverse_)
+import Data.Foldable (for_)
 import System.Directory (listDirectory)
 import System.IO.Temp (withTempDirectory)
-import Test.Hspec (parallel, hspec, it, describe, shouldBe, runIO, Expectation, expectationFailure, shouldStartWith)
+import Test.Hspec (parallel, hspec, it, describe, shouldBe, runIO, Expectation, expectationFailure)
 import AST.Converged (Prelude)
 import Data.Text (Text)
 import System.Process (readProcessWithExitCode)
 import System.FilePath ((</>), takeBaseName)
 import System.Exit (ExitCode(..))
 import Pipeline (loadPrelude, loadModule, finalizeModule)
-import Mono (mono)
-import CPrinter (cModule)
 import qualified Data.Text.IO as TextIO
 import qualified Data.Text as Text
-import Data.Bool (bool)
 import qualified Control.Exception as E
 import Test.HUnit.Lang (HUnitFailure(HUnitFailure), FailureReason (ExpectedButGot))
 import Control.Exception (catch)
@@ -80,6 +77,7 @@ expect = do
 
                 return ()
 
+
 shouldBeWithWildcard :: [String] -> [String] -> Expectation
 shouldBeWithWildcard is expected =
   let
@@ -94,6 +92,7 @@ shouldBeWithWildcard is expected =
     else do
       -- expectationFailure $ show $ (\(l, r) -> (l, trim (dropEnd wildlen r))) <$> zipPad is expected
       E.throwIO (HUnitFailure Nothing $ ExpectedButGot Nothing (unlines expected) (unlines is))
+
 
 expectNoError :: Either Error a -> Expectation
 expectNoError (Right _) = pure ()
@@ -115,6 +114,7 @@ compileAndOutputFile prelude filepath outdirpath = do
   catch compile $ \e -> pure $ Left $ Text.pack $ "(exception)\n" <> show (e :: SomeException)
 
 
+
 data TestHeader = TestHeader
   { name :: Maybe String
   , expectedExitCode :: ExitCode
@@ -126,7 +126,7 @@ readHeader path = readFile path <&> \m ->
   let ctlLines = takeWhile ("#" `isPrefixOf`) $ lines m
 
       testName = trim . drop 2 <$> find ("#$" `isPrefixOf`) ctlLines
-      exitCode = maybe ExitSuccess (intToExitCode . read) $ trim . drop 2 <$> find ("#?" `isPrefixOf`) ctlLines
+      exitCode = maybe ExitSuccess ((intToExitCode . read) . trim . drop 2) $ find ("#?" `isPrefixOf`) ctlLines
       expected = trim . drop 1 <$> filter (not . (\line -> any (`isPrefixOf` line) ["#$", "#?"])) ctlLines
   in TestHeader { name = testName, expectedExitCode = exitCode, expectedOutput = expected }
 
@@ -134,6 +134,8 @@ readHeader path = readFile path <&> \m ->
 intToExitCode :: Int -> ExitCode
 intToExitCode 0 = ExitSuccess
 intToExitCode x = ExitFailure x
+
+
 
 trim :: String -> String
 trim = dropWhile isSpace . reverse . dropWhile isSpace . reverse
