@@ -59,13 +59,6 @@ data DataCon = DC ConName [Type] deriving Eq
 data DataDef = DD TCon [UnboundTVar] [Annotated DataCon] deriving Eq
 
 
---------------
--- Function --
---------------
-
-data FunDec = FD VarName [(VarName, Maybe Type)] (Maybe Type) deriving Eq
-
-
 ----------
 -- Case --
 ----------
@@ -83,6 +76,14 @@ data CaseF expr stmt = Case
   , body :: NonEmpty stmt
   } deriving (Eq, Functor, Foldable, Traversable)
 type Case = CaseF Expr AnnStmt
+
+
+--------------
+-- Function --
+--------------
+
+data FunDec = FD VarName [(Decon, Maybe Type)] (Maybe Type) deriving Eq
+
 
 
 ---------------

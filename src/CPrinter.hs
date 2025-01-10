@@ -20,12 +20,12 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Fix (Fix (..))
 import Data.Foldable (for_, sequenceA_, foldl')
-import Data.Functor.Foldable (cata, project, para)
+import Data.Functor.Foldable (cata, project, para, embed)
 import Data.Functor.Identity (Identity(..))
 import Data.Functor ((<&>))
 import Data.Bifunctor (first, second)
 import Data.List (intercalate)
-import Data.List.NonEmpty (NonEmpty (..))
+import Data.List.NonEmpty (NonEmpty (..), (<|))
 import Data.String (IsString)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -34,6 +34,8 @@ import GHC.Num (Natural)
 import Text.Printf (printf)
 import Data.Unique (hashUnique)
 import qualified Data.List.NonEmpty as NonEmpty
+import Data.Traversable (for)
+import Data.Either (lefts)
 
 
 -- COMPLAINTS:
@@ -314,7 +316,23 @@ cFunction fun' =
     let fd = fun.functionDeclaration
 
     let funref = cVarName fd.functionId
-    let cparams = fd.functionParameters <&> \(uv, t) -> cDefinition t (cVarName uv)
+
+
+    -- prepare parameters for funny deconstruction.
+    let nonDeconstructions = project . fst <$> fd.functionParameters <&> \case -- find parameters that are just variables (to reduce noise, it doesn't actually matter.)
+          M.CaseVariable _ uv -> Right uv
+          kase@M.CaseConstructor {} -> Left (embed kase)
+
+    let paramTypes = snd <$> fd.functionParameters
+
+    -- replace missing with temps
+    addedTempsToParams <- for nonDeconstructions $ \case 
+      Right uv -> pure $ Right $ cVarName uv
+      Left _ -> Left <$> nextTemp
+
+    let filledIn = addedTempsToParams <&> \case { Left l -> l; Right r -> r }
+    
+    let cparams = zip filledIn paramTypes <&> \(var, t) -> cDefinition t var
     let envparam = do
           let envtype = if null fd.functionEnv
               then "void*"
@@ -329,7 +347,32 @@ cFunction fun' =
             then cparams
             else envparam : cparams
 
-    addTopLevel $ ccFunction funref fd.functionReturnType ccparams (cStmt <$> fun.functionBody)
+
+    -- prepare deconstructions!!
+    let actualDeconstructions = lefts nonDeconstructions
+    let body = case actualDeconstructions of
+          [] -> cStmt <$> fun.functionBody
+          _:_ -> guard <| NonEmpty.prependList accesses (cStmt <$> fun.functionBody)
+            where
+              tempsForDeconstructions = lefts addedTempsToParams
+              bigCondition = "!" & enclose "(" ")" (sepBy " && " $ zipWith cDeconCondition tempsForDeconstructions actualDeconstructions)  -- make a big condition. if it's not satisfied, we must fail immediately.
+
+              guard = "if" § enclose "(" ")" bigCondition <§ cBlock 
+                    [ statement $ do
+                      include "stdio.h"
+                      cCall "printf" [cstr "Pattern not satisfied to enter function (line %d).\n", "__LINE__"]
+
+                    , statement $ do
+                      include "stdlib.h"
+                      cCall "exit" ["1"]
+                    ]
+
+
+              varAccesses = concat $ zipWith cDeconAccess tempsForDeconstructions actualDeconstructions
+              accesses = varAccesses <&> \(uv, t, acc) -> statement $ cDefinition t (cVarName uv) § "=" § acc
+
+
+    addTopLevel $ ccFunction funref fd.functionReturnType ccparams body
 
     -- return the function identifier.
     pure funref

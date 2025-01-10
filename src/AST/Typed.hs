@@ -125,7 +125,7 @@ type Type = Fix TypeF
 data FunDec = FD
   { functionEnv :: Env
   , functionId :: UniqueVar
-  , functionParameters :: [(UniqueVar, Type)]
+  , functionParameters :: [(Decon, Type)]
   , functionReturnType :: Type
   , functionScheme :: Scheme
   }
@@ -384,7 +384,7 @@ tFunction :: Function -> Context
 tFunction fn = tBody (tFunDec fn.functionDeclaration) fn.functionBody
 
 tFunDec :: FunDec -> Context
-tFunDec (FD fenv v params retType scheme) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType <+> tScheme scheme
+tFunDec (FD fenv v params retType scheme) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType <+> tScheme scheme
 
 tScheme :: Scheme -> Context
 tScheme (Scheme tvars unions) = ppSet ppTVar tvars <+> ppSet (tEnvUnion . fmap tType) unions

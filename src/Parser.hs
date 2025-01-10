@@ -28,6 +28,7 @@ import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
 import AST.Common (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..))
 import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case)
+import Data.Functor.Foldable (embed, cata)
 
 
 type Parser = Parsec MyParseError Text
@@ -163,13 +164,19 @@ sFunctionOrCall = recoverableIndentBlock $ do
         else flip (L.IndentMany Nothing) (recoverStmt (annotationOr statement)) $ \case
           stmts@(_:_) -> FunctionDefinition header . NonEmpty.fromList <$> annotateStatements stmts
           [] ->
-            let args = map (Fix . Var . fst) params
+            let args = map (deconToExpr . fst) params
                 funName = Fix $ Var name
             in pure $ ExprStmt $ Fix $ Call funName args
 
+deconToExpr :: Decon -> Expr
+deconToExpr = cata $ embed . \case
+  CaseVariable v                  -> Var v
+  CaseConstructor con []          -> Con con
+  CaseConstructor con exprs@(_:_) -> Call (Fix $ Con con) exprs
+
 functionHeader :: Parser (FunDec, Maybe Expr)
 functionHeader = do
-  let param = liftA2 (,) variable (optional pType)
+  let param = liftA2 (,) sDeconstruction (optional pType)
   name <- variable
   params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
   ret <- choice
@@ -400,7 +407,7 @@ identifier :: Parser Text
 identifier = do
   lexeme $ do
     x <- lowerChar
-    xs <- many $ identifierChar
+    xs <- many identifierChar
     pure $ T.pack (x:xs)
 
 dataConstructor :: Parser ConName

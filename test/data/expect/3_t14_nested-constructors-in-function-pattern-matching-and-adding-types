@@ -1,0 +1,27 @@
+#$ Nested constructors in function pattern matching + try to add typing information
+# 123
+# 420
+# ()
+# True
+# False
+
+SomeEnum
+	Woah
+	Boah
+	Noah
+
+f (Noah SomeEnum)
+	print 123
+	return
+
+f(Noah)
+
+
+ff (Tuple(x, Tuple(y, Tuple(z, soy))) Tuple Int (Tuple Unit (Tuple Bool Bool)))
+	print x
+	print y
+	print z
+	print soy
+	return
+
+ff(Tuple(420, Tuple(Unit, Tuple(True, False))))

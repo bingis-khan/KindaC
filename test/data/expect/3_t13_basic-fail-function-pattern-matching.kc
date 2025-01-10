@@ -1,0 +1,13 @@
+#$ Basic failing pattern for function pattern matching.
+# Pattern not satisfied to enter function (line \*
+#? 1
+
+
+f (Just(x))
+	print x
+	return
+
+
+n = None as Maybe Int
+
+f(n)

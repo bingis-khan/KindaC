@@ -1,0 +1,18 @@
+#$ Basic function deconstructions.
+# 1
+# True
+# 420
+# ()
+# ()
+# ()
+
+t = Tuple(1, True)
+
+fff (Tuple(bob, dupa), additional-arg)
+  print bob
+  print dupa
+  print additional-arg
+  return
+
+fff(t, 420)
+fff(Tuple(Unit, Unit), Unit)

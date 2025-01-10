@@ -159,7 +159,7 @@ rStmts = traverse -- traverse through the list with Ctx
 
           (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure $ do
             rparams' <- traverse (\(n, t) -> do
-              rn <- newVar n
+              rn <- rDecon n
               rt <- traverse rType t
               return (rn, rt)) params
             rret' <- traverse rType ret

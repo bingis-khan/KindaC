@@ -173,7 +173,7 @@ type instance Type' FullEnv = Type
 data FunDec' envtype = FD
   { functionEnv :: Env' envtype,
     functionId :: UniqueVar,
-    functionParameters :: [(UniqueVar, Type' envtype)],
+    functionParameters :: [(Fix (DeconF envtype), Type' envtype)],
     functionReturnType :: Type' envtype,  -- actually, the function might return something with a yet unknown environment type...
     functionNeedsEnvironment :: NeedsImplicitEnvironment
   }
@@ -413,7 +413,7 @@ tConDef :: DataCon -> Context
 tConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
 
 tFunDec :: FunDec -> Context
-tFunDec (FD funEnv v params retType needsEnv) = comment (tEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <> ((" " <>) . tType) pType) params) <> ((" " <>) . tType) retType <> (if needsEnv then " +ENV" else " -ENV")
+tFunDec (FD funEnv v params retType needsEnv) = comment (tEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" " <>) . tType) pType) params) <> ((" " <>) . tType) retType <> (if needsEnv then " +ENV" else " -ENV")
 
 tTypes :: (Functor t) => t Type -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of
@@ -522,7 +522,7 @@ mtConDef :: DataCon -> Context
 mtConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
 
 mtFunDec :: IFunDec -> Context
-mtFunDec (FD funEnv v params retType needsEnv) = comment (mtEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <> ((" " <>) . mtType) pType) params) <> ((" " <>) . mtType) retType <> (if needsEnv then " +ENV" else " -ENV")
+mtFunDec (FD funEnv v params retType needsEnv) = comment (mtEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> mtDecon pName <> ((" " <>) . mtType) pType) params) <> ((" " <>) . mtType) retType <> (if needsEnv then " +ENV" else " -ENV")
 
 mtTypes :: (Functor t) => t IType -> t Context
 mtTypes = fmap $ \t@(Fix t') -> case t' of

@@ -139,17 +139,18 @@ mCase :: T.Case M.IExpr M.AnnIStmt -> Context M.ICase
 mCase kase = do
   decon <- mDecon kase.deconstruction
   pure $ M.Case decon kase.caseCondition kase.body
-  where
-    mDecon = cata $ fmap embed . \case
-      T.CaseVariable t uv -> do
-        mt <- mType t
-        pure $ M.CaseVariable mt uv
 
-      T.CaseConstructor t dc args -> do
-        mt <- mType t
-        mdc <- constructor dc t
-        margs <- sequenceA args
-        pure $ M.CaseConstructor mt mdc margs
+mDecon :: T.Decon -> Context M.IDecon
+mDecon = cata $ fmap embed . \case
+  T.CaseVariable t uv -> do
+    mt <- mType t
+    pure $ M.CaseVariable mt uv
+
+  T.CaseConstructor t dc args -> do
+    mt <- mType t
+    mdc <- constructor dc t
+    margs <- sequenceA args
+    pure $ M.CaseConstructor mt mdc margs
 
 
 
@@ -180,7 +181,8 @@ variable (T.DefinedFunction vfn) et = do
 
       uv <- newUniqueVar tfn.functionDeclaration.functionId
 
-      let fundec = M.FD env uv (zipWith (\mt (pv, _) -> (pv, mt)) ts tfn.functionDeclaration.functionParameters) ret needsEnv :: M.IFunDec
+      params <- flip zip ts <$> traverse (mDecon . fst) tfn.functionDeclaration.functionParameters
+      let fundec = M.FD env uv params ret needsEnv :: M.IFunDec
 
 
       -- DEBUG: when in the process of memoization, show dis.
@@ -692,7 +694,7 @@ mfFunction fun = do
   -- just map everything.
   let fundec = fun.functionDeclaration
   env <- mfEnv $ mfType <$> fundec.functionEnv
-  params <- traverse2 mfType fundec.functionParameters
+  params <- traverse (bitraverse mfDecon mfType) fundec.functionParameters
   ret <- mfType fundec.functionReturnType
 
   let mfundec = M.FD { M.functionEnv = env, M.functionId = fundec.functionId, M.functionParameters = params, M.functionReturnType = ret, M.functionNeedsEnvironment = fundec.functionNeedsEnvironment }

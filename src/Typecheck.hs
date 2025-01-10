@@ -186,33 +186,6 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
             pure (T.Case tdecon tCaseCon body, T.decon2type tdecon)
 
 
-          inferDecon :: R.Decon -> Infer T.Decon
-          inferDecon = cata $ fmap embed . \case
-              R.CaseVariable uv -> do
-                t <- var uv
-                pure (T.CaseVariable t uv)
-
-              R.CaseConstructor rcon idecons -> do
-
-                -- Ger proper constructor.
-                con@(T.DC dd@(T.DD _ scheme@(Scheme ogTVs ogUnions) _ _) _ usts _) <- inferConstructor rcon
-
-                -- Deconstruct decons.
-                decons <- sequenceA idecons
-
-                -- Custom instantiation for a deconstruction.
-                -- Create a parameter list to this constructor
-                (tvs, unions) <- instantiateScheme scheme
-                let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
-                let ts = mapTVs <$> usts
-
-                let args = T.decon2type <$> decons
-                uniMany ts args
-
-                let t = Fix $ T.TCon dd tvs unions
-                pure (T.CaseConstructor t con decons)
-
-
       R.Return (ret, t) -> do
         emret <- RWS.asks returnType
 
@@ -397,7 +370,9 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
     let rfundec = rfn.functionDeclaration
 
     params <- for rfundec.functionParameters $ \(v, definedType) -> do
-      vt <- var v
+      tv <- inferDecon v
+      let vt = T.decon2type tv
+
       case definedType of
         Just rt -> do
           t <- inferType rt
@@ -405,7 +380,7 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
           vt `uni` t
 
         Nothing -> pure ()
-      pure (v, vt)
+      pure (tv, vt)
 
     ret <- maybe fresh inferType rfundec.functionReturnType
 
@@ -529,6 +504,32 @@ constructSchemeForFunctionDeclaration dec =
 withReturn :: T.Type -> Infer a -> Infer a
 withReturn ret = RWS.local $ \e -> e { returnType = Just ret }
 
+
+inferDecon :: R.Decon -> Infer T.Decon
+inferDecon = cata $ fmap embed . \case
+    R.CaseVariable uv -> do
+      t <- var uv
+      pure (T.CaseVariable t uv)
+
+    R.CaseConstructor rcon idecons -> do
+
+      -- Ger proper constructor.
+      con@(T.DC dd@(T.DD _ scheme@(Scheme ogTVs ogUnions) _ _) _ usts _) <- inferConstructor rcon
+
+      -- Deconstruct decons.
+      decons <- sequenceA idecons
+
+      -- Custom instantiation for a deconstruction.
+      -- Create a parameter list to this constructor
+      (tvs, unions) <- instantiateScheme scheme
+      let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
+      let ts = mapTVs <$> usts
+
+      let args = T.decon2type <$> decons
+      uniMany ts args
+
+      let t = Fix $ T.TCon dd tvs unions
+      pure (T.CaseConstructor t con decons)
 
 
 

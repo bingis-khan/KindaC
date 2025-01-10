@@ -148,7 +148,7 @@ type AnnStmt = Fix (Annotated :. StmtF Expr)
 data FunDec = FD
   { functionEnv :: Env
   , functionId :: UniqueVar
-  , functionParameters :: [(UniqueVar, Maybe Type)]
+  , functionParameters :: [(Decon, Maybe Type)]
   , functionReturnType :: Maybe Type
   }
 
@@ -270,7 +270,7 @@ tConDef :: DataCon -> Context
 tConDef (DC _ g t anns) = annotate anns $ foldl' (<+>) (ppCon g) $ tTypes t
 
 tFunDec :: FunDec -> Context
-tFunDec (FD fenv v params retType) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppVar Local pName <+?> fmap tType pType) params) <+?> fmap tType retType
+tFunDec (FD fenv v params retType) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <+?> fmap tType pType) params) <+?> fmap tType retType
 
 tFunction :: Function -> Context
 tFunction fn = tBody (tFunDec fn.functionDeclaration) fn.functionBody
