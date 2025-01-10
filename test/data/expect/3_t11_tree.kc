@@ -1,0 +1,12 @@
+#$ Just a tree.
+# Tree (Tree Unit Unit Unit) Int (Tree (Tree (Tree Unit Unit Unit) Int (Tree Unit Unit Unit)) Unit (Tree Unit Unit Unit))
+
+
+Tree l a r
+	Leaf
+	Binary l a r 
+
+leaf = Leaf as Tree Unit Unit Unit  # because we don't ignore unused parameters, I have to explicitly specify the type.
+
+tree = Binary(leaf, 123, Binary(Binary(leaf, 69, leaf), Unit, leaf))
+print tree

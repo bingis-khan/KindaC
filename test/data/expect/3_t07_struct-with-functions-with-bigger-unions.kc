@@ -1,0 +1,43 @@
+#$ Struct with functions (as type parameters) with environments (bigger unions, more envs.)
+# 543
+# 1337
+# 2423
+
+
+MyTuple a b
+	MyTuple a b
+
+bool (cond, if-true, if-false)
+	if cond
+		return if-true
+	else
+		return if-false
+
+call-both (tup)
+	case tup
+		MyTuple(f, f')
+			res = f()
+			res' = f'()
+			print res + res'  # some more mangling
+
+	return
+
+
+x = 123
+y = 420
+sum-env ()
+	sum = x + y
+	print sum
+	return sum  # random ass return value (should be okay!)
+
+const = 420
+just-return-const ()
+	return const
+
+z = 1337
+miau ()
+	print z
+	return x + y + z
+
+t = MyTuple(sum-env, bool(False, just-return-const, miau))
+call-both(t)

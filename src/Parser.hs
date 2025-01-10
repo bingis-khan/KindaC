@@ -400,7 +400,7 @@ identifier :: Parser Text
 identifier = do
   lexeme $ do
     x <- lowerChar
-    xs <- many $ identifierChar <|> try (char '-' <* notFollowedBy hspace1)
+    xs <- many $ identifierChar
     pure $ T.pack (x:xs)
 
 dataConstructor :: Parser ConName
@@ -413,7 +413,7 @@ dataConstructor =
 
 -- identifiers: common
 identifierChar :: Parser Char
-identifierChar = alphaNumChar <|> char '\''
+identifierChar = alphaNumChar <|> char '\'' <|> try (char '-' <* notFollowedBy hspace1)
 
 
 stringLiteral :: Parser Text

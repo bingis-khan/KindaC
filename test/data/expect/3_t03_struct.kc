@@ -1,0 +1,40 @@
+#$ Basic struct deconstruction (non-polymorphic)
+# 5
+# 3
+# 2
+# 6
+# 4
+# 3
+
+Vec3
+	Vec3 Int Int Int
+
+mk-vec3 (x, y, z)
+	return Vec3(x, y, z)
+
+print-vec3 (v)
+	case v
+		Vec3(x, y, z)
+			print x
+			print y
+			print z
+
+	return
+
+
+add-vec3 (v, v')
+	case v
+		Vec3(x, y, z)
+
+			# you can use a tuple to not have to nest this. but i'm not testing that currently.
+			case v'
+				Vec3(x', y', z')
+					return Vec3(x + x', y + y', z + z')
+
+
+v = mk-vec3(5, 3, 2)
+print-vec3(v)
+
+vo = mk-vec3(1, 1, 1)
+vv = add-vec3(v, vo)
+print-vec3(vv)

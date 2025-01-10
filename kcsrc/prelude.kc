@@ -48,3 +48,6 @@ Either e a
 	Left e
 	Right a
 
+
+Tuple a b
+	Tuple a b

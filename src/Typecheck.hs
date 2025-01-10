@@ -38,7 +38,7 @@ import qualified AST.Resolved as R
 import qualified AST.Typed as T
 
 import AST.Converged (Prelude(..), PreludeFind (..), boolFind, tlReturnFind, intFind, floatFind)
-import AST.Common (TVar (TV), LitType (..), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..), mustOr)
+import AST.Common (TVar (TV), LitType (..), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..), mustOr, sctx, ppList)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
@@ -1025,10 +1025,10 @@ data TypeError
 -- not sure if we have to have a show instance
 instance Show TypeError where
   show = \case
-    InfiniteType tyv t -> unwords ["InfiniteType", ctx T.tTyVar tyv, ctx T.tType t]
-    TypeMismatch t t' -> printf "Type Mismatch: %s %s" (ctx T.tType t) (ctx T.tType t')
-    MismatchingNumberOfParameters ts ts' -> printf "Mismatching number of parameters: (%d) %s (%d) %s" (length ts) (show $ ctx T.tType <$> ts) (length ts') (show $ ctx T.tType <$> ts')
-    AmbiguousType tyv -> printf "Ambiguous type: %s" (ctx T.tTyVar tyv)
+    InfiniteType tyv t -> unwords ["InfiniteType", sctx $ T.tTyVar tyv, sctx $ T.tType t]
+    TypeMismatch t t' -> printf "Type Mismatch: %s %s" (sctx $ T.tType t) (sctx $ T.tType t')
+    MismatchingNumberOfParameters ts ts' -> printf "Mismatching number of parameters: (%d) %s (%d) %s" (length ts) (sctx $ ppList T.tType ts) (length ts') (sctx $ ppList T.tType ts')
+    AmbiguousType tyv -> printf "Ambiguous type: %s" (sctx $ T.tTyVar tyv)
 
 
 

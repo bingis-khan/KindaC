@@ -1,0 +1,49 @@
+#$ Can correctly unpack an enum.
+# 2
+# 0
+# 0
+# 3
+
+
+SomeEnum
+	Ayo
+	One
+	Two
+	More
+
+big-type = Just(Just(Just(Two)))
+
+get-enum (x)
+	case x
+		Just(Just(Just(e)))
+			return e
+
+		Just(Just(None))
+			return Ayo
+
+		Just(None)
+			return Ayo
+
+		None
+			return Ayo
+
+enum-i (e)
+	case e
+		Ayo
+			return 0
+
+		One
+			return 1
+
+		Two
+			return 2
+
+		More
+			return 3
+
+
+unpacked = get-enum(big-type)
+print enum-i(unpacked)
+print enum-i(get-enum(None))
+print enum-i(get-enum(Just(Just(None))))
+print enum-i(get-enum(Just(Just(Just(More)))))

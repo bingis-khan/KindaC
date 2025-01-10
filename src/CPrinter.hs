@@ -150,7 +150,8 @@ cDeconCondition basevar mdecon =
         M.CaseVariable _ _ -> []
         M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args ->
           case cons of
-            [] -> [" ==" § cCon dc]
+            [] -> undefined
+            conz | all (\(M.DC _ _ conargs _) -> null conargs) conz -> [" ==" § cCon dc]
             [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> conargs <&> \ca -> "." & cConMember uc x & ca
             _:_ -> ("." & "tag" § "==" § cTag dc) : concatMap (\(x, conargs) -> conargs <&> \ca -> "." & "env" & "." & cConStruct dc & "." & cConMember uc x & ca) (zip [1::Int ..] args)
 
@@ -166,6 +167,8 @@ cDeconAccess basevar mdecon = fmap2 (basevar &) $ flip cata mdecon $ \case
   M.CaseVariable t uv -> [(uv, t, "" :: PL)]
   M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args -> case cons of
     []  -> []
+    conz | all (\(M.DC _ _ conargs _) -> null conargs) conz -> []
+
     [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> fmap2 (("." & cConMember uc x) &) conargs
     _:_ -> concatMap (\(x, conargs) -> fmap2 (("." & "env" & "." & cConStruct dc & "." & cConMember uc x) &) conargs) (zip [1::Int ..] args)
 
@@ -484,6 +487,7 @@ sanitize :: Text -> Text
 sanitize = Text.concatMap $ \case
   '-' -> "_dash_"
   '_' -> "__"
+  '\'' -> "_prime_"
   o -> fromString [o]
 
 

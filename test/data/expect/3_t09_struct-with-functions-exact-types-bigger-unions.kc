@@ -1,0 +1,88 @@
+#$ Struct with functions (as exact types) with environments and bigger unions. (todo: i think this test is too long...)
+# 3
+# 96
+# 8143
+# 3333333
+# False
+# 3333333
+# True
+# 72
+# 165
+# 8212
+# 3333333
+# False
+# 3333333
+# True
+# 1337
+# 1337
+# 1337
+# 3333333
+# False
+# 3333333
+# True
+
+CallMeBack
+	KMB ((Int, Int) -> Int) (Bool -> Bool)
+
+
+call-me-back (cmb CallMeBack)
+	case cmb
+		KMB(f, g)
+			print f(1, 2)
+			print f(6, 90)
+			print f(8008, 135)
+			print g(True)
+			print g(False)
+
+	return
+
+
+add (x, y)
+	return x + y
+
+
+spice = 69
+add-with-spice (l-unspiced, r-unspiced)
+	return l-unspiced + r-unspiced + spice
+
+
+ignore-value = 1337
+ignore (l, r)
+	return ignore-value
+
+
+hidden-bool = Just(True)
+cucked (b)
+	case hidden-bool
+		None
+			return b
+
+		Just(True)
+			print 3333333
+			if b
+				return False
+			else
+				return True
+
+		Just(False)
+			print 111
+			return b
+
+choose (choice, a, b, c)
+	if choice == 0
+		return a
+	elif choice == 1
+		return b
+	else
+		return c
+
+get-f = opt: choose(opt, add, add-with-spice, ignore)
+
+cmb0 = KMB(get-f(0), cucked)
+call-me-back(cmb0)
+
+cmb1 = KMB(get-f(1), cucked)
+call-me-back(cmb1)
+
+cmb2 = KMB(get-f(2), cucked)
+call-me-back(cmb2)

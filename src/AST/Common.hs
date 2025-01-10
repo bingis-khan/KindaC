@@ -242,6 +242,9 @@ phase text =
 ctx :: (a -> Context) -> a -> String
 ctx = ctx' defaultContext
 
+sctx :: Context -> String
+sctx = ctx' showContext id
+
 ctx' :: CtxData -> (a -> Context) -> a -> String
 ctx' c f = if c.silent
   then mempty
@@ -318,6 +321,9 @@ ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v)
 
 ppSet :: (a -> Context) -> [a] -> Context
 ppSet f = encloseSepBy "{" "}" ", " . fmap f
+
+ppList :: (a -> Context) -> [a] -> Context
+ppList f = encloseSepBy "[" "]" ", " . fmap f
 
 
 ppAnn :: [Ann] -> Context

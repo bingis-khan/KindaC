@@ -1,0 +1,35 @@
+#$ Deconstruction of a polymorphic struct.
+# 1
+# True
+# ()
+# ()
+# () -> Int at \*
+# 420
+# True
+
+
+MyTuple a b
+	MyTuple a b
+
+t = MyTuple(1, True)
+t' = MyTuple(Unit, Unit)
+
+n = 420
+t'' = MyTuple(:n, True)
+
+
+case t
+	MyTuple(x, b)
+		print x
+		print b
+
+case t'
+	MyTuple(u, u')
+		print u
+		print u'
+
+case t''
+	MyTuple(f, b)
+		print f
+		print f()
+		print b

@@ -1,0 +1,80 @@
+#$ Just some stress test with polymorphic functions. (expects defined Tuple type)
+# Tuple (Tuple Int Bool) Unit
+# Tuple (Tuple Int Int) Bool
+# True
+# 420
+# 1337
+# 123
+# True
+# False
+
+
+fst (t)
+	case t
+		Tuple(l, r)
+			return l
+
+snd (t)
+	case t
+		Tuple(l, r)
+			return r
+
+swap (t)
+	case t
+		Tuple(l, r)
+			return Tuple(r, l)
+
+
+print-tuple (tup Tuple a b)
+	case tup
+		Tuple(l, r)
+			print l
+			print r
+
+	return
+
+
+t = Tuple(Tuple(Tuple(1, True), Unit), Tuple(Tuple(420, 1337), True))
+print-tuple(t)
+
+# get dat bool
+print snd(fst(fst(t)))
+
+# now, try to reach 420
+print fst(fst(snd(t)))
+
+# hard mode
+t' = swap(t)
+print snd(fst(snd(t)))  # owo what is this
+
+
+
+map-snd (t, f)
+	case t
+		Tuple(l, r)
+			return Tuple(l, f(r))
+
+map-fst (t, f)
+	case t
+		Tuple(l, r)
+			return Tuple(f(l), r)
+
+const (a)
+	return b: a
+
+
+t'' = map-snd(t, const(123))
+print snd(t'')
+
+
+negate (b)
+	case b
+		True
+			return False
+
+		False
+			return True
+
+t''' = map-snd(t, (a: map-snd(a, negate)))
+print snd(snd(t))
+print snd(snd(t'''))

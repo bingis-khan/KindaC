@@ -1,0 +1,45 @@
+#$ Struct with functions (as exact types) with environments.
+# 505
+# ()
+# 192
+# True
+# 420
+# 505
+# ()
+# 192
+# False
+# 8008135
+
+
+MegaCallback
+	MC (() -> Unit) (Int -> Int) (Bool -> Int)
+
+
+sos ()
+	print 505
+	return
+
+add69 (x)
+	return x + 69
+
+boolboi (b)
+	print b
+	if b
+		return 420
+	else
+		return 8008135
+
+
+call-dis (mc MegaCallback, cond Bool)
+	case mc
+		MC(f, g, h)
+			print f()
+			print g(123)
+			print h(cond)
+
+	return
+
+mega = MC(sos, add69, boolboi)
+call-dis(mega, True)
+call-dis(mega, False)
+
