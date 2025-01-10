@@ -118,7 +118,7 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
     for_ otherCases $ \kase ->
       "else" § "if" § enclose "(" ")" (cDeconCondition cond kase.deconstruction) <§ do
         -- TODO: could be factored out.
-        let vars = cDeconAccess cond firstCase.deconstruction
+        let vars = cDeconAccess cond kase.deconstruction
         let defs = vars <&> \(uv, t, acc) -> statement $ cDefinition t (cVarName uv) § "=" § acc
 
         cBlock $ NonEmpty.prependList defs kase.body
