@@ -192,7 +192,7 @@ data Scheme = Scheme [TVar] [EnvUnion]
 
 data DeconF a
   = CaseVariable Type UniqueVar
-  | CaseConstructor Type UniqueCon [a]
+  | CaseConstructor Type DataCon [a]
   deriving (Functor)
 type Decon = Fix DeconF
 
@@ -347,8 +347,8 @@ tCase kase = tBody (tDecon kase.deconstruction <+?> kase.caseCondition) kase.bod
 tDecon :: Decon -> Context
 tDecon = cata $ \case
   CaseVariable _ uv -> ppVar Local uv
-  CaseConstructor _ uc [] -> ppCon uc
-  CaseConstructor _ uc args@(_:_) -> ppCon uc <> encloseSepBy "(" ")" ", " args
+  CaseConstructor _ (DC _ uc _ _) [] -> ppCon uc
+  CaseConstructor _ (DC _ uc _ _) args@(_:_) -> ppCon uc <> encloseSepBy "(" ")" ", " args
 
 tExpr :: Expr -> Context
 tExpr = cata $ \(TypedExpr et expr) ->

@@ -258,22 +258,24 @@ asUniqueVar = \case
 -- Case --
 ----------
 
-data DeconF a
-  = CaseVariable Type UniqueVar
-  | CaseConstructor Type UniqueCon [a]
+data DeconF envtype a
+  = CaseVariable (Type' envtype) UniqueVar
+  | CaseConstructor (Type' envtype) (DataCon' envtype) [a]
   deriving (Functor)
 
-type Decon = Fix DeconF
+type IDecon = Fix (DeconF IncompleteEnv)
+type Decon = Fix (DeconF FullEnv)
 
 
-data CaseF expr stmt = Case
-  { deconstruction :: Decon,
+data CaseF envtype expr stmt = Case
+  { deconstruction :: Fix (DeconF envtype),
     caseCondition :: Maybe expr,
     body :: NonEmpty stmt
   }
   deriving (Functor, Foldable, Traversable)
 
-type Case = CaseF Expr AnnStmt
+type ICase = CaseF IncompleteEnv IExpr AnnIStmt
+type Case = CaseF FullEnv Expr AnnStmt
 
 
 
@@ -290,7 +292,7 @@ data StmtF envtype expr a
   | Mutation UniqueVar Locality expr
   -- TODO: we should maybe make function bodies a normal list - by then it's possible for a body to be empty.
   | If expr (NonEmpty a) [(expr, NonEmpty a)] (Maybe (NonEmpty a))
-  | Switch expr (NonEmpty (CaseF expr a))
+  | Switch expr (NonEmpty (CaseF envtype expr a))
   | ExprStmt expr
   | Return expr
   | EnvDef (EnvDef envtype)
@@ -371,14 +373,14 @@ tEnvDef :: EnvDef FullEnv -> Context
 tEnvDef envdef = ppLines' $
   (encloseSepBy "[" "]" ", " . NonEmpty.toList $ tEnv . snd <$> envdef) : NonEmpty.toList (tFunction . fst <$> envdef)
 
-tCase :: CaseF Expr AnnStmt -> Context
+tCase :: Case -> Context
 tCase kase = tBody (tDecon kase.deconstruction <+?> fmap tExpr kase.caseCondition) kase.body
 
 tDecon :: Decon -> Context
 tDecon = cata $ \case
   CaseVariable _ uv -> ppVar Local uv
-  CaseConstructor _ uc [] -> ppCon uc
-  CaseConstructor _ uc args@(_ : _) -> ppCon uc <> encloseSepBy "(" ")" ", " args
+  CaseConstructor _ (DC _ uc _ _) [] -> ppCon uc
+  CaseConstructor _ (DC _ uc _ _) args@(_ : _) -> ppCon uc <> encloseSepBy "(" ")" ", " args
 
 tExpr :: Expr -> Context
 tExpr = cata $ \(TypedExpr t expr) ->
@@ -480,14 +482,14 @@ mtStmt stmt = case stmt of
 mtEnvDef :: EnvDef IncompleteEnv -> Context
 mtEnvDef = ppEnvID
 
-mtCase :: CaseF IExpr AnnIStmt -> Context
+mtCase :: ICase -> Context
 mtCase kase = mtBody (mtDecon kase.deconstruction <+?> fmap mtExpr kase.caseCondition) kase.body
 
-mtDecon :: Decon -> Context
+mtDecon :: IDecon -> Context
 mtDecon = cata $ \case
   CaseVariable _ uv -> ppVar Local uv
-  CaseConstructor _ uc [] -> ppCon uc
-  CaseConstructor _ uc args@(_ : _) -> ppCon uc <> encloseSepBy "(" ")" ", " args
+  CaseConstructor _ (DC _ uc _ _) [] -> ppCon uc
+  CaseConstructor _ (DC _ uc _ _) args@(_ : _) -> ppCon uc <> encloseSepBy "(" ")" ", " args
 
 mtExpr :: IExpr -> Context
 mtExpr = cata $ \(TypedExpr t expr) ->

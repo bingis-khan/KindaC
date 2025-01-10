@@ -88,7 +88,9 @@ mAnnStmt = cata (fmap embed . f) where
       T.Print expr -> mann $ M.Print expr
       T.Mutation vid loc expr -> mann $ M.Mutation vid loc expr
       T.If cond ifTrue elseIfs else' -> mann $ M.If cond ifTrue elseIfs else'
-      T.Switch switch cases -> mann . M.Switch switch $ mCase <$> cases
+      T.Switch switch cases -> do
+        mcases <- traverse mCase cases
+        mann $ M.Switch switch mcases
       T.Return ete -> mann $ M.Return ete
       T.EnvDef fn -> do
         let env = fn.functionDeclaration.functionEnv
@@ -133,20 +135,21 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
 
 
 
-mCase :: T.Case M.IExpr M.AnnIStmt -> M.CaseF M.IExpr M.AnnIStmt
-mCase _ = undefined -- M.Case <$> mDecon kase.deconstruction <*> sequenceA kase.caseCondition <*> sequenceA kase.body
-  -- where 
-  --   mDecon = cata $ fmap embed . go
-  --     where
-  --       go = \case
-  --         T.CaseVariable t uv -> do
-  --           t' <- mType t
-  --           uv' <- variable uv t'
-  --           pure $ M.CaseVariable t' uv'
-  --         T.CaseConstructor t uc args -> do
-  --           t' <- mType t
-  --           uc' <- constructor uc t'
-  --           M.CaseConstructor t' uc' <$> sequenceA args
+mCase :: T.Case M.IExpr M.AnnIStmt -> Context M.ICase
+mCase kase = do
+  decon <- mDecon kase.deconstruction
+  pure $ M.Case decon kase.caseCondition kase.body
+  where 
+    mDecon = cata $ fmap embed . \case
+      T.CaseVariable t uv -> do
+        mt <- mType t
+        pure $ M.CaseVariable mt uv
+
+      T.CaseConstructor t dc args -> do
+        mt <- mType t
+        mdc <- constructor dc t
+        margs <- sequenceA args
+        pure $ M.CaseConstructor mt mdc margs
 
 
 
@@ -558,8 +561,23 @@ mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)
     M.Print e -> s $ M.Print e
     M.Mutation vid loc e -> s $ M.Mutation vid loc e
     M.If cond ifTrue elseIfs else' -> s $ M.If cond (body ifTrue) (fmap2 body elseIfs) (body <$> else')
-    M.Switch _ _ -> undefined
+    M.Switch e cases -> fmap (Just . M.Switch e) $ for cases $ \kase -> do
+      mdecon <- mfDecon kase.deconstruction
+      pure $ M.Case { deconstruction = mdecon, caseCondition = kase.caseCondition, body = body kase.body }
     M.Return e -> s $ M.Return e
+
+mfDecon :: M.IDecon -> EnvContext M.Decon
+mfDecon = cata $ fmap embed . \case
+  M.CaseVariable t v -> do
+    mt <- mfType t
+    pure $ M.CaseVariable mt v
+
+  M.CaseConstructor t dc decons -> do
+    mt <- mfType t
+    mdc <- mfConstructor dc t
+    mdecons <- sequenceA decons
+    pure $ M.CaseConstructor mt mdc mdecons
+
 
 mfExpr :: M.IExpr -> EnvContext M.Expr
 mfExpr expr = flip cata expr $ \(M.TypedExpr imt imexpr) -> do

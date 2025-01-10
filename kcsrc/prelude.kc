@@ -41,7 +41,7 @@ fib (x)
 
 Maybe a
 	Just a
-	Nothing
+	None
 
 
 Either e a

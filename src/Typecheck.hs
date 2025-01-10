@@ -187,34 +187,30 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
 
           inferDecon :: R.Decon -> Infer T.Decon
-          inferDecon = cata $ fmap embed . f where
-            f = \case
-              -- R.CaseVariable uv -> do
-              --   t <- lookupVar uv
+          inferDecon = cata $ fmap embed . \case
+              R.CaseVariable uv -> do
+                t <- var uv
+                pure (T.CaseVariable t uv)
 
-              --   pure (T.CaseVariable t uv)
+              R.CaseConstructor rcon idecons -> do
 
-              -- R.CaseConstructor uc args -> do
+                -- Ger proper constructor.
+                con@(T.DC dd@(T.DD _ scheme@(Scheme ogTVs ogUnions) _ _) _ usts _) <- inferConstructor rcon
 
-              --   -- HACK! Unify the case statement by creating a fake function type.
-              --   ct <- lookupCon uc
-              --   let conOnly = case ct of
-              --         Fix (T.TCon {}) -> ct
-              --         Fix (T.TFun _ _ c@(Fix (T.TCon {}))) -> c
+                -- Deconstruct decons.
+                decons <- sequenceA idecons
 
-              --         -- error in resolver: just return a fresh type. (lookupCon already does that)
-              --         _ -> ct
+                -- Custom instantiation for a deconstruction.
+                -- Create a parameter list to this constructor
+                (tvs, unions) <- instantiateScheme scheme
+                let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
+                let ts = mapTVs <$> usts
 
-              --   args' <- sequenceA args
-              --   syntheticConType <- case args' of
-              --         [] -> pure conOnly
-              --         (_:_) -> do
-              --           un <- emptyUnion
-              --           pure $ Fix $ TFun un (decon2type <$> args') conOnly
+                let args = T.decon2type <$> decons
+                uniMany ts args
 
-              --   ct `uni` syntheticConType
-              --   pure (T.CaseConstructor conOnly uc args')
-              _ -> undefined
+                let t = Fix $ T.TCon dd tvs unions
+                pure (T.CaseConstructor t con decons)
 
 
       R.Return (ret, t) -> do
@@ -651,8 +647,6 @@ addEnv :: T.Variable -> T.Type -> Infer ()
 addEnv v t = RWS.modify $ \s -> s { instantiations = Set.insert (v, t) s.instantiations }
 
 
--- maybe merge lookupVar and newVar,
---   because that's what the resolving step should... resolve.
 var :: UniqueVar -> Infer T.Type
 var v = do
   vars <- RWS.gets variables
@@ -689,6 +683,13 @@ uni t1 t2 = do
     su <- RWS.get
     let (t1', t2') = subst su (t1, t2)
     unify t1' t2'
+
+uniMany :: [T.Type] -> [T.Type] -> Infer ()
+uniMany ts1 ts2 = 
+  substituting $ do
+    su <- RWS.get
+    let (ts1', ts2') = subst su (ts1, ts2)
+    unifyMany ts1' ts2'
 
 substituting :: SubstCtx a -> Infer a
 substituting subctx = RWST $ \_ s -> do

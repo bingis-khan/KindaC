@@ -127,7 +127,7 @@ sScope stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)) ->
 
     -- we have to take care of eliminating stuff from bodies.
     T.If e ifTrue elseIfs else' -> pure $ Just $ T.If e (body ifTrue) (fmap2 body elseIfs) (body <$> else')
-    T.Switch _ _ -> undefined
+    T.Switch e cases -> pure $ Just $ T.Switch e $ cases <&> \kase -> kase { T.body = body kase.body }
 
     s -> pure $ sequenceA s
 

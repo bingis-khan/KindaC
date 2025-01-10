@@ -509,7 +509,7 @@ mkEnv innerEnv = do
 localityOfVariablesAtCurrentScope :: Ctx (Map UniqueVar (R.Variable, Locality))
 localityOfVariablesAtCurrentScope = do
   allScopes <- getScopes
-  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (R.asUniqueVar v, (v, locality))) $ Map.elems $ l.varScope) <> r) mempty $ (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs) allScopes
+  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (R.asUniqueVar v, (v, locality))) $ Map.elems l.varScope) <> r) mempty $ (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs) allScopes
 
 -- used for function definitions
 gatherVariables :: R.AnnStmt -> Set UniqueVar

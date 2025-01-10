@@ -7,7 +7,7 @@
 
 module CPrinter (cModule) where
 
-import AST.Common (Annotated (..), Ann (ACType, ACLit), UniqueType (typeName), (:.) (..), TCon (..), UniqueVar, Op (..), Locality (Local, FromEnvironment), UniqueCon, ctx', silent, defaultContext, printIdentifiers, displayTypeParameters)
+import AST.Common (Annotated (..), Ann (ACType, ACLit), UniqueType (typeName), (:.) (..), TCon (..), UniqueVar, Op (..), Locality (Local, FromEnvironment), UniqueCon, ctx', silent, defaultContext, printIdentifiers, displayTypeParameters, fmap2)
 import Misc.Memo (Memo, Memoizable)
 import qualified Misc.Memo as Memo
 import qualified AST.Common as Common
@@ -33,6 +33,7 @@ import GHC.Exts (IsString (..))
 import GHC.Num (Natural)
 import Text.Printf (printf)
 import Data.Unique (hashUnique)
+import qualified Data.List.NonEmpty as NonEmpty
 
 
 -- COMPLAINTS:
@@ -59,8 +60,7 @@ runPP px =
 
 
 cMain :: [M.AnnStmt] -> PP
-cMain stmts = pl $ addTopLevel $ do
-  "int" § "main" & "()" <§ cBlock (cStmt <$> stmts)
+cMain stmts = pl $ addTopLevel $ "int" § "main" & "()" <§ cBlock (cStmt <$> stmts)
 
 
 cStmt :: M.AnnStmt -> PP
@@ -89,10 +89,8 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
              in statement $ cPrintf (visibleType (Fix (M.TFun union args ret)) <> " at %p\\n") [enclose "(" ")" "void*" § e']
     where
       bareExpression = statement . (enclose "(" ")" "void" §)
-  M.Assignment uv e -> do
-    statement $ cDefinition (M.expr2type e) (cVarName uv) § "=" § cExpr e
-  M.Mutation uv Local e -> do
-    statement $ cVarName uv § "=" § cExpr e
+  M.Assignment uv e -> statement $ cDefinition (M.expr2type e) (cVarName uv) § "=" § cExpr e
+  M.Mutation uv Local e -> statement $ cVarName uv § "=" § cExpr e
   M.Mutation uv FromEnvironment e -> do
     pl "// ERROR: we don't handle references yet!"
     statement $ cVarName uv § "=" § cExpr e
@@ -110,32 +108,33 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
       "else" <§ cBlock els
 
   M.Switch switch (firstCase :| otherCases) -> do
-    undefined
-    -- condName <- statement $ do
-    --   next <- nextTemp
-    --   -- maybe this should be "createIntermediateVariable"?
-    --   cDefinition (M.expr2type switch) next  § "=" § cExpr switch
-    --   pure next
+    cond <- createIntermediateVariable' (M.expr2type switch) (cExpr switch)
 
-    -- "if" § enclose "(" ")" (cDeconCondition condName firstCase.deconstruction) §> do
-    --   let tvars = tvarsFromDecon condName firstCase.deconstruction
-    --   let defs = map (\(uv, t, acc) -> statement $ cDefinition (cVar uv) t § "=" § acc) tvars
+    "if" § enclose "(" ")" (cDeconCondition cond firstCase.deconstruction) <§ do
+      let vars = cDeconAccess cond firstCase.deconstruction
+      let defs = vars <&> \(uv, t, acc) -> statement $ cDefinition t (cVarName uv) § "=" § acc
+      cBlock $ NonEmpty.prependList defs firstCase.body
 
-    --   cBlock $ NonEmpty.prependList defs firstCase.body
+    for_ otherCases $ \kase ->
+      "else" § "if" § enclose "(" ")" (cDeconCondition cond kase.deconstruction) <§ do
+        -- TODO: could be factored out.
+        let vars = cDeconAccess cond firstCase.deconstruction
+        let defs = vars <&> \(uv, t, acc) -> statement $ cDefinition t (cVarName uv) § "=" § acc
 
-    -- for_ otherCases $ \kase ->
-    --   "else if" § enclose "(" ")" (cDeconCondition condName kase.deconstruction) §> do
-    --     let tvars = tvarsFromDecon condName kase.deconstruction
-    --     let defs = map (\(uv, t, acc) -> statement $ cDefinition t (cVar uv) § "=" § acc) tvars
+        cBlock $ NonEmpty.prependList defs kase.body
 
-    --     cBlock $ NonEmpty.prependList defs kase.body
+    -- this should not be needed. just in case.
+    --  NOTE: maybe I should leave it even if I have proper completeness checking? just to exit if there is some weird casting going on or, even worse, data corruption.
+    "else" <§ cBlock
+        [ statement $ do
+          include "stdio.h"
+          cCall "printf" [cstr "Case not matched on line %d.\n", "__LINE__"]
 
-    -- -- this should not be needed. just in case
-    -- "else"
-    --   §> cBlock
-    --     [ statement $ cCall "printf" ["\"Case not matched on line %d.\\n\"", "__LINE__"],
-    --       statement $ cCall "exit" ["1"]
-    --     ]
+        , statement $ do
+          include "stdlib.h"
+          cCall "exit" ["1"]
+        ]
+
 
   M.EnvDef envs ->
     for_ envs $ \(_, env) ->
@@ -144,6 +143,31 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
           envNames <- cEnv env
           envNames.envType § envNames.envName § "=" § envNames.envInstantiation
 
+
+cDeconCondition :: PL -> M.Decon -> PL
+cDeconCondition basevar mdecon =
+  let conjunction = fmap (basevar &) $ flip cata mdecon $ \case
+        M.CaseVariable _ _ -> []
+        M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args ->
+          case cons of
+            [] -> [" ==" § cCon dc]
+            [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> conargs <&> \ca -> "." & cConMember uc x & ca
+            _:_ -> ("." & "tag" § "==" § cTag dc) : concatMap (\(x, conargs) -> conargs <&> \ca -> "." & "env" & "." & cConStruct dc & "." & cConMember uc x & ca) (zip [1::Int ..] args)
+
+  in case conjunction of
+    [] -> do
+      include "stdbool.h"  -- kekek.
+      "true"
+
+    ps@(_:_) -> sepBy " && " ps
+
+cDeconAccess :: PL -> M.Decon -> [(UniqueVar, M.Type, PL)]
+cDeconAccess basevar mdecon = fmap2 (basevar &) $ flip cata mdecon $ \case
+  M.CaseVariable t uv -> [(uv, t, "" :: PL)]
+  M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args -> case cons of
+    []  -> []
+    [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> fmap2 (("." & cConMember uc x) &) conargs
+    _:_ -> concatMap (\(x, conargs) -> fmap2 (("." & "env" & "." & cConStruct dc & "." & cConMember uc x) &) conargs) (zip [1::Int ..] args)
 
 
 cExpr :: M.Expr -> PL
@@ -202,10 +226,9 @@ cUnion args ret union' =
           let functionType = cTypeFun ret params "fun"
           let allEnvs = union.union <&> \env -> do
                 -- instantiate the environment part.
-                unless (null env) $ do
-                  statement $ do
-                    envNames <- cEnv env
-                    envNames.envType § envNames.envName
+                unless (null env) $ statement $ do
+                  envNames <- cEnv env
+                  envNames.envType § envNames.envName
 
           addTopLevel $ unionType <§ cBlock
             [
@@ -227,9 +250,8 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compile
         error "[COMPILER ERROR]: Called `cEnv` with an empty environment. I can ignore it, but this is probably a bug. This should be checked beforehand btw. Why? sometimes, it requires special handling, so making it an error kind of makes me aware of this."
 
       let varTypes =
-            vars <&> \(v, _, t) -> do
-              statement $ do
-                cDefinition t $ cVarName $ M.asUniqueVar v
+            vars <&> \(v, _, t) -> statement $ do
+            cDefinition t $ cVarName $ M.asUniqueVar v
 
       let etype = "struct" § "et" & pls (hashUnique eid.fromEnvID)
       let env = etype <§ cBlock varTypes §> ";"
@@ -275,8 +297,7 @@ cLambda env params lamType lamBody = do
 
     -- there is an environment - either this function's env or some other environment. If it's not our function's, then we don't need to initialize it.
     else if M.isEnvEmpty env
-      then do
-        "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : cparams) "") funref § "}"
+      then "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : cparams) "") funref § "}"
 
       else do
         envNames <- cEnv env
@@ -331,8 +352,7 @@ include lib = addHeading $ "#include <" <> lib <> ">"
 
 
 addHeading :: Text -> PL
-addHeading heading = do
-  PL $ RWS.modify $ mapPLCtx $ \ctx -> ctx { headings = Set.insert heading ctx.headings }
+addHeading heading = PL $ RWS.modify $ mapPLCtx $ \ctx -> ctx { headings = Set.insert heading ctx.headings }
 
 
 
@@ -376,14 +396,13 @@ cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \
       addMemo dataTypeName
 
       case dd of
-        -- 0. No constructors (empty, TODO probably impossible?)
+        -- 0. No constructors (empty, TODO probably impossible? (because after monomorphization, this type will disappear, as it won't be able to be instantiated))
         M.DD _ [] _ _ ->
           pure mempty
 
         -- 1. enum
         M.DD _ dc _ _
-          | all (\(M.DC _ _ args _) -> null args) dc -> do
-            addTopLevel $ "typedef" § "enum" <§ cBlock (pl . cCon <$> dc) §> dataTypeName & ";"
+          | all (\(M.DC _ _ args _) -> null args) dc -> addTopLevel $ "typedef" § "enum" <§ cBlock (pl . cCon <$> dc) §> dataTypeName & ";"
 
         -- 2. struct
         M.DD _ [dc@(M.DC _ uc ts _)] _ _ -> do
@@ -451,8 +470,7 @@ cVar t Local (M.DefinedFunction fun) = do
 
     -- there is an environment - either this function's env or some other environment. If it's not our function's, then we don't need to initialize it.
     else if null fun.functionDeclaration.functionEnv
-      then do
-        "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) § "}"
+      then "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) § "}"
 
       else do
         envNames <- cEnv fun.functionDeclaration.functionEnv
@@ -497,6 +515,7 @@ cConStruct (M.DC _ uc _ _) = "c" & plt uc.conName.fromCN & "__" & pls (hashUniqu
 isBuiltinType :: M.Type -> Bool
 isBuiltinType (Fix (M.TCon dd)) = any (\case { ACType _ -> True; _ -> False }) dd.annotations
 isBuiltinType _ = False
+
 
 
 
@@ -553,6 +572,7 @@ cstr s = fromString $ "\"" <> escaped <> "\""
   where
     escaped = flip concatMap s $ \case
       '"' -> "\\\""
+      '\n' -> "\\n"
       c   -> pure c
 
 createIntermediateVariable :: M.Type -> PL -> PPL PL
@@ -561,6 +581,12 @@ createIntermediateVariable t e = do
   let assignment = statement $ cDefinition t next § "=" § e
 
   PL $ RWS.modify $ second (assignment :)
+  pure next
+
+createIntermediateVariable' :: M.Type -> PL -> PPG PL
+createIntermediateVariable' t e = do
+  next <- nextTemp'
+  statement $ cDefinition t next § "=" § e
   pure next
 
 
@@ -653,8 +679,7 @@ pl (PL p) = do
   PP $ RWS.put context'
 
   sequenceA_ $ reverse precedingLines
-  unless (null tokens) $ do
-    PP $ RWS.tell [line]
+  unless (null tokens) $ PP $ RWS.tell [line]
 
   pure x
 
@@ -747,6 +772,14 @@ nextTemp = do
   let nextID = fromString $ "temp" <> show extra.tempcounter
   pure nextID
 
+nextTemp' :: PPG PL
+nextTemp' = do
+  extra <- PP RWS.get
+  PP $ RWS.modify $ \ext -> ext {tempcounter = ext.tempcounter + 1}
+
+  let nextID = fromString $ "tltemp" <> show extra.tempcounter
+  pure nextID
+
 
 -- In the future, when I have better codegen, this should not be required.
 data SpecialTypeForPrinting
@@ -757,15 +790,14 @@ data SpecialTypeForPrinting
   | CustomType M.DataDef
 
 typeFromExpr :: M.Expr -> SpecialTypeForPrinting
-typeFromExpr (Fix (M.TypedExpr t _)) = do
-  case project t of
-    M.TFun union ts ret -> Function union ts ret
-    -- Brittle, but it's temporary anyway.
-    M.TCon dd
-      | dd.thisType.typeName == TC "Bool" -> Bool
-      | dd.thisType.typeName == TC "Int" -> Integer
-      | dd.thisType.typeName == TC "Unit" -> Unit
-      | otherwise -> CustomType dd
+typeFromExpr (Fix (M.TypedExpr t _)) = case project t of
+  M.TFun union ts ret -> Function union ts ret
+  -- Brittle, but it's temporary anyway.
+  M.TCon dd
+    | dd.thisType.typeName == TC "Bool" -> Bool
+    | dd.thisType.typeName == TC "Int" -> Integer
+    | dd.thisType.typeName == TC "Unit" -> Unit
+    | otherwise -> CustomType dd
 
 find :: (a -> Maybe b) -> [a] -> Maybe b
 find f = listToMaybe . mapMaybe f
@@ -781,6 +813,7 @@ visibleType = cata $ \case
   M.TCon dd    -> Text.unpack dd.thisType.typeName.fromTC
 
 
+
 -- (((polyfill)))
 unsnoc :: [a] -> Maybe ([a], a)
 -- The lazy pattern ~(a, b) is important to be productive on infinite lists
@@ -788,3 +821,4 @@ unsnoc :: [a] -> Maybe ([a], a)
 -- Expressing the recursion via 'foldr' provides for list fusion.
 unsnoc = foldr (\x -> Just . maybe ([], x) (\(~(a, b)) -> (x : a, b))) Nothing
 {-# INLINEABLE unsnoc #-}
+
