@@ -6,7 +6,7 @@
 {-# HLINT ignore "Redundant pure" #-}  -- this is retarded. it sometimes increases readability with that extra pure.
 module Mono (mono) where
 
-import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, TCon (..), UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, ppTVar, traverse2, fmap2)
+import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, ppTVar, traverse2, fmap2)
 import qualified AST.Typed as T
 import qualified AST.Mono as M
 import qualified AST.Common as Common
@@ -139,7 +139,7 @@ mCase :: T.Case M.IExpr M.AnnIStmt -> Context M.ICase
 mCase kase = do
   decon <- mDecon kase.deconstruction
   pure $ M.Case decon kase.caseCondition kase.body
-  where 
+  where
     mDecon = cata $ fmap embed . \case
       T.CaseVariable t uv -> do
         mt <- mType t
@@ -194,7 +194,7 @@ variable (T.DefinedFunction vfn) et = do
       body <- mStmts tfn.functionBody
 
       -- Then add this environment to the "used" environments for step 2.
-      registerEnvMono (Just fn) (T.envID vfn.functionDeclaration.functionEnv) env
+      registerEnvMono (Just fn) (T.envID tfn.functionDeclaration.functionEnv) env
 
       pure fn
 
@@ -220,7 +220,9 @@ constructor tdc@(T.DC dd@(T.DD ut _ _ _) _ _ _) et = do
         _ -> error $ printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%s)." (T.tType et)
 
   mtypes <- traverse mType ttypes
-  munions <- (mUnion . fmap mType) `traverse2` hideEmptyUnions tunions  -- ISSUE(unused-constructor-elimination): filters unions kind of randomly. We expect that it's because a constructor is unused and not because of some other issue.
+
+  noEmptyUnions <- hideEmptyUnions tunions
+  munions <- (mUnion . fmap mType) `traverse2` noEmptyUnions  -- ISSUE(unused-constructor-elimination): filters unions kind of randomly. We expect that it's because a constructor is unused and not because of some other issue.
   -- TODO: also, in this place, we should eliminate unused constructors. (either here or in mfDataDef!)
 
   -- Like in typechecking, find this constructor by performing an unsafe lookup!
@@ -228,7 +230,7 @@ constructor tdc@(T.DC dd@(T.DD ut _ _ _) _ _ _) et = do
   (_, dcQuery) <- mDataDef (dd, tm)
   let mdc = case dcQuery !? tdc of
         Just m -> m
-        Nothing -> error $ "[COMPILER ERROR]: Failed to query an existing constructor for type " <> show ut.typeName.fromTC
+        Nothing -> error $ printf "[COMPILER ERROR]: Failed to query an existing constructor for type %s.\n TypeMap: %s\n(applied TVs: %s, applied unions: %s) -> (applied TVs: %s, applied unions: %s)" (Common.ppTypeInfo ut) (ppTypeMap tm) (Common.ppSet T.tType ttypes) (Common.ppSet (T.tEnvUnion . fmap T.tType) tunions) (Common.ppSet M.mtType mtypes) (Common.ppSet (maybe "?" (M.tEnvUnion . fmap M.mtEnv)) munions)
 
   pure mdc
 
@@ -238,7 +240,9 @@ mType :: T.Type -> Context M.IType
 mType = cata $ \case
     T.TCon dd pts unions -> do
       params <- sequenceA pts
-      munions <- mUnion `traverse2` hideEmptyUnions unions  -- ISSUE(unused-constructor-elimination): very hacky, but should work. I think it echoes the need for a datatype that correctly represents what we're seeing here - a possible environment definition, which might not be initialized.
+
+      noEmptyUnions <- hideEmptyUnions unions
+      munions <- mUnion `traverse2` noEmptyUnions  -- ISSUE(unused-constructor-elimination): very hacky, but should work. I think it echoes the need for a datatype that correctly represents what we're seeing here - a possible environment definition, which might not be initialized.
       -- we need to represent this shit differently.
 
       let tm = typeMapFromDataDef dd params munions
@@ -258,10 +262,13 @@ mType = cata $ \case
     T.TyVar tv -> error $ printf "[COMPILER ERROR]: Encountered TyVar %s." (T.tTyVar tv)
 
 
-hideEmptyUnions :: [T.EnvUnionF a] -> [Maybe (T.EnvUnionF a)]
-hideEmptyUnions = fmap $ \u -> if not (T.isUnionEmpty u)
-  then Just u
-  else Nothing
+-- ISSUE(unused-constructor-elimination): yeah, this is bad. we also need to remember to map the empty unions (through type map.)
+hideEmptyUnions :: [T.EnvUnionF a] -> Context [Maybe (T.EnvUnionF a)]
+hideEmptyUnions unions = do
+  TypeMap _ mus <- State.gets tvarMap
+  pure $ flip fmap unions $ \u -> if Map.member u.unionID mus || not (T.isUnionEmpty u)
+    then Just u
+    else Nothing
 
 
 -- (TypeMap (Map.fromList $ zip tvs mts) (Map.fromList $ fmap (first T.unionID) $ mapMaybe sequenceA $ zip ogUnions unions))
@@ -330,12 +337,11 @@ retrieveTV tv = do
 
 
 withTypeMap :: TypeMap -> Context a -> Context a
-withTypeMap tm@(TypeMap tmv tmenv) a = do
+withTypeMap tm a = do
 
   -- DEBUG: check typemap.
   ctxPrint' "Type map:"
-  ctxPrint (ppMap . fmap (bimap (Common.pretty . Common.fromTV) M.mtType) . Map.toList) tmv
-  ctxPrint (ppMap . fmap (bimap Common.ppUnionID (M.tEnvUnion . fmap M.mtEnv)) . Map.toList) tmenv
+  ctxPrint ppTypeMap tm
 
 
   -- temporarily set merge type maps, then restore the original one.
@@ -445,7 +451,6 @@ startingContext = Context
 
   , cuckedUnions = emptyMemo
   , envInstantiations = mempty
-  -- , instantiationUsage = mempty
   }
 
 
@@ -462,6 +467,13 @@ instance Semigroup TypeMap where
 
 instance Monoid TypeMap where
   mempty = TypeMap mempty mempty
+
+
+ppTypeMap :: TypeMap -> Common.Context
+ppTypeMap (TypeMap tvs unions) = Common.ppLines'
+  [ (ppMap . fmap (bimap (Common.pretty . Common.fromTV) M.mtType) . Map.toList) tvs
+  , (ppMap . fmap (bimap Common.ppUnionID (M.tEnvUnion . fmap M.mtEnv)) . Map.toList) unions
+  ]
 
 
 typeMapFromDataDef :: T.DataDef -> [M.IType] -> [Maybe M.IEnvUnion] -> TypeMap
@@ -644,7 +656,7 @@ mfUnion union = do
 
   pure $ M.EnvUnion { M.unionID = union.unionID, M.union = mUsedEnvs }
 
-  
+
 
 expandEnvironments :: [EnvID] -> EnvContext [(M.Function, M.Env)]
 expandEnvironments envIDs = do

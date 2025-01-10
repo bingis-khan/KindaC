@@ -402,7 +402,7 @@ cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \
 
         -- 1. enum
         M.DD _ dc _ _
-          | all (\(M.DC _ _ args _) -> null args) dc -> addTopLevel $ "typedef" § "enum" <§ cBlock (pl . cCon <$> dc) §> dataTypeName & ";"
+          | all (\(M.DC _ _ args _) -> null args) dc -> addTopLevel $ "typedef" § "enum" <§ cBlock [pl $ sepBy ", " $ cCon <$> dc] §> dataTypeName & ";"
 
         -- 2. struct
         M.DD _ [dc@(M.DC _ uc ts _)] _ _ -> do

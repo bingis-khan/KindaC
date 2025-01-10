@@ -347,8 +347,8 @@ tCase kase = tBody (tDecon kase.deconstruction <+?> kase.caseCondition) kase.bod
 tDecon :: Decon -> Context
 tDecon = cata $ \case
   CaseVariable _ uv -> ppVar Local uv
-  CaseConstructor _ (DC _ uc _ _) [] -> ppCon uc
-  CaseConstructor _ (DC _ uc _ _) args@(_:_) -> ppCon uc <> encloseSepBy "(" ")" ", " args
+  CaseConstructor t (DC _ uc _ _) [] -> ppCon uc <> " :: " <> tType t
+  CaseConstructor t (DC _ uc _ _) args@(_:_) -> ppCon uc <> encloseSepBy "(" ")" ", " args <> " :: " <> tType t
 
 tExpr :: Expr -> Context
 tExpr = cata $ \(TypedExpr et expr) ->
