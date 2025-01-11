@@ -1,0 +1,51 @@
+# Example module for printing stuff to the terminal. It does not yet compile, as it presents how the language should look and function.
+
+# PARSING: either use '(' and ')' or should it be an indented list?
+export
+	print  # remember, the print *statement* is temporary.
+	println
+	
+
+# Also, the plan/suggestions for this module?
+# 1. Implement my own buffering?
+# 2. Stop relying on libc (for Linux, where syscalls are stable. however, should I still do buffering and stuff for already buffered functions like printf on systems, where libc is the default interface?)
+
+
+class Str a  # i'm not yet sure about how a typeclass should look. Should I specify this parameter, should I use the name 'trait'? :3
+	# passing in a function is cool in theory and robust, but might be slow. I should later benchmark all of this.
+	# but it might also be some sort of "buffer" typeclass, which such a function can implement?
+	# So implementations can still have max speed, whether they are buffering or passing in a lambda with a printf.
+	write-string(this a, write-str ConstStr -> Unit) -> Unit
+
+impl Str ConstStr
+	write-string (s ConstStr, write-str ConstStr -> Unit)
+		write-str(s)
+
+
+# special datatype for compile-time concatting of strings.
+StrConcat l r: StrConcat l r  # should one-line datatype definitions automatically assume that the constructor's name is the same as the datatype? prolly not.
+
+impl Str StrConcat <= Str l + Str r  # again, typeclass syntax is temporary.
+	write-string (StrConcat(l, r), write-str ConstStr -> Unit)
+		write-string(l, write-str)  # recursively call it for others.
+		write-string(r, write-str)
+
+
+print (s Str)  # Str is actually a typeclass!
+	# we can buffer it! but since libc is already buffered, we can do this.
+	s write-string(cs: Cnile.printf("%s", cs))  # postfix call
+
+println (s Str)
+	print(s)
+	print('\n')  # again, very simple as you can see
+
+	# or
+	# print(StrConcat(s, '\n'))
+
+
+
+# also, we might explicitly provide an out! like, we have to explicitly initialize it, like in Zig!
+# that would be interesting, as it would solve a problem of failable stuff you don't care about using being initialized.
+# like, a platform only provides serial, so you write:
+# out = init-serial()
+# and it would just work.

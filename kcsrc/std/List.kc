@@ -1,0 +1,90 @@
+export
+	List
+
+	# they are like this, because normal usage should probably be: List.add, etc.
+	# ....
+	# but 
+	# numbers List.add(69) 
+	# looks kinda bad compared to
+	# numbers list-add(69)
+	# ah, fuk
+
+	init
+	add
+
+
+# or should the slice length be stored alongside its pointer? because if len is 0, then we don't want to allocate pointer.
+Slice a
+	len Size
+	ptr Maybe (Ptr a)  # I want to add a special case, where Maybe (Ptr a) gets compiled to just pointer (and None becomes NULL)
+
+set-slice (Slice a, elem a, at Size)  # probably should be in its own file?
+	pass  # would probably need some C stuff because of the pointer.
+	# maybe do [] syntax?
+
+# record type!
+List a
+	count Size  # or Word or whatever. I'll have to check which languages use which.
+	mem   Slice a   # 'Bounded' is basically a (Size, Ptr) tuple. might call it something different, like 'Array' or 'Slice'?
+	alloc Allocator  # Allocator I think is also a typeclass. NOTE: Implicit typeclasses in records!
+
+
+add (list Ptr (List a), elem a)  # somehow signal errors? how?
+# or this as a shorthand?: add (list &List a, elem a)  # & before or after?
+	count = list&.count
+	cap = list&.mem.len
+
+	# check if needs a resize!
+	if len + 1 > cap
+		new-cap = if cap == 0: 8 else: cap * 2
+
+		new-mem = list&.alloc alloc-slice(new-cap)?  # failable!
+		list&.mem copy-to(new-mem)
+
+		# funny assignment syntax! not sure if I'll keep it, but I'll use it if I can heheh.
+		list <&.mem= new-mem
+
+	list&.mem set-slice(elem, count)
+	list <&.count= count + 1
+
+
+empty-slice () -> Slice a
+	return Slice { len = 0, ptr = None }
+
+
+init (alloc Allocator):  # one line
+	List { count: 0, mem: empty-slice(), alloc: alloc }  # syntax: ':' or '=' for record assignment?
+
+
+# this provides access to [] indexing
+class IndexAccess a
+	Item  # dependent type!!!!!
+	index-access (this a, index Size) -> Item
+
+# this provides more general access [] (eg. [elem] -> Bool for sets, [key] -> value for maps (or rather [key] -> Result value, because it might not exist.))
+class ElemAccess a
+	Key
+	Value
+
+	elem-access (this a, elem Item) -> Value
+
+
+# I'm not sure about this one. Should it return just a Slice? Or should it return something slicelike, eg a dependent type?
+# Because slices might get invalidated when resizing a struct, but if I store the pointer to the actual struct, they might not.
+# but then, with dependent type, what we get is essentially random.
+class SliceAccess a
+	slice-access (this a, lower-bound Maybe Size, upper-bound Maybe Size) -> Slice a
+
+
+impl IndexAccess (Ptr (List a))  # maybe some automatic Ptr instances for non-pointered?
+	Item = Result a  # or something like Either IndexOutOfRange a?
+	index-access (this &List a, index Size) -> a  # maybe we should bind both?
+		if index >= this&.count
+			return Err(IndexOutOfRange)
+
+		elem = this&.mem.ptr[index]  # automatic pointer instance.
+		return Ok(elem)
+
+		# or:
+		# elem = (this&.mem.ptr to-arithmetic-ptr() + index) arithmetic-ptr-to-ptr() &
+
