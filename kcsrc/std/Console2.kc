@@ -1,0 +1,32 @@
+# should be the same module as Console, but I wrote too many comments in that one. here, I'll just detail a nice interface.
+
+# Either call it Console or Term. 
+#  - Console is more popular and feels more natural, but
+#  - Term is shorter
+
+# here, I want to try terminfo and stuff. I want to make it easy and part of stdlib.
+# both definitions and example usage incoming.
+
+
+# ah fuck, I forgot how to write a terminal.
+
+rawterm = enter-raw()?
+defer rawterm exit-raw()  # wait, should I have rawterm???
+
+# or
+
+Console.with-raw(\term\)  # suppose here \ means a block lambda
+	while !term should-exit()
+		mkey = term try-read-key()
+
+		key = case mkey
+			None
+				continue
+			
+			Just(key)
+				yield key  # like this?
+
+		(width, height) = term dimensions()
+
+		# ... and so on ...
+

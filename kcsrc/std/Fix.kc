@@ -1,0 +1,31 @@
+
+# fixpoints!
+# requires me to implement support for higher-kinded types... eh...
+# but it would be nice to have!
+
+
+Fix a: Fix (a &(Fix a))  # correct definition??
+# wait, can we do without higher kinded types?
+
+# Basically, I want to do stuff like storing an AST in a list and every node has an index value to that list.
+AST a
+	Var Str
+	BinOp a Op a
+	# ...
+
+# then we construct it somehow...
+# then, the type is AST Idx
+Idx = Size
+
+# And when we iterate as if we didn't need to index it. It's also very safe!
+cata (ast List (AST Idx), f AST a -> a)
+	first = ast[0]
+
+	go (x AST Idx) -> a
+		x' = x map(idx: go(ast[idx]))  # the recursion will end as on leafs the function will *not* get called, thus it'll terminate!
+		res = f(x')
+		return res
+
+	return go(first)
+
+# So... we don't need higher-kinded types?
