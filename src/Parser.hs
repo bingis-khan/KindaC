@@ -26,9 +26,12 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Common (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..))
-import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case)
+import AST.Common (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..))
+import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case, DataRec (..))
 import Data.Functor.Foldable (embed, cata)
+import Control.Monad ((<=<))
+import Data.Either (partitionEithers)
+import Data.Biapplicative (bimap)
 
 
 type Parser = Parsec MyParseError Text
@@ -189,16 +192,44 @@ functionHeader = do
     Right mType -> (FD name params mType, Nothing)
 
 
--- Data definitions
+-- Data definitions.
+--   Either a normal ADT or a record type.
 sDataDefinition :: Parser Stmt
 sDataDefinition = recoverableIndentBlock $ do
   tname <- typeName
   polys <- many generic
   let dataDefinition = DD tname polys
-  return $ L.IndentMany Nothing (fmap (DataDefinition . dataDefinition) . assignAnnotations (\anns (DC name ts) -> Annotated anns (DC name ts))) $ recoverCon conOrAnnotation
-  where
-    conOrAnnotation :: Parser (Either [Ann] DataCon)
-    conOrAnnotation = Left <$> annotation <|> Right <$> dataCon
+  return $ flip (L.IndentMany Nothing) (recoverCon conOrRecOrAnnotation) $ (pure . DataDefinition . dataDefinition) <=< toRecordOrADT <=< assignAnnotations Annotated
+   where
+    conOrRecOrAnnotation :: Parser (Either [Ann] (Either DataRec DataCon))
+    conOrRecOrAnnotation = Left <$> annotation <|> Right . Left <$> dataRec <|> Right . Right <$> dataCon
+
+    toRecordOrADT :: [Annotated (Either DataRec DataCon)] -> Parser (Either [Annotated DataRec] [Annotated DataCon])
+    toRecordOrADT [] = pure (Right [])
+    toRecordOrADT ((Annotated ann first) : rest) = 
+      let (records, cons) = partitionEithers $ (\(Annotated ann x) -> bimap (Annotated ann) (Annotated ann) x) <$> rest
+      in case first of
+        Left rec ->
+          case cons of
+            [] ->
+              pure $ Left $ Annotated ann rec : records
+
+            _:_ -> do
+              fail "Encountered constructors in a Record definition."
+
+        Right dc -> 
+          case records of
+            [] -> 
+              pure $ Right $ Annotated ann dc : cons
+            _:_ -> do
+              fail "Encountered record fields in an ADT definition."  -- should not end parsing, but im lazy.
+
+
+dataRec :: Parser DataRec
+dataRec = do
+  recordName <- member
+  recordType <- typeTerm
+  pure $ DR recordName recordType
 
 dataCon :: Parser DataCon
 dataCon = do
@@ -261,9 +292,9 @@ expression = makeExprParser term operatorTable
 
 operatorTable :: [[Operator Parser Expr]]
 operatorTable =
-  [   --[ Postfix $ some identifier <&> \members expr -> toExpr (MemberAccess expr members)
-        --]
-    [ call
+  [ [ Postfix $ flip (foldr $ \mem e -> Fix $ MemAccess e mem) <$> some member
+    ]
+  , [ call
     ]
   -- , [ prefix "-" Negation
   --   , prefix "not" Not
@@ -401,6 +432,9 @@ generic = UTV <$> identifier
 variable :: Parser VarName
 variable = VN <$> identifier
 
+member :: Parser MemName
+member = MN <$> identifier
+
 
 -- term-level identifiers
 identifier :: Parser Text
@@ -506,8 +540,8 @@ registerExpect offset found expected = registerParseError $ TrivialError offset 
 recoverStmt :: Parser (Either [Ann] Stmt) -> Parser (Either [Ann] Stmt)
 recoverStmt = recoverLine (Right Pass)
 
-recoverCon :: Parser (Either [Ann] DataCon) -> Parser (Either [Ann] DataCon)
-recoverCon = recoverLine (Right (DC (CN "PLACEHOLDER") []))
+recoverCon :: Parser (Either [Ann] (Either DataRec DataCon)) -> Parser (Either [Ann] (Either DataRec DataCon))
+recoverCon = recoverLine $ Right $ Right $ DC (CN "PLACEHOLDER") []
 
 recoverLine :: a -> Parser a -> Parser a
 recoverLine sentinel = withRecovery (\err -> registerParseError err >> many (anySingleBut '\n') >> char '\n' $> sentinel)

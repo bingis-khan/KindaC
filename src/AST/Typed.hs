@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet)
+import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet, MemName, ppMem)
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -28,8 +28,9 @@ import Data.Functor ((<&>))
 -- Data Definition --
 ---------------------
 
+data DataRec = DR DataDef MemName Type [Ann]
 data DataCon = DC DataDef UniqueCon [Type] [Ann]
-data DataDef = DD UniqueType Scheme [DataCon] [Ann]
+data DataDef = DD UniqueType Scheme (Either [DataRec] [DataCon]) [Ann]
 
 instance Eq DataDef where
   DD ut _ _ _ == DD ut' _ _ _ = ut == ut'
@@ -42,6 +43,12 @@ instance Eq DataCon where
 
 instance Ord DataCon where
   DC _ uc _ _ `compare` DC _ uc' _ _ = uc `compare` (uc' :: UniqueCon)
+
+instance Eq DataRec where
+  DR (DD ut _ _ _) uv _ _ == DR (DD ut' _ _ _) uv' _ _ = ut == ut' && uv == (uv' :: MemName)
+
+instance Ord DataRec where
+  DR (DD ut _ _ _) uc _ _ `compare` DR (DD ut' _ _ _) uc' _ _ = (ut, uc) `compare` (ut', uc' :: MemName)
 
 
 ----------
@@ -154,6 +161,7 @@ data ExprF a
   = Lit LitType
   | Var Locality Variable
   | Con EnvID DataCon -- NOTE: EnvID is an ID of an *empty* environment. All constructors have an empty environment, so when an environment is needed, use this.
+  | MemAccess a MemName
 
   | Op a Op a
   | Call a [a]
@@ -280,11 +288,17 @@ isUnionEmpty _ = False
 -- This needs to be done, because custom types need to track which unions were used.
 -- TODO: this should probably be made better. Maybe store those unions in DataDef?
 extractUnionsFromDataType :: DataDef -> [EnvUnion]
-extractUnionsFromDataType (DD _ _ dcs _) =
+extractUnionsFromDataType (DD _ _ (Right dcs) _) =
   concatMap extractUnionsFromConstructor dcs
+
+extractUnionsFromDataType (DD _ _ (Left drs) _) =
+  concatMap extractUnionsFromRecord drs
 
 extractUnionsFromConstructor :: DataCon -> [EnvUnion]
 extractUnionsFromConstructor (DC (DD ut _ _ _) _ ts _) = concatMap (mapUnion ut) ts
+
+extractUnionsFromRecord :: DataRec -> [EnvUnion]
+extractUnionsFromRecord (DR (DD ut _ _ _) _ t _) = mapUnion ut t
 
 -- TODO: clean up all the mapUnion shit. think about proper structure.
 mapUnion :: UniqueType -> Type -> [EnvUnion]
@@ -359,6 +373,7 @@ tExpr = cata $ \(TypedExpr et expr) ->
   Var l (DefinedVariable v) -> ppVar l v
   Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
   Con _ (DC _ uc _ _) -> ppCon uc
+  MemAccess _ _ -> undefined
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
@@ -375,10 +390,17 @@ tExpr = cata $ \(TypedExpr et expr) ->
 
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs cons _) = indent (ppTypeInfo tid <+> tScheme tvs) $ ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
+tDataDef (DD tid tvs cons _) = indent (ppTypeInfo tid <+> tScheme tvs) $ tDataCons cons
+
+tDataCons :: Either [DataRec] [DataCon] -> Context
+tDataCons (Left recs) = ppLines (\dc@(DR _ _ _ ann) -> annotate ann (tRecDef dc)) recs
+tDataCons (Right cons) = ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
 
 tConDef :: DataCon -> Context
 tConDef (DC _ g t _) = foldl' (<+>) (ppCon g) $ tTypes t
+
+tRecDef :: DataRec -> Context
+tRecDef (DR _ uv t _) = ppMem uv <+> tType t
 
 tFunction :: Function -> Context
 tFunction fn = tBody (tFunDec fn.functionDeclaration) fn.functionBody

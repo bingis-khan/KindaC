@@ -32,13 +32,17 @@ data FullEnv        -- it's over...  (everything is monomorphized and flattened.
 -- Data Definition --
 ---------------------
 
+data DataRec' envtype = DR (DataDef' envtype) UniqueVar (Type' envtype) [Ann]
+type IDataRec = DataRec' IncompleteEnv
+type DataRec = DataRec' FullEnv
+
 data DataCon' envtype = DC (DataDef' envtype) UniqueCon [Type' envtype] [Ann]
 type IDataCon = DataCon' IncompleteEnv
 type DataCon = DataCon' FullEnv
 
 data DataDef' envtype = DD
   { thisType :: UniqueType
-  , constructors :: [DataCon' envtype]
+  , constructors :: Either [DataRec' envtype] [DataCon' envtype]
   , annotations :: [Ann]
 
     -- used only for displaying type information to the USER!
@@ -220,6 +224,8 @@ data ExprF envtype a
   = Lit LitType
   | Var Locality (Variable' envtype)
   | Con (DataCon' envtype)
+  | MemAccess a UniqueVar
+  
   | Op a Op a
   | Call a [a]
   | -- NOTE: We want to leave lambda for now, because it initializes its environment immediately.

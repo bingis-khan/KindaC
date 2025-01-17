@@ -38,12 +38,12 @@ import qualified AST.Resolved as R
 import qualified AST.Typed as T
 
 import AST.Converged (Prelude(..), PreludeFind (..), boolFind, tlReturnFind, intFind, floatFind)
-import AST.Common (TVar (TV), LitType (..), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..), mustOr, sctx, ppList)
+import AST.Common (TVar (TV), LitType (..), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..), mustOr, sctx, ppList, eitherToMaybe, MemName)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
 import Data.Maybe (fromMaybe, mapMaybe)
-import AST.Typed (TyVar, Scheme (..), extractUnionsFromDataType, extractUnionsFromConstructor)
+import AST.Typed (TyVar, Scheme (..), extractUnionsFromDataType, extractUnionsFromConstructor, extractUnionsFromRecord)
 import Text.Printf (printf)
 import Control.Applicative (liftA3)
 import Data.List.NonEmpty (NonEmpty)
@@ -109,6 +109,10 @@ generateSubstitution env senv rModule = do
       fns <- inferFunctions rModule.functions
       tls <- inferTopLevel rModule.toplevel
       exs <- inferExports rModule.exports
+
+      -- run it one last time.
+      substAccess
+
       pure $ T.Mod
         { T.toplevelStatements = tls
         , T.exports = exs
@@ -272,6 +276,13 @@ inferExpr = cata (fmap embed . inferExprType)
           t <- instantiateConstructor emptyEnv c'
           pure (T.Con emptyEnv c', t)
 
+        R.MemAccess re memname -> do
+          te <- re
+
+          -- by now, we don't know the type of the member, because it's possible to define multiple members with the same name.
+          t <- addMember (T.getType te) memname
+
+          pure (T.MemAccess te memname, t)
 
         R.Op il op ir -> do
           l <- il
@@ -323,7 +334,7 @@ inferConstructor = \case
 
     -- HACK?: Find constructor through memoized DataDefinition.
     pure $ mustOr (printf "[Compiler Error] Could not find constructor %s." (ctx ppCon uc)) $
-      find (\(T.DC _ uc' _ _) -> uc == uc') cons
+      find (\(T.DC _ uc' _ _) -> uc == uc') =<< eitherToMaybe cons
 
 
 inferType :: R.Type -> Infer T.Type
@@ -347,17 +358,23 @@ inferType = cata $ (.) (fmap embed) $ \case
 
 inferDataDef :: R.DataDef -> Infer T.DataDef
 inferDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }) $
-  \(R.DD ut tvars rdcs anns) addMemo -> mdo
-    let dd = T.DD ut (Scheme tvars unions) dcs anns  -- NOTE: TVar correctness (no duplication, etc.) should be checked in Resolver!
+  \(R.DD ut tvars erdcs anns) addMemo -> mdo
+    let dd = T.DD ut (Scheme tvars unions) edcs anns  -- NOTE: TVar correctness (no duplication, etc.) should be checked in Resolver!
 
     addMemo dd
 
-    dcs <- for rdcs $ \(R.DC _ uc rts dcAnn)-> do
-      ts <- traverse inferType rts
-      let dc = T.DC dd uc ts dcAnn
-      pure dc
+    edcs <- case erdcs of
+      Right rdcs -> fmap Right $ for rdcs $ \(R.DC _ uc rts dcAnn)-> do
+        ts <- traverse inferType rts
+        let dc = T.DC dd uc ts dcAnn
+        pure dc
 
-    let unions = concatMap extractUnionsFromConstructor dcs
+      Left _ -> undefined
+
+    let unions = case edcs of
+          Right dcs -> concatMap extractUnionsFromConstructor dcs
+          Left drs -> concatMap extractUnionsFromRecord drs
+
     pure dd
 
 
@@ -431,7 +448,10 @@ generalize ifn = do
   ctxPrint' "Unsubstituted function:"
   ctxPrint T.tFunction unsuFn
 
-  -- liftIO $ putStrLn $ ctx T.tFunction unsuFn
+
+  -- First, finalize substitution by taking care of member access.
+  substAccess
+
   csu <- RWS.gets typeSubstitution
 
   -- First substitution will substitute types that are already defined.
@@ -451,6 +471,24 @@ generalize ifn = do
 
   pure generalizedFnWithScheme
 
+
+-- substitutes members n shiii
+substAccess :: Infer ()
+substAccess = do
+  membersAccessed <- RWS.gets memberAccess
+  csu <- RWS.gets typeSubstitution
+  let subMembers = subst csu membersAccessed
+  substitutedMembers <- fmap (fmap fst . filter (not . snd)) $ for subMembers $ \(ogt, memname, t) -> do
+    (mexpectedType, shouldRemove) <- getExpectedType ogt memname
+    case mexpectedType of
+      Nothing -> pure ()
+      Just expectedType -> expectedType `uni` t
+    pure ((ogt, memname, t), shouldRemove)
+
+  RWS.modify $ \s -> s { memberAccess = substitutedMembers }
+
+  -- when some changes accured, do it again. this is because some expressions, like: a.b.c.d would require 3 iterations... is this okay??
+  when (length substitutedMembers < length subMembers) substAccess
 
 -- Constructs a scheme for a function.
 -- ignores assigned scheme!
@@ -503,6 +541,36 @@ constructSchemeForFunctionDeclaration dec =
 -- Substitute return type for function.
 withReturn :: T.Type -> Infer a -> Infer a
 withReturn ret = RWS.local $ \e -> e { returnType = Just ret }
+
+getExpectedType :: T.Type -> MemName -> Infer (Maybe T.Type, Bool)  -- (maybe type, should remove from list?)
+getExpectedType t memname = case project t of
+  T.TCon dd@(T.DD _ scheme@(Scheme ogTVs ogUnions) (Left recs) _) _ _ ->
+    case find (\(T.DR _ name _ _) -> name == memname) recs of
+      Just (T.DR _ _ recType _) -> do
+        (tvs, unions) <- instantiateScheme scheme
+        let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
+        let recType' = mapTVs recType
+        pure (Just recType', True)
+
+      Nothing -> do
+        err $ DataTypeDoesNotHaveMember dd memname
+        pure (Nothing, True)
+
+  T.TyVar _ ->
+      -- type not yet known. ignore.
+    pure (Nothing, False)
+
+  T.TCon dd@(T.DD _ _ (Right _) _) _ _ -> do
+    err $ DataTypeIsNotARecordType dd memname
+    pure (Nothing, True)
+
+  T.TFun {} -> do
+    err $ FunctionIsNotARecord t memname
+    pure (Nothing, True)
+
+  T.TVar tv -> do
+    err $ TVarIsNotARecord tv memname
+    pure (Nothing, True)
 
 
 inferDecon :: R.Decon -> Infer T.Decon
@@ -659,6 +727,14 @@ var v = do
       pure t
 
 
+addMember :: T.Type -> MemName -> Infer T.Type
+addMember ogType memname = do
+  t <- fresh  -- we don't know its type yet.
+  RWS.modify $ \s -> s { memberAccess = (ogType, memname, t) : s.memberAccess }
+  
+  pure t
+
+
 findBuiltinType :: PreludeFind -> Infer T.Type
 findBuiltinType (PF tc pf) = do
   Ctx { prelude = prelud } <- RWS.ask
@@ -671,7 +747,6 @@ findBuiltinType (PF tc pf) = do
           (tvs, unions) <- instantiateScheme scheme
           pure $ Fix $ T.TCon dd tvs unions
         Nothing -> error $ "[COMPILER ERROR]: Could not find inbuilt type '" <> show tc <> "'."
-
 
 
 
@@ -756,8 +831,9 @@ unifyFunEnv lenv@(T.EnvUnion { T.unionID = lid }) renv@(T.EnvUnion { T.unionID =
 occursCheck :: Substitutable a => TyVar -> a -> Bool
 occursCheck tyv t = tyv `Set.member` ftv t
 
-err :: TypeError -> SubstCtx ()
+err :: Monad m => TypeError -> RWST r [TypeError] s m ()
 err te = RWS.tell [te]
+
 
 -- Sikanokonokonokokośtantan
 nun :: SubstCtx ()
@@ -823,6 +899,7 @@ instance Substitutable (Fix T.TypedExpr) where
   ftv = cata $ \(T.TypedExpr et ee) -> ftv et <> case ee of
     T.As e t -> e <> ftv t
     T.Lam env params body -> ftv env <> ftv params <> body
+    T.Var _ v -> ftv v
     e -> fold e
   subst su = hoist $ \(T.TypedExpr et ee) -> T.TypedExpr (subst su et) (case ee of
     T.As e t -> T.As e (subst su t)
@@ -837,6 +914,10 @@ instance Substitutable T.Variable where
 
 
 instance Substitutable UniqueVar where
+  ftv _ = mempty
+  subst _ = id
+
+instance Substitutable MemName where
   ftv _ = mempty
   subst _ = id
 
@@ -900,6 +981,10 @@ instance Substitutable a => Substitutable (NonEmpty a) where
 instance (Substitutable a, Substitutable b) => Substitutable (a, b) where
   ftv = bifoldMap ftv ftv
   subst su = bimap (subst su) (subst su)
+
+instance (Substitutable a, Substitutable b, Substitutable c) => Substitutable (a, b, c) where
+  ftv (a, b, c) = ftv a <> ftv b <> ftv c
+  subst su (a, b, c) = (subst su a, subst su b, subst su c)
 
 instance Substitutable a => Substitutable (Maybe a) where
   ftv = maybe mempty ftv
@@ -984,6 +1069,8 @@ data TypecheckingState = TypecheckingState
 
   , variables :: Map UniqueVar T.Type
 
+  , memberAccess :: [(T.Type, MemName, T.Type)]  -- ((a :: t1).mem :: t2)
+
   -- HACK?: track instantiations from environments. 
   --  (two different function instantiations will count as two different "variables")
   , instantiations :: Set (T.Variable, T.Type)
@@ -996,6 +1083,8 @@ emptySEnv = TypecheckingState
 
   , memoFunction = Memo mempty
   , memoDataDefinition = Memo mempty
+
+  , memberAccess = mempty
 
   , variables = mempty
 
@@ -1023,6 +1112,11 @@ data TypeError
   | MismatchingNumberOfParameters [T.Type] [T.Type]
   | AmbiguousType TyVar
 
+  | DataTypeDoesNotHaveMember T.DataDef MemName
+  | DataTypeIsNotARecordType T.DataDef MemName
+  | FunctionIsNotARecord T.Type MemName
+  | TVarIsNotARecord TVar MemName
+
 -- not sure if we have to have a show instance
 instance Show TypeError where
   show = \case
@@ -1030,6 +1124,11 @@ instance Show TypeError where
     TypeMismatch t t' -> printf "Type Mismatch: %s %s" (sctx $ T.tType t) (sctx $ T.tType t')
     MismatchingNumberOfParameters ts ts' -> printf "Mismatching number of parameters: (%d) %s (%d) %s" (length ts) (sctx $ ppList T.tType ts) (length ts') (sctx $ ppList T.tType ts')
     AmbiguousType tyv -> printf "Ambiguous type: %s" (sctx $ T.tTyVar tyv)
+
+    DataTypeDoesNotHaveMember (T.DD ut _ _ _) memname -> printf "Record type %s does not have member %s." (Common.ppTypeInfo ut) (Common.ppMem memname)
+    DataTypeIsNotARecordType (T.DD ut _ _ _) memname -> printf "%s is not a record type and thus does not have member %s." (Common.ppTypeInfo ut) (Common.ppMem memname)
+    FunctionIsNotARecord t _ -> printf "Cannot subscript a function (%s)." (T.tType t)
+    TVarIsNotARecord tv _ -> printf "Cannot subscript a type variable. (%s)" (Common.ppTVar tv)
 
 
 

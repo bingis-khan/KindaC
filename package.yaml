@@ -29,6 +29,7 @@ dependencies:
 
   # https://discourse.haskell.org/t/recompilation-issue-with-stack-test/10120/11
   # Test packages. The thing is, when they are only in `tests`, it triggers recompilation, which is slow.
+
   - hspec
   - text
   - directory

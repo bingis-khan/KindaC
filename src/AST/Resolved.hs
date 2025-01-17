@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, UndecidableInstances, LambdaCase, OverloadedStrings, OverloadedRecordDot, DuplicateRecordFields, TypeOperators #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar)
+import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar, ppMem, MemName)
 import qualified AST.Typed as T
 
 import Data.Fix (Fix(..))
@@ -21,8 +21,9 @@ import Data.String (fromString)
 -- Data Definition --
 ---------------------
 
+data DataRec = DR DataDef MemName Type [Ann]  -- we don't know if the var is unique yet (I mean, here, it is... should it be a uniquevar here?)
 data DataCon = DC DataDef UniqueCon [Type] [Ann]
-data DataDef = DD UniqueType [TVar] [DataCon] [Ann]
+data DataDef = DD UniqueType [TVar] (Either [DataRec] [DataCon]) [Ann]
 
 instance Eq DataCon where
   DC _ uc _ _ == DC _ uc' _ _ = uc == uc'
@@ -64,6 +65,7 @@ data ExprF a
   = Lit LitType
   | Var Locality Variable
   | Con Constructor
+  | MemAccess a MemName  -- TODO: should this be unique var? At this point, we don't really know which accessor it is.
 
   | Op a Op a
   | Call a [a]
@@ -248,6 +250,7 @@ tExpr = cata $ \case
   Lit (LFloat f) -> pretty $ show f
   Var l v -> ppVar l (asUniqueVar v)
   Con c -> ppCon (asUniqueCon c)
+  MemAccess c memname -> c <> "." <> ppMem memname
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
@@ -264,7 +267,14 @@ tExpr = cata $ \case
 
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y _) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ ppLines tConDef cons
+tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y _) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ tConRec cons
+
+tConRec :: Either [DataRec] [DataCon] -> Context
+tConRec (Left dr) = ppLines tRecDef dr
+tConRec (Right dc) = ppLines tConDef dc
+
+tRecDef :: DataRec -> Context
+tRecDef (DR _ uv t _) = ppMem uv <+> tType t
 
 tConDef :: DataCon -> Context
 tConDef (DC _ g t anns) = annotate anns $ foldl' (<+>) (ppCon g) $ tTypes t

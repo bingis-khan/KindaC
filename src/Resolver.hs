@@ -26,7 +26,7 @@ import qualified Data.Set as Set
 import AST.Common (UniqueVar (..), UniqueCon (..), UniqueType (..), Locality (..), VarName (..), TCon (..), ConName (..), Annotated (..), (:.) (..), UnboundTVar (..), TVar (..), Binding (..), bindTVar)
 import AST.Converged (Prelude(..))
 import qualified AST.Converged as Prelude
-import AST.Untyped (StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..))
+import AST.Untyped (StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..), DataRec (DR))
 import qualified AST.Untyped as U
 import AST.Resolved (Env (..), Exports (..), Variable (..), Datatype (..), Constructor (..))
 import qualified AST.Resolved as R
@@ -121,7 +121,7 @@ rStmts = traverse -- traverse through the list with Ctx
             pure $ Fix (R.Con uc)
 
         stmt $ R.Return re
-      DataDefinition (DD tyName unboundTyParams cons) -> mdo
+      DataDefinition (DD tyName unboundTyParams econs) -> mdo
         tid <- generateType tyName
         -- tying the knot for the datatype definition
 
@@ -129,21 +129,28 @@ rStmts = traverse -- traverse through the list with Ctx
         registerDatatype dataDef
 
         let tvars = mkTVars (BindByType tid) unboundTyParams
-        rCons <- bindTVars tvars $ do
-          for cons $ \(Annotated conAnns (DC cname ctys)) -> do
-            cid <- generateCon cname
+        rCons <- bindTVars tvars $ case econs of
+          Right cons ->
+            fmap Right $ for cons $ \(Annotated conAnns (DC cname ctys)) -> do
+              cid <- generateCon cname
 
-            -- TODO: throw an error if there is more than one constructor with the same name in the same datatype.
-            -- TODO: also, can we redeclare constructors (in another datatype in the same scope?)
-            rConTys <- traverse rType ctys
-            let rCon = R.DC dataDef cid rConTys conAnns
-            newCon rCon
+              -- TODO: throw an error if there is more than one constructor with the same name in the same datatype.
+              -- TODO: also, can we redeclare constructors (in another datatype in the same scope?)
+              rConTys <- traverse rType ctys
+              let rCon = R.DC dataDef cid rConTys conAnns
+              newCon rCon
 
-            pure rCon
+              pure rCon
+
+          Left recs ->
+            fmap Left $ for recs $ \(Annotated recAnns (DR mem t)) -> do
+              t' <- rType t
+              pure $ R.DR dataDef mem t' recAnns
+
         pass
 
       FunctionDefinition (FD name params ret) body -> do
-        vid <- generateVar name
+        vid <- generateVar name  -- NOTE: this is added to scope in `newFunction` (for some reason.) TODO: change it later (after I finish implementing records.)
 
         -- get all unbound tvars
         let allTypes = catMaybes $ ret : (snd <$> params)
@@ -212,6 +219,10 @@ rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
         placeholderCon conname
 
     pure $ R.Con con
+  MemAccess expr memname -> do
+    rexpr <- expr
+    pure $ R.MemAccess rexpr memname
+
   Op l op r -> R.Op <$> l <*> pure op <*> r
   Call c args -> R.Call <$> c <*> sequenceA args
   As e t -> R.As <$> e <*> rType t
@@ -311,7 +322,7 @@ mkState prel = CtxState
     initialScope = Scope
       { varScope = exportedVariables <> exportedFunctions
 
-      , conScope = Map.fromList $ concat $ preludeExports.datatypes <&> \(T.DD _ _ dcs _) -> dcs <&> \dc@(T.DC _ uc _ _) -> (uc.conName, R.ExternalConstructor dc)
+      , conScope = Map.fromList $ concat $ preludeExports.datatypes <&> \(T.DD _ _ dcs _) -> foldMap (fmap (\dc@(T.DC _ uc _ _) -> (uc.conName, R.ExternalConstructor dc))) dcs
       , tyScope  = Map.fromList $ preludeExports.datatypes <&> \dd@(T.DD ut _ _ _) -> (ut.typeName, R.ExternalDatatype dd)
       }
 
@@ -386,7 +397,7 @@ placeholderCon name = do
 
   -- fill in later with a placeholder type.
   let dc = R.DC dd uc [] []
-      dd = R.DD ti [] [dc] []
+      dd = R.DD ti [] (Right [dc]) []
   pure $ DefinedConstructor dc
 
 
@@ -462,7 +473,7 @@ placeholderType name = do
   -- generate a placeholder type.
   ti <- generateType $ TC $ "PlaceholderType" <> name.fromTC
 
-  let dd = R.DD ti [] [] []
+  let dd = R.DD ti [] (Right []) []
   pure $ DefinedDatatype dd
 
 modifyThisScope :: (Scope -> Scope) -> Ctx ()

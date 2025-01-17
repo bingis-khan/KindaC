@@ -7,7 +7,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module AST.Untyped (module AST.Untyped) where
 
-import AST.Common (LitType, Op, Annotated, TCon (..), ConName, VarName, (:.), (<+>), Context, pretty, ppTCon, encloseSepBy, UnboundTVar (..))
+import AST.Common (LitType, Op, Annotated, TCon (..), ConName, VarName, (:.), (<+>), Context, pretty, ppTCon, encloseSepBy, UnboundTVar (..), MemName)
 
 import Data.Eq.Deriving
 import Data.Fix (Fix)
@@ -39,6 +39,7 @@ data ExprF a
   = Lit LitType
   | Var VarName
   | Con ConName
+  | MemAccess a MemName
 
   | Op a Op a
   | Call a [a]
@@ -55,8 +56,10 @@ $(deriveEq1 ''ExprF)
 -- Data Definition --
 ---------------------
 
+data DataRec = DR MemName Type deriving Eq
 data DataCon = DC ConName [Type] deriving Eq
-data DataDef = DD TCon [UnboundTVar] [Annotated DataCon] deriving Eq
+data DataDef = DD TCon [UnboundTVar] (Either [Annotated DataRec] [Annotated DataCon]) deriving Eq
+
 
 
 ----------

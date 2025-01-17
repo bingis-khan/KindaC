@@ -64,6 +64,7 @@ newtype UnboundTVar = UTV { fromUTV :: Text } deriving (Show, Eq, Ord)
 newtype TCon = TC { fromTC :: Text } deriving (Show, Eq, Ord)
 newtype ConName = CN { fromCN :: Text } deriving (Show, Eq, Ord)
 newtype VarName = VN { fromVN :: Text } deriving (Show, Eq, Ord)
+newtype MemName = MN { fromMN :: Text } deriving (Show, Eq, Ord)
 
 data Op
   = Plus
@@ -307,6 +308,9 @@ ppCon con = "@" <> pretty (fromCN con.conName) <> ppIdent ("$" <> pretty (hashUn
 ppTypeInfo :: UniqueType -> Context
 ppTypeInfo t = pretty (fromTC t.typeName) <> ppIdent ("$" <> pretty (hashUnique t.typeID))
 
+ppMem :: MemName -> Context
+ppMem = pretty . fromMN
+
 ppEnvID :: EnvID -> Context
 ppEnvID = pretty . hashUnique . fromEnvID
 
@@ -382,6 +386,10 @@ fromEither :: Either a a -> a
 fromEither = \case
   Left x -> x
   Right x -> x
+
+eitherToMaybe :: Either e a -> Maybe a
+eitherToMaybe (Left _) = Nothing
+eitherToMaybe (Right x) = Just x
 
 
 fmap2 :: (Functor f1, Functor f2) => (a -> b) -> f1 (f2 a) -> f1 (f2 b)

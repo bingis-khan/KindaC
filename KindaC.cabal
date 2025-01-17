@@ -48,6 +48,7 @@ library
     , data-fix
     , deriving-compat
     , directory
+    , eitherToMaybe
     , filepath
     , hspec
     , megaparsec
@@ -76,6 +77,7 @@ executable kc
     , data-fix
     , deriving-compat
     , directory
+    , eitherToMaybe
     , filepath
     , hspec
     , megaparsec
@@ -106,6 +108,7 @@ test-suite all
     , data-fix
     , deriving-compat
     , directory
+    , eitherToMaybe
     , filepath
     , hspec
     , megaparsec
