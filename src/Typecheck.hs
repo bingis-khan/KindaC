@@ -369,7 +369,9 @@ inferDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }
         let dc = T.DC dd uc ts dcAnn
         pure dc
 
-      Left _ -> undefined
+      Left rrecs -> fmap Left $ for rrecs $ \(R.DR _ memname rt recAnn) -> do
+        t <- inferType rt
+        pure $ T.DR dd memname t recAnn
 
     let unions = case edcs of
           Right dcs -> concatMap extractUnionsFromConstructor dcs

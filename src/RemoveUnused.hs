@@ -10,7 +10,7 @@ import Control.Monad.Trans.State (State)
 import qualified Control.Monad.Trans.State as State
 import Data.Functor.Foldable (transverse, cata, embed)
 import Data.Bitraversable (bitraverse)
-import AST.Common (Annotated(..), type (:.) (..), Locality (..), EnvID, fmap2, traverse2)
+import AST.Common (Annotated(..), type (:.) (..), Locality (..), EnvID, fmap2, traverse2, eitherToMaybe)
 import Data.Set (Set)
 import Data.Bifoldable (bifold)
 import Data.Foldable (Foldable(..))
@@ -179,13 +179,18 @@ sBody stmts = do
 
 
 sDataDef :: Mem T.DataDef
-sDataDef = memo id const $ \(T.DD uv tvs dcs anns) addMemo -> mdo
+sDataDef = memo id const $ \(T.DD uv tvs edcs anns) addMemo -> mdo
   let dd = T.DD uv tvs dcs' anns
   addMemo dd
 
-  dcs' <- for dcs $ \(T.DC _ uc ts canns) -> do
-    ts' <- traverse sType ts
-    pure $ T.DC dd uc ts' canns
+  dcs' <- case edcs of
+    Right dcs -> fmap Right $ for dcs $ \(T.DC _ uc ts canns) -> do
+      ts' <- traverse sType ts
+      pure $ T.DC dd uc ts' canns
+
+    Left drs -> fmap Left $ for drs $ \(T.DR _ memname t canns) -> do
+      t' <- sType t
+      pure $ T.DR dd memname t' canns
 
   pure dd
 
@@ -193,7 +198,9 @@ sDataDef = memo id const $ \(T.DD uv tvs dcs anns) addMemo -> mdo
 sDataCon :: Mem T.DataCon
 sDataCon (T.DC dd uc _ _) = do
   (T.DD _ _ cons _) <- sDataDef dd
-  pure $ fromJust $ find (\(T.DC _ suc _ _) -> suc == uc) cons
+  pure $ fromJust  -- now force it, because it *must* be a constructor.
+    $ find (\(T.DC _ suc _ _) -> suc == uc)  -- then find it.
+    =<< eitherToMaybe cons  -- we know it's a constructor (Right is constructor, Left is record), so eitherToMaybe -> rightToMaybe
 
 
 

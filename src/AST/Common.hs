@@ -114,6 +114,11 @@ data UniqueType = TI
   -- add info about structure for later compilation
   }
 
+data UniqueMem = MI  -- unlike the previous ones, used after (and including) Mono module.
+  { memID :: Unique
+  , memName :: MemName
+  }
+
 data Binding
   = BindByType UniqueType
   | BindByVar  UniqueVar
@@ -159,6 +164,15 @@ instance Eq UniqueType where
 
 instance Ord UniqueType where
   TI { typeID = l } `compare` TI { typeID = r } = l `compare` r
+
+instance Show UniqueMem where
+  show (MI { memID = tid, memName = name }) = show name <> "@" <> show (hashUnique tid)
+
+instance Eq UniqueMem where
+  MI { memID = l } == MI { memID = r } = l == r
+
+instance Ord UniqueMem where
+  MI { memID = l } `compare` MI { memID = r } = l `compare` r
 
 
 -- ...plus additional tags
@@ -302,14 +316,18 @@ ppVar l v = localTag <?+> pretty (fromVN v.varName) <> ppIdent ("$" <> pretty (h
 ppTCon :: TCon -> Context
 ppTCon = pretty . fromTC
 
+ppMem :: MemName -> Context
+ppMem = pretty . fromMN
+
 ppCon :: UniqueCon -> Context
 ppCon con = "@" <> pretty (fromCN con.conName) <> ppIdent ("$" <> pretty (hashUnique con.conID))
 
 ppTypeInfo :: UniqueType -> Context
 ppTypeInfo t = pretty (fromTC t.typeName) <> ppIdent ("$" <> pretty (hashUnique t.typeID))
 
-ppMem :: MemName -> Context
-ppMem = pretty . fromMN
+ppUniqueMem :: UniqueMem -> Context
+ppUniqueMem um = ppMem um.memName <> ppIdent ("#" <> pretty (hashUnique um.memID))
+
 
 ppEnvID :: EnvID -> Context
 ppEnvID = pretty . hashUnique . fromEnvID

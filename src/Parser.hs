@@ -433,7 +433,7 @@ variable :: Parser VarName
 variable = VN <$> identifier
 
 member :: Parser MemName
-member = MN <$> identifier
+member = "." >> MN <$> identifier
 
 
 -- term-level identifiers

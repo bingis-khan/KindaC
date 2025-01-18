@@ -105,7 +105,7 @@ loadPrelude = do
 
       let findUnit :: PreludeErr T.DataCon
           findUnit = 
-            let mdd (T.DD ut (T.Scheme [] []) [con] _) | ut.typeName == unitTypeName = Just con
+            let mdd (T.DD ut (T.Scheme [] []) (Right [con]) _) | ut.typeName == unitTypeName = Just con
                 mdd _ = Nothing
 
                 mdc   = listToMaybe $ mapMaybe mdd pmod.exports.datatypes

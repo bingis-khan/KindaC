@@ -7,12 +7,12 @@
 
 module CPrinter (cModule) where
 
-import AST.Common (Annotated (..), Ann (ACType, ACLit), UniqueType (typeName), (:.) (..), TCon (..), UniqueVar, Op (..), Locality (Local, FromEnvironment), UniqueCon, ctx', silent, defaultContext, printIdentifiers, displayTypeParameters, fmap2)
+import AST.Common (Annotated (..), Ann (ACType, ACLit), UniqueType (typeName), (:.) (..), TCon (..), UniqueVar, Op (..), Locality (Local, FromEnvironment), UniqueCon, ctx', silent, defaultContext, printIdentifiers, displayTypeParameters, fmap2, UniqueMem)
 import Misc.Memo (Memo, Memoizable)
 import qualified Misc.Memo as Memo
 import qualified AST.Common as Common
 import qualified AST.Mono as M
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (listToMaybe, mapMaybe, fromJust)
 import Control.Monad (when, unless, join)
 import Control.Monad.Trans.RWS (RWS)
 import qualified Control.Monad.Trans.RWS as RWS
@@ -151,7 +151,8 @@ cDeconCondition basevar mdecon =
   let conjunction = fmap (basevar &) $ flip cata mdecon $ \case
         M.CaseVariable _ _ -> []
         M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args ->
-          case cons of
+          let cons' = fromJust $ Common.eitherToMaybe cons  -- cannot be a record type! NOTE: this is ugly, should I just make two separate types?
+          in case cons' of
             [] -> undefined
             conz | all (\(M.DC _ _ conargs _) -> null conargs) conz -> [" ==" § cCon dc]
             [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> conargs <&> \ca -> "." & cConMember uc x & ca
@@ -167,12 +168,14 @@ cDeconCondition basevar mdecon =
 cDeconAccess :: PL -> M.Decon -> [(UniqueVar, M.Type, PL)]
 cDeconAccess basevar mdecon = fmap2 (basevar &) $ flip cata mdecon $ \case
   M.CaseVariable t uv -> [(uv, t, "" :: PL)]
-  M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args -> case cons of
-    []  -> []
-    conz | all (\(M.DC _ _ conargs _) -> null conargs) conz -> []
+  M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args ->
+    let cons' = fromJust $ Common.eitherToMaybe cons
+    in case cons' of
+      []  -> []
+      conz | all (\(M.DC _ _ conargs _) -> null conargs) conz -> []
 
-    [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> fmap2 (("." & cConMember uc x) &) conargs
-    _:_ -> concatMap (\(x, conargs) -> fmap2 (("." & "env" & "." & cConStruct dc & "." & cConMember uc x) &) conargs) (zip [1::Int ..] args)
+      [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> fmap2 (("." & cConMember uc x) &) conargs
+      _:_ -> concatMap (\(x, conargs) -> fmap2 (("." & "env" & "." & cConStruct dc & "." & cConMember uc x) &) conargs) (zip [1::Int ..] args)
 
 
 cExpr :: M.Expr -> PL
@@ -429,7 +432,7 @@ cType (Fix t) = case t of
 
 
 cDataType :: M.DataDef -> PL
-cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledTypes = memo }) dd' $ \dd@(M.DD _ _ anns _) addMemo -> do
+cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledTypes = memo }) dd' $ \dd@(M.DD _ econrec anns _) addMemo -> do
   -- don't forget to add a required library
   addIncludeIfPresent anns
 
@@ -441,51 +444,59 @@ cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \
       let dataTypeName = plt ut.typeName.fromTC & "__" & pls (hashUnique ut.typeID)
       addMemo dataTypeName
 
-      case dd of
-        -- 0. No constructors (empty, TODO probably impossible? (because after monomorphization, this type will disappear, as it won't be able to be instantiated))
-        M.DD _ [] _ _ ->
-          pure mempty
+      -- Check if it's a record or an ADT
+      case econrec of
+        -- it's a record!
+        Left recs -> do
+          addTopLevel $ "typedef" <§ cRecordStruct recs §> dataTypeName & ";"
 
-        -- 1. enum
-        M.DD _ dc _ _
-          | all (\(M.DC _ _ args _) -> null args) dc -> addTopLevel $ "typedef" § "enum" <§ cBlock [pl $ sepBy ", " $ cCon <$> dc] §> dataTypeName & ";"
+        -- it's am ADT
+        Right cons ->
+          case cons of
+            -- 0. No constructors (empty, TODO probably impossible? (because after monomorphization, this type will disappear, as it won't be able to be instantiated))
+            [] ->
+              pure mempty
 
-        -- 2. struct
-        M.DD _ [dc@(M.DC _ uc ts _)] _ _ -> do
-          addTopLevel $ "typedef" <§ cStruct dc §> dataTypeName & ";"
+            -- 1. enum
+            dc
+              | all (\(M.DC _ _ args _) -> null args) dc -> addTopLevel $ "typedef" § "enum" <§ cBlock [pl $ sepBy ", " $ cCon <$> dc] §> dataTypeName & ";"
 
-          -- then, create a data constructor function
-          addTopLevel $ ccFunction (cCon dc) (Fix $ M.TCon dd) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
-            [
-              statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", " ["." & cConMember uc i § "=" § cConMember uc i | (_, i) <- zip ts [1 :: Int ..]] § "}"
-            ]
+            -- 2. struct
+            [dc@(M.DC _ uc ts _)] -> do
+              addTopLevel $ "typedef" <§ cStruct dc §> dataTypeName & ";"
 
-
-        -- 3. ADT
-        M.DD _ dcs _ _ -> do
-          let tags = cTag <$> dcs
-          addTopLevel $ "typedef" § "struct" <§ cBlock
-            [ "enum" <§ cBlock [pl $ sepBy ", " tags] §> "tag;"
-            , "union" <§ cBlock [cStruct dc §> cConStruct dc & ";" | dc@(M.DC _ _ (_:_) _) <- dcs ] §> "env;"
-            ] §> dataTypeName & ";"
-
-          -- also, generate accessors
-          for_ dcs $ \case
-            -- for a constructor with no arguments....... generate preprocessor directives (TODO: bad.) try to make a better hierarchy of unique names. less functions, etc.
-            dc@(M.DC _ _ [] _) -> do
-              addTopLevel $ pl $
-                "#define" § cCon dc § enclose "(" ")"
-                  (enclose "(" ")" dataTypeName § "{" § ".tag" § "=" § cTag dc § "}")
-
-            dc@(M.DC _ uc ts@(_:_) _) -> do
+              -- then, create a data constructor function
               addTopLevel $ ccFunction (cCon dc) (Fix $ M.TCon dd) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
                 [
-                  statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", "
-                    [ ".tag" § "=" § cTag dc
-                    , ".env." & cConStruct dc § "=" § "{" § sepBy ", " ["." & cConMember uc i § "=" § cConMember uc i | (_, i) <- zip ts [1 :: Int ..]] § "}"
-                    ]
-                    § "}"
+                  statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", " ["." & cConMember uc i § "=" § cConMember uc i | (_, i) <- zip ts [1 :: Int ..]] § "}"
                 ]
+
+
+            -- 3. ADT
+            dcs -> do
+              let tags = cTag <$> dcs
+              addTopLevel $ "typedef" § "struct" <§ cBlock
+                [ "enum" <§ cBlock [pl $ sepBy ", " tags] §> "tag;"
+                , "union" <§ cBlock [cStruct dc §> cConStruct dc & ";" | dc@(M.DC _ _ (_:_) _) <- dcs ] §> "env;"
+                ] §> dataTypeName & ";"
+
+              -- also, generate accessors
+              for_ dcs $ \case
+                -- for a constructor with no arguments....... generate preprocessor directives (TODO: bad.) try to make a better hierarchy of unique names. less functions, etc.
+                dc@(M.DC _ _ [] _) -> do
+                  addTopLevel $ pl $
+                    "#define" § cCon dc § enclose "(" ")"
+                      (enclose "(" ")" dataTypeName § "{" § ".tag" § "=" § cTag dc § "}")
+
+                dc@(M.DC _ uc ts@(_:_) _) -> do
+                  addTopLevel $ ccFunction (cCon dc) (Fix $ M.TCon dd) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
+                    [
+                      statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", "
+                        [ ".tag" § "=" § cTag dc
+                        , ".env." & cConStruct dc § "=" § "{" § sepBy ", " ["." & cConMember uc i § "=" § cConMember uc i | (_, i) <- zip ts [1 :: Int ..]] § "}"
+                        ]
+                        § "}"
+                    ]
 
       pure dataTypeName
 
@@ -497,6 +508,11 @@ cStruct (M.DC _ uc ts@(_:_) _) = "struct" <§ cBlock
   where
     member t i =
       statement $ cDefinition t (cConMember uc i)
+
+cRecordStruct :: [M.DataRec] -> PP
+cRecordStruct [] = mempty
+cRecordStruct recs@(_:_) = "struct" <§ cBlock
+  [ statement $ cDefinition t (cRecMember um) | M.DR _ um t _ <- recs ]
 
 
 cVar :: M.Type -> Locality -> M.Variable -> PL
@@ -554,6 +570,8 @@ cTag (M.DC _ c _ _) = plt c.conName.fromCN & "__" & pls (hashUnique c.conID) <> 
 cConMember :: UniqueCon -> Int -> PL
 cConMember uc i = "c" & plt uc.conName.fromCN & "__" & pls (hashUnique uc.conID) & "__" & pls i
 
+cRecMember :: UniqueMem -> PL
+cRecMember um = "m" & plt um.memName.fromMN & "__" & pls (hashUnique um.memID)
 
 cConStruct :: M.DataCon -> PL
 cConStruct (M.DC _ uc _ _) = "c" & plt uc.conName.fromCN & "__" & pls (hashUnique uc.conID) & "s"

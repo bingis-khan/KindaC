@@ -6,7 +6,7 @@
 
 module AST.Mono (module AST.Mono) where
 
-import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (), ppTVar, ppLines')
+import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (), ppTVar, ppLines', UniqueMem, ppUniqueMem)
 import Control.Monad.Trans.Reader (ask)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Eq.Deriving (deriveEq1)
@@ -32,7 +32,7 @@ data FullEnv        -- it's over...  (everything is monomorphized and flattened.
 -- Data Definition --
 ---------------------
 
-data DataRec' envtype = DR (DataDef' envtype) UniqueVar (Type' envtype) [Ann]
+data DataRec' envtype = DR (DataDef' envtype) UniqueMem (Type' envtype) [Ann]
 type IDataRec = DataRec' IncompleteEnv
 type DataRec = DataRec' FullEnv
 
@@ -224,7 +224,7 @@ data ExprF envtype a
   = Lit LitType
   | Var Locality (Variable' envtype)
   | Con (DataCon' envtype)
-  | MemAccess a UniqueVar
+  | MemAccess a UniqueMem
   
   | Op a Op a
   | Call a [a]
@@ -240,7 +240,7 @@ type IExpr = Fix (TypedExpr IncompleteEnv)
 type Expr = Fix (TypedExpr FullEnv)
 
 
-expr2type :: Expr -> Type
+expr2type :: Fix (TypedExpr envtype) -> Type' envtype
 expr2type (Fix (TypedExpr t _)) = t
 
 
@@ -397,6 +397,7 @@ tExpr = cata $ \(TypedExpr t expr) ->
         Var l (DefinedVariable v) -> ppVar l v
         Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
         Con (DC _ uc _ _) -> ppCon uc
+        MemAccess _ _ -> undefined
         Op l op r -> l <+> ppOp op <+> r
         Call f args -> f <> encloseSepBy "(" ")" ", " args
         Lam lenv params e -> fromString $ printf "%s %s:%s" (tEnv lenv) (sepBy " " (map (\(v, vt) -> ppVar Local v <+> tType vt) params)) e
@@ -413,10 +414,17 @@ tFunction :: Function -> Context
 tFunction (Function fd funBody) = tBody (tFunDec fd) funBody
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid cons ann _) = annotate ann $ indent (ppTypeInfo tid) $ ppLines tConDef cons
+tDataDef (DD tid cons ann _) = annotate ann $ indent (ppTypeInfo tid) $ tDataCons cons
 
 tConDef :: DataCon -> Context
 tConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
+
+tDataCons :: Either [DataRec] [DataCon] -> Context
+tDataCons (Left recs) = ppLines (\dc@(DR _ _ _ ann) -> annotate ann (tRecDef dc)) recs
+tDataCons (Right cons) = ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
+
+tRecDef :: DataRec -> Context
+tRecDef (DR _ uv t _) = ppUniqueMem uv <+> tType t
 
 tFunDec :: FunDec -> Context
 tFunDec (FD funEnv v params retType needsEnv) = comment (tEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" " <>) . tType) pType) params) <> ((" " <>) . tType) retType <> (if needsEnv then " +ENV" else " -ENV")
@@ -506,6 +514,7 @@ mtExpr = cata $ \(TypedExpr t expr) ->
         Var l (DefinedVariable v) -> ppVar l v
         Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
         Con (DC _ uc _ _) -> ppCon uc
+        MemAccess c um -> fromString $ printf "%s.%s" c (ppUniqueMem um)
         Op l op r -> l <+> ppOp op <+> r
         Call f args -> f <> encloseSepBy "(" ")" ", " args
         Lam lenv params e -> fromString $ printf "%s %s:%s" (mtEnv lenv) (sepBy " " (map (\(v, vt) -> ppVar Local v <+> mtType vt) params)) e
@@ -522,7 +531,7 @@ mtFunction :: IFunction -> Context
 mtFunction (Function fd funBody) = mtBody (mtFunDec fd) funBody
 
 mtDataDef :: DataDef -> Context
-mtDataDef (DD tid cons ann _) = annotate ann $ indent (ppTypeInfo tid) $ ppLines tConDef cons
+mtDataDef (DD tid cons ann _) = annotate ann $ indent (ppTypeInfo tid) $ tDataCons cons
 
 mtConDef :: DataCon -> Context
 mtConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t

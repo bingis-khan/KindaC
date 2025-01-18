@@ -6,7 +6,7 @@
 {-# HLINT ignore "Redundant pure" #-}  -- this is retarded. it sometimes increases readability with that extra pure.
 module Mono (mono) where
 
-import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, ppTVar, traverse2, fmap2)
+import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, ppTVar, traverse2, fmap2, MemName, UniqueMem (..))
 import qualified AST.Typed as T
 import qualified AST.Mono as M
 import qualified AST.Common as Common
@@ -117,6 +117,15 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
       registerEnvMono Nothing eid emptyEnv
 
       pure $ M.Con mc
+
+    T.MemAccess me memname -> do
+      -- fun unsafe shit.
+      let dd = case project (M.expr2type me) of
+            M.ITCon mdd _ _ -> mdd
+            mpt -> error $ printf "Ayo, member type is not a data definition, wut???? (type: %s) for member %s" (M.mtType (embed mpt)) (Common.ppMem memname)
+
+      um <- member (dd, memname)
+      pure $ M.MemAccess me um
 
     T.Lit lit -> pure $ M.Lit lit
     T.Op l op r -> pure $ M.Op l op r
@@ -237,6 +246,12 @@ constructor tdc@(T.DC dd@(T.DD ut _ _ _) _ _ _) et = do
   pure mdc
 
 
+member :: (M.IDataDef, MemName) -> Context UniqueMem
+member = memo memoMember (\mem s -> s { memoMember = mem }) $ \(_, memname) _ -> do
+  -- TODO: maybe this should be the same as `constructor`, where I just mDataType and find the member?
+  --  at least for consistency. also, there won't be incorrect members! but right now, I'll try like this.
+  mkUniqueMember memname
+
 
 mType :: T.Type -> Context M.IType
 mType = cata $ \case
@@ -280,13 +295,14 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut (T
   nut <- newUniqueType ut
 
   let mts = tvs <&> \tv -> tvmap ! tv
-  let mdd = M.DD nut dcs ann mts
+  let mdd = M.DD nut mdcs ann mts
   addMemo (mdd, dcQuery)
 
 
   -- Strip "unused" constructors. Currently, these are constructors that contain empty unions.
-  -- TEMP: This is not finished - it only cares about unions, but a more thorough solution would track which constructors of a particular type were actually used.
-  let strippedDCs = flip filter tdcs $ \(T.DC _ _ conTs _) ->
+  -- TEMP: This is not finished - it only cares about unions, but a more thorough solution would track which constructors of a particula)r type were actually used.
+  -- NOTE: also, there is something to be said about eliminating non-existent members/constructors. if we only index member by offsets and don't export it, then should we honor the structure? IMO no, unless explicitly specified in an annotation or something.
+  let strippedDCs = tdcs <&> filter (\(T.DC _ _ conTs _) ->
         let
           isUnionEmpty :: T.EnvUnionF a -> Any
           isUnionEmpty union =
@@ -303,26 +319,37 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut (T
 
           dcHasEmptyUnions :: [T.Type] -> Bool
           dcHasEmptyUnions = getAny . foldMap hasEmptyUnions
-        in not $ dcHasEmptyUnions conTs
+        in not $ dcHasEmptyUnions conTs)
 
-  dcs <- for strippedDCs $ \(T.DC _ uc ts dcann) -> do
-    nuc <- newUniqueCon uc
-    mdcts <- traverse mType ts
-    pure $ M.DC mdd nuc mdcts dcann
+  mdcs <- case strippedDCs of
+    Right dcs -> fmap Right $ for dcs $ \(T.DC _ uc ts dcann) -> do
+        nuc <- newUniqueCon uc
+        mdcts <- traverse mType ts
+        pure $ M.DC mdd nuc mdcts dcann
+
+    Left drs -> fmap Left $ for drs $ \(T.DR _ memname memtype anns) -> do
+        um <- member (mdd, memname)
+        mt <- mType memtype
+        pure $ M.DR mdd um mt anns
 
 
   -- DEBUG: how datatypes are transformed.
   ctxPrint' $ printf "Mono: %s" (Common.ppTypeInfo ut)
   ctxPrint' "======"
-  ctxPrint (ppLines T.tConDef) tdcs
+  ctxPrint T.tDataCons tdcs
   ctxPrint' "------"
-  ctxPrint (ppLines T.tConDef) strippedDCs
+  ctxPrint T.tDataCons strippedDCs
   ctxPrint' ",,,,,,"
-  ctxPrint (ppLines (\(M.DC _ uc _ _) -> Common.ppCon uc)) dcs
+  ctxPrint (either (const "n/a (it's a record.)") (ppLines (\(M.DC _ uc _ _) -> Common.ppCon uc))) mdcs
   ctxPrint' "======"
   ctxPrint' $ printf "Mono'd: %s" (Common.ppTypeInfo nut)
 
-  let dcQuery = Map.fromList $ zip strippedDCs dcs
+  -- used only by non-record types!
+  let dcQuery = Map.fromList $ case (strippedDCs, mdcs) of
+        (Right ttdcs, Right mmdcs) -> zip ttdcs mmdcs
+        (Left _, Left _) -> mempty
+        _ -> error "caulk."  -- does not have to be very sane - controlled environment.
+
   pure (mdd, dcQuery)
 
 
@@ -432,6 +459,7 @@ data Context' = Context
   , memoDatatype :: Memo (T.DataDef, TypeMap) (M.IDataDef, Map T.DataCon M.IDataCon)
   , memoEnv :: Memo (T.EnvF M.IType) M.IEnv
   , memoUnion :: Memo (T.EnvUnionF M.IType) M.IEnvUnion
+  , memoMember :: Memo (M.IDataDef, MemName) UniqueMem
 
   -- SPECIAL ENVIRONMENTS!!!
   , cuckedUnions :: Memo UnionID M.IEnvUnion  -- this tracks which environments couldn't be resolved. then, any time this environment is encountered, use this instead of `memoUnion`.
@@ -450,6 +478,7 @@ startingContext = Context
   , memoDatatype = emptyMemo
   , memoEnv = emptyMemo
   , memoUnion = emptyMemo
+  , memoMember = emptyMemo
 
   , cuckedUnions = emptyMemo
   , envInstantiations = mempty
@@ -513,6 +542,11 @@ newUniqueVar :: UniqueVar -> Context UniqueVar
 newUniqueVar uv = do
   vid <- liftIO newUnique
   pure $ uv { varID = vid }
+
+mkUniqueMember :: MemName -> Context UniqueMem
+mkUniqueMember memname = do
+  mid <- liftIO newUnique
+  pure $ MI { memName = memname, memID = mid }
 
 
 newEnvID :: Context EnvID
@@ -605,6 +639,10 @@ mfExpr expr = flip cata expr $ \(M.TypedExpr imt imexpr) -> do
       pure $ M.Lam menv margs mret
 
     M.Con con -> M.Con <$> mfConstructor con imt
+    M.MemAccess e um -> do
+      mfe <- e
+      pure $ M.MemAccess mfe um
+
     M.Lit lt -> pure $ M.Lit lt
     M.Op l op r -> M.Op <$> l <*> pure op <*> r
     M.Call c args -> M.Call <$> c <*> sequenceA args
@@ -677,11 +715,19 @@ mfDataDef = memo memoIDatatype (\mem s -> s { memoIDatatype = mem }) $ \(idd, _)
   let dd = M.DD idd.thisType cons idd.annotations mfAppliedTypes
   addMemo (dd, dcQuery)
 
-  cons <- for idd.constructors $ \(M.DC _ uc imts ann) -> do
-    mts <- traverse mfType imts
-    pure $ M.DC dd uc mts ann
+  cons <- case idd.constructors of
+    Right mcons -> fmap Right $ for mcons $ \(M.DC _ uc imts ann) -> do
+      mts <- traverse mfType imts
+      pure $ M.DC dd uc mts ann
 
-  let dcQuery = Map.fromList $ zip idd.constructors cons
+    Left mrecs -> fmap Left $ for mrecs $ \(M.DR _ um t ann) -> do
+      mt <- mfType t
+      pure $ M.DR dd um mt ann
+
+  let dcQuery = Map.fromList $ case (idd.constructors, cons) of
+        (Right ttdcs, Right mmdcs) -> zip ttdcs mmdcs
+        (Left _, Left _) -> mempty
+        _ -> error "caulk."  -- does not have to be very safe/sane - controlled environment.
   pure (dd, dcQuery)
 
 
