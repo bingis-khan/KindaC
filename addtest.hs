@@ -28,7 +28,7 @@ getNewestTestFromGroup ourGroupId = do
   let ourGroup = fmap snd $ filter ((==ourGroupId) . fst) groupIds
   let highestId = take 1 $ reverse $ sort ourGroup
   pure $ case highestId of
-    [] -> 1
+    [] -> 0  -- when first from group, the first test will start from '1'
     x : _ -> x
 
 parseArgs :: IO (Int, FilePath, FilePath)

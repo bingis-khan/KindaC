@@ -62,6 +62,7 @@ runPP px =
 
 
 cMain :: [M.AnnStmt] -> PP
+cMain stmts | null stmts || all (\(Fix (O (Annotated _ stmt))) -> case stmt of { M.Pass -> True; _ -> False }) stmts  = pl $ addTopLevel $ "int" § "main" & "()" <§ cBlock [statement "return 0"]  -- TEMP: return 0 when all statements are empty.
 cMain stmts = pl $ addTopLevel $ "int" § "main" & "()" <§ cBlock (cStmt <$> stmts)
 
 
