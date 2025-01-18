@@ -292,7 +292,7 @@ expression = makeExprParser term operatorTable
 
 operatorTable :: [[Operator Parser Expr]]
 operatorTable =
-  [ [ Postfix $ flip (foldr $ \mem e -> Fix $ MemAccess e mem) <$> some member
+  [ [ Postfix $ flip (foldr $ \mem e -> Fix $ MemAccess e mem) <$> some ("." >> member)
     ]
   , [ call
     ]
@@ -433,7 +433,7 @@ variable :: Parser VarName
 variable = VN <$> identifier
 
 member :: Parser MemName
-member = "." >> MN <$> identifier
+member = MN <$> identifier
 
 
 -- term-level identifiers
