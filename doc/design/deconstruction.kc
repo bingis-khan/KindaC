@@ -1,0 +1,30 @@
+Which deconstruction syntax is the nicest?????
+
+1. Rust like, cool, hello fellow kids
+
+case rec
+	Record { first: True, second: something, third: Maybe(Right(True)) }
+
+
+2. Different, more C like:
+
+case rec
+	Record { first = True, second = something, third = Maybe(Right(True)) }
+
+
+3. Radical.
+
+case rec
+	Record { True = first, something = second, Maybe(Right(True)) = third }
+
+
+
+Why this 3rd one? It mimics deconstruction when assigning stuff, like so:
+
+Tuple(left, right) = get-something-or-whatever()
+
+
+
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+also, I might use { ... } and { x: y, ... } to represent deconstruction of both sets and maps respectively.
