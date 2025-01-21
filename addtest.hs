@@ -13,7 +13,11 @@ main = do
   (groupId, filename, newName) <- parseArgs
   newestTestId <- getNewestTestFromGroup groupId
   let thisTestId = newestTestId + 1
-  let testName = show groupId <> "_t" <> show thisTestId <> "_" <> newName
+  let leftPaddedTestId =  -- no need to pad it with more than one zero!
+        if thisTestId < 10
+          then "0" <> show thisTestId
+          else show thisTestId
+  let testName = show groupId <> "_t" <> leftPaddedTestId <> "_" <> newName
   saveTest filename testName
 
 saveTest :: FilePath -> FilePath -> IO ()
