@@ -17,7 +17,7 @@ main = do
         if thisTestId < 10
           then "0" <> show thisTestId
           else show thisTestId
-  let testName = show groupId <> "_t" <> leftPaddedTestId <> "_" <> newName
+  let testName = show groupId <> "_t" <> leftPaddedTestId <> "_" <> newName <> ".kc"
   saveTest filename testName
 
 saveTest :: FilePath -> FilePath -> IO ()
