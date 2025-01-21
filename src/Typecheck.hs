@@ -1178,8 +1178,8 @@ instance Show TypeError where
     MismatchingNumberOfParameters ts ts' -> printf "Mismatching number of parameters: (%d) %s (%d) %s" (length ts) (sctx $ ppList T.tType ts) (length ts') (sctx $ ppList T.tType ts')
     AmbiguousType tyv -> printf "Ambiguous type: %s" (sctx $ T.tTyVar tyv)
 
-    DataTypeDoesNotHaveMember (T.DD ut _ _ _) memname -> printf "Record type %s does not have member %s." (Common.ppTypeInfo ut) (Common.ppMem memname)
-    DataTypeIsNotARecordType (T.DD ut _ _ _) memname -> printf "%s is not a record type and thus does not have member %s." (Common.ppTypeInfo ut) (Common.ppMem memname)
+    DataTypeDoesNotHaveMember (T.DD ut _ _ _) memname -> printf "Record type %s does not have member %s." (sctx $ Common.ppTypeInfo ut) (sctx $ Common.ppMem memname)
+    DataTypeIsNotARecordType (T.DD ut _ _ _) memname -> printf "%s is not a record type and thus does not have member %s." (sctx $ Common.ppTypeInfo ut) (sctx $ Common.ppMem memname)
     FunctionIsNotARecord t _ -> printf "Cannot subscript a function (%s)." (T.tType t)
     TVarIsNotARecord tv _ -> printf "Cannot subscript a type variable. (%s)" (Common.ppTVar tv)
 

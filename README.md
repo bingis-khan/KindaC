@@ -17,21 +17,13 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 ## todo
 
-### todo BIG ASS BUGS
-
-- REGRESSION: env expansion is broken. sometimes, tvars declared inside a function appear in the environment when some other polymorphic function is instantiated to these tvars outside. seems to be the whole problem. have to find some other way to know which tvars were declared inside and which ones were not.
-- clash with RemoveUnused. it uses only EnvIDs (and ignores types), which is incorrect? however, how did it work? I didn't document it enough...
+- make assignments deconstructable.
+- in a record deconstruction, if you don't specify the right side (after ':'), bind the member to the variable of the same name.
+- when updating records, bind the current variable to the expression. ex: `p = p { v1: v1 { z = 0 } }` <- here, `v1` is bound only on the right side of ':'. No need to write `p.v1` like in Haskell.
+- add `<.member=` assignments!
 
 
 ### todo misc
-- parse pattern matching
-- [V] change VarID, ConID, TypeID to their "typeinfo" datatypes: I think it's more haskell-ish and they are immutable anyway.
-- add types to the ASTPrettyPrinter module so that
-  type Context a = a -> Context'
-    - I may not end up needing the extra context, as VarInfo, TypeInfo, ConInfo, etc. embed information in them anyway. So no extra context is needed!
-     - but context is nice for optional parameters, like, say, you want to pretty print the types or you don't want to print types in expression leaves.
-- make a separate file for each pretty printing phase + common to avoid duplication
-- use relude (better types, nonempty, undefined triggers warning!)
 - better errors *messages*
   Instead of this
   ```
@@ -41,30 +33,18 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
   unexpected 'f'
   expecting '#' or uppercase letter
   ```
-
-  write something like "expecting constructor (or annotation)"
+  write something like "expecting constructor (or annotation)". also, when I write the bootstrapped compiler, errors should be better, as I'll write my own parser.
 - look for places with recoverable errors
 - incorrect indentation if/elif/else when pretty printing AST
-- shitty names for functions newVar and lookupVar in Typecheck.hs
 - better errors for extraenous symbols (try writing `print x y`)
 - scoping - make redefining a datatype an error? or only in the same scope
-- clean Typecheck module (it's gotten bad again, especially the generalization/subSolve part - think about where do FTVs come from, should env ftvs come from data definitions and types? I should put the future `generalize` function near the `subSolve`, because they deal with similar things)
-- Environment should be a Set / Set of Sets, but right now it's a list, because we can't put 'Ord' constraints in fmap.
-- I had to replace `transverse` with their implementation due to the "forall" type of `transverse`. I wonder if there is a dedicated function instead of `transverse` - I can probably grep through the source by the implementation `cata (fmap embed . n)`.
-- `noFunEnv` and the whole imlementation of the algorithm is shaky at best, utterly disgusting at worst. just... fix this. `noFunEnv` is like the worst. incorrect state possible... it's fucked.
-- why are parameters being unified???
 - [??] super slow on nested functions: `::::::::::::::::1`
   - not currently! but when I change something minor, it happened? so kinda weird. might be a laziness problem.
   - yeah, even with the rewrite, it became slow for some reason. why? it shouldn't be slow now.
 - mark unused variables and modify the generated code to not generate warnings in C.
 - do branching analysis to check if a code path does not return a value.
   - also add a `#[noreturn]` to mark a function that does not return (eg. `exit()`)
-- environments for datatypes (I'll do it after monomorphization/codegen, because I want to know what I'm getting myself into)
 - [??] add unit type as default is there are no return statements.
-- [V] eliminate the pretty printing module for the AST - since I'm switching to separate ASTs, I can just implement everything as an implementation of Show?
-- MEMOIZING AND DIRECT REFERENCES: change Typecheck/Mono ASTs to those, that directly reference functions (Either UniqueVar Function). This will stop requiring us to use Maps for Monomorphization. Make sure to allow memoizing by UniqueVar.
-- Maybe the monomorphized AST should be an actual AST (starting from Main, without function list). This would also be pretty easy to compile and it would help with future interpretation..? And maybe it'll be easier to generate output programs?
-- Maybe represent function arrow (->) as a (predefined) constructor? This might simplify typechecking, because the environments would need to be handled by TCons, which we, as it turns out, already need to do.
 - make another phase "Transform", which transforms case expressions, checks for exhaustiveness of those case expressions, checks for unused code paths and returns.
   - But this will stop me from reporting those errors on functions, which, for example, are already typechecked... So, I'm not sure. I'll have to figure something out.
   - but in general. get rid of `Resolved` and `TyVared`
@@ -75,8 +55,6 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
     # In Haskell, it just works. Make it like Haskell.
   ```
-- Further simplify unification (make it Monoidal? find some algorithm, which enables me to make Subst composable)
-
 
 ## thoughts???
 - should I make a separate datatype for each annotation? or should I parse them later and check if they are correct?

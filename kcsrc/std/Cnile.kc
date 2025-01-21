@@ -1,0 +1,15 @@
+
+# TODO: should they be called "CInt" or "Int", but would often be used like "Cnile.Int"?
+
+#[ctype 'int']
+CInt
+
+#[ctype 'unsigned int']
+CUInt
+
+
+#[ctype 'char']
+CChar
+
+#[ctype 'unsigned char']
+CUChar

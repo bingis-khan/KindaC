@@ -1,0 +1,22 @@
+
+# assume we somehow import the standard definitions of C, like CUInt, CUChar, etc.
+
+# type synonyms!
+TCFlag = CUInt
+CC = CUChar
+Speed = CUInt
+
+# we allow the program to access its fields, but the structure is defined in termios.h, so we don't want to define it anyway.
+#[ctype 'struct termios', dontdefine, cstdinclude 'termios.h']
+Termios
+	c-iflag TCFlag
+	c-oflag TCFlag
+	c-cflag TCFlag
+	c-lflag TCFlag
+
+	c-line  CC
+	# we don't yet have array types. because we're not defining this structure anyway, just skip the definition.
+	# c-cc CArray CC 32   # NCCS = 32
+
+	c-ispeed Speed
+	c-ospeed Speed
