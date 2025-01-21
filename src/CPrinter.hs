@@ -4,10 +4,12 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Redundant &" #-}  -- BUG(LSP): LSP thinks it's the Data.Functor operator.
 
 module CPrinter (cModule) where
 
-import AST.Common (Annotated (..), Ann (ACType, ACLit), UniqueType (typeName), (:.) (..), TCon (..), UniqueVar, Op (..), Locality (Local, FromEnvironment), UniqueCon, ctx', silent, defaultContext, printIdentifiers, displayTypeParameters, fmap2, UniqueMem)
+import AST.Common (Annotated (..), Ann (ACType, ACLit), UniqueType (typeName), (:.) (..), TCon (..), UniqueVar, Op (..), Locality (Local, FromEnvironment), UniqueCon, ctx', silent, defaultContext, printIdentifiers, displayTypeParameters, fmap2, UniqueMem, encloseSepBy)
 import Misc.Memo (Memo, Memoizable)
 import qualified Misc.Memo as Memo
 import qualified AST.Common as Common
@@ -36,6 +38,7 @@ import Data.Unique (hashUnique)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Traversable (for)
 import Data.Either (lefts)
+import qualified Data.Map as Map
 
 
 -- COMPLAINTS:
@@ -151,6 +154,7 @@ cDeconCondition :: PL -> M.Decon -> PL
 cDeconCondition basevar mdecon =
   let conjunction = fmap (basevar &) $ flip cata mdecon $ \case
         M.CaseVariable _ _ -> []
+        M.CaseRecord _ _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) -> fmap (\c -> "." & cRecMember um & c) rec
         M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args ->
           let cons' = fromJust $ Common.eitherToMaybe cons  -- cannot be a record type! NOTE: this is ugly, should I just make two separate types?
           in case cons' of
@@ -169,6 +173,9 @@ cDeconCondition basevar mdecon =
 cDeconAccess :: PL -> M.Decon -> [(UniqueVar, M.Type, PL)]
 cDeconAccess basevar mdecon = fmap2 (basevar &) $ flip cata mdecon $ \case
   M.CaseVariable t uv -> [(uv, t, "" :: PL)]
+  M.CaseRecord _ _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) ->
+    flip fmap2 rec $ \acc -> "." & cRecMember um & acc
+
   M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args ->
     let cons' = fromJust $ Common.eitherToMaybe cons
     in case cons' of
@@ -176,6 +183,7 @@ cDeconAccess basevar mdecon = fmap2 (basevar &) $ flip cata mdecon $ \case
       conz | all (\(M.DC _ _ conargs _) -> null conargs) conz -> []
 
       [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> fmap2 (("." & cConMember uc x) &) conargs
+
       _:_ -> concatMap (\(x, conargs) -> fmap2 (("." & "env" & "." & cConStruct dc & "." & cConMember uc x) &) conargs) (zip [1::Int ..] args)
 
 
@@ -207,6 +215,22 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
     include "string.h"
     enclose "(" ")" $ "0" § "!=" § cCall "memcmp" [cRef le', cRef re', cSizeOf lt]
 
+  M.RecUpdate dd@(M.DD _ erecs _ _) (et, ee) upd -> do
+    ol'value <- createIntermediateVariable et ee
+
+    let records = case erecs of
+          Left recs -> recs
+          Right _ -> error "Not a record type!!!"
+
+    let updatedFields = Set.fromList $ NonEmpty.toList $ fst <$> upd
+    let persistedFields = filter (`Set.notMember` updatedFields) $ NonEmpty.toList $ records <&> \(M.DR _ um _ _) -> um
+
+    let initializePersistedFields = persistedFields <&> \um ->
+          (um, ol'value & "." & cRecMember um)
+    let initializeUpdatedFields = upd <&> \(um, (_, me)) ->
+          (um, me)
+
+    cRecordInit dd (NonEmpty.prependList initializePersistedFields initializeUpdatedFields)
 
   -- branch without the need for added types.
   pe -> case fmap snd pe of
@@ -217,8 +241,16 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
     M.Con uc -> cCon uc
     M.Op l op r -> enclose "(" ")" $ l § cOp op § r
     M.Lam env params body -> cLambda env params t body
+    M.MemAccess ee mem -> ee & "." & cRecMember mem
+    M.RecCon dd insts -> cRecordInit dd insts
     _ -> undefined
 
+cRecordInit :: M.DataDef -> NonEmpty (UniqueMem, PL) -> PL
+cRecordInit (M.DD ut _ _ _) insts =
+  let dataTypeName = plt ut.typeName.fromTC & "__" & pls (hashUnique ut.typeID)
+  in enclose "(" ")" dataTypeName § encloseSepBy "{" "}" ", " [
+      "." & cRecMember um § "=" § e | (um, e) <- NonEmpty.toList insts
+    ]
 
 
 cUnion :: [M.Type] -> M.Type -> M.EnvUnion -> PL
@@ -258,8 +290,10 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compile
       when (null menv) $
         error "[COMPILER ERROR]: Called `cEnv` with an empty environment. I can ignore it, but this is probably a bug. This should be checked beforehand btw. Why? sometimes, it requires special handling, so making it an error kind of makes me aware of this."
 
+      let uniqueVars = fmap snd $ Map.toList $ Map.fromList $ fmap (\t@(v, _, _) -> (v, t)) vars
+
       let varTypes =
-            vars <&> \(v, _, t) -> statement $ do
+            uniqueVars <&> \(v, _, t) -> statement $ do
             cDefinition t $ cVarName $ M.asUniqueVar v
 
       let etype = "struct" § "et" & pls (hashUnique eid.fromEnvID)
@@ -268,7 +302,7 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compile
 
 
       let name = "et" & pls (hashUnique eid.fromEnvID) & "s"
-      let cvarInsts = vars <&> \(v, loc, t) -> "." & cVarName (M.asUniqueVar v) § "=" § cVar t loc v
+      let cvarInsts = uniqueVars <&> \(v, loc, t) -> "." & cVarName (M.asUniqueVar v) § "=" § cVar t loc v
       let inst = enclose "{ " " }" $ sepBy ", " cvarInsts
       pure EnvNames { envType = etype, envName = name, envInstantiation = inst }
 
@@ -325,17 +359,17 @@ cFunction fun' =
     -- prepare parameters for funny deconstruction.
     let nonDeconstructions = project . fst <$> fd.functionParameters <&> \case -- find parameters that are just variables (to reduce noise, it doesn't actually matter.)
           M.CaseVariable _ uv -> Right uv
-          kase@M.CaseConstructor {} -> Left (embed kase)
+          kase -> Left (embed kase)
 
     let paramTypes = snd <$> fd.functionParameters
 
     -- replace missing with temps
-    addedTempsToParams <- for nonDeconstructions $ \case 
+    addedTempsToParams <- for nonDeconstructions $ \case
       Right uv -> pure $ Right $ cVarName uv
       Left _ -> Left <$> nextTemp
 
     let filledIn = addedTempsToParams <&> \case { Left l -> l; Right r -> r }
-    
+
     let cparams = zip filledIn paramTypes <&> \(var, t) -> cDefinition t var
     let envparam = do
           let envtype = if null fd.functionEnv
@@ -361,7 +395,7 @@ cFunction fun' =
               tempsForDeconstructions = lefts addedTempsToParams
               bigCondition = "!" & enclose "(" ")" (sepBy " && " $ zipWith cDeconCondition tempsForDeconstructions actualDeconstructions)  -- make a big condition. if it's not satisfied, we must fail immediately.
 
-              guard = "if" § enclose "(" ")" bigCondition <§ cBlock 
+              guard = "if" § enclose "(" ")" bigCondition <§ cBlock
                     [ statement $ do
                       include "stdio.h"
                       cCall "printf" [cstr "Pattern not satisfied to enter function (line %d).\n", "__LINE__"]
@@ -510,10 +544,9 @@ cStruct (M.DC _ uc ts@(_:_) _) = "struct" <§ cBlock
     member t i =
       statement $ cDefinition t (cConMember uc i)
 
-cRecordStruct :: [M.DataRec] -> PP
-cRecordStruct [] = mempty
-cRecordStruct recs@(_:_) = "struct" <§ cBlock
-  [ statement $ cDefinition t (cRecMember um) | M.DR _ um t _ <- recs ]
+cRecordStruct :: NonEmpty M.DataRec -> PP
+cRecordStruct recs = "struct" <§ cBlock
+  [ statement $ cDefinition t (cRecMember um) | M.DR _ um t _ <- NonEmpty.toList recs ]
 
 
 cVar :: M.Type -> Locality -> M.Variable -> PL
@@ -554,28 +587,28 @@ sanitize = Text.concatMap $ \case
 -- supposed to be the definitie source for unique names.
 cCon :: M.DataCon -> PL
 -- type constructor with arguments - treat it as a function
-cCon (M.DC _ c (_:_) _) = plt c.conName.fromCN & "__" & pls (hashUnique c.conID) & "f"
+cCon (M.DC _ c (_:_) _) = plt (sanitize c.conName.fromCN) & "__" & pls (hashUnique c.conID) & "f"
 -- enum type constructor (refer to actual datatype)
 cCon (M.DC _ c [] anns) =
   let representsBuiltin = find (\case { ACLit con -> Just con; _ -> Nothing }) anns
   in case representsBuiltin of
-    Just t -> plt t
-    Nothing -> plt c.conName.fromCN & "__" & pls (hashUnique c.conID)
+    Just t -> plt (sanitize t)
+    Nothing -> plt (sanitize c.conName.fromCN) & "__" & pls (hashUnique c.conID)
 
 
 cTag :: M.DataCon -> PL
-cTag (M.DC _ c _ _) = plt c.conName.fromCN & "__" & pls (hashUnique c.conID) <> "t"
+cTag (M.DC _ c _ _) = plt (sanitize c.conName.fromCN) & "__" & pls (hashUnique c.conID) <> "t"
 
 
 -- defines names of constructor members for functions to synchronize between each other.
 cConMember :: UniqueCon -> Int -> PL
-cConMember uc i = "c" & plt uc.conName.fromCN & "__" & pls (hashUnique uc.conID) & "__" & pls i
+cConMember uc i = "c" & plt (sanitize uc.conName.fromCN) & "__" & pls (hashUnique uc.conID) & "__" & pls i
 
 cRecMember :: UniqueMem -> PL
-cRecMember um = "m" & plt um.memName.fromMN & "__" & pls (hashUnique um.memID)
+cRecMember um = "m" & plt (sanitize um.memName.fromMN) & "__" & pls (hashUnique um.memID)
 
 cConStruct :: M.DataCon -> PL
-cConStruct (M.DC _ uc _ _) = "c" & plt uc.conName.fromCN & "__" & pls (hashUnique uc.conID) & "s"
+cConStruct (M.DC _ uc _ _) = "c" & plt (sanitize uc.conName.fromCN) & "__" & pls (hashUnique uc.conID) & "s"
 
 
 isBuiltinType :: M.Type -> Bool

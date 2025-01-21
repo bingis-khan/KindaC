@@ -10,7 +10,7 @@ module Resolver (resolve, ResolveError) where
 import Data.Unique (newUnique)
 import Control.Monad.IO.Class (liftIO)
 import Data.Functor.Foldable (transverse, cata, embed)
-import Data.Foldable (fold)
+import Data.Foldable (fold, for_)
 import Control.Monad.Trans.RWS (RWST)
 import Data.Map (Map, (!?))
 import qualified Control.Monad.Trans.RWS as RWST
@@ -19,11 +19,11 @@ import qualified Data.Map as Map
 import Data.List.NonEmpty (NonEmpty ((:|)), (<|))
 import qualified Data.List.NonEmpty as NonEmpty
 import Control.Applicative ((<|>))
-import Data.Set (Set)
+import Data.Set (Set, (\\))
 import Data.Bifoldable (bifold)
 import qualified Data.Set as Set
 
-import AST.Common (UniqueVar (..), UniqueCon (..), UniqueType (..), Locality (..), VarName (..), TCon (..), ConName (..), Annotated (..), (:.) (..), UnboundTVar (..), TVar (..), Binding (..), bindTVar)
+import AST.Common (UniqueVar (..), UniqueCon (..), UniqueType (..), Locality (..), VarName (..), TCon (..), ConName (..), Annotated (..), (:.) (..), UnboundTVar (..), TVar (..), Binding (..), bindTVar, MemName, sequenceA2)
 import AST.Converged (Prelude(..))
 import qualified AST.Converged as Prelude
 import AST.Untyped (StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..), DataRec (DR))
@@ -204,6 +204,30 @@ rDecon = transverse $ \case
         placeholderCon conname
 
     R.CaseConstructor con <$> sequenceA decons
+  U.CaseRecord tyName members -> do
+    ty <- resolveType tyName
+    mems <- traverse sequenceA members
+
+    -- NOTE: we can check here if members exist in datatype.
+    -- however it won't be so simple if we add anonymous structs.
+    -- basically, it'll be checked during typechecking..?
+    -- TODO: what's better?
+    case R.tryGetMembersFromDatatype ty of
+      Nothing -> pure ()
+      Just recs -> do
+        let tyMems = Set.fromList $ NonEmpty.toList recs
+        let currentMems = Set.fromList $ NonEmpty.toList $ fst <$> mems
+        let extraneousMems = currentMems \\ tyMems
+
+        for_ extraneousMems $ \mem ->
+          err $ MemberNotInDataDef mem (R.asUniqueType ty, NonEmpty.toList recs)
+
+        let memDefinitions = Map.unionsWith (+) $ flip Map.singleton (1 :: Int) . fst <$> mems
+        let redefinedMems = fmap fst $ filter ((>1) . snd) $ Map.toList memDefinitions  -- find member variables that were defined more than once.
+        for_ redefinedMems $ \mem ->
+          err $ RedefinedMember mem
+
+    pure $ R.CaseRecord ty mems
 
 rExpr :: U.Expr -> Ctx R.Expr
 rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
@@ -222,6 +246,41 @@ rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
   MemAccess expr memname -> do
     rexpr <- expr
     pure $ R.MemAccess rexpr memname
+  RecCon tyname mems -> do
+    ty <- resolveType tyname
+    mems' <- sequenceA2 mems
+
+    case R.tryGetMembersFromDatatype ty of
+      Nothing -> pure ()
+      Just recs -> do
+        let tyMems = Set.fromList $ NonEmpty.toList recs
+        let currentMems = Set.fromList $ NonEmpty.toList $ fst <$> mems
+
+        -- TODO: I don't have a Show instance for DataDef because lazy, so this should suffice for now.
+        let dd = (R.asUniqueType ty, NonEmpty.toList recs)
+
+        -- report members not in the current datatype.
+        let extraneousMems = currentMems \\ tyMems
+        for_ extraneousMems $ \mem ->
+          err $ MemberNotInDataDef mem dd
+
+        -- report members that were not defined, but should have been.
+        let undefinedMems = tyMems \\ currentMems
+        for_ undefinedMems $ \mem ->
+          err $ DidNotDefineMember mem dd
+
+        -- report redefinitions.
+        let memDefinitions = Map.unionsWith (+) $ flip Map.singleton (1 :: Int) . fst <$> mems
+        let redefinedMems = fmap fst $ filter ((>1) . snd) $ Map.toList memDefinitions  -- find member variables that were defined more than once.
+        for_ redefinedMems $ \mem ->
+          err $ RedefinedMember mem
+    
+    pure $ R.RecCon ty mems'
+    
+  RecUpdate e mems -> do
+    e' <- e
+    mems' <- sequenceA2 mems
+    pure $ R.RecUpdate e' mems'
 
   Op l op r -> R.Op <$> l <*> pure op <*> r
   Call c args -> R.Call <$> c <*> sequenceA args
@@ -508,6 +567,12 @@ data ResolveError
   | UnboundTypeVariable UnboundTVar
   | TypeRedeclaration TCon
   | CannotMutateFunctionDeclaration VarName
+
+  | DidNotDefineMember MemName (UniqueType, [MemName])
+  | MemberNotInDataDef MemName (UniqueType, [MemName])
+  | RedefinedMember    MemName
+
+  | NotARecordType UniqueType
   deriving Show
 
 

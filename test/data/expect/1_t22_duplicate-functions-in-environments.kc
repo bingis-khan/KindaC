@@ -1,0 +1,17 @@
+#$ I had a problem when a function of the same type was referenced twice in the environment.
+# 71
+# 422
+
+add1 (x Int) -> Int
+	return x + 1
+
+add2 (x Int) -> Int
+	x' = add1(x)
+	x'' = add1(x')
+	return x''
+
+x = add2(69)
+print x
+
+y = add2(420)
+print y

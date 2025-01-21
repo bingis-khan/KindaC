@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, UndecidableInstances, LambdaCase, OverloadedStrings, OverloadedRecordDot, DuplicateRecordFields, TypeOperators #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar, ppMem, MemName)
+import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar, ppMem, MemName, ppRecordMems)
 import qualified AST.Typed as T
 
 import Data.Fix (Fix(..))
@@ -23,7 +23,7 @@ import Data.String (fromString)
 
 data DataRec = DR DataDef MemName Type [Ann]  -- we don't know if the var is unique yet (I mean, here, it is... should it be a uniquevar here?)
 data DataCon = DC DataDef UniqueCon [Type] [Ann]
-data DataDef = DD UniqueType [TVar] (Either [DataRec] [DataCon]) [Ann]
+data DataDef = DD UniqueType [TVar] (Either (NonEmpty DataRec) [DataCon]) [Ann]
 
 instance Eq DataCon where
   DC _ uc _ _ == DC _ uc' _ _ = uc == uc'
@@ -65,6 +65,9 @@ data ExprF a
   = Lit LitType
   | Var Locality Variable
   | Con Constructor
+
+  | RecCon Datatype (NonEmpty (MemName, a))
+  | RecUpdate a (NonEmpty (MemName, a))
   | MemAccess a MemName  -- TODO: should this be unique var? At this point, we don't really know which accessor it is.
 
   | Op a Op a
@@ -96,6 +99,11 @@ data Datatype
   = DefinedDatatype DataDef
   | ExternalDatatype T.DataDef
 
+tryGetMembersFromDatatype :: Datatype -> Maybe (NonEmpty MemName)
+tryGetMembersFromDatatype = \case
+  DefinedDatatype (DD _ _ (Left recs) _) -> Just $ recs <&> \(DR _ mem _ _) -> mem
+  ExternalDatatype (T.DD _ _ (Left recs) _) -> Just $ recs <&> \(T.DR _ mem _ _) -> mem
+  _ -> Nothing
 
 
 ----------
@@ -105,6 +113,7 @@ data Datatype
 data DeconF a
   = CaseVariable UniqueVar
   | CaseConstructor Constructor [a]
+  | CaseRecord Datatype (NonEmpty (MemName, a))  -- ISSUE(record-as-separate-type): ya know
   deriving (Functor)
 type Decon = Fix DeconF
 
@@ -243,6 +252,7 @@ tDecon = cata $ \case
   CaseVariable uv -> ppVar Local uv
   CaseConstructor uc [] -> ppCon $ asUniqueCon uc
   CaseConstructor uc args@(_:_) -> ppCon (asUniqueCon uc) <> encloseSepBy "(" ")" ", " args
+  CaseRecord dd args -> ppTypeInfo (asUniqueType dd) <+> ppRecordMems args
 
 tExpr :: Expr -> Context
 tExpr = cata $ \case
@@ -250,7 +260,11 @@ tExpr = cata $ \case
   Lit (LFloat f) -> pretty $ show f
   Var l v -> ppVar l (asUniqueVar v)
   Con c -> ppCon (asUniqueCon c)
-  MemAccess c memname -> c <> "." <> ppMem memname
+
+  
+  RecCon dd inst -> ppTypeInfo (asUniqueType dd) <+> ppRecordMems inst
+  RecUpdate c upd -> c <+> ppRecordMems upd
+  MemAccess c mem -> c <> "." <> ppMem mem
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
@@ -269,7 +283,7 @@ tExpr = cata $ \case
 tDataDef :: DataDef -> Context
 tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y _) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ tConRec cons
 
-tConRec :: Either [DataRec] [DataCon] -> Context
+tConRec :: Either (NonEmpty DataRec) [DataCon] -> Context
 tConRec (Left dr) = ppLines tRecDef dr
 tConRec (Right dc) = ppLines tConDef dc
 

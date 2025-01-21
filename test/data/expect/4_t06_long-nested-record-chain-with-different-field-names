@@ -1,0 +1,21 @@
+#$ Long nested record chain (different field names.)
+# 69
+
+R1
+	rec1 Int
+
+R2
+	rec2 R1
+
+R3
+	rec3 R2
+
+R4
+	rec4 R3
+
+R5
+	rec5 R4
+
+rec = R5 { rec5: R4 { rec4: R3 { rec3: R2 { rec2: R1 { rec1: 69 }}}}}
+
+print rec.rec5.rec4.rec3.rec2.rec1

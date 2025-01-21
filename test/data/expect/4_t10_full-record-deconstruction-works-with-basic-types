@@ -1,0 +1,17 @@
+#$ Full record deconstruction works with basic types.
+# 133769
+# ()
+# False
+
+Record
+	wow Int
+	unit Unit
+	soy Bool
+
+rec = Record { wow: 133769, unit: Unit, soy: False }
+
+case rec
+	Record { wow: x, unit: u, soy: s }
+		print x
+		print u
+		print s

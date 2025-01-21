@@ -42,7 +42,7 @@ type DataCon = DataCon' FullEnv
 
 data DataDef' envtype = DD
   { thisType :: UniqueType
-  , constructors :: Either [DataRec' envtype] [DataCon' envtype]
+  , constructors :: Either (NonEmpty (DataRec' envtype)) [DataCon' envtype]
   , annotations :: [Ann]
 
     -- used only for displaying type information to the USER!
@@ -224,6 +224,9 @@ data ExprF envtype a
   = Lit LitType
   | Var Locality (Variable' envtype)
   | Con (DataCon' envtype)
+
+  | RecCon (DataDef' envtype) (NonEmpty (UniqueMem, a))
+  | RecUpdate (DataDef' envtype) a (NonEmpty (UniqueMem, a))
   | MemAccess a UniqueMem
   
   | Op a Op a
@@ -248,6 +251,7 @@ expr2type (Fix (TypedExpr t _)) = t
 data Variable' envtype
   = DefinedVariable UniqueVar
   | DefinedFunction (Function' envtype)
+  deriving (Eq, Ord)
 
 type IVariable = Variable' IncompleteEnv
 type Variable = Variable' FullEnv
@@ -267,6 +271,7 @@ asUniqueVar = \case
 data DeconF envtype a
   = CaseVariable (Type' envtype) UniqueVar
   | CaseConstructor (Type' envtype) (DataCon' envtype) [a]
+  | CaseRecord (Type' envtype) (DataDef' envtype) (NonEmpty (UniqueMem, a))
   deriving (Functor)
 
 type IDecon = Fix (DeconF IncompleteEnv)
@@ -387,6 +392,7 @@ tDecon = cata $ \case
   CaseVariable _ uv -> ppVar Local uv
   CaseConstructor _ (DC _ uc _ _) [] -> ppCon uc
   CaseConstructor _ (DC _ uc _ _) args@(_ : _) -> ppCon uc <> encloseSepBy "(" ")" ", " args
+  CaseRecord t (DD ut _ _ _) args -> ppTypeInfo ut <+> tRecordMems args <+> "::" <+> tType t
 
 tExpr :: Expr -> Context
 tExpr = cata $ \(TypedExpr t expr) ->
@@ -397,7 +403,11 @@ tExpr = cata $ \(TypedExpr t expr) ->
         Var l (DefinedVariable v) -> ppVar l v
         Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
         Con (DC _ uc _ _) -> ppCon uc
-        MemAccess _ _ -> undefined
+
+        RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> tRecordMems inst
+        RecUpdate _ c upd -> c <+> tRecordMems upd
+        MemAccess c mem -> c <> "." <> ppUniqueMem mem
+
         Op l op r -> l <+> ppOp op <+> r
         Call f args -> f <> encloseSepBy "(" ")" ", " args
         Lam lenv params e -> fromString $ printf "%s %s:%s" (tEnv lenv) (sepBy " " (map (\(v, vt) -> ppVar Local v <+> tType vt) params)) e
@@ -419,7 +429,7 @@ tDataDef (DD tid cons ann _) = annotate ann $ indent (ppTypeInfo tid) $ tDataCon
 tConDef :: DataCon -> Context
 tConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
 
-tDataCons :: Either [DataRec] [DataCon] -> Context
+tDataCons :: Either (NonEmpty DataRec) [DataCon] -> Context
 tDataCons (Left recs) = ppLines (\dc@(DR _ _ _ ann) -> annotate ann (tRecDef dc)) recs
 tDataCons (Right cons) = ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
 
@@ -463,6 +473,9 @@ tBody :: (Foldable f) => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
 
 
+tRecordMems :: NonEmpty (UniqueMem, Context) -> Context
+tRecordMems = encloseSepBy "{" "}" ", " . fmap (\(mem, e) -> ppUniqueMem mem <> ":" <+> e) . NonEmpty.toList
+
 
 --------------------------------------------------------------------------------------
 -- Printing the AST (cucked version)
@@ -504,6 +517,7 @@ mtDecon = cata $ \case
   CaseVariable _ uv -> ppVar Local uv
   CaseConstructor _ (DC _ uc _ _) [] -> ppCon uc
   CaseConstructor _ (DC _ uc _ _) args@(_ : _) -> ppCon uc <> encloseSepBy "(" ")" ", " args
+  CaseRecord t (DD ut _ _ _) args -> ppTypeInfo ut <+> tRecordMems args <+> "::" <+> mtType t
 
 mtExpr :: IExpr -> Context
 mtExpr = cata $ \(TypedExpr t expr) ->
@@ -514,7 +528,11 @@ mtExpr = cata $ \(TypedExpr t expr) ->
         Var l (DefinedVariable v) -> ppVar l v
         Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
         Con (DC _ uc _ _) -> ppCon uc
-        MemAccess c um -> fromString $ printf "%s.%s" c (ppUniqueMem um)
+
+        RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> tRecordMems inst
+        RecUpdate _ c upd -> c <+> tRecordMems upd
+        MemAccess c mem -> c <> "." <> ppUniqueMem mem
+
         Op l op r -> l <+> ppOp op <+> r
         Call f args -> f <> encloseSepBy "(" ")" ", " args
         Lam lenv params e -> fromString $ printf "%s %s:%s" (mtEnv lenv) (sepBy " " (map (\(v, vt) -> ppVar Local v <+> mtType vt) params)) e

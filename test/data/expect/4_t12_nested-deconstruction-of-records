@@ -1,0 +1,21 @@
+#$ Nested deconstruction of records.
+# True
+# 808
+# ()
+
+NestedRec
+	nested-int Int
+	nested-unit Unit
+
+Rec
+	nested NestedRec
+	some-bool Bool
+
+
+rec = Rec { some-bool: True, nested: NestedRec { nested-int: 808, nested-unit: Unit } }
+
+case rec
+	Rec { some-bool: bul, nested: NestedRec { nested-int: x, nested-unit: unit } }
+		print bul
+		print x
+		print unit

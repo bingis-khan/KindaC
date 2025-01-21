@@ -6,7 +6,7 @@
 {-# HLINT ignore "Redundant pure" #-}  -- this is retarded. it sometimes increases readability with that extra pure.
 module Mono (mono) where
 
-import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, ppTVar, traverse2, fmap2, MemName, UniqueMem (..))
+import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, ppTVar, traverse2, fmap2, MemName, UniqueMem (..), sequenceA2)
 import qualified AST.Typed as T
 import qualified AST.Mono as M
 import qualified AST.Common as Common
@@ -118,12 +118,24 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
 
       pure $ M.Con mc
 
-    T.MemAccess me memname -> do
-      -- fun unsafe shit.
-      let dd = case project (M.expr2type me) of
-            M.ITCon mdd _ _ -> mdd
-            mpt -> error $ printf "Ayo, member type is not a data definition, wut???? (type: %s) for member %s" (M.mtType (embed mpt)) (Common.ppMem memname)
+    T.RecCon _ inst -> do
+      let dd = expectIDataDef mt
+      inst' <- for inst $ \(mem, memt) -> do
+        ut <- member (dd, mem)
+        pure (ut, memt)
 
+      pure $ M.RecCon dd inst'
+
+    T.RecUpdate me upd -> do
+      let dd = expectIDataDef (M.expr2type me)
+      upd' <- for upd $ \(mem, meme) -> do
+        ut <- member (dd, mem)
+        pure (ut, meme)
+
+      pure $ M.RecUpdate dd me upd'
+
+    T.MemAccess me memname -> do
+      let dd = expectIDataDef (M.expr2type me)
       um <- member (dd, memname)
       pure $ M.MemAccess me um
 
@@ -154,6 +166,21 @@ mDecon = cata $ fmap embed . \case
   T.CaseVariable t uv -> do
     mt <- mType t
     pure $ M.CaseVariable mt uv
+
+  T.CaseRecord t _ args -> do
+    mt <- mType t
+
+    -- fun unsafe shit.
+    let dd = case project mt of
+          M.ITCon mdd _ _ -> mdd
+          mpt -> error $ printf "Ayo, member type is not a data definition, wut???? (type: %s)" (M.mtType (embed mpt))
+
+    margs <- for args $ \(mem, decon) -> do
+      mdecon <- decon
+      um <- member (dd, mem)
+      pure (um, mdecon)
+
+    pure $ M.CaseRecord mt dd margs
 
   T.CaseConstructor t dc args -> do
     mt <- mType t
@@ -244,7 +271,6 @@ constructor tdc@(T.DC dd@(T.DD ut _ _ _) _ _ _) et = do
         Nothing -> error $ printf "[COMPILER ERROR]: Failed to query an existing constructor for type %s.\n TypeMap: %s\n(applied TVs: %s, applied unions: %s) -> (applied TVs: %s, applied unions: %s)" (Common.ppTypeInfo ut) (ppTypeMap tm) (Common.ppSet T.tType ttypes) (Common.ppSet (T.tEnvUnion . fmap T.tType) tunions) (Common.ppSet M.mtType mtypes) (Common.ppSet (maybe "?" (M.tEnvUnion . fmap M.mtEnv)) munions)
 
   pure mdc
-
 
 member :: (M.IDataDef, MemName) -> Context UniqueMem
 member = memo memoMember (\mem s -> s { memoMember = mem }) $ \(_, memname) _ -> do
@@ -620,6 +646,19 @@ mfDecon = cata $ fmap embed . \case
     mt <- mfType t
     pure $ M.CaseVariable mt v
 
+  M.CaseRecord t _ decons -> do
+    mt <- mfType t
+    
+    -- fun unsafe shit.
+    let dd = case project mt of
+          M.TCon mdd -> mdd
+          mpt -> error $ printf "Ayo, member type is not a data definition, wut???? (type: %s)" (M.tType (embed mpt))
+
+    decons' <- for decons $ \(um, decon) -> do
+      mdecon <- decon
+      pure (um, mdecon)
+    pure $ M.CaseRecord mt dd decons'
+
   M.CaseConstructor t dc decons -> do
     mt <- mfType t
     mdc <- mfConstructor dc t
@@ -639,6 +678,16 @@ mfExpr expr = flip cata expr $ \(M.TypedExpr imt imexpr) -> do
       pure $ M.Lam menv margs mret
 
     M.Con con -> M.Con <$> mfConstructor con imt
+
+    M.RecCon _ insts -> do
+      let dd = expectDataDef mt
+      insts' <- sequenceA2 insts
+      pure $ M.RecCon dd insts'
+    M.RecUpdate _ e upd -> do
+      let dd = expectDataDef mt
+      me <- e
+      upd' <- sequenceA2 upd
+      pure $ M.RecUpdate dd me upd'
     M.MemAccess e um -> do
       mfe <- e
       pure $ M.MemAccess mfe um
@@ -797,6 +846,17 @@ filterEnvs envs = do
   let f (M.RecursiveEnv eid _) = Map.member eid envIds
       f (M.Env eid _) = Map.member eid envIds
   pure $ filter f envs
+
+
+expectIDataDef :: M.IType -> M.IDataDef
+expectIDataDef mt = case project mt of
+    M.ITCon mdd _ _ -> mdd
+    mpt -> error $ printf "Ayo, member type is not a data definition, wut???? (type: %s)" (M.mtType (embed mpt))
+
+expectDataDef :: M.Type -> M.DataDef
+expectDataDef mt = case project mt of
+    M.TCon mdd -> mdd
+    mpt -> error $ printf "Ayo, member type is not a data definition, wut???? (type: %s)" (M.tType (embed mpt))
 
 
 

@@ -38,7 +38,7 @@ import qualified AST.Resolved as R
 import qualified AST.Typed as T
 
 import AST.Converged (Prelude(..), PreludeFind (..), boolFind, tlReturnFind, intFind, floatFind)
-import AST.Common (TVar (TV), LitType (..), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..), mustOr, sctx, ppList, eitherToMaybe, MemName)
+import AST.Common (TVar (TV), LitType (..), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..), mustOr, sctx, ppList, eitherToMaybe, MemName, sequenceA2)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
@@ -276,6 +276,32 @@ inferExpr = cata (fmap embed . inferExprType)
           t <- instantiateConstructor emptyEnv c'
           pure (T.Con emptyEnv c', t)
 
+        R.RecCon dd insts -> do
+          -- currently, all the redefinitions are reported in Resolver.
+          -- this might not be the case when implementing ISSUE(anonymous-structs)
+
+          dd' <- inferDatatype dd
+          insts' <- sequenceA2 insts
+          t <- instantiateRecord dd'
+
+          for_ insts' $ \(name, me) -> do
+            mt <- addMember t name
+            uni mt (T.getType me)
+          
+          pure (T.RecCon dd' insts', t)
+
+
+        R.RecUpdate re updates -> do
+          te <- re
+          updates' <- sequenceA2 updates
+
+          -- the type can be whatever, so we couldn't check these fields in the resolver ISSUE(anonymous-records)
+          for_ updates' $ \(mem, me) -> do
+            memt <- addMember (T.getType te) mem
+            uni memt (T.getType me)
+
+          pure (T.RecUpdate te updates', T.getType te)
+
         R.MemAccess re memname -> do
           te <- re
 
@@ -355,6 +381,11 @@ inferType = cata $ (.) (fmap embed) $ \case
   R.TFun rargs rret -> liftA3 T.TFun emptyUnion (sequenceA rargs) rret
 
 
+
+inferDatatype :: R.Datatype -> Infer T.DataDef
+inferDatatype = \case
+  R.ExternalDatatype tdd -> pure tdd
+  R.DefinedDatatype rdd -> inferDataDef rdd
 
 inferDataDef :: R.DataDef -> Infer T.DataDef
 inferDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }) $
@@ -581,6 +612,17 @@ inferDecon = cata $ fmap embed . \case
       t <- var uv
       pure (T.CaseVariable t uv)
 
+    R.CaseRecord dd cases -> do
+      dd' <- inferDatatype dd
+      t <- instantiateRecord dd'
+      cases' <- sequenceA2 cases
+
+      for_ cases' $ \(mem, decon) -> do
+        mt <- addMember t mem
+        uni mt (T.decon2type decon)
+
+      pure $ T.CaseRecord t dd' cases'
+
     R.CaseConstructor rcon idecons -> do
 
       -- Ger proper constructor.
@@ -652,6 +694,13 @@ instantiateConstructor envID = \case
     union <- singleEnvUnion emptyEnv
 
     pure $ Fix $ T.TFun union ts ret
+
+instantiateRecord :: T.DataDef -> Infer T.Type
+instantiateRecord dd@(T.DD _ scheme (Left _) _) = do
+  (tvs, unions) <- instantiateScheme scheme
+  pure $ Fix $ T.TCon dd tvs unions 
+
+instantiateRecord (T.DD ut _ (Right _) _) = error $ printf "Attempted to instantiate ADT (%s) as a Record!" (Common.ppTypeInfo ut)
 
 
 instantiateScheme :: Scheme -> Infer ([T.Type], [T.EnvUnion])
@@ -893,9 +942,11 @@ instance Substitutable (Fix T.DeconF) where
   ftv = cata $ \case
     T.CaseVariable t _ -> ftv t
     T.CaseConstructor t _ ftvs -> ftv t <> mconcat ftvs
+    T.CaseRecord t _ ftvs -> ftv t <> foldMap snd ftvs
   subst su = hoist $ \case
     T.CaseVariable t v -> T.CaseVariable (subst su t) v
     T.CaseConstructor t uc ds -> T.CaseConstructor (subst su t) uc ds
+    T.CaseRecord t dd ds -> T.CaseRecord (subst su t) dd ds
 
 instance Substitutable (Fix T.TypedExpr) where
   ftv = cata $ \(T.TypedExpr et ee) -> ftv et <> case ee of

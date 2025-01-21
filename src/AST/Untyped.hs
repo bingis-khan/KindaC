@@ -39,6 +39,9 @@ data ExprF a
   = Lit LitType
   | Var VarName
   | Con ConName
+
+  | RecCon TCon (NonEmpty (MemName, a))
+  | RecUpdate a (NonEmpty (MemName, a))
   | MemAccess a MemName
 
   | Op a Op a
@@ -58,7 +61,7 @@ $(deriveEq1 ''ExprF)
 
 data DataRec = DR MemName Type deriving Eq
 data DataCon = DC ConName [Type] deriving Eq
-data DataDef = DD TCon [UnboundTVar] (Either [Annotated DataRec] [Annotated DataCon]) deriving Eq
+data DataDef = DD TCon [UnboundTVar] (Either (NonEmpty (Annotated DataRec)) [Annotated DataCon]) deriving Eq  -- ISSUE(record-as-separate-type): TODO: in the future should probably be split ADTs and Records into two separate data types, but it makes working with these easier, as we just reuse functions (less things to worry about and less code.) everything else is a bit scuffed.
 
 
 
@@ -69,6 +72,7 @@ data DataDef = DD TCon [UnboundTVar] (Either [Annotated DataRec] [Annotated Data
 data DeconF a
   = CaseVariable VarName
   | CaseConstructor ConName [a]
+  | CaseRecord TCon (NonEmpty (MemName, a))
   deriving (Eq, Functor)
 $(deriveEq1 ''DeconF)
 type Decon = Fix DeconF

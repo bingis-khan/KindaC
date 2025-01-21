@@ -15,7 +15,7 @@ import Control.Monad.Combinators.Expr
 import Data.Bifunctor (first)
 import Data.Functor (void, ($>))
 import Data.Fix (Fix(Fix))
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as NE
 
 import Data.Maybe (isJust, catMaybes, fromMaybe)
@@ -100,10 +100,22 @@ sSingleCase = scope id $ do
   pure $ Case decon Nothing
 
 sDeconstruction :: Parser Decon
-sDeconstruction = caseVariable <|> caseConstructor
+sDeconstruction = caseVariable <|> caseRecord <|> caseConstructor
   where
     caseVariable = Fix . CaseVariable <$> variable
     caseConstructor = fmap Fix $ CaseConstructor <$> dataConstructor <*> args
+    caseRecord = do
+      name <- try $ typeName <* lookAhead (symbol "{")
+      decons <- NonEmpty.fromList <$> between (symbol "{") (symbol "}") (sepBy1 recordFieldDecon (symbol ","))
+      pure $ Fix $ CaseRecord name decons
+
+    recordFieldDecon = do
+      fieldName <- member
+      symbol ":"
+      decon <- sDeconstruction
+      pure (fieldName, decon)
+
+
     args = do
       between (symbol "(") (symbol ")") (sepBy1 sDeconstruction (symbol ",")) <|> pure []
 
@@ -171,11 +183,13 @@ sFunctionOrCall = recoverableIndentBlock $ do
                 funName = Fix $ Var name
             in pure $ ExprStmt $ Fix $ Call funName args
 
+-- some construction might also be misrepresented as a deconstruction.
 deconToExpr :: Decon -> Expr
 deconToExpr = cata $ embed . \case
   CaseVariable v                  -> Var v
   CaseConstructor con []          -> Con con
   CaseConstructor con exprs@(_:_) -> Call (Fix $ Con con) exprs
+  CaseRecord con mems             -> RecCon con mems
 
 functionHeader :: Parser (FunDec, Maybe Expr)
 functionHeader = do
@@ -198,21 +212,22 @@ sDataDefinition :: Parser Stmt
 sDataDefinition = recoverableIndentBlock $ do
   tname <- typeName
   polys <- many generic
-  let dataDefinition = DD tname polys
-  return $ flip (L.IndentMany Nothing) (recoverCon conOrRecOrAnnotation) $ (pure . DataDefinition . dataDefinition) <=< toRecordOrADT <=< assignAnnotations Annotated
+  return $ flip (L.IndentMany Nothing) (recoverCon conOrRecOrAnnotation) $ toRecordOrADT tname polys <=< assignAnnotations Annotated
    where
     conOrRecOrAnnotation :: Parser (Either [Ann] (Either DataRec DataCon))
     conOrRecOrAnnotation = Left <$> annotation <|> Right . Left <$> dataRec <|> Right . Right <$> dataCon
 
-    toRecordOrADT :: [Annotated (Either DataRec DataCon)] -> Parser (Either [Annotated DataRec] [Annotated DataCon])
-    toRecordOrADT [] = pure (Right [])
-    toRecordOrADT ((Annotated ann first) : rest) = 
+    toRecordOrADT :: TCon -> [UnboundTVar] -> [Annotated (Either DataRec DataCon)] -> Parser Stmt
+    -- empty datatype
+    toRecordOrADT tname polys [] = pure $ DataDefinition $ DD tname polys (Right [])
+    
+    toRecordOrADT tname polys ((Annotated ann first) : rest) = 
       let (records, cons) = partitionEithers $ (\(Annotated ann x) -> bimap (Annotated ann) (Annotated ann) x) <$> rest
       in case first of
         Left rec ->
           case cons of
             [] ->
-              pure $ Left $ Annotated ann rec : records
+              pure $ DataDefinition $ DD tname polys $ Left $ Annotated ann rec :| records
 
             _:_ -> do
               fail "Encountered constructors in a Record definition."
@@ -220,7 +235,7 @@ sDataDefinition = recoverableIndentBlock $ do
         Right dc -> 
           case records of
             [] -> 
-              pure $ Right $ Annotated ann dc : cons
+              pure $ DataDefinition $ DD tname polys $ Right $ Annotated ann dc : cons
             _:_ -> do
               fail "Encountered record fields in an ADT definition."  -- should not end parsing, but im lazy.
 
@@ -228,7 +243,7 @@ sDataDefinition = recoverableIndentBlock $ do
 dataRec :: Parser DataRec
 dataRec = do
   recordName <- member
-  recordType <- typeTerm
+  recordType <- pType
   pure $ DR recordName recordType
 
 dataCon :: Parser DataCon
@@ -292,9 +307,10 @@ expression = makeExprParser term operatorTable
 
 operatorTable :: [[Operator Parser Expr]]
 operatorTable =
-  [ [ Postfix $ flip (foldr $ \mem e -> Fix $ MemAccess e mem) <$> some ("." >> member)
+  [ [ subscript
     ]
   , [ call
+    , recordUpdate
     ]
   -- , [ prefix "-" Negation
   --   , prefix "not" Not
@@ -319,10 +335,18 @@ operatorTable =
 binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
 binary s f = InfixL $ f <$ symbol s
 
+subscript :: Operator Parser Expr
+subscript = Postfix $ flip (foldl' $ \e mem -> Fix $ MemAccess e mem) <$> some ("." >> member)
+
 call :: Operator Parser Expr
 call = Postfix $ fmap (foldr1 (.) . reverse) $ some $ do
     args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
     return $ Fix . flip Call args
+
+recordUpdate :: Operator Parser Expr
+recordUpdate = Postfix $ between (symbol "{") (symbol "}") $ do
+  mems <- NonEmpty.fromList <$> sepBy1 memberdef (symbol ",")
+  return $ Fix . flip RecUpdate mems
 
 as :: Operator Parser Expr
 as = Postfix $ do
@@ -344,6 +368,7 @@ term :: Parser Expr
 term = choice
   [ eDecimal
   , eGrouping
+  , eRecordConstruction
   , eIdentifier
   ]
 
@@ -360,6 +385,19 @@ eIdentifier = do
   id <- (Var <$> variable) <|> (Con <$> dataConstructor)
   retf id
 
+eRecordConstruction :: Parser Expr
+eRecordConstruction = do
+  name <- try $ typeName <* lookAhead (symbol "{")
+  recordDef <- NonEmpty.fromList <$> between (symbol "{") (symbol "}") (sepBy1 memberdef (symbol ","))
+
+  retf $ RecCon name recordDef
+
+memberdef :: Parser (MemName, Expr)
+memberdef = do
+      mem <- member
+      symbol ":"
+      e <- expression
+      pure (mem, e)
 
 -----------
 -- Types --
@@ -462,15 +500,6 @@ stringLiteral = do
   void $ char '\''
   s <- manyTill L.charLiteral (char '\'')
   return $ T.pack s
-
--- parseType :: Parser Type
--- parseType = (Concrete <$>
---                 ((ClassType <$> typeName <*> return [])
---             <|> do
---                 params <- between (symbol "(") (symbol ")") $ parseType `sepBy` symbol ","
---                 returnType <- symbol "->" >> parseType
---                 return $ FunType $ FunctionType returnType params))
---         <|> (Polymorphic <$> generic)
 
 symbol :: Text -> Parser ()
 symbol = void . L.symbol sc

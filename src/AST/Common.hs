@@ -21,11 +21,13 @@ import Text.Printf (PrintfArg(..), formatString)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad (unless)
 import Data.Char (toUpper)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NonEmpty
 
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext :: CtxData
-defaultContext = runtimeContext 
+defaultContext = runtimeContext
 
 -- context for debugging with all messages enabled.
 debugContext = CtxData
@@ -348,6 +350,10 @@ ppList :: (a -> Context) -> [a] -> Context
 ppList f = encloseSepBy "[" "]" ", " . fmap f
 
 
+ppRecordMems :: NonEmpty (MemName, Context) -> Context
+ppRecordMems = encloseSepBy "{" "}" ", " . fmap (\(mem, e) -> ppMem mem <> ":" <+> e) . NonEmpty.toList
+
+
 ppAnn :: [Ann] -> Context
 ppAnn [] = mempty
 ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
@@ -415,3 +421,6 @@ fmap2 = fmap . fmap
 
 traverse2 :: (Applicative f, Traversable t1, Traversable t2) => (a -> f b) -> t1 (t2 a) -> f (t1 (t2 b))
 traverse2 = traverse . traverse
+
+sequenceA2 :: (Applicative f, Traversable t1, Traversable t2) => t1 (t2 (f a)) -> f (t1 (t2 a))
+sequenceA2 = traverse sequenceA

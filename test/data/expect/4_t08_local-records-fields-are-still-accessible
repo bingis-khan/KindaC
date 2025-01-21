@@ -1,0 +1,11 @@
+#$ Local record's fields are still accessible.
+# 420
+
+get-hidden-record (x Int)
+	HiddenRecord
+		hidden-value Int
+
+	return HiddenRecord { hidden-value: x }
+
+rec = get-hidden-record(420)
+print rec.hidden-value

@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet, MemName, ppMem)
+import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet, MemName, ppMem, ppRecordMems)
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -30,7 +30,7 @@ import Data.Functor ((<&>))
 
 data DataRec = DR DataDef MemName Type [Ann]
 data DataCon = DC DataDef UniqueCon [Type] [Ann]
-data DataDef = DD UniqueType Scheme (Either [DataRec] [DataCon]) [Ann]
+data DataDef = DD UniqueType Scheme (Either (NonEmpty DataRec) [DataCon]) [Ann]
 
 instance Eq DataDef where
   DD ut _ _ _ == DD ut' _ _ _ = ut == ut'
@@ -161,6 +161,9 @@ data ExprF a
   = Lit LitType
   | Var Locality Variable
   | Con EnvID DataCon -- NOTE: EnvID is an ID of an *empty* environment. All constructors have an empty environment, so when an environment is needed, use this.
+
+  | RecCon DataDef (NonEmpty (MemName, a))
+  | RecUpdate a (NonEmpty (MemName, a))
   | MemAccess a MemName
 
   | Op a Op a
@@ -201,6 +204,7 @@ data Scheme = Scheme [TVar] [EnvUnion]
 data DeconF a
   = CaseVariable Type UniqueVar
   | CaseConstructor Type DataCon [a]
+  | CaseRecord Type DataDef (NonEmpty (MemName, a))
   deriving (Functor)
 type Decon = Fix DeconF
 
@@ -215,6 +219,7 @@ decon2type :: Decon -> Type
 decon2type (Fix dec) = case dec of
   CaseVariable t _ -> t
   CaseConstructor t _ _ -> t
+  CaseRecord t _ _ -> t
 
 
 
@@ -363,6 +368,7 @@ tDecon = cata $ \case
   CaseVariable _ uv -> ppVar Local uv
   CaseConstructor t (DC _ uc _ _) [] -> ppCon uc <> " :: " <> tType t
   CaseConstructor t (DC _ uc _ _) args@(_:_) -> ppCon uc <> encloseSepBy "(" ")" ", " args <> " :: " <> tType t
+  CaseRecord t (DD ut _ _ _) args -> ppTypeInfo ut <+> ppRecordMems args <+> "::" <+> tType t
 
 tExpr :: Expr -> Context
 tExpr = cata $ \(TypedExpr et expr) ->
@@ -373,7 +379,10 @@ tExpr = cata $ \(TypedExpr et expr) ->
   Var l (DefinedVariable v) -> ppVar l v
   Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
   Con _ (DC _ uc _ _) -> ppCon uc
-  MemAccess _ _ -> undefined
+
+  RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> ppRecordMems inst
+  RecUpdate c upd -> c <+> ppRecordMems upd
+  MemAccess c mem -> c <> "." <> ppMem mem
 
   Op l op r -> l <+> ppOp op <+> r
   Call f args -> f <> encloseSepBy "(" ")" ", " args
@@ -388,11 +397,10 @@ tExpr = cata $ \(TypedExpr et expr) ->
       Equals -> "=="
       NotEquals -> "/="
 
-
 tDataDef :: DataDef -> Context
 tDataDef (DD tid tvs cons _) = indent (ppTypeInfo tid <+> tScheme tvs) $ tDataCons cons
 
-tDataCons :: Either [DataRec] [DataCon] -> Context
+tDataCons :: Either (NonEmpty DataRec) [DataCon] -> Context
 tDataCons (Left recs) = ppLines (\dc@(DR _ _ _ ann) -> annotate ann (tRecDef dc)) recs
 tDataCons (Right cons) = ppLines (\dc@(DC _ _ _ ann) -> annotate ann (tConDef dc)) cons
 

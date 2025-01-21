@@ -1,0 +1,13 @@
+#$ Partial record deconstruction works with basic types.
+# 133769
+
+Record
+	wow Int
+	unit Unit
+	soy Bool
+
+rec = Record { wow: 133769, unit: Unit, soy: False }
+
+case rec
+	Record { wow: x }
+		print x

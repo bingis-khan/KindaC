@@ -1,0 +1,21 @@
+#$ Print record fields with composite types (through field accessors.)
+# ()
+# 1337
+# True
+
+MyRecord
+	nice Unit
+	other-nice Maybe Int
+	other-other-nice Either Int (Maybe Bool)
+
+rec = MyRecord { nice: Unit, other-nice: Just(1337), other-other-nice: Right(Just(True)) }
+
+pmaybe (Just(x) Maybe a) -> Unit
+	print x
+
+peithermaybe (Right(Just(x)) Either e (Maybe a)) -> Unit
+	print x
+
+print rec.nice
+pmaybe(rec.other-nice)
+peithermaybe(rec.other-other-nice)

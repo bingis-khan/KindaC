@@ -1,0 +1,24 @@
+#$ Can update records.
+# 1
+# 2
+# 3
+# 1
+# 123
+# 3
+
+CoolVec
+	x Int
+	y Int
+	z Int
+
+pvec (p CoolVec) -> Unit
+	print p.x
+	print p.y
+	print p.z
+
+
+vec = CoolVec { x: 1, y: 2, z: 3 }
+pvec(vec)
+
+vec' = vec { y: 123 }
+pvec(vec')

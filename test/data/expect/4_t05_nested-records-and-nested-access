@@ -1,0 +1,12 @@
+#$ Nested records and access.
+# 69420
+
+InnerRec
+	this-is-inner Int
+
+OuterRec
+	cool-rec InnerRec
+
+rec = OuterRec { cool-rec: InnerRec { this-is-inner: 69420 } }
+
+print rec.cool-rec.this-is-inner
