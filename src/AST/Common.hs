@@ -27,7 +27,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext :: CtxData
-defaultContext = runtimeContext
+defaultContext = debugContext
 
 -- context for debugging with all messages enabled.
 debugContext = CtxData

@@ -1,0 +1,19 @@
+#$ Subscript + call mixing and functions in structures.
+# 696969
+
+Inner3
+	a Int
+
+Inner2
+	a Inner3
+
+Inner
+	other-fun () -> Inner2
+
+Rec
+	fun () -> Inner
+
+n = 696969
+rec = Rec { fun: (:Inner { other-fun: (:Inner2 { a: Inner3 { a: n } }) }) }
+
+print rec.fun().other-fun().a.a

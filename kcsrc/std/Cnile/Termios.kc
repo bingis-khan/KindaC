@@ -9,7 +9,8 @@ Speed = CUInt
 # we allow the program to access its fields, but the structure is defined in termios.h, so we don't want to define it anyway.
 #[ctype 'struct termios', dontdefine, cstdinclude 'termios.h']
 Termios
-	c-iflag TCFlag
+	#[cmember 'c_iflag']
+	c-iflag TCFlag  # etc...
 	c-oflag TCFlag
 	c-cflag TCFlag
 	c-lflag TCFlag

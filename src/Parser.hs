@@ -13,7 +13,7 @@ import qualified Text.Megaparsec as TM (parse)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Control.Monad.Combinators.Expr
 import Data.Bifunctor (first)
-import Data.Functor (void, ($>))
+import Data.Functor (void, ($>), (<&>))
 import Data.Fix (Fix(Fix))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as NE
@@ -101,7 +101,7 @@ sSingleCase = scope id $ do
 
 sDeconstruction :: Parser Decon
 sDeconstruction = caseVariable <|> caseRecord <|> caseConstructor
-  where
+ where
     caseVariable = Fix . CaseVariable <$> variable
     caseConstructor = fmap Fix $ CaseConstructor <$> dataConstructor <*> args
     caseRecord = do
@@ -307,9 +307,7 @@ expression = makeExprParser term operatorTable
 
 operatorTable :: [[Operator Parser Expr]]
 operatorTable =
-  [ [ subscript
-    ]
-  , [ call
+  [ [ subscriptOrCall
     , recordUpdate
     ]
   -- , [ prefix "-" Negation
@@ -335,11 +333,14 @@ operatorTable =
 binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
 binary s f = InfixL $ f <$ symbol s
 
-subscript :: Operator Parser Expr
-subscript = Postfix $ flip (foldl' $ \e mem -> Fix $ MemAccess e mem) <$> some ("." >> member)
+subscriptOrCall :: Operator Parser Expr
+subscriptOrCall = Postfix $ fmap (foldl1 (.) . reverse) $ some (subscript <|> call)
 
-call :: Operator Parser Expr
-call = Postfix $ fmap (foldr1 (.) . reverse) $ some $ do
+subscript :: Parser (Expr -> Expr)
+subscript = (symbol "." >> member) <&> \memname e -> Fix $ MemAccess e memname
+
+call :: Parser (Expr -> Expr)
+call = do
     args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
     return $ Fix . flip Call args
 

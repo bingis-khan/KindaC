@@ -577,10 +577,9 @@ withReturn ret = RWS.local $ \e -> e { returnType = Just ret }
 
 getExpectedType :: T.Type -> MemName -> Infer (Maybe T.Type, Bool)  -- (maybe type, should remove from list?)
 getExpectedType t memname = case project t of
-  T.TCon dd@(T.DD _ scheme@(Scheme ogTVs ogUnions) (Left recs) _) _ _ ->
+  T.TCon dd@(T.DD _ (Scheme ogTVs ogUnions) (Left recs) _) tvs unions ->
     case find (\(T.DR _ name _ _) -> name == memname) recs of
       Just (T.DR _ _ recType _) -> do
-        (tvs, unions) <- instantiateScheme scheme
         let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
         let recType' = mapTVs recType
         pure (Just recType', True)

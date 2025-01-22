@@ -1,0 +1,22 @@
+The current meta is to support both anonymous and defined records.
+My problem was that a map deconstruction might clash with record deconstruction. This is the proposed syntax (with semantics being fairly obvious):
+
+x = Record { n: 1, m: True }  # named record
+anon = { config: 69, optimization-level: 420 }  # anonymous record
+
+case _  # *I don't want to write case multiple times - assume different cases
+	Record { n: important-int, m }    # record deconstruction
+	_ { config, optimization-level }  # anonymous deconstruction +(!) possible normal record deconstruction.
+	{ ayo: boy, "nice": 0xC0C }       # map deconstruction! (exactly 2 elements, which also match)
+	{ ayo: boy, "nice": 0xC0C, ... }  # map deconstruction!  (at least 2 elements, which also match)
+
+f (  # again, assume these are different function declarations
+	x Record  # record
+	x { n Int, m Int }  # anonymous, defined record
+	x { ... }  # anonymous struct, !!!contents inferred from function body!!!
+
+	# now, a question for me in the future
+	# should we add proper row polymorphism?? also, should defined anonymous structure types compatible with records????? like in structural typing.
+	# might be bad... I'm not sure if I should allow it.
+)
+
