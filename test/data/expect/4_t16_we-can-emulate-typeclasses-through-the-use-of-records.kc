@@ -1,0 +1,36 @@
+#$ We can emulate typeclasses through the use of records.
+# 6
+# 6
+# 16
+
+
+Num a
+	add (a, a) -> a
+	sub (a, a) -> a
+
+
+Vec2
+	x Int
+	y Int
+
+
+add-vec (v1 Vec2, v2 Vec2)
+	return Vec2 { x: (v1.x + v2.x), y: (v1.y + v2.y)  }
+
+sub-vec (v1 Vec2, v2 Vec2)
+	return Vec2 { x: (v1.x - v2.x), y: (v1.y - v2.y) }
+
+num-int = Num { add: (l,r: l + r), sub: (l,r: l - r) }
+num-vec = Num { add: (add-vec), sub: (sub-vec) }
+
+pvec (v Vec2) -> Unit
+	print v.x
+	print v.y
+
+add-three (num Num a, x1 a, x2 a, x3 a) -> a
+	sum = num.add(x1, x2)
+	sum = num.add(sum, x3) 
+	return sum
+
+print add-three(num-int, 1, 2 ,3)
+pvec(add-three(num-vec, Vec2 { x: 1, y: 7 }, Vec2 { x: 2, y: 8 }, Vec2 { x: 3, y: 1 }))
