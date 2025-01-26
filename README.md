@@ -15,12 +15,25 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - `old/` - old compiler
 
 
+## todo larger
+
+- typeclasses (which features?)
+  - right now, I think I'll pass up on implementing type kinds?
+- pointers
+- error location + actual errors
+- module importing and namespaces
+- integers in types (typed C arrays)
+- finish (actually fix) recursion
+
+
 ## todo
 
 - make assignments deconstructable.
 - in a record deconstruction, if you don't specify the right side (after ':'), bind the member to the variable of the same name.
 - when updating records, bind the current variable to the expression. ex: `p = p { v1: v1 { z = 0 } }` <- here, `v1` is bound only on the right side of ':'. No need to write `p.v1` like in Haskell.
-- add `<.member=` assignments!
+- add `<.member=` assignments! (just for fun and UI experiments. maybe it'll be better!)
+- string interpolation! `'Just rammed \(num-glowies) glowies with my car.'` (support only variables inside, seems simpler)
+  - think about internationalization? apparently, that's the biggest drawback of string interpolation
 
 
 ### todo misc

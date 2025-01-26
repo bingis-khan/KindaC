@@ -1,0 +1,51 @@
+
+MapIter from to it
+	iter   it
+	map-fn from -> to
+
+
+class Iter a
+	Item
+	next     Ptr a -> Maybe Item
+
+range (from, to): RangeIter { cur: from, to }
+
+impl IntoIter RangeIter
+	IntoIterIter = RangeIter
+	into-iter (x RangeIter): x  # into-iter should be a no-op for iterators.
+
+impl Iter RangeIter
+	Item = Int
+
+	has-next (r Ptr RangeIter) -> Bool
+		return r&.cur < r&.to
+
+	next (r RangeIter) -> Maybe Item
+		cur = r&.cur
+		if cur < r&.to
+			r <&.cur= cur + 1
+			return Just(cur)
+		else
+			return None
+
+impl Iter (MapIter to a)
+	Item = to
+
+	has-next (m Ptr (MapIter (a.Iter) to a)) -> Bool
+		return (& m&.iter) has-next()
+
+	# ...
+
+map (it Iter, fn a -> b) -> MapIter a b Iter
+	return MapIter { map-fn: fn.into-iter(), iter: it }
+
+for-each (it Iter, fn a ->)
+
+# experiment.
+# i want maps that return MapIte as well as  f a -> f b (eg. Maybe a -> Maybe b)
+
+class Functor f
+	Result  # = f for Maybe, = MapIter for other iterators.
+	fmap (it f a, fn a -> b) -> Result b
+
+# maybe we can merge them, but rn I dont care.

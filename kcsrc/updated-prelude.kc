@@ -1,0 +1,27 @@
+# this contains stuff that will be contained in prelude, while not necessarily being able to compile yet.
+
+# should we support higher-kinded types in typeclasses??
+
+
+# how do we deconstruct????? i had an idea for this, now I forgot...
+
+class ListLike a
+	Item
+
+	matches-pattern (self, before, after, matches, can-contain-more) -> Bool
+		if can-contain-more and before.size + after.size > self.size
+			return False
+
+		elif not can-contain-more and before.size + after.size != self.size
+			return False
+
+		before-matches = before zip(self elems()) all(((b, e)): matches(b, e))
+		after-matches  = after zip(self rev-elems()) all((a, e): matches(a, e))
+		return before-matches and after-matches
+
+
+class MapLike a
+	Item
+
+	deconstruct-map (_ Array n Item, can-contain-more Bool)
+	# shiet, I don't know yet.

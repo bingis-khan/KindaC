@@ -1,0 +1,53 @@
+# another module for testing dis shit
+
+
+class Mappable | Iter
+	Result a
+	Item
+
+	map (self _, fn Item -> b) -> Result b
+
+inst Mappable RangeIter
+	# ...
+
+inst Mappable (Maybe n)
+	Result a = Maybe a
+	Item = n
+
+	map (self Maybe n, fn n -> b) -> Maybe b
+
+# sheeesh, but we would ideally have to implement mappable for each iterator and it would look the same. We should implement Mappable for each Iter and also make it overloadable, like in case of Maybe.....
+# so, should we add "map" to Iter???
+
+# proposed new Iter class
+
+x = list it()
+  filter(...)
+  map(...)
+  reduce(...)
+
+x = list
+  filter()
+  map()
+  reduce()
+
+class ToIter
+	ThisIter
+	it (self _) -> ThisIter
+
+class Iter
+	Result a
+	Item
+
+	next (x _, fn Item -> b) -> Result b
+
+
+## how to do typeclasses
+
+do-sth (x Mappable)  # that's a shorthand for Mappable a... how do I write that?
+
+
+do-sth (x a): x where a: Mappable + Iter
+
+do-sth (x Mappable + Iter)
+

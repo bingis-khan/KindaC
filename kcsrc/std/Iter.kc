@@ -1,0 +1,83 @@
+# okay, final spec.
+# - dependent types (no need to * -> *, plus iterate through bit vectors n shiz)
+#   - make sure to implement parametrized dependent types (possible to return different composite return types)
+# - instance deriving(?????? i dunno, seems a bit like OOP subclassing (including multiple inheritance!!) ... which is not very good, as it forces me to create some sort of hierarchy (especially, when there is none). i would like to avoid it...)
+#   - this is for iterators, where I want a Functor which maps f a -> f b and a map for Iter which adds a new datatype.
+#   - or I might just ignore it and separate map() and fmap()????
+# > okay, I kinda wanna try it anyway. it's my language, I can remove shit if I want.
+# - default implementations
+#   - again, for iterators and while deriving...
+# - mutually recursive definitions???? or should I just put IntoIter's it() into Iter?
+# - (that's more general, not only in typeclasses) return typeclasses (in a hiding implementation sort of way, but also... how do they behave in typeclasses? I mean, it's obvious, but how to implement it atop my type inference? hmmmmmm which is better. (see example IntoIter))
+
+# ----------------------------------------
+# plan działania.
+# 1. basic typeclass (no dependent types) -> Str (it has only one method and it just consumes it's parameter - super easy.)
+# 2. dependent types -> Functor typeclass
+# 3. default implementations -> Iter (i think I'll inlcude IntoIter)
+
+
+class Functor
+	MapResult a
+	Item
+
+	map (self _, fn Item -> b) -> MapResult b
+
+# if it's a List, Vector, whatever - return new iterator. if it's an iterator already, return itself.
+class IntoIter
+	# 1. either this:
+	ThisIter: Iter  # this adds typeclass constraints!
+	it (self _) -> ThisIter
+
+	# 2. or this:
+	it (self _) -> Iter
+
+	# this is because we don't exactly know the type of the iterator, it *depends* on the base type.
+	# 1. might be easier to implement, as it'll reuse dependent types and might avoid weirdness in typechecking typeclasses.
+
+
+class Iter: Functor, IntoIter
+	Item
+	next (self _) -> Maybe Item
+
+	# must also implement IntoIter!
+	# here? instead of mutrec IntoIter?
+	ThisIter
+	it (self _) -> ThisIter
+
+	# that's a default implementation!!
+	# it's also possible to override it!
+	# I think it should only override if the default type does not already implement it!
+	Functor.Item = Item
+	Functor.MapResult a = MapWith _ a
+	map (self _, fn Item -> b) -> MapWith _ b
+		i = self it()
+		return MapWith(i, fn)
+
+
+
+# str
+
+# tbh, implementation does not matter that much yet kek. we can change it later.
+# i can just make it out of printfs rn now. later, we might copy into some buffer, or use a provided function.
+class Str
+	print (self _) -> Unit
+	
+# special version of tuple used to (statically) concat strings.
+ConcatStr l r: ConcatStr l r
+inst Str (ConcatStr l r): Str l, Str r
+	print-str (ConcatStr(l, r) _) -> Unit
+		print-str l
+		print-str r
+
+#[ctype "const char*"]
+ConstStr
+
+# just a printf("%s") wrapper
+#[cfun "print_const_str"]
+# also, 'extern' keyword was used. maybe I'll change it later, it's trivial. I shouldn't also "fear" changing it.
+extern print-const-str (s ConstStr) -> Unit
+
+inst Str ConstStr
+	print-str (s ConstStr)
+

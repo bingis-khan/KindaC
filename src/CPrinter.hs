@@ -216,8 +216,6 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
     enclose "(" ")" $ "0" § "!=" § cCall "memcmp" [cRef le', cRef re', cSizeOf lt]
 
   M.RecUpdate dd@(M.DD _ erecs _ _) (et, ee) upd -> do
-    ol'value <- createIntermediateVariable et ee
-
     let records = case erecs of
           Left recs -> recs
           Right _ -> error "Not a record type!!!"
@@ -225,8 +223,12 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
     let updatedFields = Set.fromList $ NonEmpty.toList $ fst <$> upd
     let persistedFields = filter (`Set.notMember` updatedFields) $ NonEmpty.toList $ records <&> \(M.DR _ um _ _) -> um
 
-    let initializePersistedFields = persistedFields <&> \um ->
-          (um, ol'value & "." & cRecMember um)
+    initializePersistedFields <- case persistedFields of
+          []    -> pure []
+          (_:_) -> do
+            ol'value <- createIntermediateVariable et ee
+            pure $ persistedFields <&> \um ->
+              (um, ol'value & "." & cRecMember um)
     let initializeUpdatedFields = upd <&> \(um, (_, me)) ->
           (um, me)
 
