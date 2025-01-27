@@ -154,4 +154,34 @@ Item `uni` b
 ... right now, we fail to compile when members are unresolved, let's do the same here.
 ... also a problem with instantiation and unreadable compiler messages.
 
-After we add anonymous structs and hacked row polymorphism, we can try generalizing untyped
+After we add anonymous structs and hacked row polymorphism, we can try generalizing untyped functions with dependent types.
+I think I should go for it. I should experiment and see. Just to note, what would happen if I made map()
+
+mayb map-maybe(x: x + 1)
+error map-left(err: ParsingError(err))
+
+
+............ wait..........
+..... that's not that bad.
+
+note, that we can still do Iter stuff.
+
+list map() sum()
+
+class Iter
+	Item
+	next (self Ptr _) -> Maybe Item
+	
+class IntoIter
+	ThisIter: Iter
+
+	it (self _) -> ThisIter
+
+	map (self _) -> MapWith ThisIter ThisIter.Iter.Item
+
+........ wait
+.. these still need dependent types.
+... shit.
+... now, we don't need parameters in dependent types - a bit easier situation.
+... might still keep it tho. map-maybe, map-left, etc. are more descriptive.
+... however, this dependency hell still persists.
