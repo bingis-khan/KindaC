@@ -109,7 +109,7 @@ do-sth (it) -> Maybe a
 do-sth (it IntoIter) -> Maybe a
 	it map() first()
 
-do-str (it Maybe a) -> Maybe a
+do-sth (it Maybe a) -> Maybe a
 	it map() first()
 
 
@@ -121,3 +121,37 @@ class Iter item a | a -> item
 	next (self a) -> Maybe item
 
 # this is basically a multi parameter + functional dependencies extension.
+
+
+#....
+
+
+# or just accept it and add that constraint.
+
+it -> a
+	map() (MapResult Item) 
+	first() Maybe Item'
+
+(with first (it IntoIter) -> Maybe Item')
+
+Item = Item'
+MapResult n = IntoIter
+a = IntoIter
+
+(IntoIter a, IntoIter (MapResult n), Item)
+
+function signature:
+
+do-sth (x a) -> b | IntoIter a (+ constraints: [IntoIter (MapResult n), b = Item])... sheeesh. how do I represent dependencies???
+
+a -> (MapResult n, Item)
+aka
+MapResult n `uni` a'
+Item `uni` b
+
+... in general, add constraints like these: t -> t'..., same as with members.
+... when t gets instantiated, we (try to) unify them.
+... right now, we fail to compile when members are unresolved, let's do the same here.
+... also a problem with instantiation and unreadable compiler messages.
+
+After we add anonymous structs and hacked row polymorphism, we can try generalizing untyped
