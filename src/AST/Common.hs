@@ -67,6 +67,7 @@ newtype TCon = TC { fromTC :: Text } deriving (Show, Eq, Ord)
 newtype ConName = CN { fromCN :: Text } deriving (Show, Eq, Ord)
 newtype VarName = VN { fromVN :: Text } deriving (Show, Eq, Ord)
 newtype MemName = MN { fromMN :: Text } deriving (Show, Eq, Ord)
+newtype ClassName = TCN {fromTN :: Text} deriving (Show, Eq, Ord)
 
 data Op
   = Plus
@@ -119,6 +120,11 @@ data UniqueType = TI
 data UniqueMem = MI  -- unlike the previous ones, used after (and including) Mono module.
   { memID :: Unique
   , memName :: MemName
+  }
+
+data UniqueClass = TCI
+  { classID :: Unique
+  , className :: ClassName
   }
 
 data Binding
@@ -175,6 +181,12 @@ instance Eq UniqueMem where
 
 instance Ord UniqueMem where
   MI { memID = l } `compare` MI { memID = r } = l `compare` r
+
+instance Eq UniqueClass where
+  TCI { classID = l } == TCI { classID = r } = l == r
+
+instance Ord UniqueClass where
+  TCI { classID = l } `compare` TCI { classID = r } = l `compare` r
 
 
 -- ...plus additional tags

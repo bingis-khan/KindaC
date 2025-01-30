@@ -7,7 +7,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module AST.Untyped (module AST.Untyped) where
 
-import AST.Common (LitType, Op, Annotated, TCon (..), ConName, VarName, (:.), (<+>), Context, pretty, ppTCon, encloseSepBy, UnboundTVar (..), MemName)
+import AST.Common (LitType, Op, Annotated, TCon (..), ConName, VarName, (:.), (<+>), Context, pretty, ppTCon, encloseSepBy, UnboundTVar (..), MemName, ClassName)
 
 import Data.Eq.Deriving
 import Data.Fix (Fix)
@@ -92,6 +92,27 @@ type Case = CaseF Expr AnnStmt
 data FunDec = FD VarName [(Decon, Maybe Type)] (Maybe Type) deriving Eq
 
 
+---------------
+-- Typeclass --
+---------------
+
+data ClassDef = ClassDef
+  { classID :: ClassName
+  , classDependentTypes :: [DependentType]
+  , classFunctions :: [ClassFunDec]  -- TODO: soon will contain default implementations
+  } deriving Eq
+
+data ClassFunDec = CFD VarName [(Decon, Type)] Type deriving Eq
+newtype DependentType = Dep TCon deriving Eq  -- temporarily no parameters?
+
+data InstDef stmt = InstDef
+  { instClassID :: ClassName
+  , instType :: (TCon, [Type])  -- we accept only constructors yo!... (or should it involve more types... i mean, scoped type variables :OOO)
+  , instDependentTypes :: [(DependentType, Type)]
+  , instFunctions :: [(ClassFunDec, NonEmpty stmt)]
+  } deriving (Eq, Foldable, Functor, Traversable)
+
+
 
 ---------------
 -- Statement --
@@ -115,6 +136,10 @@ data StmtF expr a
   -- Big statements
   | DataDefinition DataDef
   | FunctionDefinition FunDec (NonEmpty a)
+
+  -- Typeclasses
+  | ClassDefinition ClassDef
+  | InstDefinition (InstDef a)
   deriving (Eq, Functor, Foldable, Traversable)
 
 -- not sure about this one. if using it is annoying, throw it out. (eliminates the possibility to bimap)

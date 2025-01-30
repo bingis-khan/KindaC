@@ -26,8 +26,8 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Common (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..))
-import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case, DataRec (..))
+import AST.Common (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..))
+import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case, DataRec (..), DependentType (..), ClassFunDec (..), ClassDef (..), InstDef (..))
 import Data.Functor.Foldable (embed, cata)
 import Control.Monad ((<=<))
 import Data.Either (partitionEithers)
@@ -60,6 +60,10 @@ statement = choice
   , sIf
   , sPrint
   , sReturn
+
+  , sClass
+  , sInst
+  
   , sDataDefinition
 
   , sDefinition
@@ -142,6 +146,76 @@ sReturn = do
   keyword "return"
   expr <- optional expression
   pure $ Return expr
+
+
+sClass :: Parser Stmt
+sClass = recoverableIndentBlock $ do
+  keyword "class"
+  name <- className
+  return $ flip (L.IndentMany Nothing) sDepOrFunctionDec $ \depsOrFunctions ->
+    let (deps, funs) = partitionEithers depsOrFunctions
+    in pure $ ClassDefinition $ ClassDef
+      { classID = name
+      , classDependentTypes = deps
+      , classFunctions = funs
+      }
+
+sDepOrFunctionDec :: Parser (Either DependentType ClassFunDec)
+sDepOrFunctionDec = Left <$> sDepDec <|> Right <$> sDefinedFunctionHeader
+
+sDepDec :: Parser DependentType
+sDepDec = Dep <$> typeName
+
+sDefinedFunctionHeader :: Parser ClassFunDec
+sDefinedFunctionHeader = do
+  name <- variable
+
+  let param = liftA2 (,) sDeconstruction pType
+  params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
+
+  symbol "->"  -- or just assume that no return = Unit
+  ret <- pType
+
+  pure $ CFD name params ret
+
+
+sInst :: Parser Stmt
+sInst = recoverableIndentBlock $ do
+  keyword "inst"
+  name <- className
+
+  instType <- do
+    tcon <- typeName
+    targs <- many typeTerm
+    pure (tcon, targs)
+
+  pure $ flip (L.IndentMany Nothing) sDepOrFunctionDef $ \depOrFunctions ->
+    let (deps, funs) = partitionEithers depOrFunctions
+    in pure $ InstDefinition $ InstDef
+      { instClassID = name
+      , instType = instType
+      , instDependentTypes = deps
+      , instFunctions = funs
+      }
+
+sDepOrFunctionDef :: Parser (Either (DependentType, Type) (ClassFunDec, NonEmpty AnnStmt))
+sDepOrFunctionDef = Left <$> sDepDef <|> Right <$> sInstFunction
+
+sDepDef :: Parser (DependentType, Type)
+sDepDef = do
+  depname <- sDepDec
+  symbol "="
+  typ <- pType
+
+  pure (depname, typ)
+
+sInstFunction :: Parser (ClassFunDec, NonEmpty AnnStmt)
+sInstFunction = recoverableIndentBlock $ do
+  header <- sDefinedFunctionHeader
+  pure $ flip (L.IndentSome Nothing) (recoverStmt (annotationOr statement)) $ \annsOrStmts -> do
+    stmts <- NonEmpty.fromList <$> annotateStatements annsOrStmts
+    pure (header, stmts)
+
 
 sExpression :: Parser Stmt
 sExpression = do
@@ -474,6 +548,8 @@ variable = VN <$> identifier
 member :: Parser MemName
 member = MN <$> identifier
 
+className :: Parser ClassName
+className = TCN . fromTC <$> typeName
 
 -- term-level identifiers
 identifier :: Parser Text
