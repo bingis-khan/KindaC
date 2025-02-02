@@ -28,3 +28,173 @@ Tuple(left, right) = get-something-or-whatever()
 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 
 also, I might use { ... } and { x: y, ... } to represent deconstruction of both sets and maps respectively.
+
+
+
+
+----------------------------------------------------------------
+-------- deconstruction typeclasses --------------------
+---------------------------------------------------------
+
+I want to do map deconstruction and list deconstruction.
+
+Q: Small design thing: struct decon vs map decon.
+A: What I've decided is this:
+
+	case x
+		_ { x: y }  # this is struct deconstruction
+
+	case x
+		{  x: y }   # this is map deconstruction.
+
+
+Also, list deconstruction:
+
+	case x
+		[ 1, 2, x, ... ]
+
+
+-----------------------------
+------- LIST LIST LIST ------
+-----------------------------
+
+I'll start from the list deconstruction.
+First, I'll assume that we can't deconstruct inner elements.
+
+class ListLike
+	Item
+	deconstruct (self _, head-num: Maybe (TyNum *n), tail-num: Maybe (TyNum *m)) -> Maybe (head: Array *n Item, tail: Array *m Item)  # assume *m means a number parameter. also, I added names, so you know what you're deconstructing.
+
+# note that TyNum *a enables us to pass compile time numbers.
+
+
+Next, how do I deal with deconstruction?????
+I'll try one thing: functions!
+
+class ListLike
+	Item
+	deconstruct (self _) -> (head: Array *n (Item -> Bool), tail: Array *n (Item -> Bool)) -> Maybe (head: Array *n Item, tail: Array *m Item)
+
+
+All of this handles:
+
+[x, y, z, ..., n, m]
+[x, y, ...]
+[..., x, y]
+
+What about:
+	[]?
+	[x, y, z]?
+
+Maybe make a special datatype?
+
+ListDeconstruction *m *n item  # *n is not bound with Bounded... how do we solve this?
+	Bounded (Array *m (item -> Bool))
+	Unbounbed (Array *m (item -> Bool)) (Array *n (item -> Bool))
+
+class ListLike
+	Item
+	deconstruct (self _, d ListDeconstruction *m *n Item) -> Maybe (head: Array *m Item, tail: Array *n Item)
+
+
+Or just assume that tail will be empty and add a Bool switch for you to know which one should be used? Less type safe, but actually simpler!
+
+class ListLike
+	Item
+	deconstruct (self _, head Array *m (Item -> Bool), tail Array *n (Item -> Bool), is-bounded Bool) -> Maybe (head: Array *m Item, tail: Array *n Item)
+
+
+Okay, list stuff finished. That was fairly easy....... now, the map.
+
+
+
+-----------------------------------------------
+--------- MAP MAP MAP MAP MAP MAP MAP ---------
+-----------------------------------------------
+
+Let's start with the simplest thing:
+
+	{ x: y, a: b, ... }
+	{ x: y, a: b }
+
+
+class MapLike
+	Key
+	Value
+	deconstruct (self _, num-elems TyNum *m, exact-num Bool) -> Maybe (Array *m Value)
+
+
+Next part: match on actual values. This is still okay...
+
+This handles
+	{ 'aasjdkljsa': y, (Left(Just(69))): b }
+
+class MapLike
+	Key
+	Value
+	deconstruct (self _, elems Array *m Key, exact-num Bool) -> Maybe (Array *m Value)
+
+
+Now, we want to match on incomplete deconstructions. This is much harder, because it's going to be very inefficient.
+
+class MapLike
+	Key
+	Value
+	deconstruct (self _, elems Array *m (Key -> Bool)) -> Maybe (Array *m Value)
+		# implementation would require us to perform some sort of search. Because:
+			{ Just(x), Just(69) }
+
+			actual map: { Just(69), Just(420)  }
+
+			1. Match Just(69) for Just(x)
+			2. FAIL Match Just(420) for Just(69)
+			3. Match Just(420) for Just(x)
+			4. Match Just(69) for Just(69)
+			5. OK
+
+			decon (elem-match, matched)
+				if elem-match empty()
+					return Just(matched)
+
+				matcher = elem-match head()
+				for e in elems
+					if not matcher(e) or matched contains(e)
+						continue
+
+					matched' = matched append(e)  # i dunno, just create a new list, it's pseudocode anyway
+					did-decon = decon(elem-match[1:], matched')  # depth first search yo
+					if did-decon has-value()
+						return did-decon
+
+					# otherwise, continue search.
+
+				return None
+
+
+
+It's possible, but slow. We might take advantage of several typeclasses/typeclass functions, which implement certain methods.
+Now, the hardest part. Matching on both keys *and* values.
+
+	{ 'dupa': Just(x), ... }
+
+class MapLike
+	Key
+	Value
+	deconstruct (self _, elems Array *m ((Key, Value) -> Bool), exact-num: Bool) -> Maybe (Array *m (Key, Value))
+		# it would be the same basic algorithm as the previous one, but also the value is included.
+
+
+Now, one thing is needed - the "efficiency" typeclass/function. We want to match on fully defined values n shi'.
+
+	{ 'dupa': 'zupa', Just(420): Right('bob'), ... }  # (obviously, the types are incorrect here, but I wanted to show the idea)
+
+
+class MapLike
+	Key
+	Value
+	deconstruct (self _, elems Array *m (Key, Value), exact-num: Bool) -> Bool
+
+
+Also, I'm currently ignoring some implementation details.
+Should I check (and modify accordingly) if there are two equal keys defined - to enforce the map-like structure.
+Or should I compile it directly and enforce it per-data structure basis?

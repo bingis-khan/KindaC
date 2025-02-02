@@ -1,0 +1,34 @@
+
+# an example implementation and usage of a Kinda C web server.
+
+handle-request (req Request, alloc Allocator) -> Response   # it'll be freed at the end of a request. to use an actual one, just define it and use it from the environment.
+	case req.path  # req.path is a special type that implements ListLike. This way, we can match on paths.
+		[]
+			return index()
+
+		['article', id]
+			return article(id, alloc)
+
+		[what, ...]
+			return no-path(what)
+
+	# there's also a case for anonymous deconstructors! and we can match on query parameters in the same match.
+	case req
+		_ { path: [] }
+			return index()
+
+		_ { path: ['article', id], query: { 'serve_mobile_site': _ } }
+			return mobile-article(id, alloc)
+
+		_ { path: ['article', id] }
+			return article(id, alloc)
+
+		_ { path: [ what, ... ] }
+			return no-path(what)
+
+
+serve(8080, handle-request)  # a case for multiline lambdas!
+serve(8080, @(req, alloc))
+	case req
+		# ....
+
