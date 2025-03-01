@@ -76,3 +76,108 @@
 	# error. orphan instance shit.
 	
 
+Okay nigga
+So:
+1. Shadowing instances
+2. Local instances possible. Only accessible to the scope they are in. Because environment also needs to be there, yo.
+3. Instance selection stuff....... look
+
+	inst Str Int  # 1
+		print-str (x Int)
+			print 'dupa'
+
+	print-int (n Int)
+		print-str(n) # selects instance #1
+
+	f ()
+		inst Str Int  # 2
+			print-str (x Int)
+				print 'aaaaa'
+
+		x = 123
+		print-str(x)  # 'aaaaa' (selected #2, because this is what was bound here at the time of declaration)
+		print-int(x)  # 'dupa' (selected #1, because this is what was bound at the time of declaration)
+		
+	f()
+
+Makes sense. now
+	inst Str Int  # 1
+		print-str (x Int)
+			print 'dupa'
+
+	print-string-i-guess (s)  # type is (in Haskell terms): Str s => s -> Unit
+		print-str(s)
+
+	f ()
+		inst Str Int  # 2
+			print-str (x Int)
+				print 'aaaaa'
+
+		x = 123
+		print-str(x)  # 'aaaaa'
+		print-string-i-guess(x)  # ?????? what should this print???????
+
+		# if 'dupa'
+			then i guess it is superficially similar to the first one, but how would this work??
+			like, if we define a different function somewhere else and it won't have access to the same instances???
+			then functions and class functions would have different behaviors
+			and we would have to add class functions to the declaration itself to have this kind of extensible behavior.
+			Okay, technically we can preserve it by implicitly associating inferred typeclasses with their associated instances.
+			however, the problem is extensibility. so I think I'm not gonna do it like this.
+		# if 'aaaaa'
+			then more logical resolution... or not
+			i guess i could dub the behavior as instance selection based on use.
+			where the instance is selected at the place of tvar application
+
+			I'm gonna choose this based on extensibility.
+			PITFALL: I want to make switching from datatypes to typeclasses seamless for the sake of strings. This WILL be impacted by it though. Because if Str was a typeclass, it would have different "overloading" behavior than if it was a datatypes
+
+		# THIRD FUNNY OPTION
+			In the first and second code sample, both would print 'aaaaa'
+			Instance is selected based on scopes and execution.
+			However, it leads to very funny behavior, where you can accidentally change function behavior without knowing it if they use a typeclass.
+
+				print-int(123)  # 'dupa'
+				inst Str Int
+					# ...
+				print-int(123)  # 'aaaaa'
+
+			This is unacceptable...
+
+
+		# The first one is easier to implement with my scheme... ah, but fuck, it needs to know which types will be applied to it beforehand, so as to actually check which instance gets selected. RemoveUnused might be a place for that.
+
+		# The second one is the correct choice. But I need to present it better.
+		# The basic rule is: whenever an instantiation resolves to a concrete type, select an instance then.
+
+	f()
+
+
+Another look that might clear the situation up?
+
+	f ()
+		class Dupa a
+			to-int (self _)
+
+		inst Dupa Bool
+			to-int (self _)
+				return 42
+
+		return x: to-int(x)
+
+	ff = f() as a: Dupa -> Int  # what the FUCK is this? how do we deal with local typeclasses? like, what's even supposed to happen here? type is going to be generalized.. with Dupa.
+	# okay, so
+
+	f () -> (a: Dupa -> Int)  # (however, dupa is inaccessible, thus we are not able to create any more instances of it.)
+
+	# so:
+	ff as Bool -> Int  # okay.
+	ff as Int -> Int   # compiler error.
+
+	# hmmm. so, we must somehow check which instances does this stuff have.
+
+Anonymous typeclasses! HOW!
+
+######################
+# I CHOOSE: the second choice. Instance selection based on instantiation!
+######################

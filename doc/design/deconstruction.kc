@@ -186,7 +186,7 @@ class MapLike
 
 Now, one thing is needed - the "efficiency" typeclass/function. We want to match on fully defined values n shi'.
 
-	{ 'dupa': 'zupa', Just(420): Right('bob'), ... }  # (obviously, the types are incorrect here, but I wanted to show the idea)
+	{ 'dupa': 'zupa', Just(420): Right('bob'), ... }  # (obviously, the types are incorrect here, but I wanted to present the idea)
 
 
 class MapLike
@@ -198,3 +198,19 @@ class MapLike
 Also, I'm currently ignoring some implementation details.
 Should I check (and modify accordingly) if there are two equal keys defined - to enforce the map-like structure.
 Or should I compile it directly and enforce it per-data structure basis?
+
+
+
+--------------------------------------------
+------- FUNCTIONS THAT VERIFY ARE CRAP -----
+--------------------------------------------
+
+So far, we've used (Item -> Bool) functions to check if a pattern is matched.
+This is pretty bad. Nothing is stopping us from returning incorrect Items and the program will crash.
+
+Maybe instead of functions, we should return an array, then it'll be checked... in case of list.
+In case of map, it's harder. We should create an iterator of possibilities.
+
+deconstruct (...) -> Iter (Array *m (Key, Value))
+
+This is less performant and harder to implement, but it's also harder to get wrong... huh, I'm not sure which is better here....

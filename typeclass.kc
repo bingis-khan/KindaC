@@ -1,0 +1,12 @@
+
+class Str
+	print-str (self _) -> Unit
+
+inst Str Int
+	print-str (self _) -> Unit
+		print self
+
+inst Str Bool
+	print-str (self _) -> Unit
+		print self
+		print 69

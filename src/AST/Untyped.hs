@@ -107,7 +107,7 @@ newtype DependentType = Dep TCon deriving Eq  -- temporarily no parameters?
 
 data InstDef stmt = InstDef
   { instClassID :: ClassName
-  , instType :: (TCon, [Type])  -- we accept only constructors yo!... (or should it involve more types... i mean, scoped type variables :OOO)
+  , instType :: (TCon, [UnboundTVar])  -- we accept only constructors yo!... (or should it involve more types... i mean, scoped type variables :OOO)
   , instDependentTypes :: [(DependentType, Type)]
   , instFunctions :: [(ClassFunDec, NonEmpty stmt)]
   } deriving (Eq, Foldable, Functor, Traversable)

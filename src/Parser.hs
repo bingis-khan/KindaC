@@ -186,7 +186,7 @@ sInst = recoverableIndentBlock $ do
 
   instType <- do
     tcon <- typeName
-    targs <- many typeTerm
+    targs <- many generic
     pure (tcon, targs)
 
   pure $ flip (L.IndentMany Nothing) sDepOrFunctionDef $ \depOrFunctions ->

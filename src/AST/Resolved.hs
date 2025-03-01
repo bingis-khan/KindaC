@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, UndecidableInstances, LambdaCase, OverloadedStrings, OverloadedRecordDot, DuplicateRecordFields, TypeOperators #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar, ppMem, MemName, ppRecordMems)
+import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar, ppMem, MemName, ppRecordMems, UniqueClass, TCon)
 import qualified AST.Typed as T
 
 import Data.Fix (Fix(..))
@@ -80,15 +80,23 @@ type Expr = Fix ExprF
 
 data Variable
   = DefinedVariable UniqueVar
+
   | DefinedFunction Function
   | ExternalFunction T.Function  -- it's only defined as external, because it's already typed. nothing else should change.
+
+  | DefinedClassFunction ClassFunDec [InstDef]
+  | ExternalClassFunction T.ClassFunDec [InstDef]
 
 
 asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
   DefinedVariable var -> var
+
   DefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
   ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ }) -> uv
+
+  DefinedClassFunction (CFD uv _ _) _ -> uv
+  ExternalClassFunction _ _ -> undefined
 
 
 data Constructor
@@ -178,6 +186,31 @@ instance Ord Function where
   fn `compare` fn' = fn.functionDeclaration.functionId `compare` fn'.functionDeclaration.functionId
 
 
+------------------
+-- Typeclasses --
+------------------
+
+data ClassDef = ClassDef
+  { classID :: UniqueClass
+  , classDependentTypes :: [DependentType]
+  , classFunctions :: [ClassFunDec]
+  }
+
+data InstDef = InstDef
+  { instClassID :: UniqueClass
+  , instType :: (TCon, [TVar])
+  , instDependentTypes :: [(DependentType, Type)]
+  , instFunctions :: [InstanceFunction]
+  }
+
+data DependentType = Dep TCon UniqueClass
+
+data ClassFunDec = CFD UniqueVar [(Decon, Type)] Type
+data InstanceFunction = InstanceFunction
+  { classFunctionDeclaration :: ClassFunDec
+  , classFunctionBody :: NonEmpty AnnStmt
+  }
+
 
 ---------------
 -- Module --
@@ -190,12 +223,14 @@ data Module = Mod
   -- we must also typecheck functions / datatypes that were not referenced!!!
   , functions :: [Function]
   , datatypes :: [DataDef]
+  , classes :: [ClassDef]
   }
 
 data Exports = Exports
   { variables :: [UniqueVar]
   , functions :: [Function]
   , datatypes :: [DataDef]
+  , classes   :: [ClassDef]
   }
 
 
@@ -258,7 +293,14 @@ tExpr :: Expr -> Context
 tExpr = cata $ \case
   Lit (LInt x) -> pretty x
   Lit (LFloat f) -> pretty $ show f
-  Var l v -> ppVar l (asUniqueVar v)
+  Var l v ->
+    let post = case v of
+          DefinedVariable _ -> ""
+          DefinedFunction _ -> "F"
+          ExternalFunction _ -> "EF"
+          DefinedClassFunction _ _ -> "C"
+          ExternalClassFunction _ _ -> "EC"
+    in ppVar l (asUniqueVar v) <> post
   Con c -> ppCon (asUniqueCon c)
 
   

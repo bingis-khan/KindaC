@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet, MemName, ppMem, ppRecordMems)
+import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet, MemName, ppMem, ppRecordMems, UniqueClass)
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -152,6 +152,46 @@ instance Ord Function where
   fn `compare` fn' = fn.functionDeclaration.functionId `compare` fn'.functionDeclaration.functionId
 
 
+------------------
+-- Typeclasses --
+------------------
+
+
+data ClassDef = ClassDef
+  { classID :: UniqueClass
+  -- , classDependentTypes :: [DependentType]
+  , classFunctions :: [ClassFunDec]
+  }
+
+data InstDef = InstDef
+  { instClassID :: UniqueClass
+  , instType :: (DataDef, [TVar])
+  -- , instDependentTypes :: [(DependentType, Type)]
+  , instFunctions :: [InstanceFunction]
+  }
+
+-- data DependentType = Dep TCon UniqueClass
+
+data ClassFunDec = CFD UniqueVar [(Decon, Type)] Type
+data InstanceFunction = InstanceFunction
+  { classFunctionDeclaration :: ClassFunDec
+  , classFunctionBody :: NonEmpty Stmt
+  }
+
+
+instance Eq ClassFunDec where
+  CFD uv _ _ == CFD uv' _ _ = uv == uv'
+
+instance Ord ClassFunDec where
+  CFD uv _ _ `compare` CFD uv' _ _ = uv `compare` uv'
+
+instance Eq InstDef where
+  inst == inst' = inst.instClassID == inst'.instClassID && fst inst.instType == fst inst'.instType
+
+instance Ord InstDef where
+  inst `compare` inst' = (inst.instClassID, fst inst.instType) `compare` (inst'.instClassID, fst inst'.instType)
+
+
 
 ----------------
 -- Expression --
@@ -183,6 +223,7 @@ getType (Fix (TypedExpr t _)) = t
 data Variable
   = DefinedVariable UniqueVar
   | DefinedFunction Function
+  | DefinedClassFunction ClassFunDec [InstDef]  -- which class function and which instances are visible at this point.
   deriving (Eq, Ord)
 
 
@@ -190,6 +231,7 @@ asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
   DefinedVariable uv -> uv
   DefinedFunction fn -> fn.functionDeclaration.functionId
+  DefinedClassFunction (CFD uv _ _) _ -> uv
 
 
 -- scheme for both mapping tvars and unions
@@ -259,7 +301,6 @@ $(deriveEq1 ''TypeF)
 $(deriveOrd1 ''TypeF)
 
 
-
 ---------------
 -- Module --
 ---------------
@@ -271,12 +312,14 @@ data Module = Mod
   -- not needed, used for printing the AST.
   , functions :: [Function]
   , datatypes :: [DataDef]
+  , classes   :: [ClassDef]
   }
 
 data Exports = Exports
   { variables :: [UniqueVar]
   , functions :: [Function]
   , datatypes :: [DataDef]
+  , classes   :: [ClassDef]
   }
 
 
@@ -377,7 +420,8 @@ tExpr = cata $ \(TypedExpr et expr) ->
   Lit (LInt x) -> pretty x
   Lit (LFloat fl) -> pretty $ show fl
   Var l (DefinedVariable v) -> ppVar l v
-  Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
+  Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId <> "&F"
+  Var l (DefinedClassFunction (CFD uv _ _) _) -> ppVar l uv <> "&C"
   Con _ (DC _ uc _ _) -> ppCon uc
 
   RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> ppRecordMems inst

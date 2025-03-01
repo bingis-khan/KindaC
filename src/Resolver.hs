@@ -23,7 +23,7 @@ import Data.Set (Set, (\\))
 import Data.Bifoldable (bifold)
 import qualified Data.Set as Set
 
-import AST.Common (UniqueVar (..), UniqueCon (..), UniqueType (..), Locality (..), VarName (..), TCon (..), ConName (..), Annotated (..), (:.) (..), UnboundTVar (..), TVar (..), Binding (..), bindTVar, MemName, sequenceA2)
+import AST.Common (UniqueVar (..), UniqueCon (..), UniqueType (..), Locality (..), VarName (..), TCon (..), ConName (..), Annotated (..), (:.) (..), UnboundTVar (..), TVar (..), Binding (..), bindTVar, MemName, sequenceA2, UniqueClass (..), ClassName, uniqueClassAsTypeName)
 import AST.Converged (Prelude(..))
 import qualified AST.Converged as Prelude
 import AST.Untyped (StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..), DataRec (DR))
@@ -39,6 +39,7 @@ import Data.Maybe (mapMaybe, catMaybes)
 import Data.Semigroup (sconcat)
 import Data.Traversable (for)
 import qualified Control.Monad.Trans.RWS as RWS
+import Data.Either (rights, lefts)
 
 
 
@@ -52,7 +53,7 @@ resolve mPrelude (U.Mod ustmts) = do
   let topLevelScope = NonEmpty.head state.scopes
   let moduleExports = scopeToExports topLevelScope
 
-  let rmod = R.Mod { toplevel = rstmts, exports = moduleExports, functions = state.functions, datatypes = state.datatypes }
+  let rmod = R.Mod { toplevel = rstmts, exports = moduleExports, functions = state.functions, datatypes = state.datatypes, classes = state.classes }
 
   return (errs, rmod)
 
@@ -91,6 +92,18 @@ rStmts = traverse -- traverse through the list with Ctx
             
           R.ExternalFunction fun -> do
             err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
+
+            vid <- generateVar name
+            stmt $ R.Mutation vid Local re
+
+          R.DefinedClassFunction (R.CFD cfdUV _ _) _ -> do
+            err $ CannotMutateFunctionDeclaration cfdUV.varName
+
+            vid <- generateVar name
+            stmt $ R.Mutation vid Local re
+
+          R.ExternalClassFunction (T.CFD cfdUV _ _) _ -> do
+            err $ CannotMutateFunctionDeclaration cfdUV.varName
 
             vid <- generateVar name
             stmt $ R.Mutation vid Local re
@@ -150,7 +163,7 @@ rStmts = traverse -- traverse through the list with Ctx
         pass
 
       FunctionDefinition (FD name params ret) body -> do
-        vid <- generateVar name  -- NOTE: this is added to scope in `newFunction` (for some reason.) TODO: change it later (after I finish implementing records.)
+        vid <- generateVar name  -- NOTE: this is added to scope in `newFunction` (for some reason.) TODO: change it later (after I finish implementing records.) TODO: to what?????
 
         -- get all unbound tvars
         let allTypes = catMaybes $ ret : (snd <$> params)
@@ -180,6 +193,50 @@ rStmts = traverse -- traverse through the list with Ctx
           env <- mkEnv innerEnv
 
         stmt $ R.EnvDef function
+
+      -- REF: How are instances selected in Haskell: https://www.youtube.com/watch?v=XfIlhJFmw3c
+      -- REF: https://wiki.haskell.org/index.php?title=Orphan_instance
+      --  > Type class instances are special in that they don't have a name and cannot be imported explicitly. This also means that they cannot be excluded explicitly. All instances defined in a module A are imported automatically when importing A, or importing any module that imports A, directly or indirectly. 
+      ClassDefinition cd -> do
+        uc <- generateClass cd.classID
+
+        -- scoped dependent types.
+        rec
+          let rcd = R.ClassDef { classID = uc, classDependentTypes = deps, classFunctions = fundecs }
+
+          -- TODO: define dependent types... at least, later
+          -- let _ = cd.classDependentTypes
+          let deps = []
+
+          fundecs <- for cd.classFunctions $ \(U.CFD name params ret) -> do
+            funid <- generateVar name
+
+            -- get all unbound tvars (HACK: copied from DefinedFunction)
+            let allTypes = ret : (snd <$> params)
+            tvars <- fmap mconcat $ for allTypes $ cata $ \case
+                  TVar utv -> tryResolveTVar utv <&> \case
+                    Just _ ->  Set.empty  -- don't rebind existing tvars.
+                    Nothing -> Set.singleton $ bindTVar (BindByVar funid) utv
+                  t -> fold <$> sequenceA t
+
+            -- HACK: ALSO COPIED FROM DefinedFunction!!
+            (rparams, rret) <- bindTVars (Set.toList tvars) $ closure $ do
+              rparams' <- traverse (\(n, t) -> do
+                rn <- rDecon n
+                rt <- rType t
+                return (rn, rt)) params
+              rret' <- rType ret
+              pure (rparams', rret')
+
+            pure $ R.CFD funid rparams rret
+
+          registerClass rcd
+        pass
+
+
+      InstDefinition ins -> do
+        pass
+
 
     rCase :: U.CaseF U.Expr (Ctx R.AnnStmt) -> Ctx (R.Case R.Expr R.AnnStmt)
     rCase kase = do
@@ -345,20 +402,22 @@ data CtxState = CtxState
 
   , prelude :: Maybe Prelude  -- Only empty when actually parsing prelude.
 
-  -- we need to keep track of each defiend function to actually typecheck it.
+  -- we need to keep track of each defined function to actually typecheck it.
   , functions :: [R.Function]
   , datatypes :: [R.DataDef]
+  , classes   :: [R.ClassDef]
   }
 
 data Scope = Scope
   { varScope :: Map VarName R.Variable
   , conScope :: Map ConName R.Constructor
-  , tyScope :: Map TCon R.Datatype
+  , tyScope :: Map TCon (Either R.ClassDef R.Datatype)
+  , instScope :: Map (R.ClassDef, R.Datatype) R.InstDef
   }
 
 emptyState :: CtxState
 emptyState =
-  CtxState { scopes = NonEmpty.singleton emptyScope, tvarBindings = mempty, prelude = Nothing, inLambda = False, functions = mempty, datatypes = mempty }
+  CtxState { scopes = NonEmpty.singleton emptyScope, tvarBindings = mempty, prelude = Nothing, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty }
 
 emptyScope :: Scope
 emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty }
@@ -375,6 +434,7 @@ mkState prel = CtxState
   , inLambda = False
   , functions = mempty
   , datatypes = mempty
+  , classes = mempty
   } where
 
     -- convert prelude to a scope
@@ -382,7 +442,7 @@ mkState prel = CtxState
       { varScope = exportedVariables <> exportedFunctions
 
       , conScope = Map.fromList $ concat $ preludeExports.datatypes <&> \(T.DD _ _ dcs _) -> foldMap (fmap (\dc@(T.DC _ uc _ _) -> (uc.conName, R.ExternalConstructor dc))) dcs
-      , tyScope  = Map.fromList $ preludeExports.datatypes <&> \dd@(T.DD ut _ _ _) -> (ut.typeName, R.ExternalDatatype dd)
+      , tyScope  = Map.fromList $ preludeExports.datatypes <&> \dd@(T.DD ut _ _ _) -> (ut.typeName, Right $ R.ExternalDatatype dd)
       }
 
     exportedVariables = Map.fromList $ preludeExports.variables <&> \uv -> 
@@ -460,6 +520,25 @@ placeholderCon name = do
   pure $ DefinedConstructor dc
 
 
+generateClass :: ClassName -> Ctx UniqueClass
+generateClass cn = do
+  cid <- liftIO newUnique
+  let uc = TCI { classID = cid, className = cn }
+  pure uc
+
+-- memo stuff
+registerClass :: R.ClassDef -> Ctx ()
+registerClass cd = do
+  modifyThisScope $ \sc -> sc
+    -- class itself
+    { tyScope = Map.insert (uniqueClassAsTypeName cd.classID) (Left cd) sc.tyScope
+
+    -- inner functions
+    , varScope = foldr (\cfd@(R.CFD uv _ _) -> Map.insert uv.varName (R.DefinedClassFunction cfd)) sc.varScope cd.classFunctions
+    }
+
+  RWST.modify $ \ctx -> ctx { classes = cd : ctx.classes }
+
 -- Generate a new unique type.
 generateType :: TCon -> Ctx UniqueType
 generateType name = do
@@ -471,14 +550,15 @@ registerDatatype :: R.DataDef -> Ctx ()
 registerDatatype dd@(R.DD ut _ _ _) = do
   -- Check for duplication first
   -- if it exists, we still replace it, but an error is signaled.
+  -- TODO: All of this is iffy. I don't really know what it's doing.
   let name = ut.typeName
   currentScope <- NonEmpty.head <$> getScopes
   case currentScope.tyScope !? name of
-    Nothing -> pure ()
-    Just (R.DefinedDatatype _) -> pure ()
-    Just (R.ExternalDatatype _) -> err $ TypeRedeclaration name
+    Just (Right (R.DefinedDatatype _)) -> pure ()
+    Just (Right (R.ExternalDatatype _)) -> err $ TypeRedeclaration name  -- maybe we should shadow still?????
+    _ -> pure ()
 
-  modifyThisScope $ \sc -> sc { tyScope = Map.insert name (R.DefinedDatatype dd) sc.tyScope }
+  modifyThisScope $ \sc -> sc { tyScope = Map.insert name (Right $ R.DefinedDatatype dd) sc.tyScope }
   RWST.modify $ \s -> s { datatypes = dd : s.datatypes }
   pure ()
 
@@ -522,7 +602,11 @@ resolveType :: TCon -> Ctx R.Datatype
 resolveType name = do
   allScopes <- getScopes
   case lookupScope name (fmap tyScope allScopes) of
-    Just (_, c) -> pure c  -- rn we will ignore the scope
+    Just (_, Right c) -> pure c  -- rn we will ignore the scope
+    Just (_, Left c) -> do
+      err $ AttemptToDeconstructClass c.classID  -- TODO: i can do normal class instead of ID, but right now I don't feel like implementing a custom show instance.
+      placeholderType name
+
     Nothing -> do
       err $ UndefinedType name
       placeholderType name
@@ -573,6 +657,8 @@ data ResolveError
   | RedefinedMember    MemName
 
   | NotARecordType UniqueType
+
+  | AttemptToDeconstructClass UniqueClass
   deriving Show
 
 
@@ -610,9 +696,12 @@ scopeToExports sc = Exports
   { variables = vars
   , functions = funs
   , datatypes = dts
+  , classes   = cls
   } where
     vars = mapMaybe (\case { DefinedVariable var -> Just var; _ -> Nothing }) $ Map.elems sc.varScope
 
     funs = mapMaybe (\case { DefinedFunction fun -> Just fun; _ -> Nothing }) $ Map.elems sc.varScope
 
-    dts = mapMaybe (\case { DefinedDatatype dt -> Just dt; _ -> Nothing }) $ Map.elems sc.tyScope
+    dts = mapMaybe (\case { DefinedDatatype dt -> Just dt; _ -> Nothing }) $ rights $ Map.elems sc.tyScope
+
+    cls = lefts $ Map.elems sc.tyScope

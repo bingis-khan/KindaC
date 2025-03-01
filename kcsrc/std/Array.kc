@@ -1,0 +1,55 @@
+arr = [ 1, 2, 3, 4, 5 ] as StaticArray 5 Int
+
+head (Array' t)
+	return
+		if t.size == 0:
+			None
+		else:
+			Just(t.arr[0])
+
+
+# these arrays are (by default) passed by value.
+StaticArray *n t
+
+# this one's size is not known - equal to a pointer to array.
+RawArray t
+
+
+# this one has size prepended. still contains only a pointer
+Array t
+	size Size
+	arr Array t
+
+
+as-raw-array (a Ptr (StaticArray *n t)) -> Array t
+	return Cnile.unsafe-c-cast(a)  # cast happens here
+
+as-array (a Ptr (StaticArray *n t))
+	carr = as-raw-array(a)
+	arr' = Array {
+			size: *n,
+			arr: carr,
+		}
+	return arr'
+
+
+# suggested naming?
+Array
+SizedArray
+StaticArray
+UnsizedArray
+UnsafeArray
+Buffer
+StaticBuffer
+Array*
+SizelessArray
+CArray
+RawArray
+UnboundedArray
+
+
+okay.
+
+static array:          StaticArray
+C array:               RawArray
+C array + length:      Array

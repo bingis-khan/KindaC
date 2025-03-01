@@ -127,9 +127,16 @@ data UniqueClass = TCI
   , className :: ClassName
   }
 
+-- I need to use classes in the same context as types.. but I use different types.
+-- Q: should I just remove UniqueClass?
+-- A: Nah, Resolver should decide between UniqueType and UniqueClass
+uniqueClassAsTypeName :: UniqueClass -> TCon
+uniqueClassAsTypeName TCI { className = cn } = TC cn.fromTN
+
 data Binding
   = BindByType UniqueType
   | BindByVar  UniqueVar
+  | BindByInst UniqueClass
   deriving (Eq, Ord)
 
 data TVar = TV
@@ -187,6 +194,9 @@ instance Eq UniqueClass where
 
 instance Ord UniqueClass where
   TCI { classID = l } `compare` TCI { classID = r } = l `compare` r
+
+instance Show UniqueClass where
+  show (TCI { className = name, classID = l }) = show name <> "@#" <> show (hashUnique l)
 
 
 -- ...plus additional tags
@@ -313,10 +323,11 @@ ppLines' :: Foldable t => t Context -> Context
 ppLines' = foldMap (<> "\n")
 
 ppTVar :: TVar -> Context
-ppTVar (TV tv b) = 
+ppTVar (TV tv b) =
   let bindingCtx = case b of
         BindByType ut -> ppTypeInfo ut
         BindByVar uv -> ppVar Local uv
+        BindByInst uc -> ppUniqueClass uc
   in pretty tv <> "<" <> bindingCtx <> ">"
 
 ppVar :: Locality -> UniqueVar -> Context
@@ -325,6 +336,9 @@ ppVar l v = localTag <?+> pretty (fromVN v.varName) <> ppIdent ("$" <> pretty (h
     localTag = case l of
       Local -> Nothing
       FromEnvironment -> Just "^"
+
+ppUniqueClass :: UniqueClass -> Context
+ppUniqueClass klass = fromString $ printf "%d@%s" (hashUnique klass.classID) (fromTN klass.className)
 
 -- annotate constructors with '@'
 ppTCon :: TCon -> Context

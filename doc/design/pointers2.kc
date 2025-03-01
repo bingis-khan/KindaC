@@ -1,0 +1,46 @@
+This is about pointers. I realize, that for my article I might have to implement pointers before typeclasses...... fuck.
+
+n = 420
+f = :n      :: () -> Int
+
+f-ptr = &f  :: Ptr (() -> Int)
+ret = f&()  :: Int
+
+Here, unification proceeds as expected. It's just like a singleton.
+But, there is some fun stuff when you expect memory to be undefined...
+
+Obviously, casting is *not* going to work.
+
+f =& :n
+void-ptr = f c-cast()  as  Ptr ()  # equivalent of a void pointer
+f' = void-ptr c-cast() as  Ptr (() -> Int)
+
+ret = f'&()  # no mention of environment...
+
+
+We should somehow prevent casting of functions. But what are the rules?
+Again, this is because of casting. The "normal" part of the language has no casts... it's only for interaction with C or ABIs.
+But, this might help me shine some light on the situation.
+Okay, here we go:
+
+V Ptr Int
+X Ptr (Int -> Int)
+X Ptr (Ptr (Int -> Int))
+	Explanation: we still lose environment information.
+X Ptr (Maybe (Int -> Int))
+
+.Unifying-the-Software-Toolchain/...
+
+Okay, I think I know. Each function is represented as a union OR as an application of a parameter.
+It's simpler than I thought: whenether we are casting a type that contains a function, we fail. That's because we lose environment information either way.
+Even this: Ptr (Proxy (Int -> Int))
+	- these will be two different types after recasting. this will lose information, even though the representation is going to be the same.
+
+So, I can't really enforce it on the type level, but I might add a special annotation for the `c-cast` function, which will cause the compiler to check the type that was used to cast it.
+
+
+Recursive shit.
+
+anonymous unions in recursive datatypes: we do a similar thing - we flatten it. Also, for recursive datatypes, each datatype will have the same "anonymous union". EZ, although now datatypes must obey the same mutual recursion rules as functions. Makes sense.
+
+parameters?

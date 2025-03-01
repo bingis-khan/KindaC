@@ -1,0 +1,5 @@
+
+class Str
+	print-str (self Int) -> Unit
+
+print-str(123)

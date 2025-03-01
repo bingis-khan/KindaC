@@ -104,10 +104,11 @@ generateSubstitution env senv rModule = do
   pure (tvModule, s.typeSubstitution, errors)
   where
     infer = do
-      -- Typecheck *all* functions, datatypes, etc. We want to typecheck a function even if it's not used (unlike Zig!)
+      -- Typecheck *all* functions, datatypes, etc. We want to typecheck a function even if it's not used (unlike Zig! (soig))
       dds <- inferDatatypes rModule.datatypes
       fns <- inferFunctions rModule.functions
       tls <- inferTopLevel rModule.toplevel
+      classes <- inferClasses rModule.classes
       exs <- inferExports rModule.exports
 
       -- run it one last time.
@@ -118,10 +119,12 @@ generateSubstitution env senv rModule = do
         , T.exports = exs
         , T.functions = fns
         , T.datatypes = dds
+        , T.classes = classes
         }
 
     inferFunctions fns = for fns inferFunction
     inferDatatypes dds = for dds inferDataDef
+    inferClasses cls = for cls inferClass
     inferTopLevel = inferStmts
 
 
@@ -349,8 +352,12 @@ inferExpr = cata (fmap embed . inferExprType)
 inferVariable :: R.Variable -> Infer T.Variable
 inferVariable = \case
   R.DefinedVariable v -> pure $ T.DefinedVariable v
+
   R.ExternalFunction fn -> pure $ T.DefinedFunction fn
   R.DefinedFunction fn -> T.DefinedFunction <$> inferFunction fn
+
+  R.ExternalClassFunction cfd _ -> pure $ T.DefinedClassFunction cfd
+  R.DefinedClassFunction  cfd _ -> T.DefinedClassFunction <$> inferClassFunction cfd
 
 inferConstructor :: R.Constructor -> Infer T.DataCon
 inferConstructor = \case
@@ -466,11 +473,36 @@ inferExports :: R.Exports -> Infer T.Exports
 inferExports e = do
   dts <- traverse inferDataDef e.datatypes
   fns <- traverse inferFunction e.functions
+  cls <- traverse inferClass e.classes
   pure $ T.Exports
     { variables = e.variables
     , functions = fns
     , datatypes = dts
+    , classes   = cls
     }
+
+
+inferClass :: R.ClassDef -> Infer T.ClassDef
+inferClass cd = do
+  funs <- traverse inferClassFunction cd.classFunctions
+  pure $ T.ClassDef
+    { classID = cd.classID
+    , classFunctions = funs
+    }
+
+inferClassFunction :: R.ClassFunDec -> Infer T.ClassFunDec
+inferClassFunction (R.CFD uv params ret) = do
+  params' <- for params $ \(decon, rt) -> do
+    d <- inferDecon decon
+    t  <- inferType rt
+
+    let dt = T.decon2type d
+    dt `uni` t
+
+    pure (d, t)
+
+  ret' <- inferType ret
+  pure $ T.CFD uv params' ret'
 
 
 -- Generalizes the function inside.
@@ -483,6 +515,8 @@ generalize ifn = do
 
 
   -- First, finalize substitution by taking care of member access.
+  -- NOTE: We have to call it here, because some types in the declaration might be dependent on member types.
+  --  At the end there will be one last member access.
   substAccess
 
   csu <- RWS.gets typeSubstitution
@@ -527,17 +561,10 @@ substAccess = do
 -- ignores assigned scheme!
 constructSchemeForFunctionDeclaration :: T.FunDec -> (Subst, Scheme)
 constructSchemeForFunctionDeclaration dec =
-  let digOutTyVarsAndUnionsFromType :: T.Type -> (Set TyVar, Set T.EnvUnion)
-      digOutTyVarsAndUnionsFromType = para $ \case
-        T.TyVar tyv -> (Set.singleton tyv, mempty)
-        T.TFun union ts t -> (mempty, Set.singleton (fst <$> union)) <> foldMap snd ts <> snd t
-        T.TCon _ ts unis -> foldMap snd ts <> foldMap ((mempty,) . Set.singleton . fmap fst) unis
-        t -> foldMap snd t
-
       -- IMPORTANT! We only extract types from non-instantiated! The instantiated type might/will contain types from our function and we don't won't that. We only want to know which types are from outside.
       -- So, for a function, use its own type.
       -- For a variable, use the actual type as nothing is instantiated!
-      digOutTyVarsAndUnionsFromEnv :: T.Env -> (Set TyVar, Set T.EnvUnion)
+  let digOutTyVarsAndUnionsFromEnv :: T.Env -> (Set TyVar, Set T.EnvUnion)
       digOutTyVarsAndUnionsFromEnv (T.RecursiveEnv _ _) = mempty
       digOutTyVarsAndUnionsFromEnv (T.Env _ env) = foldMap (\(v, _ ,t) -> digThroughVar t v) env
         where
@@ -545,6 +572,7 @@ constructSchemeForFunctionDeclaration dec =
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
             T.DefinedFunction f -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
+            T.DefinedClassFunction cfd _ -> undefined
 
       (tyVarsOutside, unionsOutside) = digOutTyVarsAndUnionsFromEnv dec.functionEnv
       (tyVarsDeclaration, unionsDeclaration) = foldMap (digOutTyVarsAndUnionsFromType . snd) dec.functionParameters <> digOutTyVarsAndUnionsFromType dec.functionReturnType
@@ -553,11 +581,8 @@ constructSchemeForFunctionDeclaration dec =
       tyVarsOnlyFromHere = tyVarsDeclaration \\ tyVarsOutside
       unionsOnlyFromHere = unionsDeclaration \\ unionsOutside
 
-      -- goes trhough the type and finds tvars that are defined for this function.
-      definedTVars :: T.Type -> Set TVar
-      definedTVars = cata $ \case
-        T.TVar tv@(TV _ (BindByVar varid)) | varid == dec.functionId -> Set.singleton tv
-        t -> fold t
+      -- function to find tvars defined for this function!
+      definedTVars = findTVarsForID dec.functionId
 
       tvarsDefinedForThisFunction = foldMap (definedTVars . snd) dec.functionParameters <> definedTVars dec.functionReturnType
 
@@ -570,6 +595,21 @@ constructSchemeForFunctionDeclaration dec =
       tvarsFromTyVars = Set.map asTVar tyVarsOnlyFromHere
       scheme = Scheme (Set.toList $ tvarsFromTyVars <> tvarsDefinedForThisFunction) (Set.toList unionsOnlyFromHereWithTVars)
   in (su, scheme)
+
+digOutTyVarsAndUnionsFromType :: T.Type -> (Set TyVar, Set T.EnvUnion)
+digOutTyVarsAndUnionsFromType = para $ \case
+    T.TyVar tyv -> (Set.singleton tyv, mempty)
+    T.TFun union ts t -> (mempty, Set.singleton (fst <$> union)) <> foldMap snd ts <> snd t
+    T.TCon _ ts unis -> foldMap snd ts <> foldMap ((mempty,) . Set.singleton . fmap fst) unis
+    t -> foldMap snd t
+
+
+-- goes through the type and finds tvars that are defined for this function.
+findTVarsForID :: UniqueVar -> T.Type -> Set TVar
+findTVarsForID euid = cata $ \case
+  T.TVar tv@(TV _ (BindByVar varid)) | varid == euid -> Set.singleton tv
+  t -> fold t
+
 
 -- Substitute return type for function.
 withReturn :: T.Type -> Infer a -> Infer a
@@ -674,6 +714,27 @@ instantiateVariable = \case
     ctxPrint' $ printf "After instantiation: %s" (T.tType fnType)
 
     pure fnType
+
+  T.DefinedClassFunction (T.CFD funid params ret) _ -> do
+    -- TODO: a lot of it is duplicated from DefinedFunction. sussy
+    let allTypes = ret : map snd params
+    let (_, unions) = foldMap digOutTyVarsAndUnionsFromType allTypes
+    let thisFunctionsTVars = foldMap (findTVarsForID funid) allTypes
+
+    let schemeTVars = Set.toList thisFunctionsTVars
+    let schemeUnions = Set.toList unions
+    let scheme = Scheme schemeTVars schemeUnions
+
+    (itvs, iunions) <- instantiateScheme scheme
+    let tvmap = Map.fromList $ zip schemeTVars itvs
+    let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions) iunions
+    let mapTVs = mapTVsWithMap tvmap unionmap
+    fnUnion <- emptyUnion
+
+    let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> params) (mapTVs ret)
+
+    pure fnType
+
 
 instantiateConstructor :: EnvID -> T.DataCon -> Infer T.Type
 instantiateConstructor envID = \case
@@ -914,7 +975,12 @@ instance Substitutable T.Module  where
 
     , T.functions = subst su <$> m.functions
     , T.datatypes = m.datatypes -- subst su <$> m.datatypes
+    , T.classes = subst su <$> m.classes
     }
+
+instance Substitutable T.ClassDef where
+  ftv = undefined
+  subst su cd = undefined
 
 instance Substitutable T.Exports where
   ftv e = ftv e.functions

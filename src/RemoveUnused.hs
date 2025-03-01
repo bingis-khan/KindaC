@@ -67,6 +67,7 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
       usedInsideFunction <- rFunction fun
       (usedInsideFunction <>) <$> used (T.DefinedFunction fun) t
     T.DefinedVariable uv -> if loc == FromEnvironment then used (T.DefinedVariable uv) t else pure Set.empty
+    T.DefinedClassFunction cfd _ -> undefined
 
   T.Con envID _ -> do 
     let emptyEnvMask = []
