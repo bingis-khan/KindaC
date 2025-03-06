@@ -28,7 +28,7 @@ import AST.Converged (Prelude(..))
 import qualified AST.Converged as Prelude
 import AST.Untyped (StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..), DataRec (DR))
 import qualified AST.Untyped as U
-import AST.Resolved (Env (..), Exports (..), Variable (..), Datatype (..), Constructor (..))
+import AST.Resolved (Env (..), Exports (..), Datatype (..), Constructor (..), VariableProto (..), ClassFunDec (..))
 import qualified AST.Resolved as R
 import qualified AST.Typed as T
 import Data.Fix (Fix(..))
@@ -40,6 +40,7 @@ import Data.Semigroup (sconcat)
 import Data.Traversable (for)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Either (rights, lefts)
+import Data.List (find)
 
 
 
@@ -53,7 +54,7 @@ resolve mPrelude (U.Mod ustmts) = do
   let topLevelScope = NonEmpty.head state.scopes
   let moduleExports = scopeToExports topLevelScope
 
-  let rmod = R.Mod { toplevel = rstmts, exports = moduleExports, functions = state.functions, datatypes = state.datatypes, classes = state.classes }
+  let rmod = R.Mod { toplevel = rstmts, exports = moduleExports, functions = state.functions, datatypes = state.datatypes, classes = state.classes, instances = state.instances }
 
   return (errs, rmod)
 
@@ -96,13 +97,13 @@ rStmts = traverse -- traverse through the list with Ctx
             vid <- generateVar name
             stmt $ R.Mutation vid Local re
 
-          R.DefinedClassFunction (R.CFD cfdUV _ _) _ -> do
+          R.DefinedClassFunction (R.CFD _ cfdUV _ _) _ -> do
             err $ CannotMutateFunctionDeclaration cfdUV.varName
 
             vid <- generateVar name
             stmt $ R.Mutation vid Local re
 
-          R.ExternalClassFunction (T.CFD cfdUV _ _) _ -> do
+          R.ExternalClassFunction (T.CFD _ cfdUV _ _) _ -> do
             err $ CannotMutateFunctionDeclaration cfdUV.varName
 
             vid <- generateVar name
@@ -189,7 +190,7 @@ rStmts = traverse -- traverse through the list with Ctx
           -- set the environment
           --   NOTE: don't forget to remove self reference - it does not need to be in the environment.
           -- TODO: maybe just make it a part of 'closure'?
-          let innerEnv = Set.delete vid $ sconcat $ gatherVariables <$> rbody
+          let innerEnv = Set.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
           env <- mkEnv innerEnv
 
         stmt $ R.EnvDef function
@@ -214,7 +215,7 @@ rStmts = traverse -- traverse through the list with Ctx
             -- get all unbound tvars (HACK: copied from DefinedFunction)
             let allTypes = ret : (snd <$> params)
             tvars <- fmap mconcat $ for allTypes $ cata $ \case
-                  TVar utv -> tryResolveTVar utv <&> \case
+                  U.NormalType (TVar utv) -> tryResolveTVar utv <&> \case
                     Just _ ->  Set.empty  -- don't rebind existing tvars.
                     Nothing -> Set.singleton $ bindTVar (BindByVar funid) utv
                   t -> fold <$> sequenceA t
@@ -223,19 +224,64 @@ rStmts = traverse -- traverse through the list with Ctx
             (rparams, rret) <- bindTVars (Set.toList tvars) $ closure $ do
               rparams' <- traverse (\(n, t) -> do
                 rn <- rDecon n
-                rt <- rType t
+                rt <- rClassType t
                 return (rn, rt)) params
-              rret' <- rType ret
+              rret' <- rClassType ret
               pure (rparams', rret')
 
-            pure $ R.CFD funid rparams rret
+            pure $ R.CFD rcd funid rparams rret
 
           registerClass rcd
         pass
 
 
-      InstDefinition ins -> do
-        pass
+      InstDefinition inst -> do
+        klass <- resolveClass inst.instClassName
+
+        klassType <- resolveType $ fst inst.instType
+        let cid = case klass of
+              Left cd -> cd.classID
+              Right cd -> cd.classID
+        let instTVars = map (bindTVar (BindByInst cid)) $ snd inst.instType
+
+        fns <- for inst.instFunctions $ \(FD vn params ret, body) -> do
+          vid <- findFunctionInClass vn klass
+
+          -- get all unbound tvars
+          let allTypes = catMaybes $ ret : (snd <$> params)
+          tvars <- fmap mconcat $ for allTypes $ cata $ \case
+                TVar utv -> tryResolveTVar utv <&> \case
+                  Just _ ->  Set.empty  -- don't rebind existing tvars.
+                  Nothing -> Set.singleton $ bindTVar (BindByVar vid) utv
+                t -> fold <$> sequenceA t
+
+          (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure $ do
+            rparams' <- traverse (\(n, t) -> do
+              rn <- rDecon n
+              rt <- traverse rType t
+              return (rn, rt)) params
+            rret' <- traverse rType ret
+            rbody' <- rBody body
+            pure (rparams', rret', rbody')
+
+          -- set the environment
+          --   NOTE: don't forget to remove self reference - it does not need to be in the environment.
+          -- TODO: maybe just make it a part of 'closure'?
+          let innerEnv = Set.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
+          env <- mkEnv innerEnv
+          let fundec = R.FD env vid rparams rret
+
+          pure R.InstanceFunction
+            { R.classFunctionDeclaration = fundec
+            , R.classFunctionBody = rbody
+            }
+
+        stmt $ R.InstDefDef R.InstDef
+          { R.instClass = klass
+          , R.instType = (klassType, instTVars)
+          , R.instDependentTypes = []  -- TODO: temporary!
+          , R.instFunctions = fns
+          }
 
 
     rCase :: U.CaseF U.Expr (Ctx R.AnnStmt) -> Ctx (R.Case R.Expr R.AnnStmt)
@@ -355,7 +401,15 @@ rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
 
 
 rType :: U.Type -> Ctx R.Type
-rType = transverse $ \case
+rType = transverse rType'
+
+rClassType :: U.ClassType -> Ctx R.ClassType
+rClassType = transverse $ \case
+  U.Self -> pure R.Self
+  U.NormalType t -> R.NormalType <$> rType' t
+
+rType' :: U.TypeF (Ctx a) -> Ctx (R.TypeF a)
+rType' = \case
   TCon t tapps -> do
     rt <- resolveType t
     rtApps <- sequenceA tapps
@@ -406,21 +460,24 @@ data CtxState = CtxState
   , functions :: [R.Function]
   , datatypes :: [R.DataDef]
   , classes   :: [R.ClassDef]
+  , instances :: [R.InstDef]
   }
 
 data Scope = Scope
-  { varScope :: Map VarName R.Variable
+  { varScope :: Map VarName R.VariableProto
   , conScope :: Map ConName R.Constructor
   , tyScope :: Map TCon (Either R.ClassDef R.Datatype)
-  , instScope :: Map (R.ClassDef, R.Datatype) R.InstDef
+
+  , instScope :: Map (R.ClassDef, R.DataDef) R.InstDef
+  , tinstScope :: Map (T.ClassDef, T.DataDef) T.InstDef
   }
 
 emptyState :: CtxState
 emptyState =
-  CtxState { scopes = NonEmpty.singleton emptyScope, tvarBindings = mempty, prelude = Nothing, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty }
+  CtxState { scopes = NonEmpty.singleton emptyScope, tvarBindings = mempty, prelude = Nothing, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty, instances = mempty }
 
 emptyScope :: Scope
-emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty }
+emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty, instScope = mempty, tinstScope = mempty }
 
 getScopes :: Ctx (NonEmpty Scope)
 getScopes = RWST.gets scopes
@@ -435,6 +492,7 @@ mkState prel = CtxState
   , functions = mempty
   , datatypes = mempty
   , classes = mempty
+  , instances = mempty
   } where
 
     -- convert prelude to a scope
@@ -443,12 +501,15 @@ mkState prel = CtxState
 
       , conScope = Map.fromList $ concat $ preludeExports.datatypes <&> \(T.DD _ _ dcs _) -> foldMap (fmap (\dc@(T.DC _ uc _ _) -> (uc.conName, R.ExternalConstructor dc))) dcs
       , tyScope  = Map.fromList $ preludeExports.datatypes <&> \dd@(T.DD ut _ _ _) -> (ut.typeName, Right $ R.ExternalDatatype dd)
+
+      , tinstScope = Map.fromList $ preludeExports.instances <&> \inst -> ((inst.instClass, fst inst.instType), inst)
+      , instScope = mempty
       }
 
     exportedVariables = Map.fromList $ preludeExports.variables <&> \uv -> 
-      (uv.varName, DefinedVariable uv)
+      (uv.varName, PDefinedVariable uv)
     exportedFunctions = Map.fromList $ preludeExports.functions <&> \fn -> 
-      (fn.functionDeclaration.functionId.varName, ExternalFunction fn)
+      (fn.functionDeclaration.functionId.varName, PExternalFunction fn)
 
     preludeExports = prel.tpModule.exports
 
@@ -461,13 +522,13 @@ generateVar name = do
 newFunction :: R.Function -> Ctx ()
 newFunction fun = do
   let uv = fun.functionDeclaration.functionId
-  modifyThisScope $ \sc -> sc { varScope = Map.insert uv.varName (R.DefinedFunction fun) sc.varScope }
+  modifyThisScope $ \sc -> sc { varScope = Map.insert uv.varName (R.PDefinedFunction fun) sc.varScope }
   RWST.modify $ \s -> s { functions = fun : s.functions }
 
 newVar :: VarName -> Ctx UniqueVar
 newVar name = do
   uv <- generateVar name
-  modifyThisScope $ \sc -> sc { varScope = Map.insert uv.varName (R.DefinedVariable uv) sc.varScope }
+  modifyThisScope $ \sc -> sc { varScope = Map.insert uv.varName (R.PDefinedVariable uv) sc.varScope }
   pure uv
 
 lambdaVar :: Ctx UniqueVar
@@ -480,10 +541,22 @@ resolveVar :: VarName -> Ctx (Locality, R.Variable)
 resolveVar name = do
   allScopes <- getScopes
   case lookupScope name (fmap varScope allScopes) of
-    Just v -> pure v
+    Just (l, v) -> (l,) <$> protoVariableToVariable v
     Nothing -> do
       err $ UndefinedVariable name
       (Local,) . R.DefinedVariable <$> placeholderVar name
+
+protoVariableToVariable :: R.VariableProto -> Ctx R.Variable
+protoVariableToVariable = \case
+  R.PDefinedVariable uv -> pure $ R.DefinedVariable uv
+  R.PDefinedFunction fn -> pure $ R.DefinedFunction fn
+  R.PExternalFunction fn -> pure $ R.ExternalFunction fn
+  R.PDefinedClassFunction cfd@(R.CFD cd _ _ _) -> do
+    insts <- getInstancesForDefinedClassInCurrentScope cd
+    pure $ R.DefinedClassFunction cfd insts
+  R.PExternalClassFunction cfd@(T.CFD cd _ _ _) -> do
+    insts <- getInstancesForExternalClassInCurrentScope cd
+    pure $ R.ExternalClassFunction cfd insts
 
 placeholderVar :: VarName -> Ctx UniqueVar
 placeholderVar = generateVar
@@ -534,10 +607,37 @@ registerClass cd = do
     { tyScope = Map.insert (uniqueClassAsTypeName cd.classID) (Left cd) sc.tyScope
 
     -- inner functions
-    , varScope = foldr (\cfd@(R.CFD uv _ _) -> Map.insert uv.varName (R.DefinedClassFunction cfd)) sc.varScope cd.classFunctions
+    , varScope = foldr (\cfd@(R.CFD _ uv _ _) -> Map.insert uv.varName (R.PDefinedClassFunction cfd)) sc.varScope cd.classFunctions
     }
 
   RWST.modify $ \ctx -> ctx { classes = cd : ctx.classes }
+
+resolveClass :: ClassName -> Ctx (Either R.ClassDef T.ClassDef)
+resolveClass = undefined
+
+findFunctionInClass :: VarName -> Either R.ClassDef T.ClassDef -> Ctx UniqueVar
+findFunctionInClass vn ecd =
+  let
+    fns = case ecd of
+      Left cd -> cd.classFunctions <&> \(CFD _ uv _ _) -> uv
+      Right cd -> cd.classFunctions <&> \(T.CFD _ uv _ _) -> uv
+    cid = case ecd of
+      Left cd -> cd.classID
+      Right cd -> cd.classID
+    muv = find (\uv -> uv.varName == vn) fns
+  in case muv of
+    Just uv -> pure uv
+    Nothing -> do
+      err $ UndefinedFunctionOfThisClass cid vn
+      generateVar vn
+
+
+getInstancesForDefinedClassInCurrentScope :: R.ClassDef -> Ctx [R.InstDef]
+getInstancesForDefinedClassInCurrentScope _ = pure []
+
+getInstancesForExternalClassInCurrentScope :: T.ClassDef -> Ctx [Either R.InstDef T.InstDef]
+getInstancesForExternalClassInCurrentScope _ = pure []
+
 
 -- Generate a new unique type.
 generateType :: TCon -> Ctx UniqueType
@@ -658,35 +758,36 @@ data ResolveError
 
   | NotARecordType UniqueType
 
-  | AttemptToDeconstructClass UniqueClass
+  | AttemptToDeconstructClass UniqueClass  -- IDs are only, because I'm currently too lazy to make a Show instance.
+  | UndefinedFunctionOfThisClass UniqueClass VarName
   deriving Show
 
 
 -- environment stuff
-mkEnv :: Set UniqueVar -> Ctx Env
+mkEnv :: Set VariableProto -> Ctx Env
 mkEnv innerEnv = do
   locality <- localityOfVariablesAtCurrentScope
-  pure $ Env $ mapMaybe (locality !?) $ Set.toList innerEnv
+  pure $ Env $ mapMaybe (\v -> (locality !? R.asPUniqueVar v) <&> \(_, loc) -> (v, loc)) $ Set.toList innerEnv  -- filters variables to ones that are in the environment.
 
-localityOfVariablesAtCurrentScope :: Ctx (Map UniqueVar (R.Variable, Locality))
+localityOfVariablesAtCurrentScope :: Ctx (Map UniqueVar (R.VariableProto, Locality))
 localityOfVariablesAtCurrentScope = do
   allScopes <- getScopes
-  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (R.asUniqueVar v, (v, locality))) $ Map.elems l.varScope) <> r) mempty $ (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs) allScopes
+  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (R.asPUniqueVar v, (v, locality))) $ Map.elems l.varScope) <> r) mempty $ (\(cur :| envs) -> (Local, cur) :| fmap (FromEnvironment,) envs) allScopes
 
 -- used for function definitions
-gatherVariables :: R.AnnStmt -> Set UniqueVar
+gatherVariables :: R.AnnStmt -> Set R.VariableProto
 gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesFromExpr bstmt of
-  R.Mutation v _ expr -> Set.insert v expr
+  R.Mutation v _ expr -> Set.insert (R.PDefinedVariable v) expr
   R.EnvDef fn -> 
     let dec = fn.functionDeclaration
-        envVars = Set.fromList $ R.asUniqueVar . fst <$> dec.functionEnv.fromEnv
+        envVars = Set.fromList $ fst <$> dec.functionEnv.fromEnv
     in envVars
   stmt -> bifold stmt
 
 -- used for lambdas
-gatherVariablesFromExpr :: R.Expr -> Set UniqueVar
+gatherVariablesFromExpr :: R.Expr -> Set VariableProto
 gatherVariablesFromExpr = cata $ \case
-  R.Var _ v -> Set.singleton (R.asUniqueVar v)  -- TODO: Is this... correct? It's used for making the environment, but now we can just use this variable to know. This is todo for rewrite.
+  R.Var _ v -> Set.singleton (R.asProto v)  -- TODO: Is this... correct? It's used for making the environment, but now we can just use this variable to know. This is todo for rewrite.
                                 --   Update: I don't understand the comment above.
   expr -> fold expr
 
@@ -697,11 +798,14 @@ scopeToExports sc = Exports
   , functions = funs
   , datatypes = dts
   , classes   = cls
+  , instances = insts
   } where
-    vars = mapMaybe (\case { DefinedVariable var -> Just var; _ -> Nothing }) $ Map.elems sc.varScope
+    vars = mapMaybe (\case { PDefinedVariable var -> Just var; _ -> Nothing }) $ Map.elems sc.varScope
 
-    funs = mapMaybe (\case { DefinedFunction fun -> Just fun; _ -> Nothing }) $ Map.elems sc.varScope
+    funs = mapMaybe (\case { PDefinedFunction fun -> Just fun; _ -> Nothing }) $ Map.elems sc.varScope
 
     dts = mapMaybe (\case { DefinedDatatype dt -> Just dt; _ -> Nothing }) $ rights $ Map.elems sc.tyScope
 
     cls = lefts $ Map.elems sc.tyScope
+
+    insts = Map.elems sc.instScope

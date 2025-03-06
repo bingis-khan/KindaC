@@ -27,7 +27,7 @@ import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
 import AST.Common (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..))
-import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case, DataRec (..), DependentType (..), ClassFunDec (..), ClassDef (..), InstDef (..))
+import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case, DataRec (..), DependentType (..), ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), uClassType)
 import Data.Functor.Foldable (embed, cata)
 import Control.Monad ((<=<))
 import Data.Either (partitionEithers)
@@ -170,11 +170,11 @@ sDefinedFunctionHeader :: Parser ClassFunDec
 sDefinedFunctionHeader = do
   name <- variable
 
-  let param = liftA2 (,) sDeconstruction pType
+  let param = liftA2 (,) sDeconstruction pClassType
   params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
 
   symbol "->"  -- or just assume that no return = Unit
-  ret <- pType
+  ret <- pClassType
 
   pure $ CFD name params ret
 
@@ -192,20 +192,20 @@ sInst = recoverableIndentBlock $ do
   pure $ flip (L.IndentMany Nothing) sDepOrFunctionDef $ \depOrFunctions ->
     let (deps, funs) = partitionEithers depOrFunctions
     in pure $ InstDefinition $ InstDef
-      { instClassID = name
+      { instClassName = name
       , instType = instType
       , instDependentTypes = deps
       , instFunctions = funs
       }
 
-sDepOrFunctionDef :: Parser (Either (DependentType, Type) (ClassFunDec, NonEmpty AnnStmt))
+sDepOrFunctionDef :: Parser (Either (DependentType, ClassType) (ClassFunDec, NonEmpty AnnStmt))
 sDepOrFunctionDef = Left <$> sDepDef <|> Right <$> sInstFunction
 
-sDepDef :: Parser (DependentType, Type)
+sDepDef :: Parser (DependentType, ClassType)
 sDepDef = do
   depname <- sDepDec
   symbol "="
-  typ <- pType
+  typ <- pClassType
 
   pure (depname, typ)
 
@@ -519,6 +519,46 @@ typeTerm = choice
 
 poly :: Parser Type
 poly = Fix . TVar <$> generic
+
+
+-- COPIED FROM pType n shit. uhh.... Because I don't have an "identity" constructor in the TypeF datatype, I can't use fixpoint functions.
+pClassType :: Parser ClassType
+pClassType
+  =   Fix Self <$ symbol "_"
+  <|> do
+        term <- choice
+          [ (:[]) <$> concrete
+          , (:[]) . Fix . NormalType . TVar <$> generic
+          , groupingOrParams
+          ]
+
+        fun <- optional $ do
+          symbol "->"
+          pClassType
+        case fun of
+          Nothing -> case term of
+            [t] -> return t
+            ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap (ctx uClassType) ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
+          Just ret -> return $ Fix $ NormalType $ TFun term ret
+
+        where
+          concrete = do
+            tcon <- typeName
+            targs <- many classTypeTerm
+            return $ Fix $ NormalType $ TCon tcon targs
+          groupingOrParams = between (symbol "(") (symbol ")") $ sepBy pClassType (symbol ",")
+
+classTypeTerm :: Parser ClassType
+classTypeTerm = choice
+  [ grouping
+  , Fix . NormalType . TVar <$> generic
+  , concreteType
+  ]
+  where
+    grouping = between (symbol "(") (symbol ")") pClassType
+    concreteType = do
+      tname <- typeName
+      retf $ NormalType $ TCon tname []
 
 
 

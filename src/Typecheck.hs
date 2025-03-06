@@ -22,7 +22,7 @@ import qualified Data.Map as Map
 import Control.Monad.Trans.RWS (RWST (RWST), runRWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
-import Data.Functor.Foldable (Base, cata, embed, hoist, project, para)
+import Data.Functor.Foldable (Base, cata, embed, hoist, project, para, transverse)
 import Control.Monad (replicateM, zipWithM_, when)
 import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold)
@@ -109,6 +109,7 @@ generateSubstitution env senv rModule = do
       fns <- inferFunctions rModule.functions
       tls <- inferTopLevel rModule.toplevel
       classes <- inferClasses rModule.classes
+      instances <- inferInstances rModule.instances
       exs <- inferExports rModule.exports
 
       -- run it one last time.
@@ -120,11 +121,13 @@ generateSubstitution env senv rModule = do
         , T.functions = fns
         , T.datatypes = dds
         , T.classes = classes
+        , T.instances = instances
         }
 
     inferFunctions fns = for fns inferFunction
     inferDatatypes dds = for dds inferDataDef
     inferClasses cls = for cls inferClass
+    inferInstances insts = for insts inferInstance
     inferTopLevel = inferStmts
 
 
@@ -290,7 +293,7 @@ inferExpr = cata (fmap embed . inferExprType)
           for_ insts' $ \(name, me) -> do
             mt <- addMember t name
             uni mt (T.getType me)
-          
+
           pure (T.RecCon dd' insts', t)
 
 
@@ -356,8 +359,26 @@ inferVariable = \case
   R.ExternalFunction fn -> pure $ T.DefinedFunction fn
   R.DefinedFunction fn -> T.DefinedFunction <$> inferFunction fn
 
-  R.ExternalClassFunction cfd _ -> pure $ T.DefinedClassFunction cfd
-  R.DefinedClassFunction  cfd _ -> T.DefinedClassFunction <$> inferClassFunction cfd
+  R.ExternalClassFunction cfd insts -> fmap (T.DefinedClassFunction cfd) $ for insts $ \case
+      Left rists -> inferInstance rists
+      Right tinst -> pure tinst
+
+  R.DefinedClassFunction  cfd@(R.CFD cd _ _ _) insts -> do
+    tcd <- inferClass cd
+    T.DefinedClassFunction <$> inferClassDeclaration tcd cfd <*> traverse inferInstance insts
+
+inferVariableProto :: R.VariableProto -> Infer T.VariableProto
+inferVariableProto = \case
+  R.PDefinedVariable v -> pure $ T.PDefinedVariable v
+
+  R.PExternalFunction fn -> pure $ T.PDefinedFunction fn
+  R.PDefinedFunction fn -> T.PDefinedFunction <$> inferFunction fn
+
+  R.PExternalClassFunction cfd -> pure $ T.PDefinedClassFunction cfd
+  R.PDefinedClassFunction  cfd@(R.CFD cd _ _ _) -> do
+    tcd <- inferClass cd
+    T.PDefinedClassFunction <$> inferClassDeclaration tcd cfd
+
 
 inferConstructor :: R.Constructor -> Infer T.DataCon
 inferConstructor = \case
@@ -369,6 +390,24 @@ inferConstructor = \case
     pure $ mustOr (printf "[Compiler Error] Could not find constructor %s." (ctx ppCon uc)) $
       find (\(T.DC _ uc' _ _) -> uc == uc') =<< eitherToMaybe cons
 
+
+-- pointless remap for class type
+-- we keep the original structure to later check if the inst function matches the lass declaration
+inferClassType :: R.ClassType -> Infer T.ClassType
+inferClassType = cata $ (.) (fmap embed) $ \case
+  R.Self -> pure T.Self
+  R.NormalType nt -> case nt of
+    R.TCon (R.DefinedDatatype rdd) rparams -> do
+      dd <- inferDataDef rdd
+      params <- sequenceA rparams
+      pure $ T.CTCon dd params
+    R.TCon (R.ExternalDatatype dd) rparams -> do
+      params <- sequenceA rparams
+      pure $ T.CTCon dd params
+    R.TVar tv -> pure $ T.CTVar tv
+    R.TFun params ret -> do
+      fnUnion <- emptyUnion
+      T.CTFun fnUnion.unionID <$> sequenceA params <*> ret
 
 inferType :: R.Type -> Infer T.Type
 inferType = cata $ (.) (fmap embed) $ \case
@@ -386,6 +425,13 @@ inferType = cata $ (.) (fmap embed) $ \case
   R.TVar tv -> pure $ T.TVar tv
 
   R.TFun rargs rret -> liftA3 T.TFun emptyUnion (sequenceA rargs) rret
+
+mkTypeFromClassType :: T.Type -> T.ClassType -> T.Type
+mkTypeFromClassType self = cata $ fmap embed $ \case
+  T.Self -> project self
+  T.CTCon dd params -> T.TCon dd params (extractUnionsFromDataType dd)
+  T.CTVar tv -> T.TVar tv
+  T.CTFun emptyUnionID params ret -> T.TFun (T.EnvUnion { T.unionID = emptyUnionID, T.union = [] }) params ret
 
 
 
@@ -471,38 +517,46 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
 -- Exports: what the current module will export.
 inferExports :: R.Exports -> Infer T.Exports
 inferExports e = do
-  dts <- traverse inferDataDef e.datatypes
-  fns <- traverse inferFunction e.functions
-  cls <- traverse inferClass e.classes
+  dts   <- traverse inferDataDef e.datatypes
+  fns   <- traverse inferFunction e.functions
+  cls   <- traverse inferClass e.classes
+  insts <- traverse inferInstance e.instances
   pure $ T.Exports
     { variables = e.variables
     , functions = fns
     , datatypes = dts
     , classes   = cls
+    , instances = insts
     }
 
 
 inferClass :: R.ClassDef -> Infer T.ClassDef
-inferClass cd = do
-  funs <- traverse inferClassFunction cd.classFunctions
-  pure $ T.ClassDef
-    { classID = cd.classID
-    , classFunctions = funs
-    }
+inferClass cd = mdo
+  let tcd = T.ClassDef
+        { classID = cd.classID
+        , classFunctions = funs
+        }
+  funs <- traverse (inferClassDeclaration tcd) cd.classFunctions
+  pure tcd
 
-inferClassFunction :: R.ClassFunDec -> Infer T.ClassFunDec
-inferClassFunction (R.CFD uv params ret) = do
+inferClassDeclaration :: T.ClassDef -> R.ClassFunDec -> Infer T.ClassFunDec
+inferClassDeclaration tcd (R.CFD _ uv params ret) = do
   params' <- for params $ \(decon, rt) -> do
     d <- inferDecon decon
-    t  <- inferType rt
+    t  <- inferClassType rt
 
     let dt = T.decon2type d
-    dt `uni` t
+    self <- fresh
+    dt `uni` mkTypeFromClassType self t
 
     pure (d, t)
 
-  ret' <- inferType ret
-  pure $ T.CFD uv params' ret'
+  ret' <- inferClassType ret
+  pure $ T.CFD tcd uv params' ret'
+
+inferInstance :: R.InstDef -> Infer T.InstDef
+inferInstance inst = do
+  undefined
 
 
 -- Generalizes the function inside.
@@ -561,7 +615,7 @@ substAccess = do
 -- ignores assigned scheme!
 constructSchemeForFunctionDeclaration :: T.FunDec -> (Subst, Scheme)
 constructSchemeForFunctionDeclaration dec =
-      -- IMPORTANT! We only extract types from non-instantiated! The instantiated type might/will contain types from our function and we don't won't that. We only want to know which types are from outside.
+      -- IMPORTANT: We only extract types from non-instantiated! The instantiated type might/will contain types from our function and we don't won't that. We only want to know which types are from outside.
       -- So, for a function, use its own type.
       -- For a variable, use the actual type as nothing is instantiated!
   let digOutTyVarsAndUnionsFromEnv :: T.Env -> (Set TyVar, Set T.EnvUnion)
@@ -572,7 +626,16 @@ constructSchemeForFunctionDeclaration dec =
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
             T.DefinedFunction f -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
-            T.DefinedClassFunction cfd _ -> undefined
+            T.DefinedClassFunction _ insts
+              -> foldMap digOutFromInst insts
+              where
+                digOutFromInst :: T.InstDef -> (Set TyVar, Set T.EnvUnion)
+                digOutFromInst inst = foldMap digOutFromInstFunction inst.instFunctions
+
+                digOutFromInstFunction :: T.InstanceFunction -> (Set TyVar, Set T.EnvUnion)
+                digOutFromInstFunction fn =
+                  let fndec = fn.classFunctionDeclaration
+                  in foldMap (digOutTyVarsAndUnionsFromType . snd) fndec.functionParameters <> digOutTyVarsAndUnionsFromType fndec.functionReturnType
 
       (tyVarsOutside, unionsOutside) = digOutTyVarsAndUnionsFromEnv dec.functionEnv
       (tyVarsDeclaration, unionsDeclaration) = foldMap (digOutTyVarsAndUnionsFromType . snd) dec.functionParameters <> digOutTyVarsAndUnionsFromType dec.functionReturnType
@@ -608,6 +671,12 @@ digOutTyVarsAndUnionsFromType = para $ \case
 findTVarsForID :: UniqueVar -> T.Type -> Set TVar
 findTVarsForID euid = cata $ \case
   T.TVar tv@(TV _ (BindByVar varid)) | varid == euid -> Set.singleton tv
+  t -> fold t
+
+-- copy of previous function for ClassType
+findTVarsForIDInClassType :: UniqueVar -> T.ClassType -> Set TVar
+findTVarsForIDInClassType euid = cata $ \case
+  T.CTVar tv@(TV _ (BindByVar varid)) | varid == euid -> Set.singleton tv
   t -> fold t
 
 
@@ -715,20 +784,32 @@ instantiateVariable = \case
 
     pure fnType
 
-  T.DefinedClassFunction (T.CFD funid params ret) _ -> do
+  T.DefinedClassFunction (T.CFD _ funid params ret) _ -> do
     -- TODO: a lot of it is duplicated from DefinedFunction. sussy
     let allTypes = ret : map snd params
-    let (_, unions) = foldMap digOutTyVarsAndUnionsFromType allTypes
-    let thisFunctionsTVars = foldMap (findTVarsForID funid) allTypes
+    let thisFunctionsTVars = foldMap (findTVarsForIDInClassType funid) allTypes
+
+    -- dig out unions from class type (instantiate class type)
+    -- all these unions should come from datatypes. so...
+    let extractUnions :: T.ClassType -> Set T.EnvUnion
+        extractUnions = cata $ \case
+          T.CTCon dd params ->
+            let ddUnions = Set.fromList $ extractUnionsFromDataType dd
+                paramUnions = fold params
+            in ddUnions <> paramUnions
+          ct -> fold ct
+
+    let thisFunctionsUnions = foldMap extractUnions allTypes
 
     let schemeTVars = Set.toList thisFunctionsTVars
-    let schemeUnions = Set.toList unions
+    let schemeUnions = Set.toList thisFunctionsUnions
     let scheme = Scheme schemeTVars schemeUnions
 
     (itvs, iunions) <- instantiateScheme scheme
     let tvmap = Map.fromList $ zip schemeTVars itvs
     let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions) iunions
-    let mapTVs = mapTVsWithMap tvmap unionmap
+    let self = undefined
+    let mapTVs = mapTVsWithMap tvmap unionmap . mkTypeFromClassType self
     fnUnion <- emptyUnion
 
     let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> params) (mapTVs ret)
@@ -758,7 +839,7 @@ instantiateConstructor envID = \case
 instantiateRecord :: T.DataDef -> Infer T.Type
 instantiateRecord dd@(T.DD _ scheme (Left _) _) = do
   (tvs, unions) <- instantiateScheme scheme
-  pure $ Fix $ T.TCon dd tvs unions 
+  pure $ Fix $ T.TCon dd tvs unions
 
 instantiateRecord (T.DD ut _ (Right _) _) = error $ printf "Attempted to instantiate ADT (%s) as a Record!" (Common.ppTypeInfo ut)
 
@@ -812,8 +893,8 @@ withEnv' renv x = do
 
   -- 3. then filter the stuff that actually is from the environment
   --  TODO: this might not be needed, since we conditionally add an instantiation if it's FromEnvironment.
-  renvQuery <- Map.fromList <$> traverse (\(v, t) -> (,t) <$> inferVariable v) (R.fromEnv renv)
-  let newEnv = mapMaybe (\(v, t) -> Map.lookup v renvQuery <&> (v,,t)) $ Set.toList modifiedInstantiations
+  renvQuery <- Map.fromList <$> traverse (\(v, t) -> (,t) <$> inferVariableProto v) (R.fromEnv renv)
+  let newEnv = mapMaybe (\(v, t) -> Map.lookup (T.asProto v) renvQuery <&> (v,,t)) $ Set.toList modifiedInstantiations
 
 
   -- 4. and put that filtered stuff back.
@@ -842,7 +923,7 @@ addMember :: T.Type -> MemName -> Infer T.Type
 addMember ogType memname = do
   t <- fresh  -- we don't know its type yet.
   RWS.modify $ \s -> s { memberAccess = (ogType, memname, t) : s.memberAccess }
-  
+
   pure t
 
 
@@ -872,7 +953,7 @@ uni t1 t2 = do
     unify t1' t2'
 
 uniMany :: [T.Type] -> [T.Type] -> Infer ()
-uniMany ts1 ts2 = 
+uniMany ts1 ts2 =
   substituting $ do
     su <- RWS.get
     let (ts1', ts2') = subst su (ts1, ts2)
@@ -976,11 +1057,16 @@ instance Substitutable T.Module  where
     , T.functions = subst su <$> m.functions
     , T.datatypes = m.datatypes -- subst su <$> m.datatypes
     , T.classes = subst su <$> m.classes
+    , T.instances = subst su <$> m.instances
     }
 
 instance Substitutable T.ClassDef where
   ftv = undefined
   subst su cd = undefined
+
+instance Substitutable T.InstDef where
+  ftv = undefined
+  subst su inst = undefined
 
 instance Substitutable T.Exports where
   ftv e = ftv e.functions

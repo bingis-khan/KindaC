@@ -31,6 +31,16 @@ type Type = Fix TypeF
 $(deriveEq1 ''TypeF)
 
 
+data ClassTypeF a
+  = Self
+  | NormalType (TypeF a)
+  deriving (Eq, Ord, Functor, Foldable, Traversable)
+type ClassType = Fix ClassTypeF
+
+$(deriveEq1 ''ClassTypeF)
+
+
+
 ----------------
 -- Expression --
 ----------------
@@ -102,14 +112,14 @@ data ClassDef = ClassDef
   , classFunctions :: [ClassFunDec]  -- TODO: soon will contain default implementations
   } deriving Eq
 
-data ClassFunDec = CFD VarName [(Decon, Type)] Type deriving Eq
+data ClassFunDec = CFD VarName [(Decon, ClassType)] ClassType deriving Eq
 newtype DependentType = Dep TCon deriving Eq  -- temporarily no parameters?
 
 data InstDef stmt = InstDef
-  { instClassID :: ClassName
+  { instClassName :: ClassName
   , instType :: (TCon, [UnboundTVar])  -- we accept only constructors yo!... (or should it involve more types... i mean, scoped type variables :OOO)
-  , instDependentTypes :: [(DependentType, Type)]
-  , instFunctions :: [(ClassFunDec, NonEmpty stmt)]
+  , instDependentTypes :: [(DependentType, ClassType)]
+  , instFunctions :: [(FunDec, NonEmpty stmt)]
   } deriving (Eq, Foldable, Functor, Traversable)
 
 
@@ -167,3 +177,6 @@ uType = cata $ \case
     foldl' (<+>) (ppTCon con) params
   TVar (UTV tv) -> pretty tv
   TFun args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+
+uClassType :: ClassType -> Context
+uClassType = undefined

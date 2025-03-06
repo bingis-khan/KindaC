@@ -123,6 +123,15 @@ data TypeF a
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 type Type = Fix TypeF
 
+-- Literally R.ClassType, but it would be a circular reference.
+data ClassTypeF a
+  = CTCon DataDef [a]
+  | CTVar TVar
+  | CTFun UnionID [a] a  -- UnionID: empty union.
+  | Self
+  deriving (Eq, Ord, Functor, Foldable, Traversable)
+type ClassType = Fix ClassTypeF
+
 
 
 --------------
@@ -164,32 +173,44 @@ data ClassDef = ClassDef
   }
 
 data InstDef = InstDef
-  { instClassID :: UniqueClass
+  { instClass :: ClassDef
   , instType :: (DataDef, [TVar])
   -- , instDependentTypes :: [(DependentType, Type)]
   , instFunctions :: [InstanceFunction]
   }
 
+selfType :: InstDef -> Type
+selfType instdef =
+  let (dd, tvs) = instdef.instType
+  in Fix $ TCon dd (Fix . TVar  <$> tvs) []
+
 -- data DependentType = Dep TCon UniqueClass
 
-data ClassFunDec = CFD UniqueVar [(Decon, Type)] Type
+data ClassFunDec = CFD ClassDef UniqueVar [(Decon, ClassType)] ClassType
+
 data InstanceFunction = InstanceFunction
-  { classFunctionDeclaration :: ClassFunDec
+  { classFunctionDeclaration :: FunDec
   , classFunctionBody :: NonEmpty Stmt
   }
 
 
+instance Eq ClassDef where
+  cd == cd' = cd.classID == cd'.classID
+
+instance Ord ClassDef where
+  cd `compare` cd' = cd.classID `compare` cd'.classID
+
 instance Eq ClassFunDec where
-  CFD uv _ _ == CFD uv' _ _ = uv == uv'
+  CFD _ uv _ _ == CFD _ uv' _ _ = uv == uv'
 
 instance Ord ClassFunDec where
-  CFD uv _ _ `compare` CFD uv' _ _ = uv `compare` uv'
+  CFD _ uv _ _ `compare` CFD _ uv' _ _ = uv `compare` uv'
 
 instance Eq InstDef where
-  inst == inst' = inst.instClassID == inst'.instClassID && fst inst.instType == fst inst'.instType
+  inst == inst' = inst.instClass == inst'.instClass && fst inst.instType == fst inst'.instType
 
 instance Ord InstDef where
-  inst `compare` inst' = (inst.instClassID, fst inst.instType) `compare` (inst'.instClassID, fst inst'.instType)
+  inst `compare` inst' = (inst.instClass, fst inst.instType) `compare` (inst'.instClass, fst inst'.instType)
 
 
 
@@ -226,12 +247,25 @@ data Variable
   | DefinedClassFunction ClassFunDec [InstDef]  -- which class function and which instances are visible at this point.
   deriving (Eq, Ord)
 
+data VariableProto
+  = PDefinedVariable UniqueVar
+  | PDefinedFunction Function
+  | PDefinedClassFunction ClassFunDec
+  deriving (Eq, Ord)
+
 
 asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
   DefinedVariable uv -> uv
   DefinedFunction fn -> fn.functionDeclaration.functionId
-  DefinedClassFunction (CFD uv _ _) _ -> uv
+  DefinedClassFunction (CFD _ uv _ _) _ -> uv
+
+
+asProto :: Variable -> VariableProto
+asProto = \case
+  DefinedVariable uv -> PDefinedVariable uv
+  DefinedFunction fn -> PDefinedFunction fn
+  DefinedClassFunction cd _ -> PDefinedClassFunction cd
 
 
 -- scheme for both mapping tvars and unions
@@ -313,6 +347,7 @@ data Module = Mod
   , functions :: [Function]
   , datatypes :: [DataDef]
   , classes   :: [ClassDef]
+  , instances :: [InstDef]
   }
 
 data Exports = Exports
@@ -320,6 +355,7 @@ data Exports = Exports
   , functions :: [Function]
   , datatypes :: [DataDef]
   , classes   :: [ClassDef]
+  , instances :: [InstDef]
   }
 
 
@@ -421,7 +457,7 @@ tExpr = cata $ \(TypedExpr et expr) ->
   Lit (LFloat fl) -> pretty $ show fl
   Var l (DefinedVariable v) -> ppVar l v
   Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId <> "&F"
-  Var l (DefinedClassFunction (CFD uv _ _) _) -> ppVar l uv <> "&C"
+  Var l (DefinedClassFunction (CFD _ uv _ _) _) -> ppVar l uv <> "&C"
   Con _ (DC _ uc _ _) -> ppCon uc
 
   RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> ppRecordMems inst

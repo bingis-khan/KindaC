@@ -47,18 +47,23 @@ data TypeF a
   deriving (Functor, Foldable, Traversable)
 type Type = Fix TypeF
 
+data ClassTypeF a
+  = Self
+  | NormalType (TypeF a)
+  deriving (Functor, Foldable, Traversable)
+type ClassType = Fix ClassTypeF
 
 
 ----------------
 -- Expression --
 ----------------
 
-newtype Env = Env { fromEnv :: [(Variable, Locality)]}
+newtype Env = Env { fromEnv :: [(VariableProto, Locality)]}
 instance Eq Env where
-  Env env == Env env' = fmap (first asUniqueVar) env == fmap (first asUniqueVar) env'
+  Env env == Env env' = fmap (first asPUniqueVar) env == fmap (first asPUniqueVar) env'
 
 instance Ord Env where
-  Env env `compare` Env env' = fmap (first asUniqueVar) env `compare` fmap (first asUniqueVar) env'
+  Env env `compare` Env env' = fmap (first asPUniqueVar) env `compare` fmap (first asPUniqueVar) env'
 
 
 data ExprF a
@@ -78,14 +83,27 @@ data ExprF a
 type Expr = Fix ExprF
 
 
+-- A variable prototype.
+-- the only difference is that classes don't have assigned instances.
+data VariableProto
+  = PDefinedVariable UniqueVar
+
+  | PDefinedFunction Function
+  | PExternalFunction T.Function  -- it's only defined as external, because it's already typed. nothing else should change.
+
+  | PDefinedClassFunction ClassFunDec
+  | PExternalClassFunction T.ClassFunDec
+  deriving (Eq, Ord)
+
 data Variable
   = DefinedVariable UniqueVar
 
   | DefinedFunction Function
   | ExternalFunction T.Function  -- it's only defined as external, because it's already typed. nothing else should change.
 
-  | DefinedClassFunction ClassFunDec [InstDef]
-  | ExternalClassFunction T.ClassFunDec [InstDef]
+  | DefinedClassFunction ClassFunDec [InstDef]  -- we have to track which instances were visible at the time of this scope.
+  | ExternalClassFunction T.ClassFunDec [Either InstDef T.InstDef]
+  deriving (Eq, Ord)
 
 
 asUniqueVar :: Variable -> UniqueVar
@@ -95,8 +113,26 @@ asUniqueVar = \case
   DefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
   ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ }) -> uv
 
-  DefinedClassFunction (CFD uv _ _) _ -> uv
-  ExternalClassFunction _ _ -> undefined
+  DefinedClassFunction (CFD _ uv _ _) _ -> uv
+  ExternalClassFunction (T.CFD _ uv _ _) _ -> uv
+
+asPUniqueVar :: VariableProto -> UniqueVar
+asPUniqueVar = \case
+  PDefinedVariable var -> var
+
+  PDefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
+  PExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ }) -> uv
+
+  PDefinedClassFunction (CFD _ uv _ _) -> uv
+  PExternalClassFunction (T.CFD _ uv _ _) -> uv
+
+asProto :: Variable -> VariableProto
+asProto = \case
+  DefinedVariable v -> PDefinedVariable v
+  DefinedFunction fn -> PDefinedFunction fn
+  ExternalFunction fn -> PExternalFunction fn
+  DefinedClassFunction cd _ -> PDefinedClassFunction cd
+  ExternalClassFunction cd _ -> PExternalClassFunction cd
 
 
 data Constructor
@@ -106,6 +142,7 @@ data Constructor
 data Datatype
   = DefinedDatatype DataDef
   | ExternalDatatype T.DataDef
+  deriving (Eq, Ord)
 
 tryGetMembersFromDatatype :: Datatype -> Maybe (NonEmpty MemName)
 tryGetMembersFromDatatype = \case
@@ -153,6 +190,7 @@ data StmtF expr a
 
   -- the place where env should be initialized.
   | EnvDef Function
+  | InstDefDef InstDef
   deriving (Functor, Foldable, Traversable)
 
 type Stmt = StmtF Expr AnnStmt
@@ -197,19 +235,37 @@ data ClassDef = ClassDef
   }
 
 data InstDef = InstDef
-  { instClassID :: UniqueClass
-  , instType :: (TCon, [TVar])
+  { instClass :: Either ClassDef T.ClassDef
+  , instType :: (Datatype, [TVar])
   , instDependentTypes :: [(DependentType, Type)]
   , instFunctions :: [InstanceFunction]
   }
 
 data DependentType = Dep TCon UniqueClass
 
-data ClassFunDec = CFD UniqueVar [(Decon, Type)] Type
+data ClassFunDec = CFD ClassDef UniqueVar [(Decon, ClassType)] ClassType
 data InstanceFunction = InstanceFunction
-  { classFunctionDeclaration :: ClassFunDec
+  { classFunctionDeclaration :: FunDec
   , classFunctionBody :: NonEmpty AnnStmt
   }
+
+instance Eq ClassDef where
+  cd == cd' = cd.classID == cd'.classID
+
+instance Ord ClassDef where
+  cd `compare` cd' = cd.classID `compare` cd'.classID
+
+instance Eq ClassFunDec where
+  CFD _ uv _ _ == CFD _ uv' _ _ = uv == uv'
+
+instance Ord ClassFunDec where
+  CFD _ uv _ _ `compare` CFD _ uv' _ _ = uv `compare` uv'
+
+instance Eq InstDef where
+  instdef == instdef' = instdef.instClass == instdef'.instClass && instdef.instType == instdef'.instType
+
+instance Ord InstDef where
+  instdef `compare` instdef' = (instdef.instClass, instdef.instType) `compare` (instdef'.instClass, instdef'.instType)
 
 
 ---------------
@@ -224,6 +280,7 @@ data Module = Mod
   , functions :: [Function]
   , datatypes :: [DataDef]
   , classes :: [ClassDef]
+  , instances :: [InstDef]
   }
 
 data Exports = Exports
@@ -231,6 +288,7 @@ data Exports = Exports
   , functions :: [Function]
   , datatypes :: [DataDef]
   , classes   :: [ClassDef]
+  , instances :: [InstDef]
   }
 
 
@@ -357,7 +415,7 @@ tType = cata $ \case
   TFun args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
 
 tEnv :: Env -> Context
-tEnv (Env env) = encloseSepBy "[" "]" ", " $ env <&> \(uv, l) -> ppVar l $ asUniqueVar uv
+tEnv (Env env) = encloseSepBy "[" "]" ", " $ env <&> \(v, l) -> ppVar l $ asPUniqueVar v
 
 tBody :: Foldable f => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
