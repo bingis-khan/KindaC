@@ -70,7 +70,7 @@ newtype TCon = TC { fromTC :: Text } deriving (Show, Eq, Ord)
 newtype ConName = CN { fromCN :: Text } deriving (Show, Eq, Ord)
 newtype VarName = VN { fromVN :: Text } deriving (Show, Eq, Ord)
 newtype MemName = MN { fromMN :: Text } deriving (Show, Eq, Ord)
-newtype ClassName = TCN {fromTN :: Text} deriving (Show, Eq, Ord)
+newtype ClassName = TCN { fromTN :: Text } deriving (Show, Eq, Ord)
 
 data Op
   = Plus

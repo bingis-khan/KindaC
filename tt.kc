@@ -1,0 +1,17 @@
+x = 1
+
+class Dupsko
+	f (n _) -> Int
+
+inst Dupsko Int
+	f (n Int) -> Int
+		return n
+
+inst Dupsko Bool
+	f (n Bool) -> Int
+		if n
+			return 1
+		else
+			return 0
+
+print f(x)

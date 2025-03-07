@@ -198,7 +198,7 @@ sInst = recoverableIndentBlock $ do
       , instFunctions = funs
       }
 
-sDepOrFunctionDef :: Parser (Either (DependentType, ClassType) (ClassFunDec, NonEmpty AnnStmt))
+sDepOrFunctionDef :: Parser (Either (DependentType, ClassType) (FunDec, NonEmpty AnnStmt))
 sDepOrFunctionDef = Left <$> sDepDef <|> Right <$> sInstFunction
 
 sDepDef :: Parser (DependentType, ClassType)
@@ -209,12 +209,19 @@ sDepDef = do
 
   pure (depname, typ)
 
-sInstFunction :: Parser (ClassFunDec, NonEmpty AnnStmt)
+sInstFunction :: Parser (FunDec, NonEmpty AnnStmt)
 sInstFunction = recoverableIndentBlock $ do
-  header <- sDefinedFunctionHeader
-  pure $ flip (L.IndentSome Nothing) (recoverStmt (annotationOr statement)) $ \annsOrStmts -> do
-    stmts <- NonEmpty.fromList <$> annotateStatements annsOrStmts
-    pure (header, stmts)
+  (header, mExpr) <- functionHeader
+  case mExpr of
+    Just expr ->
+      let expr2stmt = Fix . O . Annotated [] . Return . Just
+          stmt = expr2stmt expr
+          body = NonEmpty.singleton stmt
+      in pure $ L.IndentNone (header, body)
+    Nothing -> do
+      pure $ flip (L.IndentSome Nothing) (recoverStmt (annotationOr statement)) $ \annsOrStmts -> do
+        stmts <- NonEmpty.fromList <$> annotateStatements annsOrStmts
+        pure (header, stmts)
 
 
 sExpression :: Parser Stmt

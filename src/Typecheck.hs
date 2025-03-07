@@ -22,7 +22,7 @@ import qualified Data.Map as Map
 import Control.Monad.Trans.RWS (RWST (RWST), runRWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
-import Data.Functor.Foldable (Base, cata, embed, hoist, project, para, transverse)
+import Data.Functor.Foldable (Base, cata, embed, hoist, project, para)
 import Control.Monad (replicateM, zipWithM_, when)
 import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold)
@@ -38,7 +38,7 @@ import qualified AST.Resolved as R
 import qualified AST.Typed as T
 
 import AST.Converged (Prelude(..), PreludeFind (..), boolFind, tlReturnFind, intFind, floatFind)
-import AST.Common (TVar (TV), LitType (..), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..), mustOr, sctx, ppList, eitherToMaybe, MemName, sequenceA2)
+import AST.Common (TVar (TV), LitType (..), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..), mustOr, sctx, ppList, eitherToMaybe, MemName, sequenceA2, ppVar, ppUniqueClass)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
@@ -47,7 +47,7 @@ import AST.Typed (TyVar, Scheme (..), extractUnionsFromDataType, extractUnionsFr
 import Text.Printf (printf)
 import Control.Applicative (liftA3)
 import Data.List.NonEmpty (NonEmpty)
-import Misc.Memo (memo, Memo(..))
+import Misc.Memo (memo, Memo(..), emptyMemo)
 import qualified AST.Common as Common
 
 
@@ -126,7 +126,7 @@ generateSubstitution env senv rModule = do
 
     inferFunctions fns = for fns inferFunction
     inferDatatypes dds = for dds inferDataDef
-    inferClasses cls = for cls inferClass
+    inferClasses cls = for cls inferClassDef
     inferInstances insts = for insts inferInstance
     inferTopLevel = inferStmts
 
@@ -220,6 +220,10 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
       R.EnvDef rfn -> do
         fn <- inferFunction rfn
         pure $ T.EnvDef fn
+
+      R.InstDefDef rinst -> do
+        inst <- inferInstance rinst
+        pure $ T.InstDefDef inst
 
 
 
@@ -359,13 +363,18 @@ inferVariable = \case
   R.ExternalFunction fn -> pure $ T.DefinedFunction fn
   R.DefinedFunction fn -> T.DefinedFunction <$> inferFunction fn
 
-  R.ExternalClassFunction cfd insts -> fmap (T.DefinedClassFunction cfd) $ for insts $ \case
-      Left rists -> inferInstance rists
-      Right tinst -> pure tinst
+  R.ExternalClassFunction cfd rinsts -> do
+    insts <- for rinsts $ \case
+      R.DefinedInst rists  -> inferInstance rists
+      R.ExternalInst tinst -> pure tinst
+    self <- fresh
+    pure $ T.DefinedClassFunction cfd insts self
 
-  R.DefinedClassFunction  cfd@(R.CFD cd _ _ _) insts -> do
-    tcd <- inferClass cd
-    T.DefinedClassFunction <$> inferClassDeclaration tcd cfd <*> traverse inferInstance insts
+  R.DefinedClassFunction rcfd rinsts -> do
+    cfd <- inferClassDeclaration rcfd
+    insts <- traverse inferInstance rinsts
+    self <- fresh
+    pure $ T.DefinedClassFunction cfd insts self
 
 inferVariableProto :: R.VariableProto -> Infer T.VariableProto
 inferVariableProto = \case
@@ -375,9 +384,8 @@ inferVariableProto = \case
   R.PDefinedFunction fn -> T.PDefinedFunction <$> inferFunction fn
 
   R.PExternalClassFunction cfd -> pure $ T.PDefinedClassFunction cfd
-  R.PDefinedClassFunction  cfd@(R.CFD cd _ _ _) -> do
-    tcd <- inferClass cd
-    T.PDefinedClassFunction <$> inferClassDeclaration tcd cfd
+  R.PDefinedClassFunction  cfd -> do
+    T.PDefinedClassFunction <$> inferClassDeclaration cfd
 
 
 inferConstructor :: R.Constructor -> Infer T.DataCon
@@ -519,7 +527,7 @@ inferExports :: R.Exports -> Infer T.Exports
 inferExports e = do
   dts   <- traverse inferDataDef e.datatypes
   fns   <- traverse inferFunction e.functions
-  cls   <- traverse inferClass e.classes
+  cls   <- traverse inferClassDef e.classes
   insts <- traverse inferInstance e.instances
   pure $ T.Exports
     { variables = e.variables
@@ -530,33 +538,90 @@ inferExports e = do
     }
 
 
-inferClass :: R.ClassDef -> Infer T.ClassDef
-inferClass cd = mdo
+inferClass :: R.Class -> Infer T.ClassDef
+inferClass = \case
+  R.DefinedClass cd -> inferClassDef cd
+  R.ExternalClass cd -> pure cd
+
+inferClassDef :: R.ClassDef -> Infer T.ClassDef
+inferClassDef = memo memoClass (\mem s -> s { memoClass = mem }) $ \cd _ -> mdo
   let tcd = T.ClassDef
         { classID = cd.classID
         , classFunctions = funs
         }
-  funs <- traverse (inferClassDeclaration tcd) cd.classFunctions
+  funs <- for cd.classFunctions $ \(R.CFD _ uv params ret)-> do
+    params' <- for params $ \(decon, rt) -> do
+      d <- inferDecon decon
+      t  <- inferClassType rt
+
+      let dt = T.decon2type d
+      self <- fresh
+      dt `uni` mkTypeFromClassType self t
+
+      pure (d, t)
+
+    ret' <- inferClassType ret
+    pure $ T.CFD tcd uv params' ret'
+
   pure tcd
 
-inferClassDeclaration :: T.ClassDef -> R.ClassFunDec -> Infer T.ClassFunDec
-inferClassDeclaration tcd (R.CFD _ uv params ret) = do
-  params' <- for params $ \(decon, rt) -> do
-    d <- inferDecon decon
-    t  <- inferClassType rt
-
-    let dt = T.decon2type d
-    self <- fresh
-    dt `uni` mkTypeFromClassType self t
-
-    pure (d, t)
-
-  ret' <- inferClassType ret
-  pure $ T.CFD tcd uv params' ret'
+inferClassDeclaration :: R.ClassFunDec -> Infer T.ClassFunDec
+inferClassDeclaration (R.CFD rcd uv _ _) = do
+  tcd <- inferClassDef rcd
+  let mcfd = find (\(T.CFD _ cuv _ _) -> cuv == uv) tcd.classFunctions
+  pure $ mustOr (printf "[COMPILER ERROR]: Could not find function %s in class %s." (ppVar Local uv) (ppUniqueClass tcd.classID)) mcfd
 
 inferInstance :: R.InstDef -> Infer T.InstDef
 inferInstance inst = do
-  undefined
+  klass <- inferClass inst.instClass
+  it <- inferDatatype $ fst inst.instType
+  let tvars = snd inst.instType
+
+  fns <- for inst.instFunctions $ \rfn -> do
+    generalize $ mdo
+
+      -- Infer function declaration.
+      let rfundec = rfn.classFunctionDeclaration
+
+      params <- for rfundec.functionParameters $ \(v, definedType) -> do
+        tv <- inferDecon v
+        let vt = T.decon2type tv
+
+        case definedType of
+          Just rt -> do
+            t <- inferType rt
+
+            vt `uni` t
+
+          Nothing -> pure ()
+        pure (tv, vt)
+
+      ret <- maybe fresh inferType rfundec.functionReturnType
+
+
+      -- Set up temporary recursive env (if this function is recursive, this env will be used).
+      envID <- newEnvID  -- NOTE: this envID later becomes the ID of this function.
+      let recenv = T.RecursiveEnv envID (null $ R.fromEnv rfundec.functionEnv)
+      let noGeneralizationScheme = Scheme mempty mempty
+      let fundec = T.FD recenv rfundec.functionId params ret noGeneralizationScheme
+      let fun = T.Function { T.functionDeclaration = fundec, T.functionBody = body }
+
+      -- Infer body.
+      (envc, body) <- withEnv' rfundec.functionEnv $ withReturn ret $ inferStmts rfn.classFunctionBody
+
+      -- now, replace it with a non-recursive environment.
+      let env = T.Env envID envc
+      let fundec' = fundec { T.functionEnv = env }
+      let fun' = fun { T.functionDeclaration = fundec' }
+
+      pure fun'
+
+
+  pure T.InstDef
+    { instClass = klass
+    , instType = (it, tvars)
+    , instFunctions = fns
+    }
 
 
 -- Generalizes the function inside.
@@ -626,15 +691,15 @@ constructSchemeForFunctionDeclaration dec =
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
             T.DefinedFunction f -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
-            T.DefinedClassFunction _ insts
+            T.DefinedClassFunction _ insts _
               -> foldMap digOutFromInst insts
               where
                 digOutFromInst :: T.InstDef -> (Set TyVar, Set T.EnvUnion)
                 digOutFromInst inst = foldMap digOutFromInstFunction inst.instFunctions
 
-                digOutFromInstFunction :: T.InstanceFunction -> (Set TyVar, Set T.EnvUnion)
+                digOutFromInstFunction :: T.Function-> (Set TyVar, Set T.EnvUnion)
                 digOutFromInstFunction fn =
-                  let fndec = fn.classFunctionDeclaration
+                  let fndec = fn.functionDeclaration
                   in foldMap (digOutTyVarsAndUnionsFromType . snd) fndec.functionParameters <> digOutTyVarsAndUnionsFromType fndec.functionReturnType
 
       (tyVarsOutside, unionsOutside) = digOutTyVarsAndUnionsFromEnv dec.functionEnv
@@ -784,7 +849,7 @@ instantiateVariable = \case
 
     pure fnType
 
-  T.DefinedClassFunction (T.CFD _ funid params ret) _ -> do
+  T.DefinedClassFunction (T.CFD _ funid params ret) _ self -> do
     -- TODO: a lot of it is duplicated from DefinedFunction. sussy
     let allTypes = ret : map snd params
     let thisFunctionsTVars = foldMap (findTVarsForIDInClassType funid) allTypes
@@ -808,7 +873,6 @@ instantiateVariable = \case
     (itvs, iunions) <- instantiateScheme scheme
     let tvmap = Map.fromList $ zip schemeTVars itvs
     let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions) iunions
-    let self = undefined
     let mapTVs = mapTVsWithMap tvmap unionmap . mkTypeFromClassType self
     fnUnion <- emptyUnion
 
@@ -1065,8 +1129,10 @@ instance Substitutable T.ClassDef where
   subst su cd = undefined
 
 instance Substitutable T.InstDef where
-  ftv = undefined
-  subst su inst = undefined
+  ftv inst = foldMap ftv inst.instFunctions
+  subst su inst = inst
+    { T.instFunctions = subst su <$> inst.instFunctions
+    }
 
 instance Substitutable T.Exports where
   ftv e = ftv e.functions
@@ -1083,6 +1149,7 @@ instance Substitutable T.AnnStmt where
               cases' = subst su cases
           in T.Switch cond' cases'
         T.EnvDef env -> T.EnvDef $ subst su env
+        T.InstDefDef inst -> T.InstDefDef $ subst su inst
         s -> first (subst su) s
 
 instance (Substitutable expr, Substitutable stmt) => Substitutable (T.Case expr stmt) where
@@ -1114,6 +1181,7 @@ instance Substitutable (Fix T.TypedExpr) where
 instance Substitutable T.Variable where
   ftv _ = mempty
   subst su (T.DefinedFunction fn) = T.DefinedFunction $ subst su fn
+  subst su (T.DefinedClassFunction cfd insts self) = T.DefinedClassFunction cfd (subst su <$> insts) (subst su self)
   subst _ x = x
 
 
@@ -1270,6 +1338,8 @@ data TypecheckingState = TypecheckingState
 
   , memoFunction :: Memo R.Function T.Function
   , memoDataDefinition :: Memo R.DataDef T.DataDef
+  , memoClass :: Memo R.ClassDef T.ClassDef
+  , memoInstance :: Memo R.InstDef T.InstDef
 
   , variables :: Map UniqueVar T.Type
 
@@ -1285,8 +1355,10 @@ emptySEnv = TypecheckingState
   { tvargen = newTVarGen
   , typeSubstitution = emptySubst
 
-  , memoFunction = Memo mempty
-  , memoDataDefinition = Memo mempty
+  , memoFunction = emptyMemo
+  , memoDataDefinition = emptyMemo
+  , memoClass = emptyMemo
+  , memoInstance = emptyMemo
 
   , memberAccess = mempty
 

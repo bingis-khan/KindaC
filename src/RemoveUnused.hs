@@ -2,6 +2,7 @@
 {-# LANGUAGE ExplicitNamespaces #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RecursiveDo #-}
+{-# LANGUAGE OverloadedStrings #-}
 module RemoveUnused (removeUnused) where
 
 import qualified AST.Typed as T
@@ -10,7 +11,7 @@ import Control.Monad.Trans.State (State)
 import qualified Control.Monad.Trans.State as State
 import Data.Functor.Foldable (transverse, cata, embed)
 import Data.Bitraversable (bitraverse)
-import AST.Common (Annotated(..), type (:.) (..), Locality (..), EnvID, fmap2, traverse2, eitherToMaybe)
+import AST.Common (Annotated(..), type (:.) (..), Locality (..), EnvID, fmap2, traverse2, eitherToMaybe, mustOr, printf, ppTypeInfo, ppVar, sctx)
 import Data.Set (Set)
 import Data.Bifoldable (bifold)
 import Data.Foldable (Foldable(..))
@@ -67,7 +68,10 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
       usedInsideFunction <- rFunction fun
       (usedInsideFunction <>) <$> used (T.DefinedFunction fun) t
     T.DefinedVariable uv -> if loc == FromEnvironment then used (T.DefinedVariable uv) t else pure Set.empty
-    T.DefinedClassFunction cfd _ -> undefined
+    T.DefinedClassFunction cfd insts self -> do
+      let selectedFn = selectInstanceFunction cfd self insts
+      usedInsideFunction <- rFunction selectedFn
+      (usedInsideFunction <>) <$> used (T.DefinedFunction selectedFn) t
 
   T.Con envID _ -> do 
     let emptyEnvMask = []
@@ -77,6 +81,14 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
   T.Lam env _ ret -> withEnv env ret
 
   e -> fold <$> sequenceA e
+
+
+selectInstanceFunction :: T.ClassFunDec -> T.Type -> [T.InstDef] -> T.Function
+selectInstanceFunction (T.CFD _ uv _ _) (Fix (T.TCon dd@(T.DD ut _ _ _) _ _)) insts =
+  let inst = mustOr (printf "[COMPILER ERROR]: The instance for %s must have existed by this point! %s" (ppTypeInfo ut) (T.tSelectedInsts insts)) $ find (\ins -> fst ins.instType == dd) insts
+  in mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.functionDeclaration.functionId == uv) inst.instFunctions
+
+selectInstanceFunction _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (sctx (T.tType self))
 
 
 rFunction :: T.Function -> Reach
@@ -160,6 +172,19 @@ sUnion union = do
 sVariable :: Mem T.Variable
 sVariable (T.DefinedVariable v) = pure $ T.DefinedVariable v
 sVariable (T.DefinedFunction fn) = T.DefinedFunction <$> liftA2 T.Function (sFunDec fn.functionDeclaration) (sBody fn.functionBody)
+sVariable (T.DefinedClassFunction cfd insts self) = do
+  T.DefinedClassFunction cfd <$> traverse sInst insts <*> sType self
+
+sInst :: Mem T.InstDef
+sInst inst = do
+  dds <- sDataDef $ fst inst.instType
+  fns <- for inst.instFunctions $ \fn -> liftA2 T.Function (sFunDec fn.functionDeclaration) (sBody fn.functionBody)
+
+  pure T.InstDef
+    { T.instClass = inst.instClass
+    , T.instType = (dds, snd inst.instType)
+    , T.instFunctions = fns
+    }
 
 
 sFunDec :: Mem T.FunDec

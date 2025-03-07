@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, UndecidableInstances, LambdaCase, OverloadedStrings, OverloadedRecordDot, DuplicateRecordFields, TypeOperators #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar, ppMem, MemName, ppRecordMems, UniqueClass, TCon)
+import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar, ppMem, MemName, ppRecordMems, UniqueClass, TCon, ppUniqueClass)
 import qualified AST.Typed as T
 
 import Data.Fix (Fix(..))
@@ -102,7 +102,7 @@ data Variable
   | ExternalFunction T.Function  -- it's only defined as external, because it's already typed. nothing else should change.
 
   | DefinedClassFunction ClassFunDec [InstDef]  -- we have to track which instances were visible at the time of this scope.
-  | ExternalClassFunction T.ClassFunDec [Either InstDef T.InstDef]
+  | ExternalClassFunction T.ClassFunDec [Inst]
   deriving (Eq, Ord)
 
 
@@ -234,20 +234,33 @@ data ClassDef = ClassDef
   , classFunctions :: [ClassFunDec]
   }
 
+data Class
+  = DefinedClass ClassDef
+  | ExternalClass T.ClassDef
+  deriving (Eq, Ord)
+
 data InstDef = InstDef
-  { instClass :: Either ClassDef T.ClassDef
+  { instClass :: Class
   , instType :: (Datatype, [TVar])
   , instDependentTypes :: [(DependentType, Type)]
   , instFunctions :: [InstanceFunction]
   }
 
+data Inst
+  = DefinedInst InstDef
+  | ExternalInst T.InstDef
+  deriving (Eq, Ord)
+
+
 data DependentType = Dep TCon UniqueClass
 
 data ClassFunDec = CFD ClassDef UniqueVar [(Decon, ClassType)] ClassType
+
 data InstanceFunction = InstanceFunction
   { classFunctionDeclaration :: FunDec
-  , classFunctionBody :: NonEmpty AnnStmt
+  , classFunctionBody        :: NonEmpty AnnStmt
   }
+
 
 instance Eq ClassDef where
   cd == cd' = cd.classID == cd'.classID
@@ -266,6 +279,12 @@ instance Eq InstDef where
 
 instance Ord InstDef where
   instdef `compare` instdef' = (instdef.instClass, instdef.instType) `compare` (instdef'.instClass, instdef'.instType)
+
+
+asUniqueClass :: Class -> UniqueClass
+asUniqueClass = \case
+  DefinedClass cd -> cd.classID
+  ExternalClass cd -> cd.classID
 
 
 ---------------
@@ -336,6 +355,7 @@ tStmt stmt = case first tExpr stmt of
   ExprStmt e -> e
   Return e -> "return" <+> e
   EnvDef fn -> fromString $ printf "[ENV]: %s" $ tEnv fn.functionDeclaration.functionEnv
+  InstDefDef inst -> tInst inst
 
 tCase :: Case Context AnnStmt -> Context
 tCase kase = tBody (tDecon kase.deconstruction <+?> kase.caseCondition) kase.body
@@ -356,8 +376,8 @@ tExpr = cata $ \case
           DefinedVariable _ -> ""
           DefinedFunction _ -> "F"
           ExternalFunction _ -> "EF"
-          DefinedClassFunction _ _ -> "C"
-          ExternalClassFunction _ _ -> "EC"
+          DefinedClassFunction _ insts -> "C" <> tSelectedInsts (DefinedInst <$> insts)
+          ExternalClassFunction _ insts -> "EC" <> tSelectedInsts insts
     in ppVar l (asUniqueVar v) <> post
   Con c -> ppCon (asUniqueCon c)
 
@@ -379,6 +399,13 @@ tExpr = cata $ \case
       Equals -> "=="
       NotEquals -> "/="
 
+tSelectedInsts :: [Inst] -> Context
+tSelectedInsts insts = 
+  let instdds = sepBy ", " $ insts <&> ppTypeInfo . asUniqueType . \case
+        DefinedInst ins -> fst ins.instType
+        ExternalInst ins -> ExternalDatatype $ fst ins.instType
+  in fromString $ printf "[%s]" instdds
+
 
 tDataDef :: DataDef -> Context
 tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y _) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ tConRec cons
@@ -398,6 +425,15 @@ tFunDec (FD fenv v params retType) = comment (tEnv fenv) $ ppVar Local v <+> enc
 
 tFunction :: Function -> Context
 tFunction fn = tBody (tFunDec fn.functionDeclaration) fn.functionBody
+
+tInst :: InstDef -> Context
+tInst inst =
+  let
+    header = "inst" <+> ppUniqueClass (asUniqueClass inst.instClass) <+> ppTypeInfo (asUniqueType (fst inst.instType)) <+> sepBy " " (ppTVar <$> snd inst.instType)
+  in ppBody
+    (\ifn -> tBody (tFunDec ifn.classFunctionDeclaration) ifn.classFunctionBody)
+    header
+    inst.instFunctions
 
 tTypes :: Functor t => t Type -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of
