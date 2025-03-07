@@ -78,6 +78,7 @@ typecheck mprelude rStmts = do
     let suUnions' = subst suNoUnions <$> suUnions
     let su' = Subst suUnions' suTVs
 
+
     phase "Typechecking (og subst)"
     ctxPrint' $ dbgSubst su
 
@@ -114,6 +115,7 @@ generateSubstitution env senv rModule = do
 
       -- run it one last time.
       substAccess
+      addSelectedEnvironmentsFromInst
 
       pure $ T.Mod
         { T.toplevelStatements = tls
@@ -572,13 +574,14 @@ inferClassDeclaration (R.CFD rcd uv _ _) = do
   pure $ mustOr (printf "[COMPILER ERROR]: Could not find function %s in class %s." (ppVar Local uv) (ppUniqueClass tcd.classID)) mcfd
 
 inferInstance :: R.InstDef -> Infer T.InstDef
-inferInstance inst = do
+inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _ -> do
   klass <- inferClass inst.instClass
   it <- inferDatatype $ fst inst.instType
   let tvars = snd inst.instType
 
   fns <- for inst.instFunctions $ \rfn -> do
-    generalize $ mdo
+    -- TODO: add check?
+    fn <- generalize $ mdo
 
       -- Infer function declaration.
       let rfundec = rfn.classFunctionDeclaration
@@ -613,8 +616,12 @@ inferInstance inst = do
       let env = T.Env envID envc
       let fundec' = fundec { T.functionEnv = env }
       let fun' = fun { T.functionDeclaration = fundec' }
-
       pure fun'
+
+    pure T.InstanceFunction
+      { instFunction = fn
+      , instFunctionClassUniqueVar = rfn.classFunctionPrototypeUniqueVar
+      }
 
 
   pure T.InstDef
@@ -676,6 +683,20 @@ substAccess = do
   -- when some changes accured, do it again. this is because some expressions, like: a.b.c.d would require 3 iterations... is this okay??
   when (length substitutedMembers < length subMembers) substAccess
 
+
+addSelectedEnvironmentsFromInst :: Infer ()
+addSelectedEnvironmentsFromInst = do
+  classUnions <- RWS.gets classFunctionUnions
+  for_ classUnions $ \(union, cfd, self, insts) -> do
+    su <- RWS.gets typeSubstitution
+    let self' = subst su self
+    let union' = subst su union
+    let fn = T.selectInstanceFunction cfd self' insts
+    singletonEnv <- singleEnvUnion fn.instFunction.functionDeclaration.functionEnv
+    substituting $ do
+      unifyFunEnv union' singletonEnv
+
+
 -- Constructs a scheme for a function.
 -- ignores assigned scheme!
 constructSchemeForFunctionDeclaration :: T.FunDec -> (Subst, Scheme)
@@ -697,9 +718,9 @@ constructSchemeForFunctionDeclaration dec =
                 digOutFromInst :: T.InstDef -> (Set TyVar, Set T.EnvUnion)
                 digOutFromInst inst = foldMap digOutFromInstFunction inst.instFunctions
 
-                digOutFromInstFunction :: T.Function-> (Set TyVar, Set T.EnvUnion)
+                digOutFromInstFunction :: T.InstanceFunction -> (Set TyVar, Set T.EnvUnion)
                 digOutFromInstFunction fn =
-                  let fndec = fn.functionDeclaration
+                  let fndec = fn.instFunction.functionDeclaration
                   in foldMap (digOutTyVarsAndUnionsFromType . snd) fndec.functionParameters <> digOutTyVarsAndUnionsFromType fndec.functionReturnType
 
       (tyVarsOutside, unionsOutside) = digOutTyVarsAndUnionsFromEnv dec.functionEnv
@@ -849,7 +870,7 @@ instantiateVariable = \case
 
     pure fnType
 
-  T.DefinedClassFunction (T.CFD _ funid params ret) _ self -> do
+  T.DefinedClassFunction cfd@(T.CFD _ funid params ret) insts self -> do
     -- TODO: a lot of it is duplicated from DefinedFunction. sussy
     let allTypes = ret : map snd params
     let thisFunctionsTVars = foldMap (findTVarsForIDInClassType funid) allTypes
@@ -878,8 +899,13 @@ instantiateVariable = \case
 
     let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> params) (mapTVs ret)
 
+    addClassFunctionUse fnUnion cfd self insts
+
     pure fnType
 
+
+addClassFunctionUse :: T.EnvUnion -> T.ClassFunDec -> T.Type -> [T.InstDef] -> Infer ()
+addClassFunctionUse eu cfd self insts = RWS.modify $ \s -> s { classFunctionUnions = (eu, cfd, self, insts) : s.classFunctionUnions }
 
 instantiateConstructor :: EnvID -> T.DataCon -> Infer T.Type
 instantiateConstructor envID = \case
@@ -1134,6 +1160,10 @@ instance Substitutable T.InstDef where
     { T.instFunctions = subst su <$> inst.instFunctions
     }
 
+instance Substitutable T.InstanceFunction where
+  ftv ifn = ftv ifn.instFunction
+  subst su ifn = ifn { T.instFunction = subst su ifn.instFunction }
+
 instance Substitutable T.Exports where
   ftv e = ftv e.functions
   subst su e = e { T.functions = subst su e.functions }
@@ -1344,6 +1374,7 @@ data TypecheckingState = TypecheckingState
   , variables :: Map UniqueVar T.Type
 
   , memberAccess :: [(T.Type, MemName, T.Type)]  -- ((a :: t1).mem :: t2)
+  , classFunctionUnions :: [(T.EnvUnion, T.ClassFunDec, T.Type, [T.InstDef])]
 
   -- HACK?: track instantiations from environments. 
   --  (two different function instantiations will count as two different "variables")
@@ -1365,6 +1396,7 @@ emptySEnv = TypecheckingState
   , variables = mempty
 
   , instantiations = mempty
+  , classFunctionUnions = mempty
   }
 
 

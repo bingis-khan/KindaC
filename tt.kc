@@ -1,5 +1,10 @@
 x = 1
 
+gg (x Int) -> Int
+	return x + 1
+
+print gg(x)
+
 class Dupsko
 	f (n _) -> Int
 
@@ -14,4 +19,10 @@ inst Dupsko Bool
 		else
 			return 0
 
+inst Dupsko Unit
+	f (n Unit) -> Int
+		return 6969
+
 print f(x)
+print f(False)
+print f(Unit)

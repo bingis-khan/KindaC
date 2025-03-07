@@ -69,11 +69,11 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
       (usedInsideFunction <>) <$> used (T.DefinedFunction fun) t
     T.DefinedVariable uv -> if loc == FromEnvironment then used (T.DefinedVariable uv) t else pure Set.empty
     T.DefinedClassFunction cfd insts self -> do
-      let selectedFn = selectInstanceFunction cfd self insts
-      usedInsideFunction <- rFunction selectedFn
-      (usedInsideFunction <>) <$> used (T.DefinedFunction selectedFn) t
+      let selectedFn = T.selectInstanceFunction cfd self insts
+      usedInsideFunction <- rFunction selectedFn.instFunction
+      (usedInsideFunction <>) <$> used (T.DefinedFunction selectedFn.instFunction) t
 
-  T.Con envID _ -> do 
+  T.Con envID _ -> do
     let emptyEnvMask = []
     State.modify $ Map.insert envID emptyEnvMask
     pure mempty
@@ -83,17 +83,9 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
   e -> fold <$> sequenceA e
 
 
-selectInstanceFunction :: T.ClassFunDec -> T.Type -> [T.InstDef] -> T.Function
-selectInstanceFunction (T.CFD _ uv _ _) (Fix (T.TCon dd@(T.DD ut _ _ _) _ _)) insts =
-  let inst = mustOr (printf "[COMPILER ERROR]: The instance for %s must have existed by this point! %s" (ppTypeInfo ut) (T.tSelectedInsts insts)) $ find (\ins -> fst ins.instType == dd) insts
-  in mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.functionDeclaration.functionId == uv) inst.instFunctions
-
-selectInstanceFunction _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (sctx (T.tType self))
-
 
 rFunction :: T.Function -> Reach
 rFunction fun = withEnv fun.functionDeclaration.functionEnv $ rScope fun.functionBody
-
 
 
 used :: T.Variable -> T.Type -> Reach
@@ -126,17 +118,23 @@ type EnvMask = [Bool]
 sScope :: Mem [T.AnnStmt]
 sScope stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)) -> do
   stmt' <- bitraverse sExpr id stmt
-  let 
+  let
     body :: NonEmpty (Maybe T.AnnStmt) -> NonEmpty T.AnnStmt
-    body b = 
+    body b =
       let bstmts = catMaybes $ NonEmpty.toList b
       in case bstmts of
         [] -> Fix (O (Annotated [] T.Pass)) :| []
         (x:xs) -> x :| xs
 
   fmap2 (embed . O . Annotated anns) $ case stmt' of
-    -- if an environment is not used, remote it.
+    -- if an environment is not used, remove it.
     T.EnvDef fn -> fmap2 (T.EnvDef . (\env -> fn {T.functionDeclaration = fn.functionDeclaration { T.functionEnv = env }})) $ replace fn.functionDeclaration.functionEnv
+
+    T.InstDefDef inst -> do
+      fns <- traverse (\ifn -> fmap2 (\env -> ifn { T.instFunction = ifn.instFunction { T.functionDeclaration = ifn.instFunction.functionDeclaration { T.functionEnv = env } } }) $ replace ifn.instFunction.functionDeclaration.functionEnv) inst.instFunctions
+      case catMaybes fns of
+        [] -> pure Nothing
+        (f:fs) -> pure $ Just $ T.InstDefDef $ inst { T.instFunctions = f:fs }  --sequenceA fns <&> undefined
 
     -- we have to take care of eliminating stuff from bodies.
     T.If e ifTrue elseIfs else' -> pure $ Just $ T.If e (body ifTrue) (fmap2 body elseIfs) (body <$> else')
@@ -178,7 +176,10 @@ sVariable (T.DefinedClassFunction cfd insts self) = do
 sInst :: Mem T.InstDef
 sInst inst = do
   dds <- sDataDef $ fst inst.instType
-  fns <- for inst.instFunctions $ \fn -> liftA2 T.Function (sFunDec fn.functionDeclaration) (sBody fn.functionBody)
+  fns <- for inst.instFunctions $ \ifn -> do
+    tfn <- liftA2 T.Function (sFunDec ifn.instFunction.functionDeclaration) (sBody ifn.instFunction.functionBody)
+    let tifn = ifn { T.instFunction = tfn }
+    pure tifn
 
   pure T.InstDef
     { T.instClass = inst.instClass
@@ -243,7 +244,7 @@ replace env = do
 
 applyEnvMask :: T.Env -> EnvMask -> T.Env
 applyEnvMask (T.RecursiveEnv _ _) _ = error "[COMPILER ERROR: RemoveUnused] Recursive envs not yet supported (probably a noop in the future!)"
-applyEnvMask (T.Env eid content) mask = 
+applyEnvMask (T.Env eid content) mask =
   let maskedContent = map fst $ filter snd $ zip content mask
   in T.Env eid maskedContent
 

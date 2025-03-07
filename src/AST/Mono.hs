@@ -6,7 +6,7 @@
 
 module AST.Mono (module AST.Mono) where
 
-import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (), ppTVar, ppLines', UniqueMem, ppUniqueMem)
+import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (), ppTVar, ppLines', UniqueMem, ppUniqueMem, ppList)
 import Control.Monad.Trans.Reader (ask)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Eq.Deriving (deriveEq1)
@@ -318,7 +318,7 @@ type AnnStmt = Fix (Annotated :. StmtF FullEnv Expr)
 
 
 type family EnvDef envtype
-type instance EnvDef IncompleteEnv = EnvID  -- EnvDefs are being redone, so we need to keep EnvID only.
+type instance EnvDef IncompleteEnv = NonEmpty EnvID  -- EnvDefs are being redone, so we need to keep EnvID only.
 type instance EnvDef FullEnv = NonEmpty (Function, Env)  -- I think Function is not needed here, but we might as well use it here for easier debugging (printing these functions in EnvDefs).
 
 
@@ -507,7 +507,7 @@ mtStmt stmt = case stmt of
   EnvDef funEnv -> fromString $ printf "[ENV]: %s" (mtEnvDef funEnv)
 
 mtEnvDef :: EnvDef IncompleteEnv -> Context
-mtEnvDef = ppEnvID
+mtEnvDef = ppList ppEnvID . NonEmpty.toList
 
 mtCase :: ICase -> Context
 mtCase kase = mtBody (mtDecon kase.deconstruction <+?> fmap mtExpr kase.caseCondition) kase.body

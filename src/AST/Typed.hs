@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeOperators #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet, MemName, ppMem, ppRecordMems, UniqueClass, ppUniqueClass)
+import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet, MemName, ppMem, ppRecordMems, UniqueClass, ppUniqueClass, mustOr, sctx)
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -17,7 +17,7 @@ import Data.Bifunctor.TH (deriveBifoldable, deriveBifunctor, deriveBitraversable
 import Data.Functor.Classes (Eq1 (liftEq), Ord1 (..))
 import Data.Biapplicative (first)
 import Data.Functor.Foldable (cata)
-import Data.Foldable (foldl')
+import Data.Foldable ( foldl', find )
 import Data.Text (Text)
 import Data.String (fromString)
 import Data.Functor ((<&>))
@@ -177,7 +177,12 @@ data InstDef = InstDef
   { instClass :: ClassDef
   , instType :: (DataDef, [TVar])
   -- , instDependentTypes :: [(DependentType, Type)]
-  , instFunctions :: [Function]
+  , instFunctions :: [InstanceFunction]
+  }
+
+data InstanceFunction = InstanceFunction
+  { instFunction :: Function
+  , instFunctionClassUniqueVar :: UniqueVar
   }
 
 selfType :: InstDef -> Type
@@ -396,6 +401,13 @@ mapUnion ut (Fix t) = case t of
   TyVar _ -> []
 
 
+selectInstanceFunction :: ClassFunDec -> Type -> [InstDef] -> InstanceFunction
+selectInstanceFunction (CFD _ uv _ _) (Fix (TCon dd@(DD ut _ _ _) _ _)) insts =
+  let inst = mustOr (printf "[COMPILER ERROR]: The instance for %s must have existed by this point! %s" (ppTypeInfo ut) (tSelectedInsts insts)) $ find (\ins -> fst ins.instType == dd) insts
+  in mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
+
+selectInstanceFunction _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (sctx (tType self))
+
 
 --------------------------------------------------------------------------------------
 -- Printing the AST
@@ -477,7 +489,7 @@ tExpr = cata $ \(TypedExpr et expr) ->
       NotEquals -> "/="
 
 tSelectedInsts :: [InstDef] -> Context
-tSelectedInsts insts = 
+tSelectedInsts insts =
   let instdds = sepBy ", " $ insts <&> \ins -> let (DD ut _ _ _) = fst ins.instType in ppTypeInfo ut
   in fromString $ printf "[%s]" instdds
 
@@ -501,7 +513,10 @@ tInst :: InstDef -> Context
 tInst inst =
   let
     header = "inst" <+> ppUniqueClass inst.instClass.classID <+> ppTypeInfo ((\(DD ut _ _ _) -> ut) (fst inst.instType)) <+> sepBy " " (ppTVar <$> snd inst.instType)
-  in ppBody tFunction header inst.instFunctions
+
+    tInstFunction :: InstanceFunction -> Context
+    tInstFunction fn = tBody (tFunDec fn.instFunction.functionDeclaration <+> "(" <> ppVar Local fn.instFunctionClassUniqueVar <> ")") fn.instFunction.functionBody
+  in ppBody tInstFunction header inst.instFunctions
 
 tFunDec :: FunDec -> Context
 tFunDec (FD fenv v params retType scheme) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType <+> tScheme scheme

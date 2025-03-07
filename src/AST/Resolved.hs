@@ -258,6 +258,7 @@ data ClassFunDec = CFD ClassDef UniqueVar [(Decon, ClassType)] ClassType
 
 data InstanceFunction = InstanceFunction
   { classFunctionDeclaration :: FunDec
+  , classFunctionPrototypeUniqueVar :: UniqueVar
   , classFunctionBody        :: NonEmpty AnnStmt
   }
 

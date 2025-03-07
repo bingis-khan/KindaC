@@ -6,7 +6,7 @@
 {-# HLINT ignore "Redundant pure" #-}  -- this is retarded. it sometimes increases readability with that extra pure.
 module Mono (mono) where
 
-import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, ppTVar, traverse2, fmap2, MemName, UniqueMem (..), sequenceA2)
+import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, ppTVar, traverse2, fmap2, MemName, UniqueMem (..), sequenceA2, ppList, ppEnvID, ppVar)
 import qualified AST.Typed as T
 import qualified AST.Mono as M
 import qualified AST.Common as Common
@@ -95,7 +95,16 @@ mAnnStmt = cata (fmap embed . f) where
       T.EnvDef fn -> do
         let env = fn.functionDeclaration.functionEnv
         let envID = T.envID env
-        noann $ M.EnvDef envID
+        noann $ M.EnvDef $ NonEmpty.singleton envID
+      T.InstDefDef inst ->
+        case inst.instFunctions of
+          [] -> noann M.Pass
+          (ifn:ifns) -> do
+            let envs = (ifn :| ifns) <&> \fn ->
+                  let env = fn.instFunction.functionDeclaration.functionEnv
+                      envID = T.envID env
+                  in  envID
+            noann $ M.EnvDef envs
 
 
 
@@ -235,6 +244,49 @@ variable (T.DefinedFunction vfn) et = do
       registerEnvMono (Just fn) (T.envID tfn.functionDeclaration.functionEnv) env
 
       pure fn
+
+variable (T.DefinedClassFunction cfd insts self) et = do
+  let ivfn = T.selectInstanceFunction cfd self insts
+  let vfn = ivfn.instFunction
+
+  ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
+
+  -- male feminists are seething rn
+  let (tts, tret, envEmptiness) = case project et of
+        M.ITFun union mts mret -> (mts, mret, not $ M.areAllEnvsEmpty union)
+        _ -> undefined
+
+  -- creates a type mapping for this function.
+  let typemap = mapTypes (snd <$> vfn.functionDeclaration.functionParameters) tts <> mapType vfn.functionDeclaration.functionReturnType tret
+
+  withTypeMap typemap $ do
+    -- NOTE: Env must be properly monomorphised with the type map though albeit.
+    menv <- mEnv' vfn.functionDeclaration.functionEnv
+
+    -- see definition of Context for exact purpose of these parameters.
+    fmap M.DefinedFunction $ flip (memo memoFunction (\mem s -> s { memoFunction = mem })) (vfn, tts, tret, menv, envEmptiness) $ \(tfn, ts, ret, env, needsEnv) addMemo -> mdo
+
+      uv <- newUniqueVar tfn.functionDeclaration.functionId
+
+      params <- flip zip ts <$> traverse (mDecon . fst) tfn.functionDeclaration.functionParameters
+      let fundec = M.FD env uv params ret needsEnv :: M.IFunDec
+
+
+      -- DEBUG: when in the process of memoization, show dis.
+      ctxPrint' $ printf "Decl: %s -> %s" (Common.encloseSepBy "(" ")" ", " $ M.mtType <$> ts) (M.mtType ret)
+      ctxPrint' $ printf "M function: %s" (Common.ppVar Local fundec.functionId)
+
+
+      -- add memo, THEN traverse body.
+      let fn = M.Function { M.functionDeclaration = fundec, M.functionBody = body } :: M.IFunction
+      addMemo fn
+      body <- mStmts tfn.functionBody
+
+      -- Then add this environment to the "used" environments for step 2.
+      registerEnvMono (Just fn) (T.envID tfn.functionDeclaration.functionEnv) env
+
+      pure fn
+
 
 
 
@@ -621,11 +673,10 @@ mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)
 
   fmap (embed . O . Annotated anns) <$> case stmt' of
     M.EnvDef envID -> do
-      envs <- expandEnvironments [envID]
+      envs <- expandEnvironments $ NonEmpty.toList envID
       case envs of
         -- NOTE: this case shouldn't technically get triggered, as we remove extraneous environments in RemoveUnused.
         [] -> error "wtffff. no envs left in EnvDef in Mono"
-          -- pure Nothing
 
         (e:es) -> s $ M.EnvDef (e :| es)
 
@@ -750,6 +801,7 @@ mfUnion union = do
 expandEnvironments :: [EnvID] -> EnvContext [(M.Function, M.Env)]
 expandEnvironments envIDs = do
   envInsts <- RWS.asks allInsts
+  ctxPrint' $ printf "expand: %s\n%s" (ppList ppEnvID envIDs) (ppMap $ Map.toList envInsts <&> \(eid, euse) -> (ppEnvID eid, ppList (\(EnvUse mfn env) -> case mfn of { Just fn -> "(" <> ppVar Local fn.functionDeclaration.functionId <>  ", " <> ppEnvID (M.envID env) <> ")"; Nothing -> ppEnvID (M.envID env) }) $ Set.toList euse))
   fmap concat $ for envIDs $ \envID ->
     case envInsts !? envID of
       Just envs -> do

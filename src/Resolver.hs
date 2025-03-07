@@ -251,7 +251,8 @@ rStmts = traverse -- traverse through the list with Ctx
 
 
         fns <- for rinst.instFunctions $ \(FD vn params ret, body) -> do
-          vid <- findFunctionInClass vn klass
+          protovid <- findFunctionInClass vn klass
+          vid <- generateVar vn
 
           -- get all unbound tvars
           let allTypes = catMaybes $ ret : (snd <$> params)
@@ -280,6 +281,7 @@ rStmts = traverse -- traverse through the list with Ctx
           pure R.InstanceFunction
             { R.classFunctionDeclaration = fundec
             , R.classFunctionBody = rbody
+            , R.classFunctionPrototypeUniqueVar = protovid
             }
 
         stmt $ R.InstDefDef inst
