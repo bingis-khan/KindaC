@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TupleSections #-}
 module AST.Typed (module AST.Typed) where
 
 import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet, MemName, ppMem, ppRecordMems, UniqueClass, ppUniqueClass, mustOr, sctx)
@@ -21,6 +22,8 @@ import Data.Foldable ( foldl', find )
 import Data.Text (Text)
 import Data.String (fromString)
 import Data.Functor ((<&>))
+import Data.Set (Set)
+import Data.Map (Map)
 
 
 
@@ -176,9 +179,12 @@ data ClassDef = ClassDef
 data InstDef = InstDef
   { instClass :: ClassDef
   , instType :: (DataDef, [TVar])
+  , instConstraints :: ClassConstraints
   -- , instDependentTypes :: [(DependentType, Type)]
   , instFunctions :: [InstanceFunction]
   }
+
+newtype ClassConstraints = CCs { fromCCs :: Map TVar (Set ClassDef) }
 
 data InstanceFunction = InstanceFunction
   { instFunction :: Function
@@ -191,6 +197,8 @@ selfType instdef =
   in Fix $ TCon dd (Fix . TVar  <$> tvs) []
 
 -- data DependentType = Dep TCon UniqueClass
+
+data ClassConstraint = CC ClassDef TVar deriving Eq
 
 data ClassFunDec = CFD ClassDef UniqueVar [(Decon, ClassType)] ClassType
 
@@ -401,10 +409,10 @@ mapUnion ut (Fix t) = case t of
   TyVar _ -> []
 
 
-selectInstanceFunction :: ClassFunDec -> Type -> [InstDef] -> InstanceFunction
+selectInstanceFunction :: ClassFunDec -> Type -> [InstDef] -> (InstanceFunction, InstDef)
 selectInstanceFunction (CFD _ uv _ _) (Fix (TCon dd@(DD ut _ _ _) _ _)) insts =
   let inst = mustOr (printf "[COMPILER ERROR]: The instance for %s must have existed by this point! %s" (ppTypeInfo ut) (tSelectedInsts insts)) $ find (\ins -> fst ins.instType == dd) insts
-  in mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
+  in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
 selectInstanceFunction _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (sctx (tType self))
 

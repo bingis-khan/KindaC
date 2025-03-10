@@ -1,10 +1,3 @@
-x = 1
-
-gg (x Int) -> Int
-	return x + 1
-
-print gg(x)
-
 class Dupsko
 	f (n _) -> Int
 
@@ -12,17 +5,8 @@ inst Dupsko Int
 	f (n Int) -> Int
 		return n
 
-inst Dupsko Bool
-	f (n Bool) -> Int
-		if n
-			return 1
-		else
-			return 0
-
 inst Dupsko Unit
 	f (n Unit) -> Int
-		return 6969
+		return 6969 + f(123) + f(8008135)
 
-print f(x)
-print f(False)
 print f(Unit)

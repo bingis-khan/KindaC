@@ -579,10 +579,15 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
   it <- inferDatatype $ fst inst.instType
   let tvars = snd inst.instType
 
+  let (R.CCs cconstraints) = inst.instConstraints
+  constraints <- fmap T.CCs $ for cconstraints $ \rklasses -> do
+    tklasses <- fmap Set.fromList $ traverse inferClass $ Set.toList rklasses
+    pure tklasses
+
   fns <- for inst.instFunctions $ \rfn -> do
     -- TODO: add check?
     fn <- generalize $ mdo
-
+    
       -- Infer function declaration.
       let rfundec = rfn.classFunctionDeclaration
 
@@ -627,6 +632,7 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
   pure T.InstDef
     { instClass = klass
     , instType = (it, tvars)
+    , instConstraints = constraints
     , instFunctions = fns
     }
 
@@ -691,10 +697,27 @@ addSelectedEnvironmentsFromInst = do
     su <- RWS.gets typeSubstitution
     let self' = subst su self
     let union' = subst su union
-    let fn = T.selectInstanceFunction cfd self' insts
+    let (fn, inst) = T.selectInstanceFunction cfd self' insts
     singletonEnv <- singleEnvUnion fn.instFunction.functionDeclaration.functionEnv
+
+    -- First, unify environment.
     substituting $ do
       unifyFunEnv union' singletonEnv
+
+    -- second, unify the type with its constraints.
+    -- make a new type.
+    let (dd@(T.DD _ scheme _ _), instTVs) = inst.instType
+    (tvs, unions) <- instantiateScheme scheme
+
+    for_ (zip instTVs tvs) $ \(instTV, tv) -> do
+      case T.fromCCs inst.instConstraints !? instTV of
+        Nothing -> pure ()
+        Just classes ->
+          for_ classes $ \klass ->
+            tv `constrain` klass
+
+    let t = Fix $ T.TCon dd tvs unions
+    self' `uni` t
 
 
 -- Constructs a scheme for a function.
@@ -1048,6 +1071,14 @@ uniMany ts1 ts2 =
     su <- RWS.get
     let (ts1', ts2') = subst su (ts1, ts2)
     unifyMany ts1' ts2'
+
+constrain :: T.Type -> T.ClassDef -> Infer ()
+constrain t _ = case project t of
+  T.TCon dd _ _ -> undefined
+  T.TVar _ -> undefined  -- ??
+  T.TyVar _ -> undefined
+
+  T.TFun _ _ _ -> undefined  -- signal error.
 
 substituting :: SubstCtx a -> Infer a
 substituting subctx = RWST $ \_ s -> do

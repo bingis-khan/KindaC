@@ -181,3 +181,26 @@ Anonymous typeclasses! HOW!
 ######################
 # I CHOOSE: the second choice. Instance selection based on instantiation!
 ######################
+
+
+08.03.25: Okay, kind of implemented (without generalization tho - no constraints of any kind yet.)
+
+How would TYPECLASS constraints look/parse like?
+
+I want this: Str a, Str b => Str Tuple a b
+
+class Str
+	print-str (self _) -> Unit
+
+inst Str Tuple a b <= Str a, Str b
+	print-str (Tuple(l, r) Tuple a b) -> Unit
+		print-str(l)
+		print-str(r)
+
+print-tuple (Tuple(l, r) Tuple a b) -> Unit | Str a, Str b
+	pass
+
+print-tuple [Str a, Str b] (Tuple )
+
+print-tuple (Tuple(l, r) Tuple a b) <= Str a, Str b: 123
+ 

@@ -118,10 +118,12 @@ newtype DependentType = Dep TCon deriving Eq  -- temporarily no parameters?
 data InstDef stmt = InstDef
   { instClassName :: ClassName
   , instType :: (TCon, [UnboundTVar])  -- we accept only constructors yo!... (or should it involve more types... i mean, scoped type variables :OOO)
+  , instConstraints :: [ClassConstraint]
   , instDependentTypes :: [(DependentType, ClassType)]
   , instFunctions :: [(FunDec, NonEmpty stmt)]
   } deriving (Eq, Foldable, Functor, Traversable)
 
+data ClassConstraint = CC ClassName UnboundTVar deriving Eq
 
 
 ---------------

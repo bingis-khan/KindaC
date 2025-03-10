@@ -23,6 +23,7 @@ import Control.Monad (unless)
 import Data.Char (toUpper)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
+import Data.Set (Set)
 
 
 -- set printing config
@@ -453,3 +454,6 @@ traverse2 = traverse . traverse
 
 sequenceA2 :: (Applicative f, Traversable t1, Traversable t2) => t1 (t2 (f a)) -> f (t1 (t2 a))
 sequenceA2 = traverse sequenceA
+
+traverseSet :: (a -> t b) -> Set a -> t (Set b)
+traverseSet = undefined

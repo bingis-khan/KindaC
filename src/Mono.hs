@@ -246,7 +246,7 @@ variable (T.DefinedFunction vfn) et = do
       pure fn
 
 variable (T.DefinedClassFunction cfd insts self) et = do
-  let ivfn = T.selectInstanceFunction cfd self insts
+  let (ivfn, _) = T.selectInstanceFunction cfd self insts
   let vfn = ivfn.instFunction
 
   ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN

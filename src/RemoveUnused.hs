@@ -11,7 +11,7 @@ import Control.Monad.Trans.State (State)
 import qualified Control.Monad.Trans.State as State
 import Data.Functor.Foldable (transverse, cata, embed)
 import Data.Bitraversable (bitraverse)
-import AST.Common (Annotated(..), type (:.) (..), Locality (..), EnvID, fmap2, traverse2, eitherToMaybe, mustOr, printf, ppTypeInfo, ppVar, sctx)
+import AST.Common (Annotated(..), type (:.) (..), Locality (..), EnvID, fmap2, traverse2, eitherToMaybe)
 import Data.Set (Set)
 import Data.Bifoldable (bifold)
 import Data.Foldable (Foldable(..))
@@ -69,9 +69,12 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
       (usedInsideFunction <>) <$> used (T.DefinedFunction fun) t
     T.DefinedVariable uv -> if loc == FromEnvironment then used (T.DefinedVariable uv) t else pure Set.empty
     T.DefinedClassFunction cfd insts self -> do
-      let selectedFn = T.selectInstanceFunction cfd self insts
+      let (selectedFn, selectedInst) = T.selectInstanceFunction cfd self insts
       usedInsideFunction <- rFunction selectedFn.instFunction
-      (usedInsideFunction <>) <$> used (T.DefinedFunction selectedFn.instFunction) t
+
+      usedInstanceFunction <- used (T.DefinedFunction selectedFn.instFunction) t
+      usedClassFunction <- used (T.DefinedClassFunction cfd [selectedInst] self) t
+      pure $ usedInsideFunction <> usedInstanceFunction <> usedClassFunction
 
   T.Con envID _ -> do
     let emptyEnvMask = []
@@ -184,6 +187,7 @@ sInst inst = do
   pure T.InstDef
     { T.instClass = inst.instClass
     , T.instType = (dds, snd inst.instType)
+    , T.instConstraints = inst.instConstraints
     , T.instFunctions = fns
     }
 

@@ -4,6 +4,14 @@ hehe
 
 The plan is to do the whole pipeline (except codegen) in order to typecheck and import prelude automatically to files.
 
+
+## current
+
+currently implementing typeclasses.
+
+> REMEMBER: DON'T DRY.  I don't know what I'm doing, so I have to implement all this stuff first, and only then look for similarities.
+
+
 ## directory structure
 
 - `src/` - haskell compiler source
@@ -37,7 +45,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 
 ### todo misc
-- better errors *messages*
+- better error *messages*
   Instead of this
   ```
      |
@@ -54,6 +62,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 - [??] super slow on nested functions: `::::::::::::::::1`
   - not currently! but when I change something minor, it happened? so kinda weird. might be a laziness problem.
   - yeah, even with the rewrite, it became slow for some reason. why? it shouldn't be slow now.
+  - it might also be a repeated substitution problem? but also laziness maybe??
 - mark unused variables and modify the generated code to not generate warnings in C.
 - do branching analysis to check if a code path does not return a value.
   - also add a `#[noreturn]` to mark a function that does not return (eg. `exit()`)

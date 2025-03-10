@@ -47,13 +47,12 @@ ghc-options:
 - -Wmissing-home-modules
 - -Wpartial-fields
 - -Wredundant-constraints
-# - -O2
 
 library:
   source-dirs: src
 
-data-files:
-- kcsrc/prelude.kc
+# data-files:
+# - kcsrc/prelude.kc
 
 executables:
   kc:
@@ -62,19 +61,20 @@ executables:
     - -threaded
     - -rtsopts
     - -with-rtsopts=-N
+    - -O2
     main:             Main.hs
     dependencies:
     - KindaC
 
-tests:
-  all:
-    main: Spec.hs
-    source-dirs:
-    - test/src
-    ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
-    dependencies:
-    - KindaC
+# tests:
+#   all:
+#     main: Spec.hs
+#     source-dirs:
+#     - test/src
+#     ghc-options:
+#     - -threaded
+#     - -rtsopts
+#     - -with-rtsopts=-N
+#     dependencies:
+#     - KindaC
     

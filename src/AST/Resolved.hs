@@ -1,4 +1,5 @@
 {-# LANGUAGE TemplateHaskell, DeriveTraversable, TypeFamilies, UndecidableInstances, LambdaCase, OverloadedStrings, OverloadedRecordDot, DuplicateRecordFields, TypeOperators #-}
+{-# LANGUAGE TupleSections #-}
 module AST.Resolved (module AST.Resolved) where
 
 import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar, ppMem, MemName, ppRecordMems, UniqueClass, TCon, ppUniqueClass)
@@ -13,6 +14,10 @@ import Data.Bifunctor (first)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Functor ((<&>))
 import Data.String (fromString)
+import Data.Set (Set)
+import Data.Map (Map)
+import qualified Data.Map as Map
+import qualified Data.Set as Set
 
 
 
@@ -242,6 +247,7 @@ data Class
 data InstDef = InstDef
   { instClass :: Class
   , instType :: (Datatype, [TVar])
+  , instConstraints :: ClassConstraints
   , instDependentTypes :: [(DependentType, Type)]
   , instFunctions :: [InstanceFunction]
   }
@@ -251,6 +257,8 @@ data Inst
   | ExternalInst T.InstDef
   deriving (Eq, Ord)
 
+
+newtype ClassConstraints = CCs (Map TVar (Set Class))
 
 data DependentType = Dep TCon UniqueClass
 
@@ -430,11 +438,17 @@ tFunction fn = tBody (tFunDec fn.functionDeclaration) fn.functionBody
 tInst :: InstDef -> Context
 tInst inst =
   let
-    header = "inst" <+> ppUniqueClass (asUniqueClass inst.instClass) <+> ppTypeInfo (asUniqueType (fst inst.instType)) <+> sepBy " " (ppTVar <$> snd inst.instType)
+    header = "inst" <+> ppUniqueClass (asUniqueClass inst.instClass) <+> ppTypeInfo (asUniqueType (fst inst.instType)) <+> sepBy " " (ppTVar <$> snd inst.instType) <+> tConstraints inst.instConstraints
   in ppBody
     (\ifn -> tBody (tFunDec ifn.classFunctionDeclaration) ifn.classFunctionBody)
     header
     inst.instFunctions
+
+tConstraints :: ClassConstraints -> Context
+tConstraints (CCs ccs) | null ccs = ""
+tConstraints (CCs ccs) = "<=" <+> sepBy ", " (map tCC $ concatMap (\(tv, klasses) -> map (,tv) $ Set.toList klasses) (Map.toList ccs))
+  where
+    tCC (klass, tv) = ppUniqueClass (asUniqueClass klass) <+> ppTVar tv
 
 tTypes :: Functor t => t Type -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of

@@ -240,14 +240,19 @@ rStmts = traverse -- traverse through the list with Ctx
 
         klassType <- resolveType $ fst rinst.instType
         let instTVars = map (bindTVar (BindByInst (R.asUniqueClass klass))) $ snd rinst.instType
+
+        constraints <- rConstraints klass (zip (snd rinst.instType) instTVars) rinst.instConstraints
+
         let inst = R.InstDef
               { R.instClass = klass
               , R.instType = (klassType, instTVars)
+              , R.instConstraints = constraints
               , R.instDependentTypes = []  -- TODO: temporary!
               , R.instFunctions = fns
               }
 
-        registerInst inst
+        -- TEMP: should `registerInst` here, but I have a problem with recursive definitions.
+        -- It also fixed the problem
 
 
         fns <- for rinst.instFunctions $ \(FD vn params ret, body) -> do
@@ -284,6 +289,9 @@ rStmts = traverse -- traverse through the list with Ctx
             , R.classFunctionPrototypeUniqueVar = protovid
             }
 
+        
+        registerInst inst
+
         stmt $ R.InstDefDef inst
 
     rCase :: U.CaseF U.Expr (Ctx R.AnnStmt) -> Ctx (R.Case R.Expr R.AnnStmt)
@@ -295,6 +303,24 @@ rStmts = traverse -- traverse through the list with Ctx
 
     rBody :: Traversable t => t (Ctx a) -> Ctx (t a)
     rBody = scope . sequenceA
+
+
+rConstraints :: R.Class -> [(UnboundTVar, TVar)] -> [U.ClassConstraint] -> Ctx R.ClassConstraints
+rConstraints boundKlass tvars constraints = do
+  let tvm = Map.fromList tvars
+  tvclasses <- for constraints $ \(U.CC rklass utv) -> do
+    klass <- resolveClass rklass
+    tv <- case tvm !? utv of
+      Just tv ->
+        pure tv
+      Nothing -> do
+        err $ UnboundTypeVariable utv
+        let tv = bindTVar (BindByInst (R.asUniqueClass boundKlass)) utv
+        pure tv
+
+    pure (tv, klass)
+
+  pure $ R.CCs $ Map.fromListWith (<>) $ fmap Set.singleton <$> tvclasses
 
 rDecon :: U.Decon -> Ctx R.Decon
 rDecon = transverse $ \case

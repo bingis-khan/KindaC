@@ -27,7 +27,7 @@ import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
 import AST.Common (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..))
-import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case, DataRec (..), DependentType (..), ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), uClassType)
+import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case, DataRec (..), DependentType (..), ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), uClassType, ClassConstraint (..))
 import Data.Functor.Foldable (embed, cata)
 import Control.Monad ((<=<))
 import Data.Either (partitionEithers)
@@ -189,14 +189,33 @@ sInst = recoverableIndentBlock $ do
     targs <- many generic
     pure (tcon, targs)
 
+  constraints <- sClassConstraints
+
   pure $ flip (L.IndentMany Nothing) sDepOrFunctionDef $ \depOrFunctions ->
     let (deps, funs) = partitionEithers depOrFunctions
     in pure $ InstDefinition $ InstDef
       { instClassName = name
       , instType = instType
+      , instConstraints = constraints
       , instDependentTypes = deps
       , instFunctions = funs
       }
+
+
+sClassConstraints :: Parser [ClassConstraint]
+sClassConstraints = do
+  mConstraints <- optional $ do
+    symbol "<="  -- I might change it to "|"? may look prettier?
+    sepBy sClassConstraint (symbol ",")
+
+  pure $ fromMaybe [] mConstraints
+
+sClassConstraint :: Parser ClassConstraint
+sClassConstraint = do
+  name <- className
+  tv <- generic
+  pure $ CC name tv
+
 
 sDepOrFunctionDef :: Parser (Either (DependentType, ClassType) (FunDec, NonEmpty AnnStmt))
 sDepOrFunctionDef = Left <$> sDepDef <|> Right <$> sInstFunction
