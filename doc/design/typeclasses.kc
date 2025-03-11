@@ -182,6 +182,70 @@ Anonymous typeclasses! HOW!
 # I CHOOSE: the second choice. Instance selection based on instantiation!
 ######################
 
+AAAAAAAAAAAAAAA: sheeesh. 
+The thing is... when do we instantiate?
+
+# module Dupsko
+mk-tuple (): Tuple(1, True)
+
+
+# module Main
+inst Str Tuple l r <= Str l, Str r
+	print-str ()
+		# ....
+
+n = Dupsko.mk-tuple()  # wtff. clearly, we should use the instance from here, but... the type gets instantiated in Dupsko, so it won't have access to this instance.
+# huh, maybe we can do it differently. when function gets instantiated to a type it gets assigned. but, how do we ... implement it?
+# how should I do it?
+# like, how do I attach information during instantiation?? especially, that it's done during resolving.
+# i mean, not instantiation. like, when type gets actually inferred. ahhhh
+
+inst 1
+constr
+inst 2
+app # inst 2? inst 1?
+What's the correct answer here?
+
+
+f (x s) -> Unit <= Str s
+	print-str(x)
+
+
+or this?
+inst Int # 1
+mk-int (): 69
+inst Int # 2
+mk-int2 (): mk-int()
+inst Int # 3
+mk-int3 (): mk-int2()
+
+Which instance gets selected???
+I think, it should be 3.
+
+inst Int # 1
+mk-int ()
+	x = 69
+	print-str(x) # 1
+	return x
+
+inst Int # 2
+mk-int2 ()
+	x = mk-int()
+	print-str(x) # 2
+	return x
+
+inst Int # 3
+mk-int3 ()
+	x = mk-int2()
+	print-str(x) # 3
+	return x
+
+print-str(mk-int())  # 3!
+print-str(mk-int3()) # 3!
+
+okay, see instance-resolution.kc
+
+
 
 08.03.25: Okay, kind of implemented (without generalization tho - no constraints of any kind yet.)
 

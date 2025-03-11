@@ -1,0 +1,116 @@
+Example 1:
+
+inst Int # 1
+mk-int ()
+	x = 69
+	print-str(x) # 1
+	return x
+
+inst Int # 2
+mk-int2 ()
+	x = mk-int()
+	print-str(x) # 2
+	return x
+
+inst Int # 3
+mk-int3 ()
+	x = mk-int2()
+	print-str(x) # 3
+	return x
+
+print-str(mk-int())  # 3!
+print-str(mk-int3()) # 3!
+
+Explanation: All of these types are concrete types, so:
+
+	Reason: We must not change how function work later due to later imports (OBVIOUSLY)!
+
+	Using the instance function directly should select the last instance immediately from this scope.
+
+
+Example 2:
+
+inst Str Int # 1
+
+print-extra (x s) <= Str s
+	print-str(69)
+	print-str(x)
+
+inst Str Int # 2
+
+print-extra(420)  # inst 2
+
+Explanation:
+
+	If #1 was selected, we won't be able to add new instances later. So, when it's generic, no instance.
+	It would make this shiz less extensible.
+
+
+
+Example 1.5:
+
+inst Str Int # 1
+
+x = 420
+
+inst Str Int # 2
+
+print-str(x)  # which instance?? imo should be 2.
+
+
+Example 1.75:
+
+inst Str Int # 1
+
+x = 420
+
+use-this (x Int)
+	print-str(x)
+
+inst Str Int # 2
+
+use-this(x)  # which instance???? should be 1 ig.
+
+AAAAAAAAAAAAAAAAA: But there's a problem... If I didn't annotate the use-this function, it would have a general type, thus '2' would be selected..... bruh.
+
+
+
+Example 2.??:
+
+print-extra (x s)
+	print-str(69)
+	print-str(x)
+
+inst Str Int # 1
+
+f = print-extra  # gains a concrete type here. which instance will it have? uhh, let's do 1. whatever.
+f (x Int): print-extra(x)  # definitely 1.
+
+
+inst Str Int # 2
+
+f(420)  # which instance?? uh...fuck.
+
+
+
+Well, ya know.
+How can I simplify the rules tho.
+When should this "function dictionary" be added?
+I think... during calls. or function instantiations?
+
+So:
+
+x = 69
+print-str(x) <= here
+
+print-extra(x) <= here
+
+print-int(n Int)
+	print-str(n)  <= here
+
+print-int(x)
+
+f = print-str  <= here (but I decided it on a whim, i don't have any supporting examples)
+f(x)
+
+So, the conclusion is: during instantiations. sheeesh. where should I embed these instances?
