@@ -6,7 +6,7 @@
 {-# HLINT ignore "Redundant pure" #-}  -- this is retarded. it sometimes increases readability with that extra pure.
 module Mono (mono) where
 
-import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), TVar, UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, ppTVar, traverse2, fmap2, MemName, UniqueMem (..), sequenceA2, ppList, ppEnvID, ppVar)
+import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, traverse2, fmap2, MemName, UniqueMem (..), sequenceA2, ppList, ppEnvID, ppVar)
 import qualified AST.Typed as T
 import qualified AST.Mono as M
 import qualified AST.Common as Common
@@ -201,7 +201,7 @@ mDecon = cata $ fmap embed . \case
 
 variable :: T.Variable -> M.IType -> Context M.IVariable
 variable (T.DefinedVariable uv) _ = pure $ M.DefinedVariable uv
-variable (T.DefinedFunction vfn) et = do
+variable (T.DefinedFunction vfn _) et = do
   ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
 
   -- male feminists are seething rn
@@ -432,7 +432,7 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut (T
 
 
 
-retrieveTV :: TVar -> Context M.IType
+retrieveTV :: T.TVar -> Context M.IType
 retrieveTV tv = do
   TypeMap typeMap _ <- State.gets tvarMap
   pure $ case typeMap !? tv of
@@ -569,7 +569,7 @@ startingContext = Context
 
 -- HACK: EnvUnions are only needed when monomorphizing types. However, it's slightly easier right now to add this field. This should probably change later.
 --  TODO: what did I mean???
-data TypeMap = TypeMap (Map TVar M.IType) (Map UnionID M.IEnvUnion) deriving (Eq, Ord)
+data TypeMap = TypeMap (Map T.TVar M.IType) (Map UnionID M.IEnvUnion) deriving (Eq, Ord)
 
 instance Semigroup TypeMap where
   TypeMap l1 l2 <> TypeMap r1 r2 = TypeMap (l1 <> r1) (l2 <> r2)
@@ -580,7 +580,7 @@ instance Monoid TypeMap where
 
 ppTypeMap :: TypeMap -> Common.Context
 ppTypeMap (TypeMap tvs unions) = Common.ppLines'
-  [ (ppMap . fmap (bimap (Common.pretty . Common.fromTV) M.mtType) . Map.toList) tvs
+  [ (ppMap . fmap (bimap (Common.pretty . T.fromTV) M.mtType) . Map.toList) tvs
   , (ppMap . fmap (bimap Common.ppUnionID (M.tEnvUnion . fmap M.mtEnv)) . Map.toList) unions
   ]
 
@@ -773,7 +773,7 @@ mfType = para $ fmap embed . \case
     mret <- ret
     pure $ M.TFun munion margs mret
 
-  M.ITVar tv -> error $ printf "[COMPILER ERROR]: TVar %s not matched - types not applied correctly?" (ctx ppTVar tv)
+  M.ITVar tv -> error $ printf "[COMPILER ERROR]: TVar %s not matched - types not applied correctly?" (ctx T.tTVar tv)
 
 
 
@@ -878,12 +878,12 @@ mfConstructor dc@(M.DC dd _ _ _) imt = do
 
 
 
-ftvEnvButIgnoreUnions :: M.IEnv -> Set TVar
+ftvEnvButIgnoreUnions :: M.IEnv -> Set T.TVar
 ftvEnvButIgnoreUnions = \case
   M.RecursiveEnv _ _ -> Set.empty
   M.Env _ ts -> foldMap (\(_, _, t) -> ftvButIgnoreUnions t) ts
 
-ftvButIgnoreUnions :: M.IType -> Set TVar
+ftvButIgnoreUnions :: M.IType -> Set T.TVar
 ftvButIgnoreUnions = cata $ \case
   M.ITVar tv -> Set.singleton tv
   M.ITCon _ ts _ -> mconcat ts

@@ -23,7 +23,7 @@ import Data.Set (Set, (\\))
 import Data.Bifoldable (bifold)
 import qualified Data.Set as Set
 
-import AST.Common (UniqueVar (..), UniqueCon (..), UniqueType (..), Locality (..), VarName (..), TCon (..), ConName (..), Annotated (..), (:.) (..), UnboundTVar (..), TVar (..), Binding (..), bindTVar, MemName, sequenceA2, UniqueClass (..), ClassName (..), uniqueClassAsTypeName)
+import AST.Common (UniqueVar (..), UniqueCon (..), UniqueType (..), Locality (..), VarName (..), TCon (..), ConName (..), Annotated (..), (:.) (..), UnboundTVar (..), Binding (..), MemName, sequenceA2, UniqueClass (..), ClassName (..), uniqueClassAsTypeName)
 import AST.Converged (Prelude(..))
 import qualified AST.Converged as Prelude
 import AST.Untyped (StmtF (..), DataDef (..), DataCon (..), FunDec (..), ExprF (..), TypeF (..), DataRec (DR))
@@ -85,13 +85,13 @@ rStmts = traverse -- traverse through the list with Ctx
           R.DefinedVariable vid ->
             stmt $ R.Mutation vid loc re
 
-          R.DefinedFunction fun -> do
+          R.DefinedFunction fun _ -> do
             err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
 
             vid <- generateVar name
             stmt $ R.Mutation vid Local re
 
-          R.ExternalFunction fun -> do
+          R.ExternalFunction fun _ -> do
             err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
 
             vid <- generateVar name
@@ -171,7 +171,7 @@ rStmts = traverse -- traverse through the list with Ctx
         tvars <- fmap mconcat $ for allTypes $ cata $ \case
               TVar utv -> tryResolveTVar utv <&> \case
                 Just _ ->  Set.empty  -- don't rebind existing tvars.
-                Nothing -> Set.singleton $ bindTVar (BindByVar vid) utv
+                Nothing -> Set.singleton $ R.bindTVar (BindByVar vid) utv
               t -> fold <$> sequenceA t
 
         rec
@@ -217,7 +217,7 @@ rStmts = traverse -- traverse through the list with Ctx
             tvars <- fmap mconcat $ for allTypes $ cata $ \case
                   U.NormalType (TVar utv) -> tryResolveTVar utv <&> \case
                     Just _ ->  Set.empty  -- don't rebind existing tvars.
-                    Nothing -> Set.singleton $ bindTVar (BindByVar funid) utv
+                    Nothing -> Set.singleton $ R.bindTVar (BindByVar funid) utv
                   t -> fold <$> sequenceA t
 
             -- HACK: ALSO COPIED FROM DefinedFunction!!
@@ -239,14 +239,13 @@ rStmts = traverse -- traverse through the list with Ctx
         klass <- resolveClass rinst.instClassName
 
         klassType <- resolveType $ fst rinst.instType
-        let instTVars = map (bindTVar (BindByInst (R.asUniqueClass klass))) $ snd rinst.instType
+        let instTVars = map (R.bindTVar (BindByInst (R.asUniqueClass klass))) $ snd rinst.instType
 
-        constraints <- rConstraints klass (zip (snd rinst.instType) instTVars) rinst.instConstraints
+        -- constraints <- rConstraints klass (zip (snd rinst.instType) instTVars) rinst.instConstraints
 
         let inst = R.InstDef
               { R.instClass = klass
               , R.instType = (klassType, instTVars)
-              , R.instConstraints = constraints
               , R.instDependentTypes = []  -- TODO: temporary!
               , R.instFunctions = fns
               }
@@ -264,7 +263,7 @@ rStmts = traverse -- traverse through the list with Ctx
           tvars <- fmap mconcat $ for allTypes $ cata $ \case
                 TVar utv -> tryResolveTVar utv <&> \case
                   Just _ ->  Set.empty  -- don't rebind existing tvars.
-                  Nothing -> Set.singleton $ bindTVar (BindByVar vid) utv
+                  Nothing -> Set.singleton $ R.bindTVar (BindByVar vid) utv
                 t -> fold <$> sequenceA t
 
           (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure $ do
@@ -289,7 +288,7 @@ rStmts = traverse -- traverse through the list with Ctx
             , R.classFunctionPrototypeUniqueVar = protovid
             }
 
-        
+
         registerInst inst
 
         stmt $ R.InstDefDef inst
@@ -305,7 +304,7 @@ rStmts = traverse -- traverse through the list with Ctx
     rBody = scope . sequenceA
 
 
-rConstraints :: R.Class -> [(UnboundTVar, TVar)] -> [U.ClassConstraint] -> Ctx R.ClassConstraints
+rConstraints :: R.Class -> [(UnboundTVar, R.TVar)] -> [U.ClassConstraint] -> Ctx R.ClassConstraints
 rConstraints boundKlass tvars constraints = do
   let tvm = Map.fromList tvars
   tvclasses <- for constraints $ \(U.CC rklass utv) -> do
@@ -315,7 +314,7 @@ rConstraints boundKlass tvars constraints = do
         pure tv
       Nothing -> do
         err $ UnboundTypeVariable utv
-        let tv = bindTVar (BindByInst (R.asUniqueClass boundKlass)) utv
+        let tv = R.bindTVar (BindByInst (R.asUniqueClass boundKlass)) utv
         pure tv
 
     pure (tv, klass)
@@ -480,7 +479,7 @@ type Ctx = RWST () [ResolveError] CtxState IO  -- I might add additional context
 data CtxState = CtxState
   { scopes :: NonEmpty Scope
   , inLambda :: Bool  -- hack to check if we're in a lambda currently. the when the lambda is not in another lambda, we put "Local" locality.
-  , tvarBindings :: Map UnboundTVar TVar
+  , tvarBindings :: Map UnboundTVar R.TVar
 
   , prelude :: Maybe Prelude  -- Only empty when actually parsing prelude.
 
@@ -575,8 +574,12 @@ resolveVar name = do
 protoVariableToVariable :: R.VariableProto -> Ctx R.Variable
 protoVariableToVariable = \case
   R.PDefinedVariable uv -> pure $ R.DefinedVariable uv
-  R.PDefinedFunction fn -> pure $ R.DefinedFunction fn
-  R.PExternalFunction fn -> pure $ R.ExternalFunction fn
+  R.PDefinedFunction fn -> do
+    snapshot <- getScopeSnapshot
+    pure $ R.DefinedFunction fn snapshot
+  R.PExternalFunction fn -> do
+    snapshot <- getScopeSnapshot
+    pure $ R.ExternalFunction fn snapshot
   R.PDefinedClassFunction cfd@(R.CFD cd _ _ _) -> do
     insts <- getInstancesForClassInCurrentScope $ R.DefinedClass cd
     let definedInsts = insts <&> \case
@@ -672,12 +675,17 @@ findFunctionInClass vn ecd =
       generateVar vn
 
 
-getInstancesForClassInCurrentScope :: R.Class -> Ctx [R.Inst]
+getInstancesForClassInCurrentScope :: R.Class -> Ctx R.PossibleInstances
 getInstancesForClassInCurrentScope c = do
   allScopes <- getScopes
   case lookupScope c (instScope <$> allScopes) of
-    Just (_, dds) -> pure $ Map.elems dds
-    Nothing -> pure []  -- TODO: maybe report an error here?
+    Just (_, dds) -> pure dds
+    Nothing -> pure mempty  -- TODO: maybe report an error here?
+
+getScopeSnapshot :: Ctx R.ScopeSnapshot
+getScopeSnapshot = do
+  allScopes <- getScopes
+  pure $ foldMap instScope allScopes
 
 
 registerInst :: R.InstDef -> Ctx ()
@@ -714,10 +722,10 @@ registerDatatype dd@(R.DD ut _ _ _) = do
   RWST.modify $ \s -> s { datatypes = dd : s.datatypes }
   pure ()
 
-mkTVars :: Binding -> [UnboundTVar] -> [TVar]
-mkTVars b = fmap $ bindTVar b
+mkTVars :: Binding -> [UnboundTVar] -> [R.TVar]
+mkTVars b = fmap $ R.bindTVar b
 
-bindTVars :: [TVar] -> Ctx a -> Ctx a
+bindTVars :: [R.TVar] -> Ctx a -> Ctx a
 bindTVars tvs cx = do
     oldBindings <- RWS.gets tvarBindings
 
@@ -731,12 +739,12 @@ bindTVars tvs cx = do
 
     pure x
 
-tryResolveTVar :: UnboundTVar -> Ctx (Maybe TVar)
+tryResolveTVar :: UnboundTVar -> Ctx (Maybe R.TVar)
 tryResolveTVar utv = do
   tvs <- RWS.gets tvarBindings
   pure $ tvs !? utv
 
-resolveTVar :: UnboundTVar -> Ctx TVar
+resolveTVar :: UnboundTVar -> Ctx R.TVar
 resolveTVar utv = do
   mtv <- tryResolveTVar utv
   case mtv of
@@ -745,10 +753,10 @@ resolveTVar utv = do
       err $ UnboundTypeVariable utv
       placeholderTVar utv
 
-placeholderTVar :: UnboundTVar -> Ctx TVar
+placeholderTVar :: UnboundTVar -> Ctx R.TVar
 placeholderTVar utv = do
   var <- generateVar $ VN $ "placeholderVarForTVar" <> utv.fromUTV
-  pure $ bindTVar (BindByVar var) utv
+  pure (R.bindTVar (BindByVar var) utv)
 
 resolveType :: TCon -> Ctx R.Datatype
 resolveType name = do

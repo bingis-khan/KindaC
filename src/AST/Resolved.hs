@@ -2,7 +2,7 @@
 {-# LANGUAGE TupleSections #-}
 module AST.Resolved (module AST.Resolved) where
 
-import AST.Common (LitType, Op, Annotated, TVar(..), UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppTVar, ppMem, MemName, ppRecordMems, UniqueClass, TCon, ppUniqueClass)
+import AST.Common (LitType, Op, Annotated, UniqueType, UniqueVar, UniqueCon, (:.)(..), Context, Annotated(..), LitType(..), Op(..), ppLines, annotate, (<+>), (<+?>), ppVar, Locality(..), ppBody, ppCon, encloseSepBy, pretty, sepBy, indent, ppTypeInfo, comment, Ann, printf, ppLines', ppMem, MemName, ppRecordMems, UniqueClass, TCon, ppUniqueClass, Binding (..), UnboundTVar (..))
 import qualified AST.Typed as T
 
 import Data.Fix (Fix(..))
@@ -18,6 +18,7 @@ import Data.Set (Set)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import Data.Text (Text)
 
 
 
@@ -44,6 +45,21 @@ instance Ord DataDef where
 ----------
 -- Type --
 ----------
+
+data TVar = TV
+  { fromTV :: Text
+  , binding :: Binding
+  , tvClasses :: Set Class
+  }
+
+instance Eq TVar where
+  tv == tv' = tv.fromTV == tv'.fromTV && tv.binding == tv'.binding
+
+instance Ord TVar where
+  tv `compare` tv' = (tv.fromTV, tv.binding) `compare` (tv'.fromTV, tv'.binding)
+
+bindTVar :: Binding -> UnboundTVar -> TVar
+bindTVar b (UTV tvname) = TV tvname b mempty
 
 data TypeF a
   = TCon Datatype [a]
@@ -100,14 +116,18 @@ data VariableProto
   | PExternalClassFunction T.ClassFunDec
   deriving (Eq, Ord)
 
+
+type PossibleInstances = Map Datatype Inst
+type ScopeSnapshot = Map Class PossibleInstances
+
 data Variable
   = DefinedVariable UniqueVar
 
-  | DefinedFunction Function
-  | ExternalFunction T.Function  -- it's only defined as external, because it's already typed. nothing else should change.
+  | DefinedFunction Function ScopeSnapshot
+  | ExternalFunction T.Function ScopeSnapshot  -- it's only defined as external, because it's already typed. nothing else should change.
 
-  | DefinedClassFunction ClassFunDec [InstDef]  -- we have to track which instances were visible at the time of this scope.
-  | ExternalClassFunction T.ClassFunDec [Inst]
+  | DefinedClassFunction ClassFunDec (Map Datatype InstDef)  -- we have to track which instances were visible at the time of this scope.
+  | ExternalClassFunction T.ClassFunDec PossibleInstances
   deriving (Eq, Ord)
 
 
@@ -115,8 +135,8 @@ asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
   DefinedVariable var -> var
 
-  DefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
-  ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ }) -> uv
+  DefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) _ -> fid
+  ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ }) _ -> uv
 
   DefinedClassFunction (CFD _ uv _ _) _ -> uv
   ExternalClassFunction (T.CFD _ uv _ _) _ -> uv
@@ -134,8 +154,8 @@ asPUniqueVar = \case
 asProto :: Variable -> VariableProto
 asProto = \case
   DefinedVariable v -> PDefinedVariable v
-  DefinedFunction fn -> PDefinedFunction fn
-  ExternalFunction fn -> PExternalFunction fn
+  DefinedFunction fn _ -> PDefinedFunction fn
+  ExternalFunction fn _ -> PExternalFunction fn
   DefinedClassFunction cd _ -> PDefinedClassFunction cd
   ExternalClassFunction cd _ -> PExternalClassFunction cd
 
@@ -247,7 +267,6 @@ data Class
 data InstDef = InstDef
   { instClass :: Class
   , instType :: (Datatype, [TVar])
-  , instConstraints :: ClassConstraints
   , instDependentTypes :: [(DependentType, Type)]
   , instFunctions :: [InstanceFunction]
   }
@@ -383,10 +402,10 @@ tExpr = cata $ \case
   Var l v ->
     let post = case v of
           DefinedVariable _ -> ""
-          DefinedFunction _ -> "F"
-          ExternalFunction _ -> "EF"
-          DefinedClassFunction _ insts -> "C" <> tSelectedInsts (DefinedInst <$> insts)
-          ExternalClassFunction _ insts -> "EC" <> tSelectedInsts insts
+          DefinedFunction _ _ -> "F"
+          ExternalFunction _ _ -> "EF"
+          DefinedClassFunction _ insts -> "C" <> tSelectedInsts (DefinedInst <$> Map.elems insts)
+          ExternalClassFunction _ insts -> "EC" <> tSelectedInsts (Map.elems insts)
     in ppVar l (asUniqueVar v) <> post
   Con c -> ppCon (asUniqueCon c)
 
@@ -417,7 +436,7 @@ tSelectedInsts insts =
 
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y _) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ tConRec cons
+tDataDef (DD tid tvs cons _) = indent (foldl' (\x (TV y _ _) -> x <+> pretty y) (ppTypeInfo tid) tvs) $ tConRec cons
 
 tConRec :: Either (NonEmpty DataRec) [DataCon] -> Context
 tConRec (Left dr) = ppLines tRecDef dr
@@ -438,7 +457,7 @@ tFunction fn = tBody (tFunDec fn.functionDeclaration) fn.functionBody
 tInst :: InstDef -> Context
 tInst inst =
   let
-    header = "inst" <+> ppUniqueClass (asUniqueClass inst.instClass) <+> ppTypeInfo (asUniqueType (fst inst.instType)) <+> sepBy " " (ppTVar <$> snd inst.instType) <+> tConstraints inst.instConstraints
+    header = "inst" <+> ppUniqueClass (asUniqueClass inst.instClass) <+> ppTypeInfo (asUniqueType (fst inst.instType)) <+> sepBy " " (ppTVar <$> snd inst.instType)
   in ppBody
     (\ifn -> tBody (tFunDec ifn.classFunctionDeclaration) ifn.classFunctionBody)
     header
@@ -471,6 +490,13 @@ tEnv (Env env) = encloseSepBy "[" "]" ", " $ env <&> \(v, l) -> ppVar l $ asPUni
 tBody :: Foldable f => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
 
+ppTVar :: TVar -> Context
+ppTVar (TV tv b _) =
+  let bindingCtx = case b of
+        BindByType ut -> ppTypeInfo ut
+        BindByVar uv -> ppVar Local uv
+        BindByInst uc -> ppUniqueClass uc
+  in pretty tv <> "<" <> bindingCtx <> ">"
 
 asUniqueCon :: Constructor -> UniqueCon
 asUniqueCon = \case

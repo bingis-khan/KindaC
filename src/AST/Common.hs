@@ -24,6 +24,9 @@ import Data.Char (toUpper)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Set (Set)
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Bitraversable (bitraverse)
 
 
 -- set printing config
@@ -143,13 +146,6 @@ data Binding
   | BindByInst UniqueClass
   deriving (Eq, Ord)
 
-data TVar = TV
-  { fromTV :: Text
-  , binding :: Binding
-  } deriving (Eq, Ord)
-
-bindTVar :: Binding -> UnboundTVar -> TVar
-bindTVar b (UTV tvname) = TV tvname b
 
 
 -- type instances for the small datatypes
@@ -326,13 +322,6 @@ ppLines f = foldMap ((<>"\n") . f)
 ppLines' :: Foldable t => t Context -> Context
 ppLines' = foldMap (<> "\n")
 
-ppTVar :: TVar -> Context
-ppTVar (TV tv b) =
-  let bindingCtx = case b of
-        BindByType ut -> ppTypeInfo ut
-        BindByVar uv -> ppVar Local uv
-        BindByInst uc -> ppUniqueClass uc
-  in pretty tv <> "<" <> bindingCtx <> ">"
 
 ppVar :: Locality -> UniqueVar -> Context
 ppVar l v = localTag <?+> pretty (fromVN v.varName) <> ppIdent ("$" <> pretty (hashUnique v.varID))
@@ -457,3 +446,6 @@ sequenceA2 = traverse sequenceA
 
 traverseSet :: (a -> t b) -> Set a -> t (Set b)
 traverseSet = undefined
+
+bitraverseMap :: (Applicative t, Ord k') => (k -> t k') -> (a -> t b) -> Map k a -> t (Map k' b)
+bitraverseMap f g = fmap Map.fromList . traverse (bitraverse f g) . Map.toList

@@ -6,7 +6,7 @@
 
 module AST.Mono (module AST.Mono) where
 
-import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), TVar (), ppTVar, ppLines', UniqueMem, ppUniqueMem, ppList)
+import AST.Common (Ann, Annotated (..), Context, CtxData (..), EnvID, LitType (..), Locality (Local), Op (..), UnionID, UniqueCon, UniqueType, UniqueVar, annotate, comment, encloseSepBy, indent, ppBody, ppCon, ppEnvID, ppLines, ppTypeInfo, ppUnionID, ppVar, pretty, printf, sepBy, (:.) (..), (<+>), (<+?>), ppLines', UniqueMem, ppUniqueMem, ppList)
 import Control.Monad.Trans.Reader (ask)
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
 import Data.Eq.Deriving (deriveEq1)
@@ -18,6 +18,7 @@ import Data.List.NonEmpty (NonEmpty ())
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Ord.Deriving (deriveOrd1)
 import Data.String (fromString)
+import qualified AST.Typed as T
 
 
 --- The two stages...
@@ -153,7 +154,7 @@ instance Ord1 EnvUnionF where
 data ITypeF a
   = ITCon IDataDef [a] [EnvUnionF (EnvF IncompleteEnv a)]  -- extra type parameters are only used for type mapping and later to know how to memoize. We can probably do this better. TODO maybe just store TypeMap here?
   | ITFun (EnvUnionF (EnvF IncompleteEnv a)) [a] a
-  | ITVar TVar
+  | ITVar T.TVar
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 
 type IType = Fix ITypeF
@@ -569,7 +570,7 @@ mtType :: IType -> Context
 mtType = cata $ \case
   ITCon (DD tid _ _ _) _ _ -> ppTypeInfo tid
   ITFun funUnion args ret -> tEnvUnion (mtEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
-  ITVar tv -> ppTVar tv
+  ITVar tv -> T.tTVar tv
 
 mtEnv :: EnvF IncompleteEnv IType -> Context
 mtEnv = mtEnv' . fmap mtType

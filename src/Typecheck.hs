@@ -23,7 +23,7 @@ import Control.Monad.Trans.RWS (RWST (RWST), runRWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed, hoist, project, para)
-import Control.Monad (replicateM, zipWithM_, when)
+import Control.Monad (replicateM, zipWithM_, when, unless)
 import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold)
 import Data.Set (Set, (\\))
@@ -38,7 +38,7 @@ import qualified AST.Resolved as R
 import qualified AST.Typed as T
 
 import AST.Converged (Prelude(..), PreludeFind (..), boolFind, tlReturnFind, intFind, floatFind)
-import AST.Common (TVar (TV), LitType (..), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..), mustOr, sctx, ppList, eitherToMaybe, MemName, sequenceA2, ppVar, ppUniqueClass)
+import AST.Common (LitType (..), UniqueVar, UniqueType (typeName), Annotated (Annotated), Op (..), EnvID (..), UnionID (..), ctx, type (:.) (..), ppCon, Locality (..), ppUnionID, phase, ctxPrint, ctxPrint', Binding (..), mustOr, sctx, ppList, eitherToMaybe, MemName, sequenceA2, ppVar, ppUniqueClass)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
@@ -362,21 +362,38 @@ inferVariable :: R.Variable -> Infer T.Variable
 inferVariable = \case
   R.DefinedVariable v -> pure $ T.DefinedVariable v
 
-  R.ExternalFunction fn -> pure $ T.DefinedFunction fn
-  R.DefinedFunction fn -> T.DefinedFunction <$> inferFunction fn
+  R.ExternalFunction fn rsnapshot -> do
+    snapshot <- inferSnapshot rsnapshot
+    pure $ T.DefinedFunction fn snapshot
+  R.DefinedFunction fn rsnapshot -> T.DefinedFunction <$> inferFunction fn <*> inferSnapshot rsnapshot
 
-  R.ExternalClassFunction cfd rinsts -> do
-    insts <- for rinsts $ \case
-      R.DefinedInst rists  -> inferInstance rists
-      R.ExternalInst tinst -> pure tinst
+  R.ExternalClassFunction cfd@(T.CFD cd _ _ _) rinsts -> do
+    insts <- fmap Map.fromList $ for (Map.toList rinsts) $ \(rdd, rinst) -> do
+      dd <- inferDatatype rdd
+      inst <- case rinst of
+        R.DefinedInst rists  -> inferInstance rists
+        R.ExternalInst tinst -> pure tinst
+      pure (dd, inst)
+
     self <- fresh
+    self `constrain` (cd, insts)
+
     pure $ T.DefinedClassFunction cfd insts self
 
   R.DefinedClassFunction rcfd rinsts -> do
-    cfd <- inferClassDeclaration rcfd
-    insts <- traverse inferInstance rinsts
+    cfd@(T.CFD cd _ _ _) <- inferClassDeclaration rcfd
+    insts <- fmap Map.fromList $ traverse (bitraverse inferDatatype inferInstance) $ Map.toList rinsts
+
     self <- fresh
+    self `constrain` (cd, insts)
+
     pure $ T.DefinedClassFunction cfd insts self
+
+inferSnapshot :: R.ScopeSnapshot -> Infer T.ScopeSnapshot
+inferSnapshot = Common.bitraverseMap inferClass inferPossibleInstances
+  where
+    inferPossibleInstances :: R.PossibleInstances -> Infer T.PossibleInstances
+    inferPossibleInstances = Common.bitraverseMap inferDatatype inferInst
 
 inferVariableProto :: R.VariableProto -> Infer T.VariableProto
 inferVariableProto = \case
@@ -414,7 +431,9 @@ inferClassType = cata $ (.) (fmap embed) $ \case
     R.TCon (R.ExternalDatatype dd) rparams -> do
       params <- sequenceA rparams
       pure $ T.CTCon dd params
-    R.TVar tv -> pure $ T.CTVar tv
+    R.TVar rtv -> do
+      tv <- inferTVar rtv
+      pure $ T.CTVar tv
     R.TFun params ret -> do
       fnUnion <- emptyUnion
       T.CTFun fnUnion.unionID <$> sequenceA params <*> ret
@@ -432,9 +451,18 @@ inferType = cata $ (.) (fmap embed) $ \case
     let unions = extractUnionsFromDataType dd  -- TODO: same here...
     pure $ T.TCon dd params unions
 
-  R.TVar tv -> pure $ T.TVar tv
+  R.TVar tv -> T.TVar <$> inferTVar tv
 
   R.TFun rargs rret -> liftA3 T.TFun emptyUnion (sequenceA rargs) rret
+
+inferTVar :: R.TVar -> Infer T.TVar
+inferTVar rtv = do
+  classes <- Common.traverseSet inferClass rtv.tvClasses
+  pure $ T.TV
+    { fromTV = rtv.fromTV
+    , binding = rtv.binding
+    , tvConstraints = classes
+    }
 
 mkTypeFromClassType :: T.Type -> T.ClassType -> T.Type
 mkTypeFromClassType self = cata $ fmap embed $ \case
@@ -452,7 +480,8 @@ inferDatatype = \case
 
 inferDataDef :: R.DataDef -> Infer T.DataDef
 inferDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }) $
-  \(R.DD ut tvars erdcs anns) addMemo -> mdo
+  \(R.DD ut rtvars erdcs anns) addMemo -> mdo
+    tvars <- traverse inferTVar rtvars
     let dd = T.DD ut (Scheme tvars unions) edcs anns  -- NOTE: TVar correctness (no duplication, etc.) should be checked in Resolver!
 
     addMemo dd
@@ -573,21 +602,21 @@ inferClassDeclaration (R.CFD rcd uv _ _) = do
   let mcfd = find (\(T.CFD _ cuv _ _) -> cuv == uv) tcd.classFunctions
   pure $ mustOr (printf "[COMPILER ERROR]: Could not find function %s in class %s." (ppVar Local uv) (ppUniqueClass tcd.classID)) mcfd
 
+inferInst :: R.Inst -> Infer T.InstDef
+inferInst = \case
+  R.ExternalInst inst -> pure inst
+  R.DefinedInst inst -> inferInstance inst
+
 inferInstance :: R.InstDef -> Infer T.InstDef
 inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _ -> do
   klass <- inferClass inst.instClass
   it <- inferDatatype $ fst inst.instType
-  let tvars = snd inst.instType
-
-  let (R.CCs cconstraints) = inst.instConstraints
-  constraints <- fmap T.CCs $ for cconstraints $ \rklasses -> do
-    tklasses <- fmap Set.fromList $ traverse inferClass $ Set.toList rklasses
-    pure tklasses
+  tvars <- traverse inferTVar $ snd inst.instType
 
   fns <- for inst.instFunctions $ \rfn -> do
     -- TODO: add check?
     fn <- generalize $ mdo
-    
+
       -- Infer function declaration.
       let rfundec = rfn.classFunctionDeclaration
 
@@ -632,7 +661,6 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
   pure T.InstDef
     { instClass = klass
     , instType = (it, tvars)
-    , instConstraints = constraints
     , instFunctions = fns
     }
 
@@ -700,24 +728,27 @@ addSelectedEnvironmentsFromInst = do
     let (fn, inst) = T.selectInstanceFunction cfd self' insts
     singletonEnv <- singleEnvUnion fn.instFunction.functionDeclaration.functionEnv
 
+    -- By the end of typechecking, an instance should be selected.
+    -- We need to add that instance's environment to that function environment union.
     -- First, unify environment.
     substituting $ do
       unifyFunEnv union' singletonEnv
 
     -- second, unify the type with its constraints.
     -- make a new type.
-    let (dd@(T.DD _ scheme _ _), instTVs) = inst.instType
-    (tvs, unions) <- instantiateScheme scheme
+    -- ERROR: wait, but why? I think I should remove it kekek.
+    -- let (dd@(T.DD _ scheme _ _), instTVs) = inst.instType
+    -- (tvs, unions) <- instantiateScheme scheme
 
-    for_ (zip instTVs tvs) $ \(instTV, tv) -> do
-      case T.fromCCs inst.instConstraints !? instTV of
-        Nothing -> pure ()
-        Just classes ->
-          for_ classes $ \klass ->
-            tv `constrain` klass
+    -- for_ (zip instTVs tvs) $ \(instTV, tv) -> do
+    --   case T.fromCCs inst.instConstraints !? instTV of
+    --     Nothing -> pure ()
+    --     Just classes ->
+    --       for_ classes $ \klass ->
+    --         tv `constrain` klass
 
-    let t = Fix $ T.TCon dd tvs unions
-    self' `uni` t
+    -- let t = Fix $ T.TCon dd tvs unions
+    -- self' `uni` t
 
 
 -- Constructs a scheme for a function.
@@ -734,7 +765,7 @@ constructSchemeForFunctionDeclaration dec =
           digThroughVar :: T.Type -> T.Variable -> (Set TyVar, Set T.EnvUnion)
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
-            T.DefinedFunction f -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
+            T.DefinedFunction f _ -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
             T.DefinedClassFunction _ insts _
               -> foldMap digOutFromInst insts
               where
@@ -759,7 +790,7 @@ constructSchemeForFunctionDeclaration dec =
       tvarsDefinedForThisFunction = foldMap (definedTVars . snd) dec.functionParameters <> definedTVars dec.functionReturnType
 
       -- Then substitute it.
-      asTVar (T.TyV tyname) = TV tyname (BindByVar dec.functionId)
+      asTVar (T.TyV tyname classInstances) = T.TV tyname (BindByVar dec.functionId) (Set.fromList $ fst <$> classInstances)
 
       su = Subst mempty $ Map.fromSet (Fix . T.TVar . asTVar) tyVarsOnlyFromHere
       unionsOnlyFromHereWithTVars = Set.map (subst su) unionsOnlyFromHere  -- NOTE: Unions might also contain our TyVars, so we must substitute it also.
@@ -777,15 +808,15 @@ digOutTyVarsAndUnionsFromType = para $ \case
 
 
 -- goes through the type and finds tvars that are defined for this function.
-findTVarsForID :: UniqueVar -> T.Type -> Set TVar
+findTVarsForID :: UniqueVar -> T.Type -> Set T.TVar
 findTVarsForID euid = cata $ \case
-  T.TVar tv@(TV _ (BindByVar varid)) | varid == euid -> Set.singleton tv
+  T.TVar tv@(T.TV _ (BindByVar varid) classes) | varid == euid -> Set.singleton tv
   t -> fold t
 
 -- copy of previous function for ClassType
-findTVarsForIDInClassType :: UniqueVar -> T.ClassType -> Set TVar
+findTVarsForIDInClassType :: UniqueVar -> T.ClassType -> Set T.TVar
 findTVarsForIDInClassType euid = cata $ \case
-  T.CTVar tv@(TV _ (BindByVar varid)) | varid == euid -> Set.singleton tv
+  T.CTVar tv@(T.TV _ (BindByVar varid) _) | varid == euid -> Set.singleton tv
   t -> fold t
 
 
@@ -850,7 +881,7 @@ inferDecon = cata $ fmap embed . \case
 
       -- Custom instantiation for a deconstruction.
       -- Create a parameter list to this constructor
-      (tvs, unions) <- instantiateScheme scheme
+      (tvs, unions) <- instantiateScheme mempty scheme
       let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
       let ts = mapTVs <$> usts
 
@@ -861,7 +892,6 @@ inferDecon = cata $ fmap embed . \case
       pure (T.CaseConstructor t con decons)
 
 
-
 ------
 -- Instantiation
 ------
@@ -869,11 +899,11 @@ inferDecon = cata $ fmap embed . \case
 instantiateVariable :: T.Variable -> Infer T.Type
 instantiateVariable = \case
   T.DefinedVariable v -> var v
-  T.DefinedFunction fn -> do
+  T.DefinedFunction fn snapshot -> do
     let fundec = fn.functionDeclaration
     let (Scheme schemeTVars schemeUnions) = fundec.functionScheme
 
-    (tvs, unions) <- instantiateScheme fundec.functionScheme
+    (tvs, unions) <- instantiateScheme snapshot fundec.functionScheme
 
     -- Prepare a mapping for the scheme!
     let tvmap = Map.fromList $ zip schemeTVars tvs
@@ -881,7 +911,7 @@ instantiateVariable = \case
     let mapTVs = mapTVsWithMap tvmap unionmap
 
     ctxPrint' $ printf "Instantiation of %s" (show fundec.functionId.varName)
-    ctxPrint (Common.ppMap . fmap (bimap Common.ppTVar T.tType) . Map.toList) tvmap
+    ctxPrint (Common.ppMap . fmap (bimap T.tTVar T.tType) . Map.toList) tvmap
     ctxPrint (Common.ppMap . fmap (bimap Common.ppUnionID (T.tEnvUnion . fmap T.tType)) . Map.toList) unionmap
 
 
@@ -914,7 +944,7 @@ instantiateVariable = \case
     let schemeUnions = Set.toList thisFunctionsUnions
     let scheme = Scheme schemeTVars schemeUnions
 
-    (itvs, iunions) <- instantiateScheme scheme
+    (itvs, iunions) <- instantiateScheme mempty scheme
     let tvmap = Map.fromList $ zip schemeTVars itvs
     let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions) iunions
     let mapTVs = mapTVsWithMap tvmap unionmap . mkTypeFromClassType self
@@ -922,22 +952,22 @@ instantiateVariable = \case
 
     let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> params) (mapTVs ret)
 
-    addClassFunctionUse fnUnion cfd self insts
+    -- addClassFunctionUse fnUnion cfd self insts
 
     pure fnType
 
 
-addClassFunctionUse :: T.EnvUnion -> T.ClassFunDec -> T.Type -> [T.InstDef] -> Infer ()
+addClassFunctionUse :: T.EnvUnion -> T.ClassFunDec -> T.Type -> T.PossibleInstances -> Infer ()
 addClassFunctionUse eu cfd self insts = RWS.modify $ \s -> s { classFunctionUnions = (eu, cfd, self, insts) : s.classFunctionUnions }
 
 instantiateConstructor :: EnvID -> T.DataCon -> Infer T.Type
 instantiateConstructor envID = \case
   T.DC dd@(T.DD _ scheme _ _) _ [] _ -> do
-    (tvs, unions) <- instantiateScheme scheme
+    (tvs, unions) <- instantiateScheme mempty scheme
     pure $ Fix $ T.TCon dd tvs unions
 
   (T.DC dd@(T.DD _ scheme@(Scheme ogTVs ogUnions) _ _) _ usts@(_:_) _) -> do
-    (tvs, unions) <- instantiateScheme scheme
+    (tvs, unions) <- instantiateScheme mempty scheme
     let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
     let ts = mapTVs <$> usts
 
@@ -951,26 +981,32 @@ instantiateConstructor envID = \case
 
 instantiateRecord :: T.DataDef -> Infer T.Type
 instantiateRecord dd@(T.DD _ scheme (Left _) _) = do
-  (tvs, unions) <- instantiateScheme scheme
+  (tvs, unions) <- instantiateScheme mempty scheme
   pure $ Fix $ T.TCon dd tvs unions
 
 instantiateRecord (T.DD ut _ (Right _) _) = error $ printf "Attempted to instantiate ADT (%s) as a Record!" (Common.ppTypeInfo ut)
 
 
-instantiateScheme :: Scheme -> Infer ([T.Type], [T.EnvUnion])
-instantiateScheme (Scheme schemeTVars schemeUnions) = do
+instantiateScheme :: T.ScopeSnapshot -> Scheme -> Infer ([T.Type], [T.EnvUnion])
+instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
   -- Prepare a mapping for the scheme!
-  tvs <- traverse (const fresh) schemeTVars  -- scheme
-  let tvmap = Map.fromList $ zip schemeTVars tvs
+  tyvs <- traverse (const fresh) schemeTVars  -- scheme
+  let tvmap = Map.fromList $ zip schemeTVars tyvs
 
   -- Unions themselves also need to be mapped with the instantiated tvars!
   let mapOnlyTVsForUnions = mapTVsWithMap tvmap mempty
-  unions <-traverse (\union -> cloneUnion (mapOnlyTVsForUnions <$> union)) schemeUnions
+  unions <- traverse (\union -> cloneUnion (mapOnlyTVsForUnions <$> union)) schemeUnions
 
-  pure (tvs, unions)
+  -- also, don't forget to constrain new types.
+  for_ (zip tyvs schemeTVars) $ \(t, tv) -> do
+    for_ tv.tvConstraints $ \klass -> do
+      let instmap = fromMaybe mempty $ insts !? klass
+      t `constrain` (klass, instmap)
+
+  pure (tyvs, unions)
 
 
-mapTVsWithMap :: Map TVar T.Type -> Map UnionID T.EnvUnion -> T.Type -> T.Type
+mapTVsWithMap :: Map T.TVar T.Type -> Map UnionID T.EnvUnion -> T.Type -> T.Type
 mapTVsWithMap tvmap unionmap =
   let
     mapTVs :: T.Type -> T.Type
@@ -1049,7 +1085,7 @@ findBuiltinType (PF tc pf) = do
       ts <- RWS.gets $ memoToMap . memoDataDefinition
       case findMap tc (\(R.DD ut _ _ _) -> ut.typeName) ts of
         Just dd@(T.DD _ scheme _ _) -> do
-          (tvs, unions) <- instantiateScheme scheme
+          (tvs, unions) <- instantiateScheme mempty scheme
           pure $ Fix $ T.TCon dd tvs unions
         Nothing -> error $ "[COMPILER ERROR]: Could not find inbuilt type '" <> show tc <> "'."
 
@@ -1061,41 +1097,48 @@ findBuiltinType (PF tc pf) = do
 uni :: T.Type -> T.Type -> Infer ()
 uni t1 t2 = do
   substituting $ do
-    su <- RWS.get
+    su <- RWS.gets ctxSubst
     let (t1', t2') = subst su (t1, t2)
     unify t1' t2'
 
 uniMany :: [T.Type] -> [T.Type] -> Infer ()
 uniMany ts1 ts2 =
   substituting $ do
-    su <- RWS.get
+    su <- RWS.gets ctxSubst
     let (ts1', ts2') = subst su (ts1, ts2)
     unifyMany ts1' ts2'
 
-constrain :: T.Type -> T.ClassDef -> Infer ()
-constrain t _ = case project t of
-  T.TCon dd _ _ -> undefined
-  T.TVar _ -> undefined  -- ??
-  T.TyVar _ -> undefined
-
-  T.TFun _ _ _ -> undefined  -- signal error.
+constrain :: T.Type -> (T.ClassDef, T.PossibleInstances) -> Infer ()
+constrain t cdi = do
+  substituting $ do
+    su <- RWS.gets ctxSubst
+    let t' = subst su t
+    addConstraint t' cdi
 
 substituting :: SubstCtx a -> Infer a
 substituting subctx = RWST $ \_ s -> do
-  (x, su, errs) <- RWS.runRWST subctx () s.typeSubstitution
-  pure (x, s { typeSubstitution = su }, errs)
+  (x, ss, errs) <- RWS.runRWST subctx () (SubstState { ctxSubst = s.typeSubstitution, ctxTvargen = s.tvargen })
+  pure (x, s { typeSubstitution = ss.ctxSubst, tvargen = ss.ctxTvargen }, errs)
 
 
 ------
 
 unify :: T.Type -> T.Type -> SubstCtx ()
 unify ttl ttr = do
-  su <- RWS.get
+  su <- RWS.gets ctxSubst
   let (tl, tr) = subst su (ttl, ttr)
   case bimap project project $ subst su (tl, tr) of
     (l, r) | l == r -> pure ()
-    (T.TyVar tyv, _) -> tyv `bind` tr
-    (_, T.TyVar tyv) -> tyv `bind` tl
+    (T.TyVar tyv, _) -> do
+      tyv `bind` tr
+      for_ tyv.tyvConstraints $ \klass ->
+        addConstraint tr klass
+
+    (_, T.TyVar tyv) -> do
+      tyv `bind` tl
+      for_ tyv.tyvConstraints $ \klass ->
+        addConstraint tl klass
+
     (T.TFun lenv lps lr, T.TFun renv rps rr) -> do
       unifyMany lps rps
       unify lr rr
@@ -1116,25 +1159,54 @@ unifyMany (tl:ls) (tr:rs) | length ls == length rs = do  -- quick fix - we don't
 
 unifyMany tl tr = err $ MismatchingNumberOfParameters tl tr
 
+addConstraint :: T.Type -> (T.ClassDef, T.PossibleInstances) -> SubstCtx ()
+addConstraint t (klass, instances) = case project t of
+      T.TCon dd _ _ -> do
+        let mSelectedInst = instances !? dd
+        case mSelectedInst of
+          Nothing -> do
+            err $ DataDefDoesNotImplementClass dd klass
+
+          Just _ -> do
+            -- Don't do anything? like, we only have to confirm that the instance gets applied, right?
+            pure ()
+
+      T.TVar tv -> do
+        unless (Set.member klass tv.tvConstraints) $ do
+          err $ TVarDoesNotConstrainThisClass tv klass
+
+      T.TyVar tyv -> do
+        -- create new tyvar with both classes merged!
+        let cids = (klass, instances) : tyv.tyvConstraints
+        newtyv <- freshTyVarInSubst cids
+        tyv `bind` Fix (T.TyVar newtyv)
+
+      T.TFun {} ->
+        err $ FunctionTypeConstrainedByClass t klass
+
 bind :: TyVar -> T.Type -> SubstCtx ()
 bind tyv (Fix (T.TyVar tyv')) | tyv == tyv' = nun
 bind tyv t | occursCheck tyv t =
               err $ InfiniteType tyv t
            | otherwise = do
-  RWS.modify $ \su ->
-    let singleSubst  = Subst mempty (Map.singleton tyv t)
-        Subst unions types = subst singleSubst su
-    in Subst unions (Map.insert tyv t types)
+  RWS.modify $ \su -> su
+    { ctxSubst =
+        let singleSubst  = Subst mempty (Map.singleton tyv t)
+            Subst unions types = subst singleSubst su.ctxSubst
+        in Subst unions (Map.insert tyv t types)
+    }
 
 unifyFunEnv :: T.EnvUnion -> T.EnvUnion -> SubstCtx ()
 unifyFunEnv lenv@(T.EnvUnion { T.unionID = lid }) renv@(T.EnvUnion { T.unionID = rid }) = do
   unionID <- newUnionID
   let env = T.EnvUnion { T.unionID = unionID, T.union = funEnv }
 
-  RWS.modify $ \su ->
-    let unionSubst = Subst (Map.fromList [(lid, env), (rid, env)]) Map.empty -- i don't think we need an occurs check. BUG: we actually do, nigga.
-        Subst unions ts = subst unionSubst su  -- NOTE: technically, we don't even need to add this mapping to our global Subst, but then we would have to create a new fresh variable every time a new variable is created, or something similar (more error prone, so maybe not worth it.).
-    in Subst (Map.insert rid env $ Map.insert lid env unions) ts
+  RWS.modify $ \su -> su
+    { ctxSubst =
+        let unionSubst = Subst (Map.fromList [(lid, env), (rid, env)]) Map.empty -- i don't think we need an occurs check. BUG: we actually do, nigga.
+            Subst unions ts = subst unionSubst su.ctxSubst  -- NOTE: technically, we don't even need to add this mapping to our global Subst, but then we would have to create a new fresh variable every time a new variable is created, or something similar (more error prone, so maybe not worth it.).
+        in Subst (Map.insert rid env $ Map.insert lid env unions) ts
+    }
   --       traceShow ("ENVUNI: " <> show lenv <> "|||||" <> show renv <> "8=====>" <> show env <> "\n") $ 
   where
     union2envset = Set.fromList . (\(T.EnvUnion { T.union = union }) -> union)
@@ -1182,8 +1254,8 @@ instance Substitutable T.Module  where
     }
 
 instance Substitutable T.ClassDef where
-  ftv = undefined
-  subst su cd = undefined
+  ftv = mempty  -- no FTVs in declarations. will need to get ftvs from associated types and default functions when they'll be implemented.
+  subst su cd = cd  -- TODO: not sure if there is anything to substitute.
 
 instance Substitutable T.InstDef where
   ftv inst = foldMap ftv inst.instFunctions
@@ -1241,7 +1313,7 @@ instance Substitutable (Fix T.TypedExpr) where
 
 instance Substitutable T.Variable where
   ftv _ = mempty
-  subst su (T.DefinedFunction fn) = T.DefinedFunction $ subst su fn
+  subst su (T.DefinedFunction fn ss) = T.DefinedFunction (subst su fn) ss
   subst su (T.DefinedClassFunction cfd insts self) = T.DefinedClassFunction cfd (subst su <$> insts) (subst su self)
   subst _ x = x
 
@@ -1340,14 +1412,20 @@ newUnionID = UnionID <$> liftIO newUnique
 
 -- Returns a fresh new tyvare
 fresh :: Infer T.Type
-fresh = Fix . T.TyVar <$> freshTyvar
+fresh = Fix . T.TyVar <$> freshTyVar
 
 -- Supplies the underlying tyvar without the structure. (I had to do it, it's used in one place, where I need a deconstructed tyvar)
-freshTyvar :: Infer TyVar
-freshTyvar = do
+freshTyVar :: Infer TyVar
+freshTyVar = do
   TVG nextVar <- RWS.gets tvargen
   RWS.modify $ \s -> s { tvargen = TVG (nextVar + 1) }
-  pure $ T.TyV (letters !! nextVar)
+  pure $ T.TyV (letters !! nextVar) mempty
+
+freshTyVarInSubst :: [(T.ClassDef, T.PossibleInstances)] -> SubstCtx TyVar
+freshTyVarInSubst cdis = do
+  TVG nextVar <- RWS.gets ctxTvargen
+  RWS.modify $ \s -> s { ctxTvargen = TVG (nextVar + 1) }
+  pure $ T.TyV (letters !! nextVar) cdis
 
 letters :: [Text]
 letters = map (Text.pack . ('\'':)) $ [1..] >>= flip replicateM ['a'..'z']
@@ -1382,13 +1460,17 @@ findMap kk f = fmap snd . find (\(k, _) -> f k == kk). Map.toList
 
 -- TODO: after I finish, or earlier, maybe make sections for main logic, then put stuff like datatypes or utility functions at the bottom.
 type Infer = RWST Context [TypeError] TypecheckingState IO  -- normal inference
-type SubstCtx = RWST () [TypeError] Subst IO     -- substitution
+type SubstCtx = RWST () [TypeError] SubstState IO     -- substitution
 
 data Context = Ctx
   { prelude :: Maybe Prelude
   , returnType :: Maybe T.Type
   }
 
+data SubstState = SubstState
+  { ctxSubst :: Subst
+  , ctxTvargen :: TVarGen
+  }
 
 
 data TypecheckingState = TypecheckingState
@@ -1405,7 +1487,7 @@ data TypecheckingState = TypecheckingState
   , variables :: Map UniqueVar T.Type
 
   , memberAccess :: [(T.Type, MemName, T.Type)]  -- ((a :: t1).mem :: t2)
-  , classFunctionUnions :: [(T.EnvUnion, T.ClassFunDec, T.Type, [T.InstDef])]
+  -- , classFunctionUnions :: [(T.EnvUnion, T.ClassFunDec, T.Type, T.PossibleInstances)]
 
   -- HACK?: track instantiations from environments. 
   --  (two different function instantiations will count as two different "variables")
@@ -1454,7 +1536,11 @@ data TypeError
   | DataTypeDoesNotHaveMember T.DataDef MemName
   | DataTypeIsNotARecordType T.DataDef MemName
   | FunctionIsNotARecord T.Type MemName
-  | TVarIsNotARecord TVar MemName
+  | TVarIsNotARecord T.TVar MemName
+
+  | DataDefDoesNotImplementClass T.DataDef T.ClassDef
+  | TVarDoesNotConstrainThisClass T.TVar T.ClassDef
+  | FunctionTypeConstrainedByClass T.Type T.ClassDef
 
 -- not sure if we have to have a show instance
 instance Show TypeError where
@@ -1467,7 +1553,11 @@ instance Show TypeError where
     DataTypeDoesNotHaveMember (T.DD ut _ _ _) memname -> printf "Record type %s does not have member %s." (sctx $ Common.ppTypeInfo ut) (sctx $ Common.ppMem memname)
     DataTypeIsNotARecordType (T.DD ut _ _ _) memname -> printf "%s is not a record type and thus does not have member %s." (sctx $ Common.ppTypeInfo ut) (sctx $ Common.ppMem memname)
     FunctionIsNotARecord t _ -> printf "Cannot subscript a function (%s)." (T.tType t)
-    TVarIsNotARecord tv _ -> printf "Cannot subscript a type variable. (%s)" (Common.ppTVar tv)
+    TVarIsNotARecord tv _ -> printf "Cannot subscript a type variable. (%s)" (T.tTVar tv)
+    DataDefDoesNotImplementClass (T.DD ut _ _ _ ) cd -> printf "Type %s does not implement instance of class %s." (sctx $ Common.ppTypeInfo ut) (sctx $ Common.ppUniqueClass cd.classID)
+    TVarDoesNotConstrainThisClass tv cd -> printf "TVar %s is not constrained by class %s." (T.tTVar tv) (Common.ppUniqueClass cd.classID)
+    FunctionTypeConstrainedByClass t cd ->
+      printf "Function type %t constrained by class %s (function types cannot implement classes, bruh.)" (T.tType t) (Common.ppUniqueClass cd.classID)
 
 
 

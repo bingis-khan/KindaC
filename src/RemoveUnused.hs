@@ -7,8 +7,6 @@ module RemoveUnused (removeUnused) where
 
 import qualified AST.Typed as T
 import Misc.Memo (Memo, memo, emptyMemo)
-import Control.Monad.Trans.State (State)
-import qualified Control.Monad.Trans.State as State
 import Data.Functor.Foldable (transverse, cata, embed)
 import Data.Bitraversable (bitraverse)
 import AST.Common (Annotated(..), type (:.) (..), Locality (..), EnvID, fmap2, traverse2, eitherToMaybe)
@@ -35,11 +33,12 @@ import Data.Functor ((<&>))
 -- 30.12.24: wait, what did i need it for??? i forgot...
 -- ah, right. if a function is not called (not reachable) remove other variables (from the environment) that are refernced only by unused functions
 --  we do this by remapping environments.
+-- 13.03.25 update: I should probably put this logic in the monomorphisation module. To know which environments and which instance functions end up being used, we have to apply it... i guess? It might be easier.
 
 removeUnused :: [T.AnnStmt] -> [T.AnnStmt]
 removeUnused stmts =
   -- phase 1: create new environments.
-  let (_, envs) = State.runState (rScope stmts) mempty
+  let (_, envs, _) = RWS.runRWS (rScope stmts) mempty mempty
 
   -- phase 2: substitute environments.
       (nuStmts, _) = RWS.evalRWS (sScope stmts) envs emptyMemo
@@ -63,22 +62,22 @@ rStmt = cata $ \(O (Annotated _ stmt)) -> do
 rExpr :: T.Expr -> Reach
 rExpr = cata $ \(T.TypedExpr t te) -> case te of
   T.Var loc v -> case v of
-    T.DefinedFunction fun -> do
+    T.DefinedFunction fun insts -> do
       -- when a function is directly referenced, we know it's reachable inside its current scope, so we add it as used
       usedInsideFunction <- rFunction fun
-      (usedInsideFunction <>) <$> used (T.DefinedFunction fun) t
+      (usedInsideFunction <>) <$> used (T.DefinedFunction fun insts) t
     T.DefinedVariable uv -> if loc == FromEnvironment then used (T.DefinedVariable uv) t else pure Set.empty
     T.DefinedClassFunction cfd insts self -> do
       let (selectedFn, selectedInst) = T.selectInstanceFunction cfd self insts
       usedInsideFunction <- rFunction selectedFn.instFunction
 
-      usedInstanceFunction <- used (T.DefinedFunction selectedFn.instFunction) t
-      usedClassFunction <- used (T.DefinedClassFunction cfd [selectedInst] self) t
+      usedInstanceFunction <- used (T.DefinedFunction selectedFn.instFunction mempty) t
+      usedClassFunction <- used (T.DefinedClassFunction cfd (Map.singleton undefined selectedInst) self) t
       pure $ usedInsideFunction <> usedInstanceFunction <> usedClassFunction
 
   T.Con envID _ -> do
     let emptyEnvMask = []
-    State.modify $ Map.insert envID emptyEnvMask
+    RWS.modify $ Map.insert envID emptyEnvMask
     pure mempty
 
   T.Lam env _ ret -> withEnv env ret
@@ -88,11 +87,14 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
 
 
 rFunction :: T.Function -> Reach
-rFunction fun = withEnv fun.functionDeclaration.functionEnv $ rScope fun.functionBody
+rFunction fun = withEnv fun.functionDeclaration.functionEnv $ withInstances undefined $ rScope fun.functionBody
 
 
 used :: T.Variable -> T.Type -> Reach
 used v t = pure $ Set.singleton (v, t)
+
+withInstances :: Map T.TVar (Map T.ClassDef T.InstDef) -> Reach -> Reach
+withInstances tvm = RWS.local (Map.union tvm)
 
 withEnv :: T.Env -> Reach -> Reach
 withEnv env r = do
@@ -103,11 +105,11 @@ withEnv env r = do
         T.Env teid envContent -> do
           (teid, envContent <&> \(v, _, t) -> Set.member (v, t) usedVars)
 
-  State.modify $ Map.insert eid mask
+  RWS.modify $ Map.insert eid mask
   pure usedVars
 
 
-type Reach = State (Map EnvID EnvMask) (Set (T.Variable, T.Type))
+type Reach = RWS (Map T.TVar (Map T.ClassDef T.InstDef)) () (Map EnvID EnvMask) (Set (T.Variable, T.Type))
 
 -- KEKEKEKEKEKKEK THIS IS SO RETARDED BUT IT MIGHT JUST WORK
 -- because environments can escape out of the context, mapping them is the wrong way to go, because they might be instantiated.
@@ -172,7 +174,7 @@ sUnion union = do
 
 sVariable :: Mem T.Variable
 sVariable (T.DefinedVariable v) = pure $ T.DefinedVariable v
-sVariable (T.DefinedFunction fn) = T.DefinedFunction <$> liftA2 T.Function (sFunDec fn.functionDeclaration) (sBody fn.functionBody)
+sVariable (T.DefinedFunction fn insts) = T.DefinedFunction <$> liftA2 T.Function (sFunDec fn.functionDeclaration) (sBody fn.functionBody) <*> pure insts
 sVariable (T.DefinedClassFunction cfd insts self) = do
   T.DefinedClassFunction cfd <$> traverse sInst insts <*> sType self
 
@@ -187,7 +189,6 @@ sInst inst = do
   pure T.InstDef
     { T.instClass = inst.instClass
     , T.instType = (dds, snd inst.instType)
-    , T.instConstraints = inst.instConstraints
     , T.instFunctions = fns
     }
 

@@ -7,7 +7,7 @@
 {-# LANGUAGE TupleSections #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), TVar (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppTVar, ppSet, MemName, ppMem, ppRecordMems, UniqueClass, ppUniqueClass, mustOr, sctx)
+import AST.Common (LitType (..), Op (..), Annotated (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppSet, MemName, ppMem, ppRecordMems, UniqueClass, ppUniqueClass, Binding (..))
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -18,12 +18,13 @@ import Data.Bifunctor.TH (deriveBifoldable, deriveBifunctor, deriveBitraversable
 import Data.Functor.Classes (Eq1 (liftEq), Ord1 (..))
 import Data.Biapplicative (first)
 import Data.Functor.Foldable (cata)
-import Data.Foldable ( foldl', find )
+import Data.Foldable ( foldl' )
 import Data.Text (Text)
 import Data.String (fromString)
 import Data.Functor ((<&>))
 import Data.Set (Set)
 import Data.Map (Map)
+import qualified Data.Map as Map
 
 
 
@@ -116,7 +117,25 @@ instance Ord t => Ord (EnvUnionF t) where
 
 
 
-newtype TyVar = TyV { fromTyV :: Text } deriving (Eq, Ord)
+data TyVar = TyV { fromTyV :: Text, tyvConstraints :: [(ClassDef, PossibleInstances)] }
+
+instance Eq TyVar where
+  tyv == tyv' = tyv.fromTyV == tyv'.fromTyV
+
+instance Ord TyVar where
+  tyv `compare` tyv' = tyv.fromTyV `compare` tyv'.fromTyV
+
+data TVar = TV
+  { fromTV :: Text
+  , binding :: Binding
+  , tvConstraints :: Set ClassDef
+  }
+
+instance Eq TVar where
+  tv == tv' = tv.fromTV == tv'.fromTV && tv.binding == tv'.binding
+
+instance Ord TVar where
+  tv `compare` tv' = (tv.fromTV, tv.binding) `compare` (tv'.fromTV, tv'.binding)
 
 data TypeF a
   = TCon DataDef [a] [EnvUnionF a]
@@ -147,6 +166,7 @@ data FunDec = FD
   , functionParameters :: [(Decon, Type)]
   , functionReturnType :: Type
   , functionScheme :: Scheme
+  --, functionClassConstraints :: Map TVar (Set ClassDef)
   }
 
 instance Eq FunDec where
@@ -179,12 +199,9 @@ data ClassDef = ClassDef
 data InstDef = InstDef
   { instClass :: ClassDef
   , instType :: (DataDef, [TVar])
-  , instConstraints :: ClassConstraints
   -- , instDependentTypes :: [(DependentType, Type)]
   , instFunctions :: [InstanceFunction]
   }
-
-newtype ClassConstraints = CCs { fromCCs :: Map TVar (Set ClassDef) }
 
 data InstanceFunction = InstanceFunction
   { instFunction :: Function
@@ -194,7 +211,7 @@ data InstanceFunction = InstanceFunction
 selfType :: InstDef -> Type
 selfType instdef =
   let (dd, tvs) = instdef.instType
-  in Fix $ TCon dd (Fix . TVar  <$> tvs) []
+  in Fix $ TCon dd (fmap Fix $ TVar <$> tvs) []
 
 -- data DependentType = Dep TCon UniqueClass
 
@@ -250,10 +267,13 @@ getType :: Expr -> Type
 getType (Fix (TypedExpr t _)) = t
 
 
+type PossibleInstances = Map DataDef InstDef
+type ScopeSnapshot = Map ClassDef PossibleInstances
+
 data Variable
   = DefinedVariable UniqueVar
-  | DefinedFunction Function
-  | DefinedClassFunction ClassFunDec [InstDef] Type  -- which class function and which instances are visible at this point.
+  | DefinedFunction Function ScopeSnapshot
+  | DefinedClassFunction ClassFunDec PossibleInstances Type  -- which class function and which instances are visible at this point.
 
 data VariableProto
   = PDefinedVariable UniqueVar
@@ -265,14 +285,14 @@ data VariableProto
 asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
   DefinedVariable uv -> uv
-  DefinedFunction fn -> fn.functionDeclaration.functionId
+  DefinedFunction fn _ -> fn.functionDeclaration.functionId
   DefinedClassFunction (CFD _ uv _ _) _ _ -> uv
 
 
 asProto :: Variable -> VariableProto
 asProto = \case
   DefinedVariable uv -> PDefinedVariable uv
-  DefinedFunction fn -> PDefinedFunction fn
+  DefinedFunction fn _ -> PDefinedFunction fn
   DefinedClassFunction cd _ _ -> PDefinedClassFunction cd
 
 
@@ -409,12 +429,14 @@ mapUnion ut (Fix t) = case t of
   TyVar _ -> []
 
 
-selectInstanceFunction :: ClassFunDec -> Type -> [InstDef] -> (InstanceFunction, InstDef)
-selectInstanceFunction (CFD _ uv _ _) (Fix (TCon dd@(DD ut _ _ _) _ _)) insts =
-  let inst = mustOr (printf "[COMPILER ERROR]: The instance for %s must have existed by this point! %s" (ppTypeInfo ut) (tSelectedInsts insts)) $ find (\ins -> fst ins.instType == dd) insts
-  in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
+-- selectInstanceFunction :: ClassFunDec -> Type -> PossibleInstances -> Maybe (InstanceFunction, InstDef)
+-- selectInstanceFunction (CFD _ uv _ _) (Fix (TCon dd@(DD ut _ _ _) _ _)) insts =
+--   let inst = mustOr (printf "[COMPILER ERROR]: The instance for %s must have existed by this point! %s" (ppTypeInfo ut) (tSelectedInsts (Map.elems insts))) $ insts !? dd
+--   in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
-selectInstanceFunction _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (sctx (tType self))
+-- selectInstanceFunction _ (Fix (TVar tv)) _ = undefined
+
+-- selectInstanceFunction _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (sctx (tType self))
 
 
 --------------------------------------------------------------------------------------
@@ -475,8 +497,8 @@ tExpr = cata $ \(TypedExpr et expr) ->
   Lit (LInt x) -> pretty x
   Lit (LFloat fl) -> pretty $ show fl
   Var l (DefinedVariable v) -> ppVar l v
-  Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId <> "&F"
-  Var l (DefinedClassFunction (CFD _ uv _ _) insts _) -> ppVar l uv <> "&C" <> tSelectedInsts insts
+  Var l (DefinedFunction f _) -> ppVar l f.functionDeclaration.functionId <> "&F"
+  Var l (DefinedClassFunction (CFD _ uv _ _) insts _) -> ppVar l uv <> "&C" <> tSelectedInsts (Map.elems insts)
   Con _ (DC _ uc _ _) -> ppCon uc
 
   RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> ppRecordMems inst
@@ -520,7 +542,7 @@ tFunction fn = tBody (tFunDec fn.functionDeclaration) fn.functionBody
 tInst :: InstDef -> Context
 tInst inst =
   let
-    header = "inst" <+> ppUniqueClass inst.instClass.classID <+> ppTypeInfo ((\(DD ut _ _ _) -> ut) (fst inst.instType)) <+> sepBy " " (ppTVar <$> snd inst.instType)
+    header = "inst" <+> ppUniqueClass inst.instClass.classID <+> ppTypeInfo ((\(DD ut _ _ _) -> ut) (fst inst.instType)) <+> sepBy " " (tTVar <$> snd inst.instType)
 
     tInstFunction :: InstanceFunction -> Context
     tInstFunction fn = tBody (tFunDec fn.instFunction.functionDeclaration <+> "(" <> ppVar Local fn.instFunctionClassUniqueVar <> ")") fn.instFunction.functionBody
@@ -530,7 +552,7 @@ tFunDec :: FunDec -> Context
 tFunDec (FD fenv v params retType scheme) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType <+> tScheme scheme
 
 tScheme :: Scheme -> Context
-tScheme (Scheme tvars unions) = ppSet ppTVar tvars <+> ppSet (tEnvUnion . fmap tType) unions
+tScheme (Scheme tvars unions) = ppSet tTVar tvars <+> ppSet (tEnvUnion . fmap tType) unions
 
 tTypes :: Functor t => t Type -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of
@@ -547,12 +569,12 @@ tType = cata $ \case
           [] -> []
           tunions -> "|" : (tEnvUnion <$> tunions)
     in foldl' (<+>) (ppTypeInfo ut) (params ++ conunion)
-  TVar tv -> ppTVar tv
+  TVar tv -> tTVar tv
   TFun fenv args ret -> tEnvUnion fenv <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
   TyVar ty -> tTyVar ty
 
 tTyVar :: TyVar -> Context
-tTyVar (TyV t) = "#" <> pretty t
+tTyVar (TyV t _) = "#" <> pretty t
 
 tUnions :: [EnvUnion] -> Context
 tUnions [] = mempty
@@ -571,3 +593,11 @@ tEnv' = \case
 
 tBody :: Foldable f => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
+
+tTVar :: TVar -> Context
+tTVar (TV tv b _) =
+  let bindingCtx = case b of
+        BindByType ut -> ppTypeInfo ut
+        BindByVar uv -> ppVar Local uv
+        BindByInst uc -> ppUniqueClass uc
+  in pretty tv <> "<" <> bindingCtx <> ">"
