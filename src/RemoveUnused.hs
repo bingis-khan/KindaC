@@ -72,7 +72,7 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
       usedInsideFunction <- rFunction selectedFn.instFunction
 
       usedInstanceFunction <- used (T.DefinedFunction selectedFn.instFunction mempty) t
-      usedClassFunction <- used (T.DefinedClassFunction cfd (Map.singleton undefined selectedInst) self) t
+      usedClassFunction <- used (T.DefinedClassFunction cfd (Map.singleton (fst selectedInst.instType) selectedInst) self) t
       pure $ usedInsideFunction <> usedInstanceFunction <> usedClassFunction
 
   T.Con envID _ -> do

@@ -114,8 +114,9 @@ generateSubstitution env senv rModule = do
       exs <- inferExports rModule.exports
 
       -- run it one last time.
-      substAccess
-      addSelectedEnvironmentsFromInst
+      substAccessAndAssociations
+      reportAssociationErrors
+      -- addSelectedEnvironmentsFromInst
 
       pure $ T.Mod
         { T.toplevelStatements = tls
@@ -531,7 +532,7 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
     envID <- newEnvID  -- NOTE: this envID later becomes the ID of this function.
     let recenv = T.RecursiveEnv envID (null $ R.fromEnv rfundec.functionEnv)
     let noGeneralizationScheme = Scheme mempty mempty
-    let fundec = T.FD recenv rfundec.functionId params ret noGeneralizationScheme
+    let fundec = T.FD recenv rfundec.functionId params ret noGeneralizationScheme []
     let fun = T.Function { T.functionDeclaration = fundec, T.functionBody = body }
 
     -- Add *ungeneralized* type.
@@ -608,10 +609,16 @@ inferInst = \case
   R.DefinedInst inst -> inferInstance inst
 
 inferInstance :: R.InstDef -> Infer T.InstDef
-inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _ -> do
+inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _ -> mdo
   klass <- inferClass inst.instClass
   it <- inferDatatype $ fst inst.instType
   tvars <- traverse inferTVar $ snd inst.instType
+
+  let instDef = T.InstDef
+        { instClass = klass
+        , instType = (it, tvars)
+        , instFunctions = fns
+        }
 
   fns <- for inst.instFunctions $ \rfn -> do
     -- TODO: add check?
@@ -640,7 +647,7 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
       envID <- newEnvID  -- NOTE: this envID later becomes the ID of this function.
       let recenv = T.RecursiveEnv envID (null $ R.fromEnv rfundec.functionEnv)
       let noGeneralizationScheme = Scheme mempty mempty
-      let fundec = T.FD recenv rfundec.functionId params ret noGeneralizationScheme
+      let fundec = T.FD recenv rfundec.functionId params ret noGeneralizationScheme []
       let fun = T.Function { T.functionDeclaration = fundec, T.functionBody = body }
 
       -- Infer body.
@@ -655,14 +662,10 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
     pure T.InstanceFunction
       { instFunction = fn
       , instFunctionClassUniqueVar = rfn.classFunctionPrototypeUniqueVar
+      , instDef = instDef
       }
 
-
-  pure T.InstDef
-    { instClass = klass
-    , instType = (it, tvars)
-    , instFunctions = fns
-    }
+  pure instDef
 
 
 -- Generalizes the function inside.
@@ -677,7 +680,7 @@ generalize ifn = do
   -- First, finalize substitution by taking care of member access.
   -- NOTE: We have to call it here, because some types in the declaration might be dependent on member types.
   --  At the end there will be one last member access.
-  substAccess
+  substAccessAndAssociations
 
   csu <- RWS.gets typeSubstitution
 
@@ -688,7 +691,12 @@ generalize ifn = do
 
   ctxPrint' $ printf "Scheme: %s" (T.tScheme scheme)
   let generalizedFn = subst su fn
-  let generalizedFnWithScheme = generalizedFn { T.functionDeclaration = generalizedFn.functionDeclaration { T.functionScheme = scheme } }
+
+  -- add associations.
+  assocs <- rummageThroughAssociations generalizedFn.functionDeclaration.functionId su -- remember to use the new Subst, which generalizes the associations.
+  reportAssociationErrors
+
+  let generalizedFnWithScheme = generalizedFn { T.functionDeclaration = generalizedFn.functionDeclaration { T.functionScheme = scheme, T.functionAssociations = assocs } }
 
   -- Also, remember the substitution! (tvars might escape the environment)
   --  TODO: not sure if that's the best way. maybe instead of doing this, just add it in the beginning and resubstitute the function.
@@ -699,13 +707,22 @@ generalize ifn = do
   pure generalizedFnWithScheme
 
 
--- substitutes members n shiii
-substAccess :: Infer ()
+substAccessAndAssociations :: Infer ()
+substAccessAndAssociations = do
+  didAccessProgressedSubstitutions <- substAccess
+  didAssociationsProgressedSubstitutions <- substAssociations
+
+  when (didAccessProgressedSubstitutions || didAssociationsProgressedSubstitutions) substAccessAndAssociations
+
+
+-- substitutes members n shiii (this is done in conjunction with associated types).
+-- returns True if substitutions were done.
+substAccess :: Infer Bool
 substAccess = do
   membersAccessed <- RWS.gets memberAccess
   csu <- RWS.gets typeSubstitution
   let subMembers = subst csu membersAccessed
-  substitutedMembers <- fmap (fmap fst . filter (not . snd)) $ for subMembers $ \(ogt, memname, t) -> do
+  substitutedMembers <- fmap filterDesignatedForRemoval $ for subMembers $ \(ogt, memname, t) -> do
     (mexpectedType, shouldRemove) <- getExpectedType ogt memname
     case mexpectedType of
       Nothing -> pure ()
@@ -713,42 +730,138 @@ substAccess = do
     pure ((ogt, memname, t), shouldRemove)
 
   RWS.modify $ \s -> s { memberAccess = substitutedMembers }
-
-  -- when some changes accured, do it again. this is because some expressions, like: a.b.c.d would require 3 iterations... is this okay??
-  when (length substitutedMembers < length subMembers) substAccess
+  pure (length substitutedMembers < length subMembers)
 
 
-addSelectedEnvironmentsFromInst :: Infer ()
-addSelectedEnvironmentsFromInst = do
-  classUnions <- RWS.gets classFunctionUnions
-  for_ classUnions $ \(union, cfd, self, insts) -> do
-    su <- RWS.gets typeSubstitution
-    let self' = subst su self
-    let union' = subst su union
-    let (fn, inst) = T.selectInstanceFunction cfd self' insts
-    singletonEnv <- singleEnvUnion fn.instFunction.functionDeclaration.functionEnv
+-- returns True if substitutions were done.
+substAssociations :: Infer Bool
+substAssociations = do
+  assocs <- RWS.gets associations
+  csu <- RWS.gets typeSubstitution
+  let subAssociations = first (subst csu) <$> assocs
+  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation from to (T.CFD _ uv _ _), insts) -> do
+    case project from of
+        T.TCon dd _ _ -> case insts !? dd of
+          Just inst -> do
+            -- select instance function to instantiate.
+            let instFun = mustOr "[COMPILER ERROR]: Could not select function %s bruh," $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
-    -- By the end of typechecking, an instance should be selected.
-    -- We need to add that instance's environment to that function environment union.
-    -- First, unify environment.
-    substituting $ do
-      unifyFunEnv union' singletonEnv
+            -- hope it's correct....
+            instFunType <- instantiateFunction mempty instFun.instFunction
 
-    -- second, unify the type with its constraints.
-    -- make a new type.
-    -- ERROR: wait, but why? I think I should remove it kekek.
-    -- let (dd@(T.DD _ scheme _ _), instTVs) = inst.instType
-    -- (tvs, unions) <- instantiateScheme scheme
+            to `uni` instFunType
 
-    -- for_ (zip instTVs tvs) $ \(instTV, tv) -> do
-    --   case T.fromCCs inst.instConstraints !? instTV of
-    --     Nothing -> pure ()
-    --     Just classes ->
-    --       for_ classes $ \klass ->
-    --         tv `constrain` klass
+            pure (t, True)
 
-    -- let t = Fix $ T.TCon dd tvs unions
-    -- self' `uni` t
+          Nothing -> do
+            pure (t, False)  -- error.
+
+        -- I guess we don't signal errors yet! We'll do it on the next pass.
+        _ -> pure (t, False)
+
+  RWS.modify $ \s -> s { associations = substitutedAssociations }
+  pure (length substitutedAssociations < length subAssociations)
+
+--  2. report any errors or something.
+-- TODO: all of these 3 functions are kinda hindi-style programming. FIX IT AFTER I UNDERSTAND WHAT IM DOING.
+reportAssociationErrors :: Infer ()
+reportAssociationErrors = do
+  assocs <- RWS.gets associations
+  su <- RWS.gets typeSubstitution
+  let subAssociations = first (subst su) <$> assocs
+
+  -- first, report errors.
+  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation from _ (T.CFD cd _ _ _), insts) -> do
+    case project from of
+        T.TCon dd _ _ -> case insts !? dd of
+          Just _ -> error "[COMPILER ERROR]: resolvable associated type found. should already be taken care of."
+
+          Nothing -> do
+            err $ DataDefDoesNotImplementClass dd cd
+            pure (t, True)
+
+        -- I guess we don't signal errors yet! We'll do it on the next pass.
+        T.TFun {} -> do
+          err $ FunctionTypeConstrainedByClass from cd
+          pure (t, True)
+
+        T.TVar tv -> do
+          error $ printf "[COMPILER ERROR]: associated type of tvar %s not bound by this function. should not happen?" (T.tTVar tv)
+
+        T.TyVar _ -> do
+          -- ignore!
+          pure (t, False)
+
+  RWS.modify $ \s -> s { associations = substitutedAssociations }
+
+
+-- used after generalization to
+--  1. extract associations for the function.
+rummageThroughAssociations :: UniqueVar -> Subst -> Infer [T.FunctionTypeAssociation]
+rummageThroughAssociations funUV su = do
+  assocs <- RWS.gets associations
+  let subAssociations = first (subst su) <$> assocs
+
+  -- first, report errors.
+  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation from _ (T.CFD cd _ _ _), insts) -> do
+    case project from of
+        T.TVar tv | tv.binding == BindByVar funUV -> do
+          -- will be added later to the association list!
+          pure (t, True)
+
+        _ ->
+          -- ignore!
+          pure (t, False)
+
+  RWS.modify $ \s -> s { associations = substitutedAssociations }
+
+  -- second: extract associations for the function.
+  let functionAssociations = flip mapMaybe subAssociations $ \(T.TypeAssociation from to cfd, _) -> case project from of
+        T.TVar tv | tv.binding == BindByVar funUV ->
+          Just $ T.FunctionTypeAssociation tv to cfd
+        _ -> Nothing
+
+  pure functionAssociations
+
+
+  -- -- when some changes accured, do it again. this is because some expressions, like: a.b.c.d would require 3 iterations... is this okay??
+  -- when (length substitutedMembers < length subMembers) substAccess
+
+filterDesignatedForRemoval :: [(a, Bool)] -> [a]
+filterDesignatedForRemoval = fmap fst . filter (not . snd)
+
+-- addSelectedEnvironmentsFromInst :: Infer ()
+-- addSelectedEnvironmentsFromInst = do
+--   classUnions <- RWS.gets classFunctionUnions
+--   for_ classUnions $ \(union, cfd, self, insts) -> do
+--     su <- RWS.gets typeSubstitution
+--     let self' = subst su self
+--     let union' = subst su union
+--     let (fn, inst) = T.selectInstanceFunction cfd self' insts
+--     -- singletonEnv <- singleEnvUnion fn.instFunction.functionDeclaration.functionEnv
+--     pure ()
+
+--     -- By the end of typechecking, an instance should be selected.
+--     -- We need to add that instance's environment to that function environment union.
+--     -- First, unify environment.
+--     -- substituting $ do
+--     --   unifyFunEnv union' singletonEnv
+
+--     -- second, unify the type with its constraints.
+--     -- make a new type.
+--     -- ERROR: wait, but why? I think I should remove it kekek.
+--     -- let (dd@(T.DD _ scheme _ _), instTVs) = inst.instType
+--     -- (tvs, unions) <- instantiateScheme scheme
+
+--     -- for_ (zip instTVs tvs) $ \(instTV, tv) -> do
+--     --   case T.fromCCs inst.instConstraints !? instTV of
+--     --     Nothing -> pure ()
+--     --     Just classes ->
+--     --       for_ classes $ \klass ->
+--     --         tv `constrain` klass
+
+--     -- let t = Fix $ T.TCon dd tvs unions
+--     -- self' `uni` t
 
 
 -- Constructs a scheme for a function.
@@ -810,7 +923,7 @@ digOutTyVarsAndUnionsFromType = para $ \case
 -- goes through the type and finds tvars that are defined for this function.
 findTVarsForID :: UniqueVar -> T.Type -> Set T.TVar
 findTVarsForID euid = cata $ \case
-  T.TVar tv@(T.TV _ (BindByVar varid) classes) | varid == euid -> Set.singleton tv
+  T.TVar tv@(T.TV _ (BindByVar varid) _) | varid == euid -> Set.singleton tv
   t -> fold t
 
 -- copy of previous function for ClassType
@@ -900,28 +1013,7 @@ instantiateVariable :: T.Variable -> Infer T.Type
 instantiateVariable = \case
   T.DefinedVariable v -> var v
   T.DefinedFunction fn snapshot -> do
-    let fundec = fn.functionDeclaration
-    let (Scheme schemeTVars schemeUnions) = fundec.functionScheme
-
-    (tvs, unions) <- instantiateScheme snapshot fundec.functionScheme
-
-    -- Prepare a mapping for the scheme!
-    let tvmap = Map.fromList $ zip schemeTVars tvs
-    let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions) unions
-    let mapTVs = mapTVsWithMap tvmap unionmap
-
-    ctxPrint' $ printf "Instantiation of %s" (show fundec.functionId.varName)
-    ctxPrint (Common.ppMap . fmap (bimap T.tTVar T.tType) . Map.toList) tvmap
-    ctxPrint (Common.ppMap . fmap (bimap Common.ppUnionID (T.tEnvUnion . fmap T.tType)) . Map.toList) unionmap
-
-
-    -- Create type from function declaration
-    fnUnion <- singleEnvUnion (mapTVs <$> fundec.functionEnv)
-    let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> fundec.functionParameters) (mapTVs fundec.functionReturnType)
-
-    ctxPrint' $ printf "After instantiation: %s" (T.tType fnType)
-
-    pure fnType
+    instantiateFunction snapshot fn
 
   T.DefinedClassFunction cfd@(T.CFD _ funid params ret) insts self -> do
     -- TODO: a lot of it is duplicated from DefinedFunction. sussy
@@ -952,13 +1044,50 @@ instantiateVariable = \case
 
     let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> params) (mapTVs ret)
 
+    associateType self fnType cfd insts
     -- addClassFunctionUse fnUnion cfd self insts
 
     pure fnType
 
+instantiateFunction :: T.ScopeSnapshot -> T.Function -> Infer T.Type
+instantiateFunction snapshot fn = do
+    let fundec = fn.functionDeclaration
+    let (Scheme schemeTVars schemeUnions) = fundec.functionScheme
 
-addClassFunctionUse :: T.EnvUnion -> T.ClassFunDec -> T.Type -> T.PossibleInstances -> Infer ()
-addClassFunctionUse eu cfd self insts = RWS.modify $ \s -> s { classFunctionUnions = (eu, cfd, self, insts) : s.classFunctionUnions }
+    (tvs, unions) <- instantiateScheme snapshot fundec.functionScheme
+
+    -- Prepare a mapping for the scheme!
+    let tvmap = Map.fromList $ zip schemeTVars tvs
+    let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions) unions
+    let mapTVs = mapTVsWithMap tvmap unionmap
+
+    ctxPrint' $ printf "Instantiation of %s" (show fundec.functionId.varName)
+    ctxPrint (Common.ppMap . fmap (bimap T.tTVar T.tType) . Map.toList) tvmap
+    ctxPrint (Common.ppMap . fmap (bimap Common.ppUnionID (T.tEnvUnion . fmap T.tType)) . Map.toList) unionmap
+
+
+    -- Create type from function declaration
+    fnUnion <- singleEnvUnion (mapTVs <$> fundec.functionEnv)
+    let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> fundec.functionParameters) (mapTVs fundec.functionReturnType)
+
+    -- add new associations
+    for_ fundec.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(T.CFD cd _ _ _)) -> do
+      let from = Fix $ T.TVar tv
+      associateType (mapTVs from) (mapTVs to) cfd (fromMaybe mempty $ snapshot !? cd)
+    
+
+    ctxPrint' $ printf "After instantiation: %s" (T.tType fnType)
+
+    pure fnType
+
+
+associateType :: T.Type -> T.Type -> T.ClassFunDec -> T.PossibleInstances -> Infer ()
+associateType based result cfd insts =
+  let ta = T.TypeAssociation based result cfd
+  in RWS.modify $ \s -> s { associations = (ta, insts) : s.associations }
+
+-- addClassFunctionUse :: T.EnvUnion -> T.ClassFunDec -> T.Type -> T.PossibleInstances -> Infer ()
+-- addClassFunctionUse eu cfd self insts = RWS.modify $ \s -> s { classFunctionUnions = (eu, cfd, self, insts) : s.classFunctionUnions }
 
 instantiateConstructor :: EnvID -> T.DataCon -> Infer T.Type
 instantiateConstructor envID = \case
@@ -1333,9 +1462,16 @@ instance Substitutable T.Function where
   subst su fn = T.Function { T.functionDeclaration = subst su fn.functionDeclaration, T.functionBody = subst su fn.functionBody }
 
 instance Substitutable T.FunDec where
-  ftv (T.FD _ _ params ret _) = ftv params <> ftv ret -- <> ftv env  -- TODO: env ignored here, because we expect these variables to be defined outside. If it's undefined, it'll come up in ftv from the function body. 
-  subst su (T.FD env fid params ret scheme) = T.FD (subst su env) fid (subst su params) (subst su ret) scheme
+  ftv (T.FD _ _ params ret _ assocs) = ftv params <> ftv ret <> ftv assocs -- <> ftv env  -- TODO: env ignored here, because we expect these variables to be defined outside. If it's undefined, it'll come up in ftv from the function body. 
+  subst su (T.FD env fid params ret scheme assocs) = T.FD (subst su env) fid (subst su params) (subst su ret) scheme (subst su assocs)
 
+instance Substitutable T.TypeAssociation where
+  ftv (T.TypeAssociation from to _) = ftv from <> ftv to
+  subst su (T.TypeAssociation from to c) = T.TypeAssociation (subst su from) (subst su to) c
+
+instance Substitutable T.FunctionTypeAssociation where
+  ftv (T.FunctionTypeAssociation _ to _) = ftv to
+  subst su (T.FunctionTypeAssociation from to c) = T.FunctionTypeAssociation from (subst su to) c
 
 instance Substitutable (Fix T.TypeF) where
   ftv = cata $ \case
@@ -1487,7 +1623,8 @@ data TypecheckingState = TypecheckingState
   , variables :: Map UniqueVar T.Type
 
   , memberAccess :: [(T.Type, MemName, T.Type)]  -- ((a :: t1).mem :: t2)
-  -- , classFunctionUnions :: [(T.EnvUnion, T.ClassFunDec, T.Type, T.PossibleInstances)]
+  , classFunctionUnions :: [(T.EnvUnion, T.ClassFunDec, T.Type, T.PossibleInstances)]
+  , associations :: [(T.TypeAssociation, Map T.DataDef T.InstDef)]
 
   -- HACK?: track instantiations from environments. 
   --  (two different function instantiations will count as two different "variables")
@@ -1510,6 +1647,7 @@ emptySEnv = TypecheckingState
 
   , instantiations = mempty
   , classFunctionUnions = mempty
+  , associations = mempty
   }
 
 

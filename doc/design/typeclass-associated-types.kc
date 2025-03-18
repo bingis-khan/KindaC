@@ -1,0 +1,49 @@
+I need them for proper typeclass resolution with environments!
+
+How should it work?
+
+First, I'll try defining how associated types behave for class functions only.
+
+So:
+
+1. Instantiating class function.
+
+cfd(6969)  # ass: self -> ftype
+cfd(x)     # ass: self -> ftype
+
+okay, good.
+
+
+2. Generalizing
+
+2.1. First part. We resolve and update things here. It happens before generalizing.
+
+When ass around dd: just unify the types.
+When tyvar: ignore!
+When tvar:  ignore!
+When function: signal error and remove! (or ignore rn! we can do this in the next step.)
+
+2.2. Second part. We look for associated types that will be associated with this function.
+
+After generalization!
+
+When ass around dd: shouldn't happen!
+When tyvar: ignore!
+When tvar that is not of this function: ignore, i think! maybe it's impossible for tvars from appear from nested functions!
+When tvar that is of this function: add it to the function's associated types list!
+When function: signal error!
+
+
+3. Instantiating functions!
+
+Scheme instantiated!
+
+Subst stuff from scheme to the associated types!
+Also, add instantiations for the associated types!
+	Which instantiations to add? For the class.
+	So... we need a class reference, right?
+	But, we also need to know which function to use! So we know which one to choose to unify!
+	So, store either ClassFunDec or InstanceFunction!
+	Also store possible instances!
+		We might as well store possible InstanceFunctions only and make them have a reference to the OG instance.
+Add associated types from this function to the global list of associations.

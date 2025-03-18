@@ -27,11 +27,12 @@ import Data.Set (Set)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Bitraversable (bitraverse)
+import qualified Data.Set as Set
 
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = dc
+defaultContext = rc
 
 dc = debugContext
 rc = runtimeContext
@@ -444,8 +445,8 @@ traverse2 = traverse . traverse
 sequenceA2 :: (Applicative f, Traversable t1, Traversable t2) => t1 (t2 (f a)) -> f (t1 (t2 a))
 sequenceA2 = traverse sequenceA
 
-traverseSet :: (a -> t b) -> Set a -> t (Set b)
-traverseSet = undefined
+traverseSet :: (Applicative t, Ord b) => (a -> t b) -> Set a -> t (Set b)
+traverseSet f = fmap Set.fromList . traverse f . Set.toList
 
 bitraverseMap :: (Applicative t, Ord k') => (k -> t k') -> (a -> t b) -> Map k a -> t (Map k' b)
 bitraverseMap f g = fmap Map.fromList . traverse (bitraverse f g) . Map.toList

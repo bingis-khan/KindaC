@@ -136,7 +136,7 @@ asUniqueVar = \case
   DefinedVariable var -> var
 
   DefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) _ -> fid
-  ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ }) _ -> uv
+  ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ _ }) _ -> uv
 
   DefinedClassFunction (CFD _ uv _ _) _ -> uv
   ExternalClassFunction (T.CFD _ uv _ _) _ -> uv
@@ -146,7 +146,7 @@ asPUniqueVar = \case
   PDefinedVariable var -> var
 
   PDefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
-  PExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ }) -> uv
+  PExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ _ }) -> uv
 
   PDefinedClassFunction (CFD _ uv _ _) -> uv
   PExternalClassFunction (T.CFD _ uv _ _) -> uv

@@ -7,7 +7,7 @@
 {-# LANGUAGE TupleSections #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppSet, MemName, ppMem, ppRecordMems, UniqueClass, ppUniqueClass, Binding (..))
+import AST.Common (LitType (..), Op (..), Annotated (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppSet, MemName, ppMem, ppRecordMems, UniqueClass, ppUniqueClass, Binding (..), mustOr)
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -23,8 +23,10 @@ import Data.Text (Text)
 import Data.String (fromString)
 import Data.Functor ((<&>))
 import Data.Set (Set)
-import Data.Map (Map)
+import Data.Map (Map, (!?))
 import qualified Data.Map as Map
+import Data.Foldable (find)
+import qualified AST.Common as Common
 
 
 
@@ -167,10 +169,11 @@ data FunDec = FD
   , functionReturnType :: Type
   , functionScheme :: Scheme
   --, functionClassConstraints :: Map TVar (Set ClassDef)
+  , functionAssociations :: [FunctionTypeAssociation]
   }
 
 instance Eq FunDec where
-  FD _ uv _ _ _ == FD _ uv' _ _ _ = uv == uv'
+  FD _ uv _ _ _ _ == FD _ uv' _ _ _ _ = uv == uv'
 
 data Function = Function
   { functionDeclaration :: FunDec
@@ -183,6 +186,8 @@ instance Eq Function where
 instance Ord Function where
   fn `compare` fn' = fn.functionDeclaration.functionId `compare` fn'.functionDeclaration.functionId
 
+data FunctionTypeAssociation = FunctionTypeAssociation TVar Type ClassFunDec
+data TypeAssociation = TypeAssociation Type Type ClassFunDec
 
 
 ------------------
@@ -206,12 +211,13 @@ data InstDef = InstDef
 data InstanceFunction = InstanceFunction
   { instFunction :: Function
   , instFunctionClassUniqueVar :: UniqueVar
+  , instDef :: InstDef
   }
 
 selfType :: InstDef -> Type
 selfType instdef =
   let (dd, tvs) = instdef.instType
-  in Fix $ TCon dd (fmap Fix $ TVar <$> tvs) []
+  in Fix $ TCon dd (Fix . TVar <$> tvs) []
 
 -- data DependentType = Dep TCon UniqueClass
 
@@ -429,14 +435,15 @@ mapUnion ut (Fix t) = case t of
   TyVar _ -> []
 
 
--- selectInstanceFunction :: ClassFunDec -> Type -> PossibleInstances -> Maybe (InstanceFunction, InstDef)
--- selectInstanceFunction (CFD _ uv _ _) (Fix (TCon dd@(DD ut _ _ _) _ _)) insts =
---   let inst = mustOr (printf "[COMPILER ERROR]: The instance for %s must have existed by this point! %s" (ppTypeInfo ut) (tSelectedInsts (Map.elems insts))) $ insts !? dd
---   in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
+-- TODO: in the future, make it return a possible error.
+selectInstanceFunction :: ClassFunDec -> Type -> PossibleInstances -> (InstanceFunction, InstDef)
+selectInstanceFunction (CFD _ uv _ _) (Fix (TCon dd@(DD ut _ _ _) _ _)) insts =
+  let inst = mustOr (printf "[COMPILER ERROR]: The instance for %s must have existed by this point! %s" (ppTypeInfo ut) (tSelectedInsts (Map.elems insts))) $ insts !? dd
+  in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
--- selectInstanceFunction _ (Fix (TVar tv)) _ = undefined
+selectInstanceFunction _ (Fix (TVar tv)) _ = undefined
 
--- selectInstanceFunction _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (sctx (tType self))
+selectInstanceFunction _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (Common.sctx (tType self))
 
 
 --------------------------------------------------------------------------------------
@@ -549,7 +556,7 @@ tInst inst =
   in ppBody tInstFunction header inst.instFunctions
 
 tFunDec :: FunDec -> Context
-tFunDec (FD fenv v params retType scheme) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType <+> tScheme scheme
+tFunDec (FD fenv v params retType scheme _) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType <+> tScheme scheme
 
 tScheme :: Scheme -> Context
 tScheme (Scheme tvars unions) = ppSet tTVar tvars <+> ppSet (tEnvUnion . fmap tType) unions

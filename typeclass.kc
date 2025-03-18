@@ -3,10 +3,13 @@ class Str
 	print-str (self _) -> Unit
 
 inst Str Int
-	print-str (self _) -> Unit
+	print-str (self Int) -> Unit
 		print self
 
 inst Str Bool
-	print-str (self _) -> Unit
+	print-str (self Bool) -> Unit
 		print self
 		print 69
+
+print-str(123)
+print-str(True)

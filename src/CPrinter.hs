@@ -292,11 +292,18 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compile
       when (null menv) $
         error "[COMPILER ERROR]: Called `cEnv` with an empty environment. I can ignore it, but this is probably a bug. This should be checked beforehand btw. Why? sometimes, it requires special handling, so making it an error kind of makes me aware of this."
 
-      let uniqueVars = fmap snd $ Map.toList $ Map.fromList $ fmap (\t@(v, _, _) -> (v, t)) vars
+      let uniqueVars = fmap snd $ Map.toList $ Map.fromList $ vars <&> \case
+            tup@(v@(M.DefinedFunction fn), _, t) | fn.functionDeclaration.functionNeedsEnvironment -> ((v, Just t), tup)
+            tup@(v, _, _) -> ((v, Nothing), tup)
+
+      let envVarName v t = case v of
+              M.DefinedVariable uv -> cVarName uv
+              M.DefinedFunction fn | fn.functionDeclaration.functionNeedsEnvironment -> cEnvFunctionVarName (cFunction fn) t
+              M.DefinedFunction fn -> cFunction fn
 
       let varTypes =
             uniqueVars <&> \(v, _, t) -> statement $ do
-            cDefinition t $ cVarName $ M.asUniqueVar v
+            cDefinition t $ envVarName v t
 
       let etype = "struct" § "et" & pls (hashUnique eid.fromEnvID)
       let env = etype <§ cBlock varTypes §> ";"
@@ -304,7 +311,7 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compile
 
 
       let name = "et" & pls (hashUnique eid.fromEnvID) & "s"
-      let cvarInsts = uniqueVars <&> \(v, loc, t) -> "." & cVarName (M.asUniqueVar v) § "=" § cVar t loc v
+      let cvarInsts = uniqueVars <&> \(v, loc, t) -> "." & envVarName v t § "=" § cVar t loc v
       let inst = enclose "{ " " }" $ sepBy ", " cvarInsts
       pure EnvNames { envType = etype, envName = name, envInstantiation = inst }
 
@@ -354,9 +361,7 @@ cFunction :: M.Function -> PL
 cFunction fun' =
   unpack $ Memo.memo' (compiledFunctions . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledFunctions = memo }) fun' $ \fun _ -> do
     let fd = fun.functionDeclaration
-
     let funref = cVarName fd.functionId
-
 
     -- prepare parameters for funny deconstruction.
     let nonDeconstructions = project . fst <$> fd.functionParameters <&> \case -- find parameters that are just variables (to reduce noise, it doesn't actually matter.)
@@ -554,7 +559,12 @@ cRecordStruct recs = "struct" <§ cBlock
 cVar :: M.Type -> Locality -> M.Variable -> PL
 cVar _ Local (M.DefinedVariable uv) = cVarName uv
 cVar _ FromEnvironment (M.DefinedVariable uv) = "env->" <> cVarName uv
-cVar _ FromEnvironment (M.DefinedFunction fun) = "env->" & cFunction fun
+cVar t FromEnvironment (M.DefinedFunction fun) | fun.functionDeclaration.functionNeedsEnvironment =
+  "env->" & cEnvFunctionVarName (cFunction fun) t
+
+cVar _ FromEnvironment (M.DefinedFunction fun) =
+  "env->" & cFunction fun
+
 cVar t Local (M.DefinedFunction fun) = do
   -- type safety fans are SEETHING rn
   let (union, args, ret) = case project t of
@@ -574,6 +584,14 @@ cVar t Local (M.DefinedFunction fun) = do
         envNames <- cEnv fun.functionDeclaration.functionEnv
         "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) & "," § ".env." & envNames.envName § "=" § envNames.envName § "}"
 
+
+
+cEnvFunctionVarName :: PL -> M.Type -> PL
+cEnvFunctionVarName fn t =
+  let uid = case project t of
+        M.TFun munion _ _ -> munion.unionID
+        _ -> undefined
+  in fn & "__" & pls (hashUnique uid.fromUnionID)
 
 cVarName :: UniqueVar -> PL
 cVarName v = plt (sanitize v.varName.fromVN) & "__" & pls (hashUnique v.varID)

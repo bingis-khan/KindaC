@@ -1,0 +1,9 @@
+
+m = 5
+f (x Int) -> Int
+	return x + m
+
+g (n)
+	return 123 + f(1) + f(4) + n
+
+g(420)

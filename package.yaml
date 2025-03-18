@@ -66,15 +66,15 @@ executables:
     dependencies:
     - KindaC
 
-# tests:
-#   all:
-#     main: Spec.hs
-#     source-dirs:
-#     - test/src
-#     ghc-options:
-#     - -threaded
-#     - -rtsopts
-#     - -with-rtsopts=-N
-#     dependencies:
-#     - KindaC
+tests:
+  all:
+    main: Spec.hs
+    source-dirs:
+    - test/src
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - KindaC
     

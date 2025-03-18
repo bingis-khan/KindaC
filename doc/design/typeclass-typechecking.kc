@@ -1,0 +1,71 @@
+This relates to the difficulty of integrating typeclasses with type checking, inference and environment propagation.
+
+Problems:
+
+1. Environment propagation of class function (actually, its instances' environments)
+
+The problem is, that the environment of the instance environment might not be known when instantiating a class function. 
+And when that environment is later generalized, it's not possible to easily substitute instantiated environments with the original one.
+
+Right now, I added a special case for class environments, which will be later substituted with the instantiation's environment!
+
+
+2. Class functions might return functions. They can have different environment unions... oh fuck.
+
+Maybe the previous solution is the wrong one, as it's pretty similar to this one. Maybe we can do something like what we're doing
+while monomorphising escaped tvars. Expand environments to include extra shit.
+
+Huh, but how do we handle generalization then? ....
+
+Oh shid. It might be possible with associated types.
+
+So, we have a function like:
+
+
+class Mappable a
+	Item
+	Result a
+	map (Item -> a) -> Result a
+
+
+Then each parameter (and return value) that is a function will have an associated type. So it will be propagated with generalizations!
+
+Then, because we have to handle the generalizations, it should work.
+
+But, there is a problem...
+
+
+3. NESTED UNIONS
+
+Oh fuck. Okay.
+Let's say there is a function like: (Int -> (Int -> Int))
+
+then we apply the function:
+g = f(69)
+
+so, f as Int -> (Int -> Int)
+and g as Int -> Int (but the union is shared.)
+
+Now, we make this function:
+apply-class-fun (c)
+	f = c cfd()
+
+	if random-bool()
+		return (f, f(1))
+	else
+		return (some-other-fun, f(1)
+
+At the end, part of the declaration is the nested type, so, there's some weirdness.
+
+c (associated with (Int -> (Int -> Int))
+OKAY, THIS WILL WORK. WE ALREADY DO THIS WITH SCHEME.
+So, they will be mapped to the same environment union!
+Which will be generalized to the same union!
+So, when associated types get applied (just after generalizing), it'll unify properly!
+
+
+Okay, finished.
+
+(but how do we store the candidates? since it's when we instantiate the function, they might be added to the "association list entry". kool.)
+
+Also, remember, that you also need to generate associations for datatypes with unions, because they can act just like functions!

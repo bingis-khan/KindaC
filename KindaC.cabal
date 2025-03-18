@@ -85,3 +85,33 @@ executable kc
     , text
     , transformers
   default-language: Haskell2010
+
+test-suite all
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Expect
+      Paths_KindaC
+  hs-source-dirs:
+      test/src
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      HUnit
+    , KindaC
+    , base >=4.7 && <5
+    , bifunctors
+    , containers
+    , data-fix
+    , deriving-compat
+    , directory
+    , filepath
+    , hspec
+    , megaparsec
+    , parser-combinators
+    , prettyprinter
+    , process
+    , recursion-schemes
+    , temporary
+    , text
+    , transformers
+  default-language: Haskell2010
