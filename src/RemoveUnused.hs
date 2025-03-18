@@ -68,11 +68,11 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
       (usedInsideFunction <>) <$> used (T.DefinedFunction fun insts) t
     T.DefinedVariable uv -> if loc == FromEnvironment then used (T.DefinedVariable uv) t else pure Set.empty
     T.DefinedClassFunction cfd insts self -> do
-      let (selectedFn, selectedInst) = T.selectInstanceFunction cfd self insts
+      let (selectedFn, _) = T.selectInstanceFunction cfd self insts
       usedInsideFunction <- rFunction selectedFn.instFunction
 
       usedInstanceFunction <- used (T.DefinedFunction selectedFn.instFunction mempty) t
-      usedClassFunction <- used (T.DefinedClassFunction cfd (Map.singleton (fst selectedInst.instType) selectedInst) self) t
+      usedClassFunction <- used (T.DefinedClassFunction cfd insts self) t
       pure $ usedInsideFunction <> usedInstanceFunction <> usedClassFunction
 
   T.Con envID _ -> do
