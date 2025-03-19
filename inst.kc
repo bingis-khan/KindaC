@@ -1,5 +1,11 @@
+class MyAsInt
+	to-int (self _) -> Int
 
-class Str
-	print-str (self Int) -> Unit
+inst MyAsInt Int
+	to-int (self Int) -> Int
+		return self
 
-print-str(123)
+turn-to-int-and-add-69 (x)
+	return to-int(x) + 69
+
+print turn-to-int-and-add-69(1)

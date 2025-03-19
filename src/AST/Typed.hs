@@ -17,8 +17,8 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Bifunctor.TH (deriveBifoldable, deriveBifunctor, deriveBitraversable)
 import Data.Functor.Classes (Eq1 (liftEq), Ord1 (..))
 import Data.Biapplicative (first)
-import Data.Functor.Foldable (cata)
-import Data.Foldable ( foldl' )
+import Data.Functor.Foldable (cata, project)
+import Data.Foldable ( foldl', fold )
 import Data.Text (Text)
 import Data.String (fromString)
 import Data.Functor ((<&>))
@@ -27,6 +27,8 @@ import Data.Map (Map, (!?))
 import qualified Data.Map as Map
 import Data.Foldable (find)
 import qualified AST.Common as Common
+import qualified Data.Set as Set
+import Data.Maybe (mapMaybe)
 
 
 
@@ -436,15 +438,49 @@ mapUnion ut (Fix t) = case t of
 
 
 -- TODO: in the future, make it return a possible error.
-selectInstanceFunction :: ClassFunDec -> Type -> PossibleInstances -> (InstanceFunction, InstDef)
-selectInstanceFunction (CFD _ uv _ _) (Fix (TCon dd@(DD ut _ _ _) _ _)) insts =
+selectInstanceFunction :: Map TVar (Map ClassDef InstDef) -> ClassFunDec -> Type -> PossibleInstances -> (InstanceFunction, InstDef)
+selectInstanceFunction _ (CFD _ uv _ _) (Fix (TCon dd@(DD ut _ _ _) _ _)) insts =
   let inst = mustOr (printf "[COMPILER ERROR]: The instance for %s must have existed by this point! %s" (ppTypeInfo ut) (tSelectedInsts (Map.elems insts))) $ insts !? dd
   in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
-selectInstanceFunction _ (Fix (TVar tv)) _ = undefined
+selectInstanceFunction backing (CFD cd uv _ _) (Fix (TVar tv)) _ =
+  let inst = mustOr (printf "[COMPILER ERROR]: TVar %s not mapped for some reason!" (tTVar tv)) $ backing !? tv >>= (!? cd)
+  in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
-selectInstanceFunction _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (Common.sctx (tType self))
+selectInstanceFunction _ _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (Common.sctx (tType self))
 
+
+-- TODO: ONG ITS SO BADD
+mapType :: Type -> Type -> Map TVar DataDef
+mapType lpt rpt = case (project lpt, project rpt) of
+  (TVar tv, TCon dd _ _)-> Map.singleton tv dd
+  (TVar {}, TFun {}) -> mempty
+
+  (TFun _ lts lt, TFun _ rts rt) -> fold (zipWith mapType lts rts) <> mapType lt rt
+  (TCon _ lts _, TCon _ rts _) -> fold $ zipWith mapType lts rts
+
+  _ -> undefined
+
+findTVars :: Type -> Set TVar
+findTVars = cata $ \case
+  TVar tv -> Set.singleton tv
+  TFun _ params ret -> fold params <> ret
+  t -> fold t
+
+
+mkInstanceSelector :: Type -> Map TVar DataDef -> ScopeSnapshot -> Map TVar (Map ClassDef InstDef)
+mkInstanceSelector from tvddm snapshot =
+  let
+      tvars = findTVars from
+  in flip Map.fromSet tvars $ \tv ->
+    case tvddm !? tv of
+      Just dd ->
+        Map.fromList $ flip mapMaybe (Set.toList tv.tvConstraints) $ \cd -> case snapshot !? cd of
+          Just pis -> case pis !? dd of
+            Just instdef -> Just (cd, instdef)
+            Nothing -> Nothing
+          Nothing -> Nothing
+      Nothing -> mempty
 
 --------------------------------------------------------------------------------------
 -- Printing the AST
@@ -602,9 +638,12 @@ tBody :: Foldable f => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
 
 tTVar :: TVar -> Context
-tTVar (TV tv b _) =
+tTVar (TV tv b cs) =
   let bindingCtx = case b of
         BindByType ut -> ppTypeInfo ut
         BindByVar uv -> ppVar Local uv
         BindByInst uc -> ppUniqueClass uc
-  in pretty tv <> "<" <> bindingCtx <> ">"
+  in pretty tv <> "<" <> bindingCtx <> ">" <> Common.ppSet tClassName (Set.toList cs)
+
+tClassName :: ClassDef -> Context
+tClassName cd = pretty $ show cd.classID

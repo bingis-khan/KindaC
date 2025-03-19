@@ -197,7 +197,7 @@ instance Ord UniqueClass where
   TCI { classID = l } `compare` TCI { classID = r } = l `compare` r
 
 instance Show UniqueClass where
-  show (TCI { className = name, classID = l }) = show name <> "@#" <> show (hashUnique l)
+  show (TCI { className = name, classID = l }) = show name.fromTN <> "@#" <> show (hashUnique l)
 
 
 -- ...plus additional tags

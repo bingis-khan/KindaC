@@ -7,9 +7,9 @@ module RemoveUnused (removeUnused) where
 
 import qualified AST.Typed as T
 import Misc.Memo (Memo, memo, emptyMemo)
-import Data.Functor.Foldable (transverse, cata, embed)
+import Data.Functor.Foldable (transverse, cata, embed, project)
 import Data.Bitraversable (bitraverse)
-import AST.Common (Annotated(..), type (:.) (..), Locality (..), EnvID, fmap2, traverse2, eitherToMaybe)
+import AST.Common (Annotated(..), type (:.) (..), Locality (..), EnvID, fmap2, traverse2, eitherToMaybe, Binding (BindByVar))
 import Data.Set (Set)
 import Data.Bifoldable (bifold)
 import Data.Foldable (Foldable(..))
@@ -17,7 +17,7 @@ import Data.Map (Map, (!?))
 import qualified Data.Set as Set
 import qualified Data.Map as Map
 import Data.Traversable (for)
-import Data.Maybe (catMaybes, fromJust)
+import Data.Maybe (catMaybes, fromJust, mapMaybe)
 import Control.Monad.Trans.RWS (RWS)
 import Control.Applicative (liftA3)
 import Control.Monad ((<=<))
@@ -64,11 +64,17 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
   T.Var loc v -> case v of
     T.DefinedFunction fun insts -> do
       -- when a function is directly referenced, we know it's reachable inside its current scope, so we add it as used
-      usedInsideFunction <- rFunction fun
+      let fd = fun.functionDeclaration
+
+      -- TODO: THIS IS ALL FUCKING RETARDED.
+      let tvt = Fix $ T.TFun undefined (snd <$> fd.functionParameters) fd.functionReturnType
+      let mapping = T.mkInstanceSelector tvt (T.mapType tvt t) insts
+      usedInsideFunction <- withInstances mapping $ rFunction fun
       (usedInsideFunction <>) <$> used (T.DefinedFunction fun insts) t
     T.DefinedVariable uv -> if loc == FromEnvironment then used (T.DefinedVariable uv) t else pure Set.empty
     T.DefinedClassFunction cfd insts self -> do
-      let (selectedFn, _) = T.selectInstanceFunction cfd self insts
+      backing <- RWS.ask  -- FUCK ME.
+      let (selectedFn, _) = T.selectInstanceFunction backing cfd self insts
       usedInsideFunction <- rFunction selectedFn.instFunction
 
       usedInstanceFunction <- used (T.DefinedFunction selectedFn.instFunction mempty) t
@@ -85,9 +91,8 @@ rExpr = cata $ \(T.TypedExpr t te) -> case te of
   e -> fold <$> sequenceA e
 
 
-
 rFunction :: T.Function -> Reach
-rFunction fun = withEnv fun.functionDeclaration.functionEnv $ withInstances undefined $ rScope fun.functionBody
+rFunction fun = withEnv fun.functionDeclaration.functionEnv $ rScope fun.functionBody
 
 
 used :: T.Variable -> T.Type -> Reach

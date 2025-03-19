@@ -201,7 +201,7 @@ mDecon = cata $ fmap embed . \case
 
 variable :: T.Variable -> M.IType -> Context M.IVariable
 variable (T.DefinedVariable uv) _ = pure $ M.DefinedVariable uv
-variable (T.DefinedFunction vfn _) et = do
+variable (T.DefinedFunction vfn snapshot) et = do
   ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
 
   -- male feminists are seething rn
@@ -217,7 +217,10 @@ variable (T.DefinedFunction vfn _) et = do
   -- creates a type mapping for this function.
   let typemap = mapTypes (snd <$> vfn.functionDeclaration.functionParameters) tts <> mapType vfn.functionDeclaration.functionReturnType tret
 
-  withTypeMap typemap $ do
+  let fd = vfn.functionDeclaration
+  let tvt = Fix $ T.TFun undefined (snd <$> fd.functionParameters) fd.functionReturnType
+  let tvm = T.mkInstanceSelector tvt (cringeMapType tvt et) snapshot
+  withTVarInsts tvm $ withTypeMap typemap $ do
     -- NOTE: Env must be properly monomorphised with the type map though albeit.
     menv <- mEnv' vfn.functionDeclaration.functionEnv
 
@@ -246,7 +249,8 @@ variable (T.DefinedFunction vfn _) et = do
       pure fn
 
 variable (T.DefinedClassFunction cfd insts self) et = do
-  let (ivfn, _) = T.selectInstanceFunction cfd self insts
+  backup <- State.gets tvarInsts
+  let (ivfn, _) = T.selectInstanceFunction backup cfd self insts
   let vfn = ivfn.instFunction
 
   ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
@@ -287,6 +291,16 @@ variable (T.DefinedClassFunction cfd insts self) et = do
 
       pure fn
 
+-- CRINGE: FUCK.
+cringeMapType :: T.Type -> M.IType -> Map T.TVar T.DataDef
+cringeMapType lpt rpt = case (project lpt, project rpt) of
+  (T.TVar tv, M.ITCon dd _ _)-> Map.singleton tv dd.ogDataDef
+  (T.TVar {}, M.ITFun {}) -> mempty
+
+  (T.TFun _ lts lt, M.ITFun _ rts rt) -> fold (zipWith cringeMapType lts rts) <> cringeMapType lt rt
+  (T.TCon _ lts _, M.ITCon _ appts _) -> fold $ zipWith cringeMapType lts appts
+
+  _ -> undefined
 
 
 
@@ -368,12 +382,12 @@ hideEmptyUnions unions = do
 
 -- (TypeMap (Map.fromList $ zip tvs mts) (Map.fromList $ fmap (first T.unionID) $ mapMaybe sequenceA $ zip ogUnions unions))
 mDataDef :: (T.DataDef, TypeMap) -> Context (M.IDataDef, Map T.DataCon M.IDataCon)
-mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(T.DD ut (T.Scheme tvs _) tdcs ann, tm@(TypeMap tvmap unionMap)) addMemo -> withTypeMap tm $ mdo
+mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(tdd@(T.DD ut (T.Scheme tvs _) tdcs ann), tm@(TypeMap tvmap unionMap)) addMemo -> withTypeMap tm $ mdo
 
   nut <- newUniqueType ut
 
   let mts = tvs <&> \tv -> tvmap ! tv
-  let mdd = M.DD nut mdcs ann mts
+  let mdd = M.DD nut mdcs ann mts tdd
   addMemo (mdd, dcQuery)
 
 
@@ -459,6 +473,17 @@ withTypeMap tm a = do
   pure x
 
 
+withTVarInsts :: Map T.TVar (Map T.ClassDef T.InstDef) -> Context a -> Context a
+withTVarInsts tvm a = do
+
+  -- temporarily set merge type maps, then restore the original one.
+  ogTM <- State.gets tvarInsts
+  x <- State.withStateT (\s -> s { tvarInsts = tvm <> s.tvarInsts }) a
+  State.modify $ \s -> s { tvarInsts = ogTM }
+
+  pure x
+
+
 
 mUnion :: T.EnvUnionF (Context M.IType) -> Context M.IEnvUnion
 mUnion tunion = do
@@ -533,6 +558,7 @@ mEnv env' = do
 
 data Context' = Context
   { tvarMap :: TypeMap  -- this describes the temporary mapping of tvars while monomorphizing.
+  , tvarInsts :: Map T.TVar (Map T.ClassDef T.InstDef)  -- TODO: smell.
   , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.IEnv, M.NeedsImplicitEnvironment) M.IFunction
   , memoDatatype :: Memo (T.DataDef, TypeMap) (M.IDataDef, Map T.DataCon M.IDataCon)
   , memoEnv :: Memo (T.EnvF M.IType) M.IEnv
@@ -552,6 +578,7 @@ type Context = StateT Context' IO
 startingContext :: Context'
 startingContext = Context
   { tvarMap = mempty
+  , tvarInsts = mempty
   , memoFunction = emptyMemo
   , memoDatatype = emptyMemo
   , memoEnv = emptyMemo
@@ -813,7 +840,7 @@ expandEnvironments envIDs = do
 mfDataDef :: (M.IDataDef, [M.EnvUnion]) -> EnvContext (M.DataDef, Map M.IDataCon M.DataCon)
 mfDataDef = memo memoIDatatype (\mem s -> s { memoIDatatype = mem }) $ \(idd, _) addMemo -> mdo
   mfAppliedTypes <- traverse mfType idd.appliedTypes
-  let dd = M.DD idd.thisType cons idd.annotations mfAppliedTypes
+  let dd = M.DD idd.thisType cons idd.annotations mfAppliedTypes idd.ogDataDef
   addMemo (dd, dcQuery)
 
   cons <- case idd.constructors of

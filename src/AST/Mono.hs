@@ -48,16 +48,17 @@ data DataDef' envtype = DD
 
     -- used only for displaying type information to the USER!
   , appliedTypes :: [Type' envtype]
+  , ogDataDef :: T.DataDef
   }
 type IDataDef = DataDef' IncompleteEnv
 type DataDef = DataDef' FullEnv
 
 
 instance Eq (DataDef' envtype) where
-  DD ut _ _ _ == DD ut' _ _ _ = ut == ut'
+  DD ut _ _ _ _ == DD ut' _ _ _ _ = ut == ut'
 
 instance Ord (DataDef' envtype) where
-  DD ut _ _ _ `compare` DD ut' _ _ _ = ut `compare` ut'
+  DD ut _ _ _ _ `compare` DD ut' _ _ _ _ = ut `compare` ut'
 
 instance Eq (DataCon' envtype) where
   DC _ uc _ _ == DC _ uc' _ _ = uc == (uc' :: UniqueCon)
@@ -393,7 +394,7 @@ tDecon = cata $ \case
   CaseVariable _ uv -> ppVar Local uv
   CaseConstructor _ (DC _ uc _ _) [] -> ppCon uc
   CaseConstructor _ (DC _ uc _ _) args@(_ : _) -> ppCon uc <> encloseSepBy "(" ")" ", " args
-  CaseRecord t (DD ut _ _ _) args -> ppTypeInfo ut <+> tRecordMems args <+> "::" <+> tType t
+  CaseRecord t (DD ut _ _ _ _) args -> ppTypeInfo ut <+> tRecordMems args <+> "::" <+> tType t
 
 tExpr :: Expr -> Context
 tExpr = cata $ \(TypedExpr t expr) ->
@@ -405,7 +406,7 @@ tExpr = cata $ \(TypedExpr t expr) ->
         Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
         Con (DC _ uc _ _) -> ppCon uc
 
-        RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> tRecordMems inst
+        RecCon (DD ut _ _ _ _) inst -> ppTypeInfo ut <+> tRecordMems inst
         RecUpdate _ c upd -> c <+> tRecordMems upd
         MemAccess c mem -> c <> "." <> ppUniqueMem mem
 
@@ -425,7 +426,7 @@ tFunction :: Function -> Context
 tFunction (Function fd funBody) = tBody (tFunDec fd) funBody
 
 tDataDef :: DataDef -> Context
-tDataDef (DD tid cons ann _) = annotate ann $ indent (ppTypeInfo tid) $ tDataCons cons
+tDataDef (DD tid cons ann _ _) = annotate ann $ indent (ppTypeInfo tid) $ tDataCons cons
 
 tConDef :: DataCon -> Context
 tConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
@@ -442,7 +443,7 @@ tFunDec (FD funEnv v params retType needsEnv) = comment (tEnv funEnv) $ ppVar Lo
 
 tTypes :: (Functor t) => t Type -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of
-  TCon (DD _ _ _ []) -> tType t
+  TCon (DD _ _ _ [] _) -> tType t
   TCon _ -> enclose t
   TFun {} -> enclose t
   where
@@ -450,7 +451,7 @@ tTypes = fmap $ \t@(Fix t') -> case t' of
 
 tType :: Type -> Context
 tType = cata $ \case
-  TCon (DD tid _ _ ts) -> do
+  TCon (DD tid _ _ ts _) -> do
     c <- ask
     if c.displayTypeParameters && not (null ts)
       then ppTypeInfo tid <+> sepBy " " (tTypes ts)
@@ -518,7 +519,7 @@ mtDecon = cata $ \case
   CaseVariable _ uv -> ppVar Local uv
   CaseConstructor _ (DC _ uc _ _) [] -> ppCon uc
   CaseConstructor _ (DC _ uc _ _) args@(_ : _) -> ppCon uc <> encloseSepBy "(" ")" ", " args
-  CaseRecord t (DD ut _ _ _) args -> ppTypeInfo ut <+> tRecordMems args <+> "::" <+> mtType t
+  CaseRecord t (DD ut _ _ _ _) args -> ppTypeInfo ut <+> tRecordMems args <+> "::" <+> mtType t
 
 mtExpr :: IExpr -> Context
 mtExpr = cata $ \(TypedExpr t expr) ->
@@ -530,7 +531,7 @@ mtExpr = cata $ \(TypedExpr t expr) ->
         Var l (DefinedFunction f) -> ppVar l f.functionDeclaration.functionId
         Con (DC _ uc _ _) -> ppCon uc
 
-        RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> tRecordMems inst
+        RecCon (DD ut _ _ _ _) inst -> ppTypeInfo ut <+> tRecordMems inst
         RecUpdate _ c upd -> c <+> tRecordMems upd
         MemAccess c mem -> c <> "." <> ppUniqueMem mem
 
@@ -550,7 +551,7 @@ mtFunction :: IFunction -> Context
 mtFunction (Function fd funBody) = mtBody (mtFunDec fd) funBody
 
 mtDataDef :: DataDef -> Context
-mtDataDef (DD tid cons ann _) = annotate ann $ indent (ppTypeInfo tid) $ tDataCons cons
+mtDataDef (DD tid cons ann _ _) = annotate ann $ indent (ppTypeInfo tid) $ tDataCons cons
 
 mtConDef :: DataCon -> Context
 mtConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
@@ -568,7 +569,7 @@ mtTypes = fmap $ \t@(Fix t') -> case t' of
 
 mtType :: IType -> Context
 mtType = cata $ \case
-  ITCon (DD tid _ _ _) _ _ -> ppTypeInfo tid
+  ITCon (DD tid _ _ _ _) _ _ -> ppTypeInfo tid
   ITFun funUnion args ret -> tEnvUnion (mtEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
   ITVar tv -> T.tTVar tv
 

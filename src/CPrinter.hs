@@ -155,7 +155,7 @@ cDeconCondition basevar mdecon =
   let conjunction = fmap (basevar &) $ flip cata mdecon $ \case
         M.CaseVariable _ _ -> []
         M.CaseRecord _ _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) -> fmap (\c -> "." & cRecMember um & c) rec
-        M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args ->
+        M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _ _) uc _ _) args ->
           let cons' = fromJust $ Common.eitherToMaybe cons  -- cannot be a record type! NOTE: this is ugly, should I just make two separate types?
           in case cons' of
             [] -> undefined
@@ -176,7 +176,7 @@ cDeconAccess basevar mdecon = fmap2 (basevar &) $ flip cata mdecon $ \case
   M.CaseRecord _ _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) ->
     flip fmap2 rec $ \acc -> "." & cRecMember um & acc
 
-  M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _) uc _ _) args ->
+  M.CaseConstructor _ dc@(M.DC (M.DD _ cons _ _ _) uc _ _) args ->
     let cons' = fromJust $ Common.eitherToMaybe cons
     in case cons' of
       []  -> []
@@ -215,7 +215,7 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
     include "string.h"
     enclose "(" ")" $ "0" § "!=" § cCall "memcmp" [cRef le', cRef re', cSizeOf lt]
 
-  M.RecUpdate dd@(M.DD _ erecs _ _) (et, ee) upd -> do
+  M.RecUpdate dd@(M.DD _ erecs _ _ _) (et, ee) upd -> do
     let records = case erecs of
           Left recs -> recs
           Right _ -> error "Not a record type!!!"
@@ -248,7 +248,7 @@ cExpr expr = flip para expr $ \(M.TypedExpr t e) -> case fmap (first M.expr2type
     _ -> undefined
 
 cRecordInit :: M.DataDef -> NonEmpty (UniqueMem, PL) -> PL
-cRecordInit (M.DD ut _ _ _) insts =
+cRecordInit (M.DD ut _ _ _ _) insts =
   let dataTypeName = plt ut.typeName.fromTC & "__" & pls (hashUnique ut.typeID)
   in enclose "(" ")" dataTypeName § encloseSepBy "{" "}" ", " [
       "." & cRecMember um § "=" § e | (um, e) <- NonEmpty.toList insts
@@ -474,7 +474,7 @@ cType (Fix t) = case t of
 
 
 cDataType :: M.DataDef -> PL
-cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledTypes = memo }) dd' $ \dd@(M.DD _ econrec anns _) addMemo -> do
+cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledTypes = memo }) dd' $ \dd@(M.DD _ econrec anns _ _) addMemo -> do
   -- don't forget to add a required library
   addIncludeIfPresent anns
 
