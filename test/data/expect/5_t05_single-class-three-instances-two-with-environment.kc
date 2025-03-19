@@ -1,0 +1,31 @@
+#$ Basic typeclass with three instances, two with environment.
+# 11111
+# 489
+# 0
+# 11193
+
+class MyAsInt
+	to-int (self _) -> Int
+
+m = 69
+inst MyAsInt Int
+	to-int (self Int) -> Int
+		return self + m
+
+inst MyAsInt Unit
+	to-int (self Unit) -> Int
+		return 11111
+
+true-const = 1
+false-const = 0
+inst MyAsInt Bool
+	to-int (self Bool) -> Int
+		if self
+			return true-const
+		else
+			return false-const
+
+print to-int(Unit)
+print to-int(420)
+print to-int(False)
+print to-int(Unit) + to-int(12) + to-int(True)

@@ -1,0 +1,11 @@
+#$ Compile and run a basic typeclass with one instance.
+# 123
+
+class MyStr
+	print-str (self _) -> Unit
+
+inst MyStr Int
+	print-str (self Int) -> Unit
+		print 123
+
+print-str(123)

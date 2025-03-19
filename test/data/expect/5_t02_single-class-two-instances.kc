@@ -1,0 +1,20 @@
+#$ Basic typeclass with two instances.
+# 11
+# 0
+
+class MyAsInt
+	to-int (self _) -> Int
+
+inst MyAsInt Int
+	to-int (self Int) -> Int
+		return self
+
+inst MyAsInt Bool
+	to-int (self Bool) -> Int
+		if self
+			return 1
+		else
+			return 0
+
+print to-int(10) + to-int(True)
+print to-int(False)

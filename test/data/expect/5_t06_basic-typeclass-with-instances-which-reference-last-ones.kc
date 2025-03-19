@@ -1,0 +1,25 @@
+#$ Basic typeclass with three instances, which reference the previous ones.
+# 600
+
+class MyAsInt
+	to-int (self _) -> Int
+
+m = 69
+inst MyAsInt Int
+	to-int (self Int) -> Int
+		return self + m
+
+inst MyAsInt Unit
+	to-int (self Unit) -> Int
+		return 420 + to-int(111)
+
+true-const = 1
+false-const = 0
+inst MyAsInt Bool
+	to-int (self Bool) -> Int
+		if self
+			return true-const
+		else
+			return false-const + to-int(Unit)
+
+print to-int(False)

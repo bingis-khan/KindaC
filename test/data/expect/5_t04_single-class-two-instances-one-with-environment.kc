@@ -1,0 +1,18 @@
+#$ Basic typeclass with two instances, one with environment.
+# 11111
+# 489
+
+class MyAsInt
+	to-int (self _) -> Int
+
+m = 69
+inst MyAsInt Int
+	to-int (self Int) -> Int
+		return self + m
+
+inst MyAsInt Unit
+	to-int (self Unit) -> Int
+		return 11111
+
+print to-int(Unit)
+print to-int(420)
