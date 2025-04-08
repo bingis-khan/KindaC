@@ -66,7 +66,7 @@ instance Eq (DataCon' envtype) where
 instance Ord (DataCon' envtype) where
   DC _ uc _ _ `compare` DC _ uc' _ _ = uc `compare` (uc' :: UniqueCon)
 
-  
+
 
 ----------
 -- Type --
@@ -78,43 +78,72 @@ type family Type' envtype
 
 -- I think I'll keep the separate-but-same-structure environments until codegen, because it might be nice information to have?
 -- I'll do deduplication during the codegen phase
-data EnvF envtype t
-  = Env EnvID [(Variable' envtype, Locality, t)]
+data EnvF t
+  = Env EnvID [(Variable, Locality, t)]
   | RecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
 
-type IEnv = EnvF IncompleteEnv IType
+data IEnvF t
+  = IEnv EnvID [(T.Variable, Locality, t)]
+  | IRecursiveEnv EnvID IsEmpty
+  deriving (Functor, Foldable, Traversable)
+
+type IEnv = IEnvF IType
 type instance Env' IncompleteEnv = IEnv
 
-type Env = EnvF FullEnv Type
+type Env = EnvF Type
 type instance Env' FullEnv = Env
 
 type IsEmpty = Bool
 
 
-envID :: EnvF envtype t -> EnvID
+envID :: EnvF t -> EnvID
 envID = \case
   Env eid _ -> eid
   RecursiveEnv eid _ -> eid
 
+ienvID :: IEnvF t -> EnvID
+ienvID = \case
+  IEnv eid _ -> eid
+  IRecursiveEnv eid _ -> eid
 
-instance Eq t => Eq (EnvF et t) where
+
+instance Eq t => Eq (EnvF t) where
   -- Env lid lts == Env rid rts = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
   l == r = envID l == envID r
 
-instance Ord t => Ord (EnvF et t) where
+instance Ord t => Ord (EnvF t) where
   -- Env lid lts `compare` Env rid rts = (lid, lts <&> \(_, _, x) -> x) `compare` (rid, rts <&> \(_, _, x) -> x)
   l `compare` r = envID l `compare` envID r
 
-instance Eq1 (EnvF et) where
+instance Eq1 EnvF where
   -- liftEq f (Env lid lts) (Env rid rts) = lid == rid && and (zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts)
   liftEq _ l r = envID l == envID r
 
-instance Ord1 (EnvF et) where
+instance Ord1 EnvF where
   -- liftCompare f (Env lid lts) (Env rid rts) = case lid `compare` rid of
   --   EQ -> mconcat $ zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts
   --   ord -> ord
   liftCompare _ l r = envID l `compare` envID r
+
+
+instance Eq t => Eq (IEnvF t) where
+  -- Env lid lts == Env rid rts = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
+  l == r = ienvID l == ienvID r
+
+instance Ord t => Ord (IEnvF t) where
+  -- Env lid lts `compare` Env rid rts = (lid, lts <&> \(_, _, x) -> x) `compare` (rid, rts <&> \(_, _, x) -> x)
+  l `compare` r = ienvID l `compare` ienvID r
+
+instance Eq1 IEnvF where
+  -- liftEq f (Env lid lts) (Env rid rts) = lid == rid && and (zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts)
+  liftEq _ l r = ienvID l == ienvID r
+
+instance Ord1 IEnvF where
+  -- liftCompare f (Env lid lts) (Env rid rts) = case lid `compare` rid of
+  --   EQ -> mconcat $ zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts
+  --   ord -> ord
+  liftCompare _ l r = ienvID l `compare` ienvID r
 
 
 
@@ -124,18 +153,27 @@ data EnvUnionF env = EnvUnion
   }
   deriving (Functor, Foldable, Traversable)
 
-type IEnvUnion = EnvUnionF (EnvF IncompleteEnv IType)
-type EnvUnion = EnvUnionF (EnvF FullEnv Type)
+type IEnvUnion = EnvUnionF (IEnvF IType)
+type EnvUnion = EnvUnionF (EnvF Type)
 
 
-isEnvEmpty :: EnvF envtype t -> Bool
+isEnvEmpty :: EnvF t -> Bool
 isEnvEmpty = \case
   RecursiveEnv _ isEmpty -> isEmpty
   Env _ envs -> null envs
 
-
-areAllEnvsEmpty :: EnvUnionF (EnvF envtype a) -> Bool
+areAllEnvsEmpty :: EnvUnionF (EnvF a) -> Bool
 areAllEnvsEmpty envUnion = all isEnvEmpty envUnion.union
+
+
+
+iIsEnvEmpty :: IEnvF t -> Bool
+iIsEnvEmpty = \case
+  IRecursiveEnv _ isEmpty -> isEmpty
+  IEnv _ envs -> null envs
+
+iAreAllEnvsEmpty :: EnvUnionF (IEnvF a) -> Bool
+iAreAllEnvsEmpty envUnion = all iIsEnvEmpty envUnion.union
 
 
 instance Eq (EnvUnionF t) where
@@ -153,8 +191,8 @@ instance Ord1 EnvUnionF where
 
 
 data ITypeF a
-  = ITCon IDataDef [a] [EnvUnionF (EnvF IncompleteEnv a)]  -- extra type parameters are only used for type mapping and later to know how to memoize. We can probably do this better. TODO maybe just store TypeMap here?
-  | ITFun (EnvUnionF (EnvF IncompleteEnv a)) [a] a
+  = ITCon IDataDef [a] [EnvUnionF (IEnvF a)]  -- extra type parameters are only used for type mapping and later to know how to memoize. We can probably do this better. TODO maybe just store TypeMap here?
+  | ITFun (EnvUnionF (IEnvF a)) [a] a
   | ITVar T.TVar
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 
@@ -164,7 +202,7 @@ type instance Type' IncompleteEnv = IType
 
 data TypeF a
   = TCon DataDef
-  | TFun (EnvUnionF (EnvF FullEnv a)) [a] a
+  | TFun (EnvUnionF (EnvF a)) [a] a
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 
 type Type = Fix TypeF
@@ -230,7 +268,7 @@ data ExprF envtype a
   | RecCon (DataDef' envtype) (NonEmpty (UniqueMem, a))
   | RecUpdate (DataDef' envtype) a (NonEmpty (UniqueMem, a))
   | MemAccess a UniqueMem
-  
+
   | Op a Op a
   | Call a [a]
   | -- NOTE: We want to leave lambda for now, because it initializes its environment immediately.
@@ -321,7 +359,7 @@ type AnnStmt = Fix (Annotated :. StmtF FullEnv Expr)
 
 type family EnvDef envtype
 type instance EnvDef IncompleteEnv = NonEmpty EnvID  -- EnvDefs are being redone, so we need to keep EnvID only.
-type instance EnvDef FullEnv = NonEmpty (Function, Env)  -- I think Function is not needed here, but we might as well use it here for easier debugging (printing these functions in EnvDefs).
+type instance EnvDef FullEnv = [(Function, Env)]  -- I think Function is not needed here, but we might as well use it here for easier debugging (printing these functions in EnvDefs).
 
 
 $(deriveBifunctor ''CaseF)
@@ -384,7 +422,7 @@ tStmt stmt = case stmt of
 
 tEnvDef :: EnvDef FullEnv -> Context
 tEnvDef envdef = ppLines' $
-  (encloseSepBy "[" "]" ", " . NonEmpty.toList $ tEnv . snd <$> envdef) : NonEmpty.toList (tFunction . fst <$> envdef)
+  encloseSepBy "[" "]" ", " (tEnv . snd <$> envdef) : (tFunction . fst <$> envdef)
 
 tCase :: Case -> Context
 tCase kase = tBody (tDecon kase.deconstruction <+?> fmap tExpr kase.caseCondition) kase.body
@@ -464,10 +502,10 @@ tEnvUnion EnvUnion {unionID = uid, union = us} = ppUnionID uid <> encloseSepBy "
 tEnvUnion' :: EnvUnionF Type -> Context
 tEnvUnion' = tEnvUnion . fmap tType
 
-tEnv :: EnvF FullEnv Type -> Context
+tEnv :: EnvF Type -> Context
 tEnv = tEnv' . fmap tType
 
-tEnv' :: EnvF FullEnv Context -> Context
+tEnv' :: EnvF Context -> Context
 tEnv' (RecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
 tEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (asUniqueVar v) <+> t) vs)
 
@@ -573,12 +611,12 @@ mtType = cata $ \case
   ITFun funUnion args ret -> tEnvUnion (mtEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
   ITVar tv -> T.tTVar tv
 
-mtEnv :: EnvF IncompleteEnv IType -> Context
+mtEnv :: IEnvF IType -> Context
 mtEnv = mtEnv' . fmap mtType
 
-mtEnv' :: EnvF IncompleteEnv Context -> Context
-mtEnv' (RecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
-mtEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (asUniqueVar v) <+> t) vs)
+mtEnv' :: IEnvF Context -> Context
+mtEnv' (IRecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
+mtEnv' (IEnv eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (T.asUniqueVar v) <+> t) vs)
 
 mtBody :: (Foldable f) => Context -> f AnnIStmt -> Context
 mtBody = ppBody mtAnnStmt

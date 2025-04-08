@@ -1,6 +1,6 @@
 arr = [ 1, 2, 3, 4, 5 ] as StaticArray 5 Int
 
-head (Array' t)
+head (t Array' )
 	return
 		if t.size == 0:
 			None
