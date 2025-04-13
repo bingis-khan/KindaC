@@ -194,7 +194,7 @@ instance Ord1 EnvUnionF where
 
 data ITypeF a
   = ITCon IDataDef [a] [EnvUnionF EnvID]  -- extra type parameters are only used for type mapping and later to know how to memoize. We can probably do this better. TODO maybe just store TypeMap here?
-  | ITFun (EnvUnionF IEnvID) [a] a
+  | ITFun (EnvUnionF IEnvID) [a] a  -- ALGO: EnvID instead of actual environment, because we might need to eliminate these envs, which happens during FullEnv step. It'll be later expanded into actually used environments.
   | ITVar T.TVar
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 

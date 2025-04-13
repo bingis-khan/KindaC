@@ -1,0 +1,14 @@
+#$ Generalize functions over typeclass constraints.
+# 70
+
+class MyAsInt
+	to-int (self _) -> Int
+
+inst MyAsInt Int
+	to-int (self Int) -> Int
+		return self
+
+turn-to-int-and-add-69 (x)
+	return to-int(x) + 69
+
+print turn-to-int-and-add-69(1)
