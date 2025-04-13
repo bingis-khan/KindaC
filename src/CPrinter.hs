@@ -293,13 +293,13 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compile
         error "[COMPILER ERROR]: Called `cEnv` with an empty environment. I can ignore it, but this is probably a bug. This should be checked beforehand btw. Why? sometimes, it requires special handling, so making it an error kind of makes me aware of this."
 
       let uniqueVars = fmap snd $ Map.toList $ Map.fromList $ vars <&> \case
-            tup@(v@(M.DefinedFunction fn), _, t) | fn.functionDeclaration.functionNeedsEnvironment -> ((v, Just t), tup)
+            tup@(v@(M.DefinedFunction _), _, t) | doesFunctionNeedExplicitEnvironment t -> ((v, Just t), tup)
             tup@(v, _, _) -> ((v, Nothing), tup)
 
       let envVarName v t = case v of
               M.DefinedVariable uv -> cVarName uv
-              M.DefinedFunction fn | fn.functionDeclaration.functionNeedsEnvironment -> cEnvFunctionVarName (cFunction fn) t
-              M.DefinedFunction fn -> cFunction fn
+              M.DefinedFunction fn | doesFunctionNeedExplicitEnvironment t -> cEnvFunctionVarName (cFunction t fn) t
+              M.DefinedFunction fn -> cFunction t fn
 
       let varTypes =
             uniqueVars <&> \(v, _, t) -> statement $ do
@@ -357,9 +357,10 @@ cLambda env params lamType lamBody = do
 
 
 
-cFunction :: M.Function -> PL
-cFunction fun' =
-  unpack $ Memo.memo' (compiledFunctions . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledFunctions = memo }) fun' $ \fun _ -> do
+cFunction :: M.Type -> M.Function -> PL
+cFunction fnt fun' =
+  let needsEnv' = doesFunctionNeedExplicitEnvironment fnt
+  in unpack $ Memo.memo' (compiledFunctions . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledFunctions = memo }) (fun', needsEnv') $ \(fun, needsEnv) _ -> do
     let fd = fun.functionDeclaration
     let funref = cVarName fd.functionId
 
@@ -388,7 +389,7 @@ cFunction fun' =
           envtype § "env"
 
     let ccparams =
-          if not fd.functionNeedsEnvironment
+          if not needsEnv
             then cparams
             else envparam : cparams
 
@@ -559,11 +560,11 @@ cRecordStruct recs = "struct" <§ cBlock
 cVar :: M.Type -> Locality -> M.Variable -> PL
 cVar _ Local (M.DefinedVariable uv) = cVarName uv
 cVar _ FromEnvironment (M.DefinedVariable uv) = "env->" <> cVarName uv
-cVar t FromEnvironment (M.DefinedFunction fun) | fun.functionDeclaration.functionNeedsEnvironment =
-  "env->" & cEnvFunctionVarName (cFunction fun) t
+cVar t FromEnvironment (M.DefinedFunction fun) | doesFunctionNeedExplicitEnvironment t  =
+  "env->" & cEnvFunctionVarName (cFunction t fun) t
 
-cVar _ FromEnvironment (M.DefinedFunction fun) =
-  "env->" & cFunction fun
+cVar t FromEnvironment (M.DefinedFunction fun) =
+  "env->" & cFunction t fun
 
 cVar t Local (M.DefinedFunction fun) = do
   -- type safety fans are SEETHING rn
@@ -572,17 +573,17 @@ cVar t Local (M.DefinedFunction fun) = do
        M.TCon _ -> undefined
 
   -- check if we even need an environment
-  if not fun.functionDeclaration.functionNeedsEnvironment
+  if not $ doesFunctionNeedExplicitEnvironment t
     -- we don't - just reference the function
-    then cFunction fun
+    then cFunction t fun
 
     -- there is an environment - either this function's env or some other environment. If it's not our function's, then we don't need to initialize it.
     else if null fun.functionDeclaration.functionEnv
-      then "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) § "}"
+      then "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction t fun) § "}"
 
       else do
         envNames <- cEnv fun.functionDeclaration.functionEnv
-        "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction fun) & "," § ".env." & envNames.envName § "=" § envNames.envName § "}"
+        "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction t fun) & "," § ".env." & envNames.envName § "=" § envNames.envName § "}"
 
 
 
@@ -856,7 +857,7 @@ data Context = Context
 
   , compiledUnions :: Memo M.EnvUnion PL
   , compiledEnvs :: Memo M.Env EnvNames
-  , compiledFunctions :: Memo M.Function PL
+  , compiledFunctions :: Memo (M.Function, M.NeedsImplicitEnvironment) PL
   , compiledTypes :: Memo M.DataDef PL
   }
 
@@ -930,6 +931,12 @@ visibleType = cata $ \case
   M.TFun _ [arg] ret -> printf "%s -> %s" arg ret
   M.TFun _ ts ret -> printf "(%s) -> %s" (intercalate ", " ts) ret
   M.TCon dd    -> Text.unpack dd.thisType.typeName.fromTC
+
+
+doesFunctionNeedExplicitEnvironment :: M.Type -> M.NeedsImplicitEnvironment
+doesFunctionNeedExplicitEnvironment t = case project t of
+    M.TFun union _ _ -> not $ M.areAllEnvsEmpty union
+    _ -> undefined
 
 
 

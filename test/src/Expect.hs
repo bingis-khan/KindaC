@@ -35,6 +35,7 @@ expect = do
     hspec $ parallel $ do
       for_ tests $ \filename -> do
         let path = testdir </> filename
+        runIO $ putStrLn filename
         header <- runIO $ readHeader path
         describe (filename <?> (": " <>) <$> header.name) $ do
             errorOrFilepath <- runIO $ compileAndOutputFile prelude path dir

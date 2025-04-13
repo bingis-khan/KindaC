@@ -30,7 +30,6 @@ library
       Mono
       Parser
       Pipeline
-      RemoveUnused
       Resolver
       Typecheck
   other-modules:

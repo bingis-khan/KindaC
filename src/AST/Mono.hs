@@ -83,11 +83,13 @@ data EnvF t
   | RecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
 
+-- What I'm currently trying is saving EnvID in the AST and then 
 data IEnvF t
-  = IEnv EnvID [(T.Variable, Locality, t)]
+  = IEnv EnvID [(IVariable, Locality, t)]
   | IRecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
 
+type IEnvID = EnvID
 type IEnv = IEnvF IType
 type instance Env' IncompleteEnv = IEnv
 
@@ -153,7 +155,7 @@ data EnvUnionF env = EnvUnion
   }
   deriving (Functor, Foldable, Traversable)
 
-type IEnvUnion = EnvUnionF (IEnvF IType)
+type IEnvUnion = EnvUnionF EnvID
 type EnvUnion = EnvUnionF (EnvF Type)
 
 
@@ -191,8 +193,8 @@ instance Ord1 EnvUnionF where
 
 
 data ITypeF a
-  = ITCon IDataDef [a] [EnvUnionF (IEnvF a)]  -- extra type parameters are only used for type mapping and later to know how to memoize. We can probably do this better. TODO maybe just store TypeMap here?
-  | ITFun (EnvUnionF (IEnvF a)) [a] a
+  = ITCon IDataDef [a] [EnvUnionF EnvID]  -- extra type parameters are only used for type mapping and later to know how to memoize. We can probably do this better. TODO maybe just store TypeMap here?
+  | ITFun (EnvUnionF IEnvID) [a] a
   | ITVar T.TVar
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 
@@ -218,8 +220,8 @@ data FunDec' envtype = FD
   { functionEnv :: Env' envtype,
     functionId :: UniqueVar,
     functionParameters :: [(Fix (DeconF envtype), Type' envtype)],
-    functionReturnType :: Type' envtype,  -- actually, the function might return something with a yet unknown environment type...
-    functionNeedsEnvironment :: NeedsImplicitEnvironment
+    functionReturnType :: Type' envtype  -- actually, the function might return something with a yet unknown environment type...
+    -- functionNeedsEnvironment :: NeedsImplicitEnvironment
   }
 
 type IFunDec = FunDec' IncompleteEnv
@@ -227,10 +229,10 @@ type FunDec = FunDec' FullEnv
 
 
 instance Eq (FunDec' envtype) where
-  FD _ uv _ _ _ == FD _ uv' _ _ _ = uv == uv'
+  FD _ uv _ _ == FD _ uv' _ _ = uv == uv'
 
 instance Ord (FunDec' envtype) where
-  FD _ uv _ _ _ `compare` FD _ uv' _ _ _ = uv `compare` uv'
+  FD _ uv _ _ `compare` FD _ uv' _ _ = uv `compare` uv'
 
 
 
@@ -356,6 +358,10 @@ type AnnStmt' envtype = Fix (Annotated :. StmtF envtype (Fix (TypedExpr envtype)
 type AnnIStmt = Fix (Annotated :. StmtF IncompleteEnv IExpr)
 type AnnStmt = Fix (Annotated :. StmtF FullEnv Expr)
 
+deannAnnIStmt :: (Annotated :. StmtF IncompleteEnv IExpr) a -> StmtF IncompleteEnv IExpr a
+deannAnnIStmt (O (Annotated _ stmt)) = stmt
+
+
 
 type family EnvDef envtype
 type instance EnvDef IncompleteEnv = NonEmpty EnvID  -- EnvDefs are being redone, so we need to keep EnvID only.
@@ -477,7 +483,7 @@ tRecDef :: DataRec -> Context
 tRecDef (DR _ uv t _) = ppUniqueMem uv <+> tType t
 
 tFunDec :: FunDec -> Context
-tFunDec (FD funEnv v params retType needsEnv) = comment (tEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" " <>) . tType) pType) params) <> ((" " <>) . tType) retType <> (if needsEnv then " +ENV" else " -ENV")
+tFunDec (FD funEnv v params retType) = comment (tEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" " <>) . tType) pType) params) <> ((" " <>) . tType) retType
 
 tTypes :: (Functor t) => t Type -> t Context
 tTypes = fmap $ \t@(Fix t') -> case t' of
@@ -595,7 +601,7 @@ mtConDef :: DataCon -> Context
 mtConDef (DC _ g t ann) = annotate ann $ foldl' (<+>) (ppCon g) $ tTypes t
 
 mtFunDec :: IFunDec -> Context
-mtFunDec (FD funEnv v params retType needsEnv) = comment (mtEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> mtDecon pName <> ((" " <>) . mtType) pType) params) <> ((" " <>) . mtType) retType <> (if needsEnv then " +ENV" else " -ENV")
+mtFunDec (FD funEnv v params retType) = comment (mtEnv funEnv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> mtDecon pName <> ((" " <>) . mtType) pType) params) <> ((" " <>) . mtType) retType
 
 mtTypes :: (Functor t) => t IType -> t Context
 mtTypes = fmap $ \t@(Fix t') -> case t' of
@@ -608,7 +614,7 @@ mtTypes = fmap $ \t@(Fix t') -> case t' of
 mtType :: IType -> Context
 mtType = cata $ \case
   ITCon (DD tid _ _ _ _) _ _ -> ppTypeInfo tid
-  ITFun funUnion args ret -> tEnvUnion (mtEnv' <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
+  ITFun funUnion args ret -> tEnvUnion (ppEnvID <$> funUnion) <> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
   ITVar tv -> T.tTVar tv
 
 mtEnv :: IEnvF IType -> Context
@@ -616,7 +622,7 @@ mtEnv = mtEnv' . fmap mtType
 
 mtEnv' :: IEnvF Context -> Context
 mtEnv' (IRecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
-mtEnv' (IEnv eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (T.asUniqueVar v) <+> t) vs)
+mtEnv' (IEnv eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (asUniqueVar v) <+> t) vs)
 
 mtBody :: (Foldable f) => Context -> f AnnIStmt -> Context
 mtBody = ppBody mtAnnStmt

@@ -16,7 +16,7 @@ import Data.List.NonEmpty (NonEmpty)
 
 import Data.Bifunctor.TH (deriveBifoldable, deriveBifunctor, deriveBitraversable)
 import Data.Functor.Classes (Eq1 (liftEq), Ord1 (..))
-import Data.Biapplicative (first)
+import Data.Biapplicative (first, bimap)
 import Data.Functor.Foldable (cata, project)
 import Data.Foldable ( foldl', fold )
 import Data.Text (Text)
@@ -444,11 +444,15 @@ selectInstanceFunction _ (CFD _ uv _ _) (Fix (TCon dd@(DD ut _ _ _) _ _)) insts 
   in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
 selectInstanceFunction backing (CFD cd uv _ _) (Fix (TVar tv)) _ =
-  let inst = mustOr (printf "[COMPILER ERROR]: TVar %s not mapped for some reason!" (tTVar tv)) $ backing !? tv >>= (!? cd)
+  let inst = mustOr (printf "[COMPILER ERROR]: TVar %s not mapped for some reason! Content of backing: %s." (tTVar tv) (pBacking backing)) $ backing !? tv >>= (!? cd)
   in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
 selectInstanceFunction _ _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (Common.sctx (tType self))
 
+
+pBacking :: Map TVar (Map ClassDef InstDef) -> Context
+pBacking = Common.ppMap . fmap (bimap tTVar pInsts) . Map.toList
+  where pInsts = Common.ppMap . fmap (bimap tClassName tInst) . Map.toList
 
 -- TODO: ONG ITS SO BADD
 mapType :: Type -> Type -> Map TVar DataDef

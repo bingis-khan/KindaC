@@ -8,4 +8,4 @@ inst MyAsInt Int
 turn-to-int-and-add-69 (x)
 	return to-int(x) + 69
 
-print turn-to-int-and-add-69(1)
+print turn-to-int-and-add-69(10 + 1)

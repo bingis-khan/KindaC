@@ -11,6 +11,8 @@ currently implementing typeclasses.
 
 > REMEMBER: DON'T DRY.  I don't know what I'm doing, so I have to implement all this stuff first, and only then look for similarities.
 
+Also I decided to use a tag "ALGO", which should mark key moments with the typechecking scheme and unions. I should probably start writing them up as a source of info for the article.
+
 
 ## directory structure
 
@@ -20,7 +22,6 @@ currently implementing typeclasses.
 - `doc/` - documentation (README inside)
 - `error-handling/` - put files here, when error is stupid or unreadable
 - `ctest/` - testing stuff in C
-- `old/` - old compiler
 
 
 ## todo larger

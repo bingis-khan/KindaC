@@ -32,6 +32,7 @@ import Misc.Memo (Memo (..), emptyMemo, memo, memo', isMemoed)
 import Data.Monoid (Any (Any, getAny))
 import Control.Monad.Trans.RWS (RWST)
 import qualified Control.Monad.Trans.RWS as RWS
+import Data.Bifoldable (bifold)
 
 
 
@@ -49,7 +50,7 @@ mono tmod = do
 
 
   phase "Monomorphisation (env instantiations)"
-  ctxPrint (Common.ppMap . fmap (bimap Common.ppEnvID (Common.encloseSepBy "[" "]" ", " . fmap (\(EnvUse _ env) -> M.mtEnv env) . Set.toList)) . Map.toList) monoCtx.envInstantiations
+  ctxPrint (Common.ppMap . fmap (bimap Common.ppEnvID (Common.encloseSepBy "[" "]" ", " . fmap (\(EnvUse _ env _) -> M.mtEnv env) . Set.toList)) . Map.toList) monoCtx.envInstantiations
 
   phase "Monomorphisation (first part)"
   ctxPrint M.mtStmts mistmts
@@ -123,7 +124,7 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
 
       -- don't forget to register usage.
       emptyEnv <- mEnv $ T.Env eid []
-      registerEnvMono Nothing eid emptyEnv
+      registerEnvMono Nothing eid emptyEnv mempty
 
       pure $ M.Con mc
 
@@ -157,13 +158,26 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
     T.Lam env args ret -> do
       margs <- traverse2 mType args
       menv <- mEnv' env
-      registerEnvMono Nothing (T.envID env) menv
+
+      let usedVarsInLambda = findUsedVarsInExpr ret
+      registerEnvMono Nothing (T.envID env) menv usedVarsInLambda
 
       pure $ M.Lam menv margs ret
 
   pure $ M.TypedExpr mt mexpr
 
 
+findUsedVarsInExpr :: M.IExpr -> EnvVarUsage
+findUsedVarsInExpr = cata $ \(M.TypedExpr _ expr) -> case expr of
+  M.Var _ v -> Set.singleton $ Right v
+  e -> fold e
+
+findUsedVarsInFunction :: NonEmpty M.AnnIStmt -> EnvVarUsage
+findUsedVarsInFunction = foldMap $ cata $ kat . first findUsedVarsInExpr . M.deannAnnIStmt
+  where
+    kat = \case
+      M.EnvDef envIDs -> Set.fromList $ fmap Left $ NonEmpty.toList envIDs
+      ke -> bifold ke
 
 mCase :: T.Case M.IExpr M.AnnIStmt -> Context M.ICase
 mCase kase = do
@@ -205,8 +219,8 @@ variable (T.DefinedFunction vfn snapshot) et = do
   ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
 
   -- male feminists are seething rn
-  let (tts, tret, envEmptiness) = case project et of
-        M.ITFun union mts mret -> (mts, mret, not $ M.iAreAllEnvsEmpty union)
+  let (tts, tret) = case project et of
+        M.ITFun _ mts mret -> (mts, mret)
         _ -> undefined
 
 
@@ -225,12 +239,12 @@ variable (T.DefinedFunction vfn snapshot) et = do
     menv <- mEnv' vfn.functionDeclaration.functionEnv
 
     -- see definition of Context for exact purpose of these parameters.
-    fmap M.DefinedFunction $ flip (memo memoFunction (\mem s -> s { memoFunction = mem })) (vfn, tts, tret, menv, envEmptiness) $ \(tfn, ts, ret, env, needsEnv) addMemo -> mdo
+    fmap M.DefinedFunction $ flip (memo memoFunction (\mem s -> s { memoFunction = mem })) (vfn, tts, tret, menv) $ \(tfn, ts, ret, env) addMemo -> mdo
 
       uv <- newUniqueVar tfn.functionDeclaration.functionId
 
       params <- flip zip ts <$> traverse (mDecon . fst) tfn.functionDeclaration.functionParameters
-      let fundec = M.FD env uv params ret needsEnv :: M.IFunDec
+      let fundec = M.FD env uv params ret :: M.IFunDec
 
 
       -- DEBUG: when in the process of memoization, show dis.
@@ -244,7 +258,8 @@ variable (T.DefinedFunction vfn snapshot) et = do
       body <- mStmts tfn.functionBody
 
       -- Then add this environment to the "used" environments for step 2.
-      registerEnvMono (Just fn) (T.envID tfn.functionDeclaration.functionEnv) env
+      let usedVarsInFunction = findUsedVarsInFunction body
+      registerEnvMono (Just fn) (T.envID tfn.functionDeclaration.functionEnv) env usedVarsInFunction
 
       pure fn
 
@@ -256,8 +271,8 @@ variable (T.DefinedClassFunction cfd insts self) et = do
   ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
 
   -- male feminists are seething rn
-  let (tts, tret, envEmptiness) = case project et of
-        M.ITFun union mts mret -> (mts, mret, not $ M.iAreAllEnvsEmpty union)
+  let (tts, tret) = case project et of
+        M.ITFun _ mts mret -> (mts, mret)
         _ -> undefined
 
   -- creates a type mapping for this function.
@@ -268,12 +283,12 @@ variable (T.DefinedClassFunction cfd insts self) et = do
     menv <- mEnv' vfn.functionDeclaration.functionEnv
 
     -- see definition of Context for exact purpose of these parameters.
-    fmap M.DefinedFunction $ flip (memo memoFunction (\mem s -> s { memoFunction = mem })) (vfn, tts, tret, menv, envEmptiness) $ \(tfn, ts, ret, env, needsEnv) addMemo -> mdo
+    fmap M.DefinedFunction $ flip (memo memoFunction (\mem s -> s { memoFunction = mem })) (vfn, tts, tret, menv) $ \(tfn, ts, ret, env) addMemo -> mdo
 
       uv <- newUniqueVar tfn.functionDeclaration.functionId
 
       params <- flip zip ts <$> traverse (mDecon . fst) tfn.functionDeclaration.functionParameters
-      let fundec = M.FD env uv params ret needsEnv :: M.IFunDec
+      let fundec = M.FD env uv params ret :: M.IFunDec
 
 
       -- DEBUG: when in the process of memoization, show dis.
@@ -287,7 +302,8 @@ variable (T.DefinedClassFunction cfd insts self) et = do
       body <- mStmts tfn.functionBody
 
       -- Then add this environment to the "used" environments for step 2.
-      registerEnvMono (Just fn) (T.envID tfn.functionDeclaration.functionEnv) env
+      let usedVarsInInstFunction = findUsedVarsInFunction body
+      registerEnvMono (Just fn) (T.envID tfn.functionDeclaration.functionEnv) env usedVarsInInstFunction
 
       pure fn
 
@@ -305,11 +321,12 @@ cringeMapType lpt rpt = case (project lpt, project rpt) of
 
 
 -- Registers a single environment monomorphization. later used to track which environments monomoprhised to what.
-registerEnvMono :: Maybe M.IFunction -> EnvID -> M.IEnv -> Context ()
-registerEnvMono mvar oldEID nuEnv | null (ftvEnvButIgnoreUnions nuEnv) = State.modify $ \mctx -> mctx { envInstantiations = Map.insertWith (<>) (M.ienvID nuEnv) (Set.singleton (EnvUse mvar nuEnv)) (Map.insertWith (<>) oldEID (Set.singleton (EnvUse mvar nuEnv)) mctx.envInstantiations) }
+registerEnvMono :: Maybe M.IFunction -> EnvID -> M.IEnv -> Set (Either EnvID M.IVariable) -> Context ()
+registerEnvMono mvar oldEID nuEnv vars = State.modify $ \mctx -> mctx { envInstantiations = Map.insertWith (<>) (M.ienvID nuEnv) (Set.singleton (EnvUse mvar nuEnv vars)) (Map.insertWith (<>) oldEID (Set.singleton (EnvUse mvar nuEnv vars)) mctx.envInstantiations) }
 
--- ignore when the environment has TVars...???? i guess...
-registerEnvMono _ _ _ = pure ()
+-- CHECK:
+-- ignore when the environment has TVars...???? i guess... it shouldn't happen anyway, right?
+-- registerEnvMono _ _ _ _ = pure ()
 
 
 
@@ -334,7 +351,7 @@ constructor tdc@(T.DC dd@(T.DD ut _ _ _) _ _ _) et = do
   (_, dcQuery) <- mDataDef (dd, tm)
   let mdc = case dcQuery !? tdc of
         Just m -> m
-        Nothing -> error $ printf "[COMPILER ERROR]: Failed to query an existing constructor for type %s.\n TypeMap: %s\n(applied TVs: %s, applied unions: %s) -> (applied TVs: %s, applied unions: %s)" (Common.ppTypeInfo ut) (ppTypeMap tm) (Common.ppSet T.tType ttypes) (Common.ppSet (T.tEnvUnion . fmap T.tType) tunions) (Common.ppSet M.mtType mtypes) (Common.ppSet (maybe "?" (M.tEnvUnion . fmap M.mtEnv)) munions)
+        Nothing -> error $ printf "[COMPILER ERROR]: Failed to query an existing constructor for type %s.\n TypeMap: %s\n(applied TVs: %s, applied unions: %s) -> (applied TVs: %s, applied unions: %s)" (Common.ppTypeInfo ut) (ppTypeMap tm) (Common.ppSet T.tType ttypes) (Common.ppSet (T.tEnvUnion . fmap T.tType) tunions) (Common.ppSet M.mtType mtypes) (Common.ppSet (maybe "?" (M.tEnvUnion . fmap ppEnvID)) munions)
 
   pure mdc
 
@@ -493,39 +510,49 @@ mUnion tunion = do
   case envMap !? tunion.unionID of
     Just mru -> pure mru
     Nothing -> do
+      -- normal union - all TVars mapped. safe to memoize.
+      memo' memoUnion (\mem mctx -> mctx { memoUnion = mem }) tunion.unionID $ \eid _ -> do
+        -- menvs <- traverse mEnv tunion''.union
+        case tunion.union of
+          [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
 
-      -- check if we previously encountered this environment and it contained TVars that weren't mapped.
-      cuckedMemo <- State.gets cuckedUnions
-      case isMemoed tunion.unionID cuckedMemo of
-        Just mu -> pure mu
-        Nothing -> do
+          (e:es) -> do
+            let envs = T.envID <$> e :| es
+            pure $ M.EnvUnion { M.unionID = eid, M.union = envs }
 
-          -- it wasn't... but it's still possible.
-          tunion' <- sequenceA tunion
-          let unionFTV = foldMap ftvButIgnoreUnions tunion'
-          if not (null unionFTV)
-            then
-              -- had TVars -> remember it.
-              memo' cuckedUnions (\mem mctx -> mctx { cuckedUnions = mem }) tunion'.unionID $ \eid _ -> do
-                menvs <- traverse mEnv tunion'.union
-                case menvs of
-                  -- literally impossible as there would be no FTVs otherwise...
-                  [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
+      -- CHECK: old mUnion stuff
+      -- -- check if we previously encountered this environment and it contained TVars that weren't mapped.
+      -- cuckedMemo <- State.gets cuckedUnions
+      -- case isMemoed tunion.unionID cuckedMemo of
+      --   Just mu -> pure mu
+      --   Nothing -> do
 
-                  (e:es) -> do
-                    -- preserve ID!!!!
-                    pure $ M.EnvUnion { M.unionID = eid, M.union = e :| es }
+      --     -- it wasn't... but it's still possible.
+      --     tunion' <- sequenceA tunion
+      --     let unionFTV = foldMap ftvButIgnoreUnions tunion'
+      --     if not (null unionFTV)
+      --       then
+      --         -- had TVars -> remember it.
+      --         memo' cuckedUnions (\mem mctx -> mctx { cuckedUnions = mem }) tunion'.unionID $ \eid _ -> do
+      --           menvs <- traverse mEnv tunion'.union
+      --           case menvs of
+      --             -- literally impossible as there would be no FTVs otherwise...
+      --             [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
 
-            else
-              -- normal union - all TVars mapped. safe to memoize.
-              memo' memoUnion (\mem mctx -> mctx { memoUnion = mem }) tunion' $ \tunion'' _ -> do
-                menvs <- traverse mEnv tunion''.union
-                case menvs of
-                  [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
+      --             (e:es) -> do
+      --               -- preserve ID!!!!
+      --               pure $ M.EnvUnion { M.unionID = eid, M.union = e :| es }
 
-                  (e:es) -> do
-                    nuid <- newUnionID
-                    pure $ M.EnvUnion { M.unionID = nuid, M.union = e :| es }
+      --       else
+      --         -- normal union - all TVars mapped. safe to memoize.
+      --         memo' memoUnion (\mem mctx -> mctx { memoUnion = mem }) tunion' $ \tunion'' _ -> do
+      --           menvs <- traverse mEnv tunion''.union
+      --           case menvs of
+      --             [] -> error $ printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
+
+      --             (e:es) -> do
+      --               nuid <- newUnionID
+      --               pure $ M.EnvUnion { M.unionID = nuid, M.union = e :| es }
 
 
 
@@ -536,20 +563,21 @@ mEnv' env = do
 
 
 
-mEnv :: T.EnvF M.IType -> Context M.IEnv
+-- TODO: modify?
+mEnv :: T.EnvF M.IType -> Context (M.IEnvF M.IType)
 mEnv env' = do
-  -- let mapParams = traverse $ \(v, loc, t) -> (,loc,t) <$> variable v t
+  let mapParams = traverse $ \(v, loc, t) -> (,loc,t) <$> variable v t
   memo' memoEnv (\mem mctx -> mctx { memoEnv = mem }) env' $ \env _ -> case env of
     T.RecursiveEnv eid isEmpty -> pure $ M.IRecursiveEnv eid isEmpty
 
     -- xdddd, we don't create a new env id when it has shit inside.
     T.Env eid params | not (null (foldMap (\(_, _, t) -> ftvButIgnoreUnions t) params)) -> do
       -- we have to preserve the original ID to later replace it with all the type permutations.
-      pure $ M.IEnv eid params
+      M.IEnv eid <$> mapParams params
 
     T.Env _ params -> do
       newEID <- newEnvID
-      pure $ M.IEnv newEID params
+      M.IEnv newEID <$> mapParams params
 
 
 
@@ -560,10 +588,11 @@ mEnv env' = do
 data Context' = Context
   { tvarMap :: TypeMap  -- this describes the temporary mapping of tvars while monomorphizing.
   , tvarInsts :: Map T.TVar (Map T.ClassDef T.InstDef)  -- TODO: smell.
-  , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.IEnv, M.NeedsImplicitEnvironment) M.IFunction
+  , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.IEnv) M.IFunction
   , memoDatatype :: Memo (T.DataDef, TypeMap) (M.IDataDef, Map T.DataCon M.IDataCon)
   , memoEnv :: Memo (T.EnvF M.IType) M.IEnv
-  , memoUnion :: Memo (T.EnvUnionF M.IType) M.IEnvUnion
+  -- , memoUnion :: Memo (T.EnvUnionF M.IType) M.IEnvUnion
+  , memoUnion :: Memo UnionID M.IEnvUnion
   , memoMember :: Memo (M.IDataDef, MemName) UniqueMem
 
   -- SPECIAL ENVIRONMENTS!!!
@@ -573,6 +602,8 @@ data Context' = Context
   -- burh, this is shit, literally
   -- like, maybe env usage can be merged into that kekekek.
   , envInstantiations :: Map EnvID (Set EnvUse)
+
+  , usedVars :: Set UniqueVar  -- FROM RemoveUnused. this thing tracks which (monomorphized) variables were used. remember that it should not carry between scopes.
   }
 type Context = StateT Context' IO
 
@@ -588,6 +619,8 @@ startingContext = Context
 
   , cuckedUnions = emptyMemo
   , envInstantiations = mempty
+
+  , usedVars = mempty
   }
 
 
@@ -609,7 +642,7 @@ instance Monoid TypeMap where
 ppTypeMap :: TypeMap -> Common.Context
 ppTypeMap (TypeMap tvs unions) = Common.ppLines'
   [ (ppMap . fmap (bimap (Common.pretty . T.fromTV) M.mtType) . Map.toList) tvs
-  , (ppMap . fmap (bimap Common.ppUnionID (M.tEnvUnion . fmap M.mtEnv)) . Map.toList) unions
+  , (ppMap . fmap (bimap Common.ppUnionID (M.tEnvUnion . fmap ppEnvID)) . Map.toList) unions
   ]
 
 
@@ -723,7 +756,7 @@ mfDecon = cata $ fmap embed . \case
 
   M.CaseRecord t _ decons -> do
     mt <- mfType t
-    
+
     -- fun unsafe shit.
     let dd = case project mt of
           M.TCon mdd -> mdd
@@ -779,15 +812,47 @@ mfVariable = \case
     pure $ M.DefinedFunction mfun
 
 
-mfEnv :: M.IEnvF (EnvContext M.Type) -> EnvContext M.Env
-mfEnv (M.IRecursiveEnv eid isEmpty) = pure $ M.RecursiveEnv eid isEmpty
-mfEnv (M.IEnv eid envparams) = do
-  _ <- RWS.asks masks
-  menvparams <- traverse (\(v, loc, t) -> liftA2 (,loc,) (mfVariable v) t) $ undefined
-  pure $ M.Env eid menvparams
+-- mfEnv :: M.IEnvF (EnvContext M.Type) -> EnvContext M.Env
+-- mfEnv (M.IRecursiveEnv eid isEmpty) = pure $ M.RecursiveEnv eid isEmpty
+-- mfEnv (M.IEnv eid envparams) = do
+--   menvparams <- traverse (\(v, loc, t) -> liftA2 (,loc,) (mfVariable v) t) envparams
+--   pure $ M.Env eid menvparams
+mfEnv :: M.IEnvF a -> EnvContext M.Env
+mfEnv (M.IRecursiveEnv eid isEmpty) = error "RECURSIVENESS ASDASD"  -- pure $ M.RecursiveEnv eid isEmpty
+mfEnv (M.IEnv eid _) = do
+  envInsts <- RWS.asks allInsts
+  case envInsts !? eid of
+    Just envs | length envs == 1 -> do
+      case head (Set.toList envs) of
+        EnvUse _ (M.IEnv eeid vars) usage -> do
+          usage' <- fmap fold
+            $ traverse (\case
+              Left  eid -> expandVars eid
+              Right var -> pure (Set.singleton var))
+            $ Set.toList usage
+          let vars' = filter (\(v, _, _) -> Set.member v usage') vars
+          vars'' <- traverse (\(v, loc, t) -> liftA2 (,loc,) (mfVariable v) (mfType t)) vars'
+          pure $ M.Env eeid vars''
 
--- applyMask :: [Bool] -> [b] -> [b]
--- applyMask mask content = map snd $ filter fst $ zip mask content
+        EnvUse _ (M.IRecursiveEnv reid isEmpty) _ ->
+          -- pure $ M.RecursiveEnv reid isEmpty
+          error "DUPSKO!"
+
+    _ -> error $ "Bruh. Muh shit code is shit."
+
+expandVars :: EnvID -> EnvContext (Set M.IVariable)
+expandVars eid = do
+  envInsts <- RWS.asks allInsts
+  case envInsts !? eid of
+    Nothing -> pure mempty
+    Just set | null set -> pure mempty
+    Just set -> do
+      let EnvUse _ _ usage = head $ Set.toList set
+      fmap fold $ traverse (\case
+          Left  eid' -> expandVars eid'
+          Right var  -> pure (Set.singleton var)
+        ) $ Set.toList usage
+
 
 mfType :: M.IType -> EnvContext M.Type
 mfType = para $ fmap embed . \case
@@ -805,17 +870,16 @@ mfType = para $ fmap embed . \case
 
 
 
-mfUnion :: M.EnvUnionF (M.IEnvF (M.IType, EnvContext M.Type)) -> EnvContext M.EnvUnion
+mfUnion :: M.EnvUnionF M.IEnvID -> EnvContext M.EnvUnion
 mfUnion union = do
   usedEnvsFromThisEnv <- filterEnvs $ NonEmpty.toList union.union
 
+  -- TODO: explain more. Here environments with tvars should get expanded into actual definitions.
+  -- TODO: also, filterEnvs seems unnecessary? like, it does the filtering already.
   mappedEnvs <- fmap concat $ for usedEnvsFromThisEnv $ \env -> do
-    if null (ftvEnvButIgnoreUnions $ fst <$> env)
-      then fmap (:[]) $ mfEnv $ snd <$> env
-      else do
-        -- TODO: it seems like it's also expanding environments, like the expandEnvironments function.
-        envMap <- RWS.asks allInsts
-        traverse (mfEnv . fmap mfType . (\(EnvUse _ envInstantiation) -> envInstantiation)) $ Set.toList $ Map.findWithDefault Set.empty (M.ienvID env) envMap
+    -- TODO: it seems like it's also expanding environments, like the expandEnvironments function.
+    envMap <- RWS.asks allInsts
+    traverse (mfEnv . fmap mfType . (\(EnvUse _ envInstantiation _) -> envInstantiation)) $ Set.toList $ Map.findWithDefault Set.empty env envMap
 
 
   -- NOTE: I HATE THIS FUCKING ERROR LIKE YOU WOULDN'T BELIEVE.
@@ -828,16 +892,16 @@ mfUnion union = do
 
 
 -- TODO: smell. this seems to expand environments only for functions, which means it's only used for EnvDefs.
+--       it's because each function usage is separate in the environment, so we don't have to expand them.
 expandEnvironments :: [EnvID] -> EnvContext [(M.Function, M.Env)]
 expandEnvironments envIDs = do
   envInsts <- RWS.asks allInsts
-  ctxPrint' $ printf "expand: %s\n%s" (ppList ppEnvID envIDs) (ppMap $ Map.toList envInsts <&> \(eid, euse) -> (ppEnvID eid, ppList (\(EnvUse mfn env) -> case mfn of { Just fn -> "(" <> ppVar Local fn.functionDeclaration.functionId <>  ", " <> ppEnvID (M.ienvID env) <> ")"; Nothing -> ppEnvID (M.ienvID env) }) $ Set.toList euse))
+  ctxPrint' $ printf "expand: %s\n%s" (ppList ppEnvID envIDs) (ppMap $ Map.toList envInsts <&> \(eid, euse) -> (ppEnvID eid, ppList (\(EnvUse mfn env _) -> case mfn of { Just fn -> "(" <> ppVar Local fn.functionDeclaration.functionId <>  ", " <> ppEnvID (M.ienvID env) <> ")"; Nothing -> ppEnvID (M.ienvID env) }) $ Set.toList euse))
   fmap concat $ for envIDs $ \envID ->
     case envInsts !? envID of
       Just envs -> do
-        traverse (bitraverse mfFunction (mfEnv . fmap mfType)) $ mapMaybe (\(EnvUse fn env) -> fn <&> (,env)) $ Set.toList envs
+        traverse (bitraverse mfFunction (mfEnv . fmap mfType)) $ mapMaybe (\(EnvUse fn env _) -> fn <&> (,env)) $ Set.toList envs
       Nothing -> pure []
-
 
 
 mfDataDef :: (M.IDataDef, [M.EnvUnion]) -> EnvContext (M.DataDef, Map M.IDataCon M.DataCon)
@@ -874,7 +938,7 @@ mfFunction fun = do
   params <- traverse (bitraverse mfDecon mfType) fundec.functionParameters
   ret <- mfType fundec.functionReturnType
 
-  let mfundec = M.FD { M.functionEnv = env, M.functionId = fundec.functionId, M.functionParameters = params, M.functionReturnType = ret, M.functionNeedsEnvironment = fundec.functionNeedsEnvironment }
+  let mfundec = M.FD { M.functionEnv = env, M.functionId = fundec.functionId, M.functionParameters = params, M.functionReturnType = ret }
 
   body <- mfAnnStmts $ NonEmpty.toList fun.functionBody
   let completedBody = case body of
@@ -900,7 +964,7 @@ mfConstructor dc@(M.DC dd _ _ _) imt = do
         _ -> error $ printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%s)." (M.mtType imt)
 
   -- mtypes <- traverse mfType ttypes
-  munions <- traverse (mfUnion . fmap2 (\t -> (t, mfType t))) imunions
+  munions <- traverse mfUnion imunions
 
   (_, dcQuery) <- mfDataDef (dd, munions)
   let mdc = fromJust $ dcQuery !? dc
@@ -908,10 +972,10 @@ mfConstructor dc@(M.DC dd _ _ _) imt = do
 
 
 
-ftvEnvButIgnoreUnions :: M.IEnv -> Set T.TVar
-ftvEnvButIgnoreUnions = \case
-  M.IRecursiveEnv _ _ -> Set.empty
-  M.IEnv _ ts -> foldMap (\(_, _, t) -> ftvButIgnoreUnions t) ts
+-- ftvEnvButIgnoreUnions :: M.IEnv -> Set T.TVar
+-- ftvEnvButIgnoreUnions = \case
+--   M.IRecursiveEnv _ _ -> Set.empty
+--   M.IEnv _ ts -> foldMap (\(_, _, t) -> ftvButIgnoreUnions t) ts
 
 ftvButIgnoreUnions :: M.IType -> Set T.TVar
 ftvButIgnoreUnions = cata $ \case
@@ -921,13 +985,10 @@ ftvButIgnoreUnions = cata $ \case
 
 
 
-filterEnvs :: [M.IEnvF a] -> EnvContext [M.IEnvF a]
+filterEnvs :: [M.IEnvID] -> EnvContext [M.IEnvID]
 filterEnvs envs = do
   envIds <- RWS.asks allInsts
-
-  let f (M.IRecursiveEnv eid _) = Map.member eid envIds
-      f (M.IEnv eid _) = Map.member eid envIds
-  pure $ filter f envs
+  pure $ filter (`Map.member` envIds) envs
 
 
 expectIDataDef :: M.IType -> M.IDataDef
@@ -952,16 +1013,16 @@ type EnvContext = RWST EnvContextUse () EnvMemo IO  -- TEMP: IO temporarily for 
 --   NOTE: In the future, maybe more stuff (like which constructors were used!)
 data EnvContextUse = EnvContextUse
   { allInsts :: Map EnvID (Set EnvUse)
-  , masks :: Map EnvID ()
   }
 
-data EnvUse = EnvUse (Maybe M.IFunction) M.IEnv
+data EnvUse = EnvUse (Maybe M.IFunction) M.IEnv EnvVarUsage
+type EnvVarUsage = Set (Either EnvID M.IVariable)
 
 instance Eq EnvUse where
-  EnvUse _ le == EnvUse _ re = le == re
+  EnvUse _ le _ == EnvUse _ re _ = le == re
 
 instance Ord EnvUse where
-  EnvUse _ le `compare` EnvUse _ re = le `compare` re
+  EnvUse _ le _ `compare` EnvUse _ re _ = le `compare` re
 
 
 newtype EnvMemo = EnvMemo

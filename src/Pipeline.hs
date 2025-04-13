@@ -5,7 +5,6 @@ import qualified Data.Text.IO as TextIO
 import Parser (parse)
 import Resolver (resolve)
 import Typecheck (typecheck)
-import RemoveUnused (removeUnused)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
@@ -61,12 +60,12 @@ finalizeModule prel modul = do
   -- join both modules
   let joinedStatements = prel.tpModule.toplevelStatements ++ modul.toplevelStatements
 
-  phase "Removing Unused"
-  let removedUnused = removeUnused joinedStatements
-  ctxPrint T.tStmts removedUnused
+  -- phase "Removing Unused"
+  -- let removedUnused = removeUnused joinedStatements
+  -- ctxPrint T.tStmts removedUnused
 
   phase "Monomorphizing"
-  mmod <- mono removedUnused
+  mmod <- mono joinedStatements
   ctxPrint M.mModule mmod
 
   phase "C-ing"
