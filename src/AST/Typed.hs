@@ -280,7 +280,7 @@ type ScopeSnapshot = Map ClassDef PossibleInstances
 
 data Variable
   = DefinedVariable UniqueVar
-  | DefinedFunction Function ScopeSnapshot
+  | DefinedFunction Function ScopeSnapshot [Type]
   | DefinedClassFunction ClassFunDec PossibleInstances Type  -- which class function and which instances are visible at this point.
 
 data VariableProto
@@ -293,14 +293,14 @@ data VariableProto
 asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
   DefinedVariable uv -> uv
-  DefinedFunction fn _ -> fn.functionDeclaration.functionId
+  DefinedFunction fn _ _ -> fn.functionDeclaration.functionId
   DefinedClassFunction (CFD _ uv _ _) _ _ -> uv
 
 
 asProto :: Variable -> VariableProto
 asProto = \case
   DefinedVariable uv -> PDefinedVariable uv
-  DefinedFunction fn _ -> PDefinedFunction fn
+  DefinedFunction fn _ _ -> PDefinedFunction fn
   DefinedClassFunction cd _ _ -> PDefinedClassFunction cd
 
 
@@ -544,8 +544,8 @@ tExpr = cata $ \(TypedExpr et expr) ->
   Lit (LInt x) -> pretty x
   Lit (LFloat fl) -> pretty $ show fl
   Var l (DefinedVariable v) -> ppVar l v
-  Var l (DefinedFunction f _) -> ppVar l f.functionDeclaration.functionId <> "&F"
-  Var l (DefinedClassFunction (CFD _ uv _ _) insts _) -> ppVar l uv <> "&C" <> tSelectedInsts (Map.elems insts)
+  Var l (DefinedFunction f _ _) -> ppVar l f.functionDeclaration.functionId <> "&F"
+  Var l (DefinedClassFunction (CFD _ uv _ _) insts _)  -> ppVar l uv <> "&C" <> tSelectedInsts (Map.elems insts)
   Con _ (DC _ uc _ _) -> ppCon uc
 
   RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> ppRecordMems inst

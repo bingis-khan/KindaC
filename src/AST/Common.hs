@@ -32,7 +32,7 @@ import qualified Data.Set as Set
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = dc
+defaultContext = rc
 
 dc = debugContext
 rc = runtimeContext
@@ -273,6 +273,9 @@ ctxPrint f x = unless defaultContext.silent $ liftIO $ putStrLn $ ctx f x
 
 ctxPrint' :: MonadIO io => String -> io ()
 ctxPrint' = unless defaultContext.silent . liftIO . putStrLn
+
+ctxPrint'' :: MonadIO io => Context -> io ()
+ctxPrint'' = unless defaultContext.silent . liftIO . putStrLn . ctx id
 
 phase :: String -> IO ()
 phase text =

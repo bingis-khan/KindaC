@@ -1,6 +1,6 @@
-#$ Generalize functions over typeclass constraints with multiple instances.
-# 111
+#$ Generalize functions over typeclass constraints with multiple instances, one defined after general function.
 # 69
+# 192
 
 class MyAsInt
 	to-int (self _) -> Int
@@ -9,6 +9,9 @@ inst MyAsInt Int
 	to-int (self Int) -> Int
 		return self
 
+turn-to-int-and-add-69 (x)
+	return to-int(x) + 69
+
 inst MyAsInt Bool
 	to-int (self Bool) -> Int
 		if self
@@ -16,8 +19,6 @@ inst MyAsInt Bool
 		else
 			return 0
 
-turn-to-int-and-add-69 (x)
-	return to-int(x) + 69
 
-print turn-to-int-and-add-69(42)
 print turn-to-int-and-add-69(False)
+print turn-to-int-and-add-69(123)

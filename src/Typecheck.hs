@@ -222,10 +222,26 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
       R.EnvDef rfn -> do
         fn <- inferFunction rfn
+
+        -- be sure to copy the environment HERE!
+        let varsFromNestedFun = case fn.functionDeclaration.functionEnv of
+              T.Env _ env -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
+              _ -> error "FUKKK"
+
+        RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
+
         pure $ T.EnvDef fn
 
       R.InstDefDef rinst -> do
         inst <- inferInstance rinst
+        
+        -- be sure to copy the environment HERE!
+        let varsFromNestedFun = fold $ inst.instFunctions <&> \fn -> case fn.instFunction.functionDeclaration.functionEnv of
+              T.Env _ env -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
+              _ -> error "FUKKK"
+
+        RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
+
         pure $ T.InstDefDef inst
 
 
@@ -248,6 +264,13 @@ inferExpr = cata (fmap embed . inferExprType)
 
           -- eval body
           (fenv, body') <- withEnv env body
+
+          -- be sure to copy the environment HERE!
+          let varsFromNestedFun = case fenv of
+                T.Env _ env -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
+                _ -> error "FUKKK"
+
+          RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
 
           union <- singleEnvUnion fenv
           let ret = T.getType body'
@@ -273,8 +296,7 @@ inferExpr = cata (fmap embed . inferExprType)
 
 
         R.Var loc v -> do
-          v' <- inferVariable v
-          t <- instantiateVariable v'
+          (t, v') <- instantiateVariable =<< inferVariable v
 
           when (loc == FromEnvironment) $ do
             addEnv v' t
@@ -365,8 +387,9 @@ inferVariable = \case
 
   R.ExternalFunction fn rsnapshot -> do
     snapshot <- inferSnapshot rsnapshot
-    pure $ T.DefinedFunction fn snapshot
-  R.DefinedFunction fn rsnapshot -> T.DefinedFunction <$> inferFunction fn <*> inferSnapshot rsnapshot
+    pure $ T.DefinedFunction fn snapshot undefined
+
+  R.DefinedFunction fn rsnapshot -> T.DefinedFunction <$> inferFunction fn <*> inferSnapshot rsnapshot <*> pure undefined
 
   R.ExternalClassFunction cfd@(T.CFD cd _ _ _) rinsts -> do
     insts <- fmap Map.fromList $ for (Map.toList rinsts) $ \(rdd, rinst) -> do
@@ -687,14 +710,11 @@ generalize ifn = do
   -- First substitution will substitute types that are already defined.
   -- What's left will be TyVars that are in the definition.
   let fn = subst csu unsuFn
-  let (su, scheme) = constructSchemeForFunctionDeclaration fn.functionDeclaration
+  (su, scheme, assocs) <- constructSchemeForFunctionDeclaration fn.functionDeclaration
 
   ctxPrint' $ printf "Scheme: %s" (T.tScheme scheme)
   let generalizedFn = subst su fn
 
-  -- add associations.
-  assocs <- rummageThroughAssociations generalizedFn.functionDeclaration.functionId su -- remember to use the new Subst, which generalizes the associations.
-  reportAssociationErrors
 
   let generalizedFnWithScheme = generalizedFn { T.functionDeclaration = generalizedFn.functionDeclaration { T.functionScheme = scheme, T.functionAssociations = assocs } }
 
@@ -747,7 +767,7 @@ substAssociations = do
             let instFun = mustOr "[COMPILER ERROR]: Could not select function %s bruh," $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
             -- hope it's correct....
-            instFunType <- instantiateFunction mempty instFun.instFunction
+            (instFunType, _) <- instantiateFunction mempty instFun.instFunction
 
             to `uni` instFunType
 
@@ -866,8 +886,8 @@ filterDesignatedForRemoval = fmap fst . filter (not . snd)
 
 -- Constructs a scheme for a function.
 -- ignores assigned scheme!
-constructSchemeForFunctionDeclaration :: T.FunDec -> (Subst, Scheme)
-constructSchemeForFunctionDeclaration dec =
+constructSchemeForFunctionDeclaration :: T.FunDec -> Infer (Subst, Scheme, [T.FunctionTypeAssociation])
+constructSchemeForFunctionDeclaration dec = do
       -- IMPORTANT: We only extract types from non-instantiated! The instantiated type might/will contain types from our function and we don't won't that. We only want to know which types are from outside.
       -- So, for a function, use its own type.
       -- For a variable, use the actual type as nothing is instantiated!
@@ -878,8 +898,8 @@ constructSchemeForFunctionDeclaration dec =
           digThroughVar :: T.Type -> T.Variable -> (Set TyVar, Set T.EnvUnion)
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
-            T.DefinedFunction f _ -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
-            T.DefinedClassFunction _ insts _
+            T.DefinedFunction f _ _ -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
+            T.DefinedClassFunction _ insts _   -- TODO: I think we don't need to dig through instances?
               -> foldMap digOutFromInst insts
               where
                 digOutFromInst :: T.InstDef -> (Set TyVar, Set T.EnvUnion)
@@ -897,6 +917,8 @@ constructSchemeForFunctionDeclaration dec =
       tyVarsOnlyFromHere = tyVarsDeclaration \\ tyVarsOutside
       unionsOnlyFromHere = unionsDeclaration \\ unionsOutside
 
+      -- ALGO: ASSOCIATIONS
+
       -- function to find tvars defined for this function!
       definedTVars = findTVarsForID dec.functionId
 
@@ -909,8 +931,16 @@ constructSchemeForFunctionDeclaration dec =
       unionsOnlyFromHereWithTVars = Set.map (subst su) unionsOnlyFromHere  -- NOTE: Unions might also contain our TyVars, so we must substitute it also.
 
       tvarsFromTyVars = Set.map asTVar tyVarsOnlyFromHere
-      scheme = Scheme (Set.toList $ tvarsFromTyVars <> tvarsDefinedForThisFunction) (Set.toList unionsOnlyFromHereWithTVars)
-  in (su, scheme)
+      Scheme tvars _ = Scheme (Set.toList $ tvarsFromTyVars <> tvarsDefinedForThisFunction) (Set.toList unionsOnlyFromHereWithTVars)
+      
+  -- add associations.
+  assocs <- rummageThroughAssociations dec.functionId su -- remember to use the new Subst, which generalizes the associations.
+  reportAssociationErrors
+
+  let (_, assocUnions) = foldMap (\(T.FunctionTypeAssociation _ t _) -> digOutTyVarsAndUnionsFromType t) assocs
+  let assocScheme = Scheme tvars (Set.toList $ unionsOnlyFromHereWithTVars <> assocUnions)
+
+  pure (su, assocScheme, assocs)
 
 digOutTyVarsAndUnionsFromType :: T.Type -> (Set TyVar, Set T.EnvUnion)
 digOutTyVarsAndUnionsFromType = para $ \case
@@ -1009,10 +1039,11 @@ inferDecon = cata $ fmap embed . \case
 -- Instantiation
 ------
 
-instantiateVariable :: T.Variable -> Infer T.Type
+-- TODO: merge it with 'inferVariable'.
+instantiateVariable :: T.Variable -> Infer (T.Type, T.Variable)
 instantiateVariable = \case
-  T.DefinedVariable v -> var v
-  T.DefinedFunction fn snapshot -> do
+  T.DefinedVariable v -> var v <&> (,T.DefinedVariable v)
+  T.DefinedFunction fn snapshot _ -> do
     instantiateFunction snapshot fn
 
   T.DefinedClassFunction cfd@(T.CFD _ funid params ret) insts self -> do
@@ -1047,9 +1078,9 @@ instantiateVariable = \case
     associateType self fnType cfd insts
     -- addClassFunctionUse fnUnion cfd self insts
 
-    pure fnType
+    pure (fnType, T.DefinedClassFunction cfd insts self)
 
-instantiateFunction :: T.ScopeSnapshot -> T.Function -> Infer T.Type
+instantiateFunction :: T.ScopeSnapshot -> T.Function -> Infer (T.Type, T.Variable)
 instantiateFunction snapshot fn = do
     let fundec = fn.functionDeclaration
     let (Scheme schemeTVars schemeUnions) = fundec.functionScheme
@@ -1071,14 +1102,16 @@ instantiateFunction snapshot fn = do
     let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> fundec.functionParameters) (mapTVs fundec.functionReturnType)
 
     -- add new associations
-    for_ fundec.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(T.CFD cd _ _ _)) -> do
+    assocs <- for fundec.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(T.CFD cd _ _ _)) -> do
       let from = Fix $ T.TVar tv
-      associateType (mapTVs from) (mapTVs to) cfd (fromMaybe mempty $ snapshot !? cd)
+      let mto = mapTVs to
+      associateType (mapTVs from) mto cfd (fromMaybe mempty $ snapshot !? cd)
+      pure mto
     
 
     ctxPrint' $ printf "After instantiation: %s" (T.tType fnType)
 
-    pure fnType
+    pure (fnType, T.DefinedFunction fn snapshot assocs)
 
 
 associateType :: T.Type -> T.Type -> T.ClassFunDec -> T.PossibleInstances -> Infer ()
@@ -1175,9 +1208,9 @@ withEnv' renv x = do
   let newEnv = mapMaybe (\(v, t) -> Map.lookup (T.asProto v) renvQuery <&> (v,,t)) $ Set.toList modifiedInstantiations
 
 
-  -- 4. and put that filtered stuff back.
-  let usedInstantiations = Set.fromList $ fmap (\(v, _, t) -> (v, t)) newEnv
-  RWS.modify $ \s -> s { instantiations = outOfEnvInstantiations <> usedInstantiations }
+  -- 4. and put that filtered stuff back. ? NO. ONLY IN ENV DEFS. SO WE COPY THAT ENVIRONMENT THERE NIGGA. inferFunction can be called for normal variables.
+  -- let usedInstantiations = Set.fromList $ fmap (\(v, _, t) -> (v, t)) newEnv
+  RWS.modify $ \s -> s { instantiations = outOfEnvInstantiations }
 
   pure (newEnv, x')
 
@@ -1326,8 +1359,16 @@ bind tyv t | occursCheck tyv t =
     }
 
 unifyFunEnv :: T.EnvUnion -> T.EnvUnion -> SubstCtx ()
-unifyFunEnv lenv@(T.EnvUnion { T.unionID = lid }) renv@(T.EnvUnion { T.unionID = rid }) = do
+unifyFunEnv lenv renv = do
   unionID <- newUnionID
+
+  -- BUG: adding 'subst su' here fixed some environments not having instantiated shit. (test 5_t10)
+  su <- RWS.gets ctxSubst
+  let (lenv'@(T.EnvUnion { T.unionID = lid }), renv'@(T.EnvUnion { T.unionID = rid })) = subst su (lenv, renv)
+      union2envset = Set.fromList . (\(T.EnvUnion { T.union = union }) -> union)
+      envset2union = Set.toList
+      funEnv = envset2union $ union2envset lenv' <> union2envset renv'
+
   let env = T.EnvUnion { T.unionID = unionID, T.union = funEnv }
 
   RWS.modify $ \su -> su
@@ -1337,10 +1378,6 @@ unifyFunEnv lenv@(T.EnvUnion { T.unionID = lid }) renv@(T.EnvUnion { T.unionID =
         in Subst (Map.insert rid env $ Map.insert lid env unions) ts
     }
   --       traceShow ("ENVUNI: " <> show lenv <> "|||||" <> show renv <> "8=====>" <> show env <> "\n") $ 
-  where
-    union2envset = Set.fromList . (\(T.EnvUnion { T.union = union }) -> union)
-    envset2union = Set.toList
-    funEnv = envset2union $ union2envset lenv <> union2envset renv
 
 occursCheck :: Substitutable a => TyVar -> a -> Bool
 occursCheck tyv t = tyv `Set.member` ftv t
@@ -1442,7 +1479,7 @@ instance Substitutable (Fix T.TypedExpr) where
 
 instance Substitutable T.Variable where
   ftv _ = mempty
-  subst su (T.DefinedFunction fn ss) = T.DefinedFunction (subst su fn) ss
+  subst su (T.DefinedFunction fn ss assocs) = T.DefinedFunction (subst su fn) ss (subst su assocs)
   subst su (T.DefinedClassFunction cfd insts self) = T.DefinedClassFunction cfd (subst su <$> insts) (subst su self)
   subst _ x = x
 

@@ -26,6 +26,7 @@ Also I decided to use a tag "ALGO", which should mark key moments with the typec
 ## regressions
 
 - in test 5.08, there are two environments in the union instead of one for a generalized function over typeclass instance. i'll have to check if it also happens for normal functions, what kind of regression it is. happened after removing RemoveUnused, so it's obvious something like this would happen. check if there are any warnings in tests when compiling C programs.
+- fuck, RemoveUnused was probably better, as Mono now does a lot of things and it kinda sucks.
 
 
 ## todo larger

@@ -47,3 +47,225 @@ Also, add instantiations for the associated types!
 	Also store possible instances!
 		We might as well store possible InstanceFunctions only and make them have a reference to the OG instance.
 Add associated types from this function to the global list of associations.
+
+
+
+ISSUE
+When functions are referenced, they appear in the environment with their type and union. These *do not change*,
+so unifying the associated type unifies the union, and it happens for each instantiation. fuck.
+
+this will also be a problem with explicit associated types (eg. Item for iterators)
+
+I guess I have a shit solution. Two, in fact, but it's the same idea.
+Alongside function definition, we also instantiate associated types.
+
+The question is if I should go deep. Because deep unions get modified.
+
+So we can track associated types.
+
+tv1 -> t1
+tv2 -> t2
+...etc
+
+
+These t1, t2, ... can be mapped. When monomorphizing, we can possibly compare the monomorphised version to the original and map the TYPES/UNIONS.
+They can/will change. We can keep them as implicit parts of the function definition.
+
+For clarification, I use associated types for both associated types in typeclasses AND function implementations.
+
+Okay, so we have the "mappings". We need to map the function during instantiation.
+
+
+A PARTIAL SOLUTION? (nevermind.)
+
+Let's focus only on function implementations. With function implementations, there are 2 possible combinations (without associated types):
+
+1. Only the class TVar.
+	This one just gets instantiated, so it doesn't matter. It's like a bound tvar, so it's okay.
+
+2. Class TVar + TVars bound by class function.
+	Same.
+
+The inst function will always be a *function*, not a variable. So we can easily instantiate it. Also, functions have the same types. Only the hidden unions are different and these are causing problems.
+We also know that unifying a union should not cause issues (not really, but it might actually be impossible in this case).
+Also, the parameters and return types' unions might be different. Eh....
+
+Nevermind.
+
+------
+
+Okay, so what do we know?
+
+For an instantiated class function, if it's union is an inner union, you should instantiate that union.
+If it's from an external *variable*, don't instantiate it. (Functions are okay, because they are instantiated.)
+
+f (x)
+	return (if random(): inst-fun else some-fun)(x)  # this should be re-instantiated - union is not from outside.
+
+--
+
+var-fun = x: x + 1
+
+f (x)
+	return (if random(): inst-fun else var-fun)(x)  # this should NOT be re-instantiated - union is from outside.
+
+
+wait, hold on.
+in the second example, the 'x' cannot be a tvar - it's from var-fun, so it won't be bound by f.
+hmmmm.....
+so, if a tvar gets bound, this means that the function IS NOT a variable from the outside - only functions instantiated inside.
+SO, we know that this union can be remapped safely!
+
+The converse is true. If it's not a tvar, it means all used instances must be unified with each other for this.
+wait... ONLY ONE. because it's not bound, it only has a single type. so, it will be a single instance!
+
+
+huh.
+
+--
+
+okay, in the first case. what about function parameters, which may contain unions themselves (in the implementation)? how much should we remap?
+
+class A
+	inst-fun (x _) -> (Int -> Int)
+
+var-fun = ...
+inst A Int
+	inst-fun (x Int) -> (Int -> Int)
+		return if random(): (n: n + x) else: var-fun
+
+f (x)
+	return inst-fun(x)(69)  # an easier example? the return type union does not escape.
+
+Sure, here we remap the whole thing. Why not. Both the class fun union and its return type.
+
+f (x) -> (Int -> Int)
+	return inst-fun(x) 
+
+now, it's a bit harder. consider this.
+
+x = todo()
+x <= f(123)
+
+In this case, the inner function union interacts with the outside environment - even a previously defined x.
+
+The correct thing here is the union of the inst function environment union with x.
+which means: we have to select the union and remap it during its instantiation (at least its instantiated type). so, we must REMAP the return value also (during instantiation, and later during monomorphisation.)
+
+
+--
+
+for parameters, it's the same.
+
+
+--
+
+Now, what about nested unions? what should we do?
+EDIT: these are nested types. these unions are not actually nested - they are separate.
+So, yeah, map them all.
+
+class A
+	inst-fun (x _) -> (Int -> (Int -> Int))
+
+var-fun = ...
+inst A Int
+	inst-fun (x _) -> (Int -> (Int -> Int))
+		return if random(): (a: b: a + b + x) else: var-fun
+
+
+f (x)
+	return inst-fun(x)(1)
+
+NOT ACTUALLY NESTED UNIONS. MAP THEM ALL. (remap all unions, because they are not nested.)
+
+
+--
+
+When are unions nested?
+
+class A
+	inst-fun (x _) -> (Int -> Int)
+
+cuck-fun (m)
+	return m + 1
+
+inst A Int
+	inst-fun (x _) -> (Int -> Int)
+		return (n: n + cuck-fun(n) + x)  # inst-fun [cuck-fun []]
+
+
+f (x)
+	return inst-fun(x)(1)
+
+g (x)
+	return inst-fun(x)(2)
+
+We don't really have to here. They are not mapped by default.
+
+f (x)
+	return inst-fun(x)
+
+x = todo()
+x <= f(123)
+
+We don't need to map the nested union here. We can just instantiate it like a real function.
+
+I'm kinda shaky on this, but I assume it's correct. Honestly, it seems like normal function instantiation now. So it's probably correct.
+Now the hard part.
+
+--
+
+f (x)
+	return inst-fun(x)
+
+g (x) [f [inst-fun [...]]]
+	# (broken up for clarity)
+	res = f(x)  # it gets instantiated. Both the union of the inst function and its return type is mapped.
+
+	return res  # it gets returned here. so we do the same thing. REMAP the union from the result type during instantiation of g.
+
+x = g(x)  # remap here.
+
+
+The problem: environment. What should the actual type be?
+
+(NOTE: a -{union-id}> b)
+
+...
+	inst-fun (x) -> (Int -{0}> Int)
+
+f (x a) -> (Int -{1}> Int)
+	return inst-fun(x) :: Int -{1}> Int  # 0 -> 1
+
+g (x b) -> (Int -{2}> Int)
+	return f(x) :: Int -{2}> Int  # 1 -> 2
+
+x = g(123) :: Int -{3: (lambda from inst-fun for Int)[cuck-fun (Int -{?}> Int)]}> Int
+x <= m: m  -> :: Int -{3: (lambda from top level)[], (lambda from inst-fun for Int)[cuck-fun (Int -{?}> Int)]}> Int
+
+Should cuck-fun be mapped? right now, no.
+
+but the problem is associated types...
+
+--
+
+i thought about it more. let's try:
+
+1. create typemap from function
+2. map function
+3. map associations
+4. create typemap from associations
+5. map associations
+6. map function
+
+how can we create a type mapping again from the type?
+
+
+it seems to work!! but i have a bug and I forgot why i did the stuff I did.
+
+
+-----
+
+so, currently, because I removed the RemoveUnused module, I'm also using only Env IDs. But envs can repeat.
+I use only env IDs because the types in env might not even appear in the final program - we don't have a guarantee *because of* removing RemoveUnused.
+

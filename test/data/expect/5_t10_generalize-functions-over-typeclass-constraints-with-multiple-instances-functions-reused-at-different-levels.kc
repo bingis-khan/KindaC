@@ -1,0 +1,29 @@
+#$ Generalize functions over typeclass constraints with multiple instances. Functions "reused" at different levels.
+# 141
+# 199
+
+class MyAsInt
+	to-int (self _) -> Int
+
+turn-to-int-and-add-69 (x)
+	return to-int(x) + 69
+
+inst MyAsInt Int
+	to-int (self Int) -> Int
+		return self
+
+inst MyAsInt Bool
+	to-int (self Bool) -> Int
+		if self
+			return 1
+		else
+			return 0
+
+b (x)
+	return turn-to-int-and-add-69(x) + 1
+
+aaaaa (x, y)
+	return b(x) + turn-to-int-and-add-69(y)
+
+print aaaaa(True, True)
+print aaaaa(60, False)
