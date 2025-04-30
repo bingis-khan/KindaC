@@ -6,7 +6,7 @@
 {-# HLINT ignore "Redundant pure" #-}  -- this is retarded. it sometimes increases readability with that extra pure.
 module Mono (mono) where
 
-import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, traverse2, fmap2, MemName, UniqueMem (..), sequenceA2, ppList, ppEnvID, ppVar, ctxPrint'')
+import AST.Common (Annotated (..), UniqueVar (..), UniqueCon (..), UniqueType (..), UnionID (..), EnvID (..), VarName (..), Locality (..), (:.) (..), printf, ctx, ppMap, ppLines, ctxPrint', ctxPrint, phase, traverse2, fmap2, MemName, UniqueMem (..), sequenceA2, ppList, ppEnvID, ppVar, ctxPrint'', UniqueClassInstantiation)
 import qualified AST.Typed as T
 import qualified AST.Mono as M
 import qualified AST.Common as Common
@@ -34,6 +34,7 @@ import Control.Monad.Trans.RWS (RWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Bifoldable (bifold)
 import Control.Monad (void)
+import qualified Data.IORef as IORef
 
 
 
@@ -43,15 +44,19 @@ import Control.Monad (void)
 --  Step 2: Replace escaped TVars with each instantiation of them. (TODO: this is bad, but necessary. maybe do it in RemoveUnused somehow?)
 
 
-mono :: [T.AnnStmt] -> IO M.Module
-mono tmod = do
+mono :: Map UniqueClassInstantiation [T.Type] -> [T.AnnStmt] -> IO M.Module
+mono cia tmod = do
 
   -- Step 1: Just do monomorphization with a few quirks*.
-  (mistmts, monoCtx) <- flip State.runStateT startingContext $ mStmts tmod
+  (mistmts, monoCtx) <- flip State.runStateT (startingContext cia) $ mStmts tmod
 
+  let envs = memoToMap monoCtx.memoEnv
 
   phase "Monomorphisation (env instantiations)"
   ctxPrint (Common.ppMap . fmap (bimap Common.ppEnvID (Common.encloseSepBy "[" "]" ", " . fmap (\(EnvUse _ env) -> M.mtIEnvDef env) . Set.toList)) . Map.toList) monoCtx.envInstantiations
+
+  phase "Monomorphisation (just envs)"
+  ctxPrint (Common.ppMap . fmap (bimap M.mtEnv M.mtIEnvDef) . Map.toList) envs
 
   phase "Monomorphisation (first part)"
   ctxPrint M.mtStmts mistmts
@@ -61,7 +66,7 @@ mono tmod = do
   -- 1. substitute environments
   -- 2. check function usage and remove unused EnvDefs
 
-  mmod <- withEnvContext (memoToMap monoCtx.memoEnv) monoCtx.envInstantiations $ do
+  mmod <- withEnvContext envs monoCtx.envInstantiations $ do
     mstmts <- mfAnnStmts mistmts
     pure $ M.Mod { M.toplevelStatements = mstmts }
 
@@ -252,7 +257,7 @@ variable (T.DefinedFunction vfn snapshot assocs) et = do
   -- DEBUG: print a non-memoized type. This was used to check memoization errors.
   ctxPrint' $ printf "Decl (nomemo): %s -> %s" (Common.encloseSepBy "(" ")" ", " $ M.mtType <$> tts) (M.mtType tret)
 
-  let tassocs = vfn.functionDeclaration.functionAssociations <&> \(T.FunctionTypeAssociation _ t _) -> t
+  let tassocs = vfn.functionDeclaration.functionAssociations <&> \(T.FunctionTypeAssociation _ t _ _) -> t
   massocs <- traverse mType assocs
 
   -- creates a type mapping for this function.
@@ -261,7 +266,7 @@ variable (T.DefinedFunction vfn snapshot assocs) et = do
   let fd = vfn.functionDeclaration
   let tvt = Fix $ T.TFun undefined (snd <$> fd.functionParameters) fd.functionReturnType
   let tvm = T.mkInstanceSelector tvt (cringeMapType tvt et) snapshot
-  withTVarInsts tvm $ withTypeMap typemap $ do
+  withClassInstanceAssociations fd.functionClassInstantiationAssociations $ withTVarInsts tvm $ withTypeMap typemap $ do
     -- NOTE: Env must be properly monomorphised with the type map though albeit.
     menv <- mEnv' vfn.functionDeclaration.functionEnv
 
@@ -288,22 +293,47 @@ variable (T.DefinedFunction vfn snapshot assocs) et = do
 
       pure fn
 
-variable (T.DefinedClassFunction cfd insts self) et = do
-  backup <- State.gets tvarInsts
-  let (ivfn, _) = T.selectInstanceFunction backup cfd self insts
-  let vfn = ivfn.instFunction
-
-  ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
-
+variable (T.DefinedClassFunction cfd@(T.CFD cd _ cfdParams cfdRet) snapshot self uci) et = do
   -- male feminists are seething rn
   let (tts, tret) = case project et of
         M.ITFun _ mts mret -> (mts, mret)
         _ -> undefined
 
-  -- creates a type mapping for this function.
-  let typemap = mapTypes (snd <$> vfn.functionDeclaration.functionParameters) tts <> mapType vfn.functionDeclaration.functionReturnType tret
 
-  withTypeMap typemap $ do
+  -- FIX: Fix for class functions not instantiating tvars, but it's bad.
+  -- let fromDef = foldMap (cringeMapClassType . snd) cfdParams et <> cringeMapClassType cfdRet tret
+  -- let tvm = T.mkInstanceSelector self fromDef snapshot
+  -- backup <- withTVarInsts tvm $ State.gets tvarInsts
+  -- let insts = snapshot ! cd
+  backup <- State.gets tvarInsts
+  let insts = snapshot ! cd
+
+  let (ivfn, _) = T.selectInstanceFunction backup cfd self insts
+  let vfn = ivfn.instFunction
+
+  ctxPrint' $ printf "Variable: %s.\n\tT Type: (%s) -> %s\n\tM Type: %s\n" (Common.ppVar Local vfn.functionDeclaration.functionId) (Common.sepBy ", " $ T.tType . snd <$> vfn.functionDeclaration.functionParameters) (T.tType vfn.functionDeclaration.functionReturnType) (M.mtType et)
+
+  ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
+
+
+  -- creates a type mapping for this function.
+  let tassocs = vfn.functionDeclaration.functionAssociations <&> \(T.FunctionTypeAssociation _ t _ _) -> t
+  
+  ucis <- State.gets classInstantiationAssociations
+  massocs <- traverse mType $ case ucis !? uci of
+      Just ts -> ts
+      Nothing -> error "AOSJDOJSADOJSAJODJSAOJDASODSAJ"
+
+
+  ctxPrint' $ printf "t assocs: %s\nm assocs: %s\n" (Common.sepBy ", " $ T.tType <$> tassocs) (Common.sepBy ", " $ M.mtType <$> massocs)
+
+  let typemap = mapTypes (snd <$> vfn.functionDeclaration.functionParameters) tts <> mapType vfn.functionDeclaration.functionReturnType tret
+        <> mapTypes tassocs massocs  -- FIX: this should be `mapTypes tassocs massocs`, but I don't know how to pass them here, so I'll use the environment instead.
+
+  let fd = vfn.functionDeclaration
+  let tvt = Fix $ T.TFun undefined (snd <$> fd.functionParameters) fd.functionReturnType
+  let tvm = T.mkInstanceSelector tvt (cringeMapType tvt et) snapshot
+  withClassInstanceAssociations fd.functionClassInstantiationAssociations $ withTVarInsts tvm $ withTypeMap typemap $ do
     -- NOTE: Env must be properly monomorphised with the type map though albeit.
     menv <- mEnv' vfn.functionDeclaration.functionEnv
 
@@ -329,6 +359,7 @@ variable (T.DefinedClassFunction cfd insts self) et = do
       pure fn
 
 -- CRINGE: FUCK.
+-- EDIT: 29.04.25 WHAT IS THIS????
 cringeMapType :: T.Type -> M.IType -> Map T.TVar T.DataDef
 cringeMapType lpt rpt = case (project lpt, project rpt) of
   (T.TVar tv, M.ITCon dd _ _)-> Map.singleton tv dd.ogDataDef
@@ -336,6 +367,18 @@ cringeMapType lpt rpt = case (project lpt, project rpt) of
 
   (T.TFun _ lts lt, M.ITFun _ rts rt) -> fold (zipWith cringeMapType lts rts) <> cringeMapType lt rt
   (T.TCon _ lts _, M.ITCon _ appts _) -> fold $ zipWith cringeMapType lts appts
+
+  _ -> undefined
+
+-- I assume it's a quick mapping for classes. TODO: refactor nigga.
+cringeMapClassType :: T.ClassType -> M.IType -> Map T.TVar T.DataDef
+cringeMapClassType lpt rpt = case (project lpt, project rpt) of
+  (T.CTVar tv, M.ITCon dd _ _)-> Map.singleton tv dd.ogDataDef
+  (T.CTVar {}, M.ITFun {}) -> mempty
+  (T.Self, _) -> mempty
+
+  (T.CTFun _ lts lt, M.ITFun _ rts rt) -> fold (zipWith cringeMapClassType lts rts) <> cringeMapClassType lt rt
+  (T.CTCon _ lts, M.ITCon _ appts _) -> fold $ zipWith cringeMapClassType lts appts
 
   _ -> undefined
 
@@ -512,6 +555,14 @@ withTypeMap tm a = do
   pure x
 
 
+withClassInstanceAssociations :: Map UniqueClassInstantiation [T.Type] -> Context a -> Context a
+withClassInstanceAssociations ucis a = do
+  ogTM <- State.gets classInstantiationAssociations
+  x <- State.withStateT (\s -> s { classInstantiationAssociations = ucis <> s.classInstantiationAssociations }) a
+  State.modify $ \s -> s { classInstantiationAssociations = ogTM }
+
+  pure x
+
 withTVarInsts :: Map T.TVar (Map T.ClassDef T.InstDef) -> Context a -> Context a
 withTVarInsts tvm a = do
 
@@ -611,11 +662,13 @@ data Context' = Context
   , envInstantiations :: Map EnvID (Set EnvUse)
 
   , usedVars :: Set (UniqueVar, M.IType)  -- FROM RemoveUnused. this thing tracks which (monomorphized) variables were used. remember that it should not carry between scopes.
+
+  , classInstantiationAssociations :: Map UniqueClassInstantiation [T.Type]
   }
 type Context = StateT Context' IO
 
-startingContext :: Context'
-startingContext = Context
+startingContext :: Map UniqueClassInstantiation [T.Type] -> Context'
+startingContext cia = Context
   { tvarMap = mempty
   , tvarInsts = mempty
   , memoFunction = emptyMemo
@@ -628,6 +681,7 @@ startingContext = Context
   , envInstantiations = mempty
 
   , usedVars = mempty
+  , classInstantiationAssociations = cia
   }
 
 
@@ -906,6 +960,7 @@ mfUnion union = do
 
 
   -- NOTE: I HATE THIS FUCKING ERROR LIKE YOU WOULDN'T BELIEVE.
+  ctxPrint' $ printf "mfUnion: %s => %s" (M.tEnvUnion $ M.mtEnv <$> union) (Common.encloseSepBy "{" "}" ", " $ M.tEnv <$> mappedEnvs)
   let mUsedEnvs = case mappedEnvs of
         [] -> error $ "[COMPILER ERROR] Empty union (" <> show union.unionID <> ") encountered... wut!??!??!?!? Woah.1>!>!>!>!>>!"
         (x:xs) -> x :| xs

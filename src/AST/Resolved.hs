@@ -19,6 +19,7 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
+import AST.Typed (defaultEmpty)
 
 
 
@@ -126,8 +127,8 @@ data Variable
   | DefinedFunction Function ScopeSnapshot
   | ExternalFunction T.Function ScopeSnapshot  -- it's only defined as external, because it's already typed. nothing else should change.
 
-  | DefinedClassFunction ClassFunDec (Map Datatype InstDef)  -- we have to track which instances were visible at the time of this scope.
-  | ExternalClassFunction T.ClassFunDec PossibleInstances
+  | DefinedClassFunction ClassFunDec ScopeSnapshot  -- we have to track which instances were visible at the time of this scope.
+  | ExternalClassFunction T.ClassFunDec ScopeSnapshot
   deriving (Eq, Ord)
 
 
@@ -136,7 +137,7 @@ asUniqueVar = \case
   DefinedVariable var -> var
 
   DefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) _ -> fid
-  ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ _ }) _ -> uv
+  ExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ _ _ }) _ -> uv
 
   DefinedClassFunction (CFD _ uv _ _) _ -> uv
   ExternalClassFunction (T.CFD _ uv _ _) _ -> uv
@@ -146,7 +147,7 @@ asPUniqueVar = \case
   PDefinedVariable var -> var
 
   PDefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
-  PExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ _ }) -> uv
+  PExternalFunction (T.Function { T.functionDeclaration = T.FD _ uv _ _ _ _ _ }) -> uv
 
   PDefinedClassFunction (CFD _ uv _ _) -> uv
   PExternalClassFunction (T.CFD _ uv _ _) -> uv
@@ -404,8 +405,8 @@ tExpr = cata $ \case
           DefinedVariable _ -> ""
           DefinedFunction _ _ -> "F"
           ExternalFunction _ _ -> "EF"
-          DefinedClassFunction _ insts -> "C" <> tSelectedInsts (DefinedInst <$> Map.elems insts)
-          ExternalClassFunction _ insts -> "EC" <> tSelectedInsts (Map.elems insts)
+          DefinedClassFunction (CFD cd _ _ _) insts -> "C" <> tSelectedInsts (Map.elems (defaultEmpty (DefinedClass cd) insts))
+          ExternalClassFunction _ insts -> "EC"
     in ppVar l (asUniqueVar v) <> post
   Con c -> ppCon (asUniqueCon c)
 

@@ -1,0 +1,37 @@
+
+class Str
+	print-str (self _) -> Unit
+
+inst Str Int
+	print-str (self Int) -> Unit
+		print self
+
+inst Str Bool
+	print-str (self Bool) -> Unit
+		print self
+
+inst Str Unit
+	print-str (u Unit) -> Unit
+		print Unit
+StrPtr a
+	StrPtr a
+
+inst Str StrPtr a
+	print-str (StrPtr(x)) -> Unit
+		print 80085
+		print-str(x)
+
+StrConcat l r
+	StrConcat l r
+
+inst Str StrConcat l r
+	print-str (StrConcat(l, r)) -> Unit
+		print-str(l)
+		print-str(r)
+
+
+
+
+
+
+print-str(StrConcat(StrConcat(True, 420), StrConcat(False, Unit)))

@@ -110,7 +110,7 @@ s = 'a' to-runes()[0]  # or, more rust-like, to-runes() next() unwrap()
 # We don't have Chars, we have Runes. Or, maybe
 s as Rune
 
-# should I call Runes as Rune or Char?
+# should I call Runes a Rune or Char?
 
 
 
@@ -171,6 +171,7 @@ printf('sucking done % times. Result: %', random-int(100, 300), default-message)
 
 
 # or maybe just varargs like this:
+# EDIT: nah, format strings are better. you can't localize here either way - same as format strings.
 print('sucking done ', random-int(100, 300), ' times. Result: ', default-message')
 
 # where print is defined like so:

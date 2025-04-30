@@ -581,14 +581,16 @@ protoVariableToVariable = \case
     snapshot <- getScopeSnapshot
     pure $ R.ExternalFunction fn snapshot
   R.PDefinedClassFunction cfd@(R.CFD cd _ _ _) -> do
-    insts <- getInstancesForClassInCurrentScope $ R.DefinedClass cd
-    let definedInsts = insts <&> \case
-          R.DefinedInst inst -> inst
-          R.ExternalInst _ -> error "[COMPILER ERROR]: SHOULD NOT HAPPEN!"
-    pure $ R.DefinedClassFunction cfd definedInsts
+    -- insts <- getInstancesForClassInCurrentScope $ R.DefinedClass cd
+    -- let definedInsts = insts <&> \case
+    --       R.DefinedInst inst -> inst
+    --       R.ExternalInst _ -> error "[COMPILER ERROR]: SHOULD NOT HAPPEN!"
+    snapshot <- getScopeSnapshot
+    pure $ R.DefinedClassFunction cfd snapshot
   R.PExternalClassFunction cfd@(T.CFD cd _ _ _) -> do
-    insts <- getInstancesForClassInCurrentScope $ R.ExternalClass cd
-    pure $ R.ExternalClassFunction cfd insts
+    -- insts <- getInstancesForClassInCurrentScope $ R.ExternalClass cd
+    snapshot <- getScopeSnapshot
+    pure $ R.ExternalClassFunction cfd snapshot
 
 placeholderVar :: VarName -> Ctx UniqueVar
 placeholderVar = generateVar

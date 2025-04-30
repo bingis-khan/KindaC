@@ -65,7 +65,7 @@ finalizeModule prel modul = do
   -- ctxPrint T.tStmts removedUnused
 
   phase "Monomorphizing"
-  mmod <- mono joinedStatements
+  mmod <- mono modul.classInstantiationAssociations joinedStatements  --TODO: classInstantiationAssociations = funny
   ctxPrint M.mModule mmod
 
   phase "C-ing"

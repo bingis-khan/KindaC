@@ -32,7 +32,7 @@ import qualified Data.Set as Set
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = rc
+defaultContext = dc
 
 dc = debugContext
 rc = runtimeContext
@@ -135,6 +135,9 @@ data UniqueClass = TCI
   , className :: ClassName
   }
 
+-- TODO: this is kinda bad. It should probably be done in subst or something, but I want it done quick.
+newtype UniqueClassInstantiation = UCI { fromUCI :: Unique } deriving (Eq, Ord)
+
 -- I need to use classes in the same context as types.. but I use different types.
 -- Q: should I just remove UniqueClass?
 -- A: Nah, Resolver should decide between UniqueType and UniqueClass
@@ -198,6 +201,10 @@ instance Ord UniqueClass where
 
 instance Show UniqueClass where
   show (TCI { className = name, classID = l }) = show name.fromTN <> "@#" <> show (hashUnique l)
+
+
+instance Show UniqueClassInstantiation where
+  show (UCI { fromUCI = un }) = printf "UCI%d" (hashUnique un)
 
 
 -- ...plus additional tags

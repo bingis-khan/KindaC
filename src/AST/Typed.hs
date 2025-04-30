@@ -7,7 +7,7 @@
 {-# LANGUAGE TupleSections #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (LitType (..), Op (..), Annotated (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppSet, MemName, ppMem, ppRecordMems, UniqueClass, ppUniqueClass, Binding (..), mustOr)
+import AST.Common (LitType (..), Op (..), Annotated (..), Ann, UniqueType, UniqueVar, UniqueCon, Locality (Local), Context, ppLines, annotate, (<+>), ppVar, (<+?>), pretty, ppCon, encloseSepBy, sepBy, indent, ppTypeInfo, comment, ppBody, UnionID, EnvID, ppUnionID, ppEnvID, (:.) (..), ppLines', printf, ctx, ppSet, MemName, ppMem, ppRecordMems, UniqueClass, ppUniqueClass, Binding (..), mustOr, UniqueClassInstantiation)
 
 import Data.Eq.Deriving
 import Data.Ord.Deriving
@@ -29,6 +29,7 @@ import Data.Foldable (find)
 import qualified AST.Common as Common
 import qualified Data.Set as Set
 import Data.Maybe (mapMaybe)
+import Data.IORef (IORef)
 
 
 
@@ -170,12 +171,12 @@ data FunDec = FD
   , functionParameters :: [(Decon, Type)]
   , functionReturnType :: Type
   , functionScheme :: Scheme
-  --, functionClassConstraints :: Map TVar (Set ClassDef)
   , functionAssociations :: [FunctionTypeAssociation]
+  , functionClassInstantiationAssociations :: Map UniqueClassInstantiation [Type]
   }
 
 instance Eq FunDec where
-  FD _ uv _ _ _ _ == FD _ uv' _ _ _ _ = uv == uv'
+  FD _ uv _ _ _ _ _ == FD _ uv' _ _ _ _ _ = uv == uv'
 
 data Function = Function
   { functionDeclaration :: FunDec
@@ -188,8 +189,8 @@ instance Eq Function where
 instance Ord Function where
   fn `compare` fn' = fn.functionDeclaration.functionId `compare` fn'.functionDeclaration.functionId
 
-data FunctionTypeAssociation = FunctionTypeAssociation TVar Type ClassFunDec
-data TypeAssociation = TypeAssociation Type Type ClassFunDec
+data FunctionTypeAssociation = FunctionTypeAssociation TVar Type ClassFunDec UniqueClassInstantiation
+data TypeAssociation = TypeAssociation Type Type ClassFunDec UniqueClassInstantiation
 
 
 ------------------
@@ -281,7 +282,8 @@ type ScopeSnapshot = Map ClassDef PossibleInstances
 data Variable
   = DefinedVariable UniqueVar
   | DefinedFunction Function ScopeSnapshot [Type]
-  | DefinedClassFunction ClassFunDec PossibleInstances Type  -- which class function and which instances are visible at this point.
+  | DefinedClassFunction ClassFunDec ScopeSnapshot Type UniqueClassInstantiation  -- which class function and which instances are visible at this point. 
+
 
 data VariableProto
   = PDefinedVariable UniqueVar
@@ -294,14 +296,14 @@ asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
   DefinedVariable uv -> uv
   DefinedFunction fn _ _ -> fn.functionDeclaration.functionId
-  DefinedClassFunction (CFD _ uv _ _) _ _ -> uv
+  DefinedClassFunction (CFD _ uv _ _) _ _ _ -> uv
 
 
 asProto :: Variable -> VariableProto
 asProto = \case
   DefinedVariable uv -> PDefinedVariable uv
   DefinedFunction fn _ _ -> PDefinedFunction fn
-  DefinedClassFunction cd _ _ -> PDefinedClassFunction cd
+  DefinedClassFunction cd _ _ _ -> PDefinedClassFunction cd
 
 
 -- scheme for both mapping tvars and unions
@@ -370,9 +372,28 @@ $(deriveBifunctor ''StmtF)
 $(deriveBitraversable ''StmtF)
 $(deriveEq1 ''TypeF)
 $(deriveOrd1 ''TypeF)
-$(deriveEq ''Variable)
-$(deriveOrd ''Variable)
+-- $(deriveEq ''Variable)
+-- $(deriveOrd ''Variable)
 
+instance Eq Variable where
+  v == v' = case (v, v') of
+    (DefinedVariable uv, DefinedVariable uv') -> uv == uv'
+    (DefinedFunction fn ss ts, DefinedFunction fn' ss' ts') -> (fn, ss, ts) == (fn', ss', ts')
+    (DefinedClassFunction cfd pi self _, DefinedClassFunction cfd' pi' self' _) -> (cfd, pi, self) == (cfd', pi', self')
+    _ -> False
+
+instance Ord Variable where
+  v `compare` v' = case (v, v') of
+    (DefinedVariable uv, DefinedVariable uv') -> uv `compare` uv'
+    (DefinedFunction fn ss ts, DefinedFunction fn' ss' ts') -> (fn, ss, ts) `compare` (fn', ss', ts')
+    (DefinedClassFunction cfd pi self _, DefinedClassFunction cfd' pi' self' _) -> (cfd, pi, self) `compare` (cfd', pi', self')
+
+    (DefinedVariable _, _) -> LT
+
+    (DefinedFunction {}, DefinedVariable _) -> GT
+    (DefinedFunction {}, _) -> LT
+
+    (DefinedClassFunction {}, _) -> GT
 
 ---------------
 -- Module --
@@ -381,6 +402,7 @@ $(deriveOrd ''Variable)
 data Module = Mod
   { toplevelStatements :: [AnnStmt]
   , exports :: Exports
+  , classInstantiationAssociations :: Map UniqueClassInstantiation [Type]  -- TODO: another reason this solution can't stay: how do we "connect" the classInstantiation associations?
 
   -- not needed, used for printing the AST.
   , functions :: [Function]
@@ -444,7 +466,7 @@ selectInstanceFunction _ (CFD _ uv _ _) (Fix (TCon dd@(DD ut _ _ _) _ _)) insts 
   in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
 selectInstanceFunction backing (CFD cd uv _ _) (Fix (TVar tv)) _ =
-  let inst = mustOr (printf "[COMPILER ERROR]: TVar %s not mapped for some reason! Content of backing: %s." (tTVar tv) (pBacking backing)) $ backing !? tv >>= (!? cd)
+  let inst = mustOr (printf "[COMPILER ERROR]: TVar %s not mapped for some reason! Content of backing:\n%s." (tTVar tv) (pBacking backing)) $ backing !? tv >>= (!? cd)
   in (,inst) $ mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (ppVar Local uv)) $ find (\fn -> fn.instFunctionClassUniqueVar == uv) inst.instFunctions
 
 selectInstanceFunction _ _ self _ = error $ printf "[COMPILER ERROR]: INCORRECT TYPE AYO. CANNOT SELECT INSTANCE FOR TYPE %s." (Common.sctx (tType self))
@@ -485,6 +507,14 @@ mkInstanceSelector from tvddm snapshot =
             Nothing -> Nothing
           Nothing -> Nothing
       Nothing -> mempty
+
+
+defaultEmpty :: (Monoid v, Ord k) => k -> Map k v -> v
+defaultEmpty k m = case m !? k of
+  Just v -> v
+  Nothing -> mempty
+
+
 
 --------------------------------------------------------------------------------------
 -- Printing the AST
@@ -545,7 +575,7 @@ tExpr = cata $ \(TypedExpr et expr) ->
   Lit (LFloat fl) -> pretty $ show fl
   Var l (DefinedVariable v) -> ppVar l v
   Var l (DefinedFunction f _ _) -> ppVar l f.functionDeclaration.functionId <> "&F"
-  Var l (DefinedClassFunction (CFD _ uv _ _) insts _)  -> ppVar l uv <> "&C" <> tSelectedInsts (Map.elems insts)
+  Var l (DefinedClassFunction (CFD cd uv _ _) insts _ _)  -> ppVar l uv <> "&C" <> tSelectedInsts (Map.elems (defaultEmpty cd insts))
   Con _ (DC _ uc _ _) -> ppCon uc
 
   RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> ppRecordMems inst
@@ -596,7 +626,7 @@ tInst inst =
   in ppBody tInstFunction header inst.instFunctions
 
 tFunDec :: FunDec -> Context
-tFunDec (FD fenv v params retType scheme _) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType <+> tScheme scheme
+tFunDec (FD fenv v params retType scheme _ _) = comment (tEnv fenv) $ ppVar Local v <+> encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> tDecon pName <> ((" "<>) . tType) pType) params) <> ((" "<>) . tType) retType <+> tScheme scheme
 
 tScheme :: Scheme -> Context
 tScheme (Scheme tvars unions) = ppSet tTVar tvars <+> ppSet (tEnvUnion . fmap tType) unions
