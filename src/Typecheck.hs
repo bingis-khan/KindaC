@@ -736,7 +736,7 @@ generalize ifn = do
   pure generalizedFnWithScheme
 
 
-substAccessAndAssociations :: Infer (Map UniqueClassInstantiation [T.Type])
+substAccessAndAssociations :: Infer T.ClassInstantiationAssocs
 substAccessAndAssociations = do
   liftIO $ phase "SUBST ACCESS"
   go where
@@ -744,10 +744,10 @@ substAccessAndAssociations = do
       didAccessProgressedSubstitutions <- substAccess
       classInstantiationAssocs <- substAssociations
       let didAssociationsProgressedSubstitutions = not $ null classInstantiationAssocs
-      liftIO $ ctxPrint' $ printf "CIA: %s" (Common.ppMap $ fmap (bimap (fromString . show) (Common.encloseSepBy "[" "]" ", " . fmap T.tType)) $ Map.toList classInstantiationAssocs)
+      liftIO $ ctxPrint' $ printf "CIA: %s" (Common.ppMap $ fmap (bimap (fromString . show) (Common.encloseSepBy "[" "]" ", " . fmap (Common.ppTup . bimap T.tType (Common.ppTup . bimap (Common.encloseSepBy "[" "]" ", " . fmap T.tType) (\ifn -> Common.ppVar Local ifn.instFunction.functionDeclaration.functionId))))) $ Map.toList classInstantiationAssocs)
 
       if didAccessProgressedSubstitutions || didAssociationsProgressedSubstitutions
-        then Map.union classInstantiationAssocs <$> go
+        then Map.unionWith (++) classInstantiationAssocs <$> go
         else do
           liftIO $ phase "END SUBST ACCESS"
           pure mempty
@@ -772,7 +772,7 @@ substAccess = do
 
 
 -- returns True if substitutions were done.
-substAssociations :: Infer (Map UniqueClassInstantiation [T.Type])
+substAssociations :: Infer T.ClassInstantiationAssocs
 substAssociations = do
   assocs <- RWS.gets associations
   RWS.modify $ \s -> s { associations = mempty }
@@ -780,7 +780,7 @@ substAssociations = do
   csu <- RWS.gets typeSubstitution
   let subAssociations = first (subst csu) <$> assocs
   liftIO $ ctxPrint' $ printf "Associations (before): %s" (Common.encloseSepBy "[" "]" ", " $ subAssociations <&> \(T.TypeAssociation from to _ _, _) -> printf "%s: %s" (T.tType from) (T.tType to) :: String)
-  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval fold . unzip) $ for subAssociations $ \t@(T.TypeAssociation from to (T.CFD _ uv _ _) uci, insts) -> do
+  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval (foldr (Map.unionWith (++)) Map.empty) . unzip) $ for subAssociations $ \t@(T.TypeAssociation from to (T.CFD _ uv _ _) uci, insts) -> do
     case project from of
         T.TCon dd _ _ -> case insts !? dd of
           Just inst -> do
@@ -793,7 +793,7 @@ substAssociations = do
 
             to `uni` instFunType
 
-            pure ((t, True), Map.singleton uci instAssocs)
+            pure ((t, True), Map.singleton uci [(from, (instAssocs, instFun))])
 
           Nothing -> do
             pure ((t, False), mempty)  -- error.
@@ -1518,6 +1518,10 @@ instance Substitutable UniqueVar where
   ftv _ = mempty
   subst _ = id
 
+instance Substitutable UniqueClassInstantiation where
+  ftv _ = mempty
+  subst _ = id
+
 instance Substitutable MemName where
   ftv _ = mempty
   subst _ = id
@@ -1530,7 +1534,7 @@ instance Substitutable T.Function where
 
 instance Substitutable T.FunDec where
   ftv (T.FD _ _ params ret _ assocs _) = ftv params <> ftv ret <> ftv assocs -- <> ftv env  -- TODO: env ignored here, because we expect these variables to be defined outside. If it's undefined, it'll come up in ftv from the function body. 
-  subst su (T.FD env fid params ret scheme assocs classInstantiationAssocs) = T.FD (subst su env) fid (subst su params) (subst su ret) scheme (subst su assocs) (Map.map (subst su) classInstantiationAssocs)
+  subst su (T.FD env fid params ret scheme assocs classInstantiationAssocs) = T.FD (subst su env) fid (subst su params) (subst su ret) scheme (subst su assocs) (Map.fromList $ fmap (bimap (subst su) (subst su)) $ Map.toList classInstantiationAssocs)
 
 instance Substitutable T.TypeAssociation where
   ftv (T.TypeAssociation from to _ _) = ftv from <> ftv to

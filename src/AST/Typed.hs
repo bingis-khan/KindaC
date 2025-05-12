@@ -28,7 +28,7 @@ import qualified Data.Map as Map
 import Data.Foldable (find)
 import qualified AST.Common as Common
 import qualified Data.Set as Set
-import Data.Maybe (mapMaybe)
+import Data.Maybe (mapMaybe, fromMaybe)
 import Data.IORef (IORef)
 
 
@@ -172,8 +172,11 @@ data FunDec = FD
   , functionReturnType :: Type
   , functionScheme :: Scheme
   , functionAssociations :: [FunctionTypeAssociation]
-  , functionClassInstantiationAssociations :: Map UniqueClassInstantiation [Type]
+  , functionClassInstantiationAssociations :: ClassInstantiationAssocs
   }
+
+-- TODO: note, "recursive" calls to instance functions redefine UCI. This is a quick fix. I'll have to rethink how all of it is structured.
+type ClassInstantiationAssocs = Map UniqueClassInstantiation [(Type, ([Type], InstanceFunction))]
 
 instance Eq FunDec where
   FD _ uv _ _ _ _ _ == FD _ uv' _ _ _ _ _ = uv == uv'
@@ -402,7 +405,7 @@ instance Ord Variable where
 data Module = Mod
   { toplevelStatements :: [AnnStmt]
   , exports :: Exports
-  , classInstantiationAssociations :: Map UniqueClassInstantiation [Type]  -- TODO: another reason this solution can't stay: how do we "connect" the classInstantiation associations?
+  , classInstantiationAssociations :: ClassInstantiationAssocs  -- TODO: another reason this solution can't stay: how do we "connect" the classInstantiation associations?
 
   -- not needed, used for printing the AST.
   , functions :: [Function]
@@ -510,9 +513,7 @@ mkInstanceSelector from tvddm snapshot =
 
 
 defaultEmpty :: (Monoid v, Ord k) => k -> Map k v -> v
-defaultEmpty k m = case m !? k of
-  Just v -> v
-  Nothing -> mempty
+defaultEmpty k m = fromMaybe mempty $ m !? k
 
 
 
@@ -575,7 +576,7 @@ tExpr = cata $ \(TypedExpr et expr) ->
   Lit (LFloat fl) -> pretty $ show fl
   Var l (DefinedVariable v) -> ppVar l v
   Var l (DefinedFunction f _ _) -> ppVar l f.functionDeclaration.functionId <> "&F"
-  Var l (DefinedClassFunction (CFD cd uv _ _) insts _ _)  -> ppVar l uv <> "&C" <> tSelectedInsts (Map.elems (defaultEmpty cd insts))
+  Var l (DefinedClassFunction (CFD cd uv _ _) insts _ uci)  -> ppVar l uv <> "&" <> fromString (show uci) <>"&C" <> tSelectedInsts (Map.elems (defaultEmpty cd insts))
   Con _ (DC _ uc _ _) -> ppCon uc
 
   RecCon (DD ut _ _ _) inst -> ppTypeInfo ut <+> ppRecordMems inst

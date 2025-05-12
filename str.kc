@@ -34,4 +34,4 @@ inst Str StrConcat l r
 
 
 
-print-str(StrConcat(StrConcat(True, 420), StrConcat(False, Unit)))
+print-str(StrPtr(StrPtr(1)))

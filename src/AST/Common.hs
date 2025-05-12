@@ -135,6 +135,9 @@ data UniqueClass = TCI
   , className :: ClassName
   }
 
+-- This associates types for class associations with the types.
+-- Normal function calls store it with their instantiation, but I can't do that with class instantiations - associations depend on the selected type, which means I can't create them when I'm building the AST - only later, when association is resolved.
+-- 
 -- TODO: this is kinda bad. It should probably be done in subst or something, but I want it done quick.
 newtype UniqueClassInstantiation = UCI { fromUCI :: Unique } deriving (Eq, Ord)
 
@@ -372,6 +375,9 @@ ppUnique = pretty . hashUnique
 
 ppMap :: [(Context, Context)] -> Context
 ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v)
+
+ppTup :: (Context, Context) -> Context
+ppTup (l, r) = encloseSepBy "(" ")" ", " [l, r]
 
 ppSet :: (a -> Context) -> [a] -> Context
 ppSet f = encloseSepBy "{" "}" ", " . fmap f
