@@ -10,6 +10,9 @@ Cxs
 	Cxs
 	Dxs
 
+#fid (abc)
+#	return abc
+
 f (x a, y b)
 	print x
 	print y

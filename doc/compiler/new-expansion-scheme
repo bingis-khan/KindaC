@@ -1,3 +1,47 @@
 How do I expand dis shieeeeeeeet.
+(referencing bb.kc currently)
 
-FUCK.
+Okay, so maybe the IMono -> Mono thing - i should do it in one step?
+Whenever a scope gets closed over - eg. a function.
+
+I did it.
+[insert comparison - the error is the same, but did it monomorphize better?]
+
+Also, let's see if the environment changes for the referenced function.
+
+fid (abc)
+	return abc
+
+f (x a, y b)
+	print fid(x)
+	print fid(y)
+	return
+
+it turns to:
+
+fid (abc)
+	return abc
+
+f (x a, y b)
+	print fid(x)
+	print fid(y)
+	return
+
+Hell yeah, it works!
+
+
+TODO:
+But I have to remember, that it's not all correct. Here, environments are unified, despite the fact, that only one environment should be chosen here.
+
+  ((h$93 :: 67{107[const$40 Int$92, ^ f$103 84{98[]}(Int$92, Unit$85) -> Unit$85, ^ f$96 84{98[]}(Int$92, Int$92) -> Unit$85], 120[const$40 Int$92, ^ f$118 84{98[]}(Bool$108, Unit$85) -> Unit$85, ^ f$114 84{98[]}(Bool$108, Int$92) -> Unit$85]}(Int$92) -> Unit$85)((1 :: Int$92)) :: Unit$85)
+  ((h$111 :: 71{107[const$40 Int$92, ^ f$103 84{98[]}(Int$92, Unit$85) -> Unit$85, ^ f$96 84{98[]}(Int$92, Int$92) -> Unit$85], 120[const$40 Int$92, ^ f$118 84{98[]}(Bool$108, Unit$85) -> Unit$85, ^ f$114 84{98[]}(Bool$108, Int$92) -> Unit$85]}(Bool$108) -> Unit$85)((@True$110 :: Bool$108)) :: Unit$85)
+
+	translated to:
+
+	h{67{107, 120}}(Int)
+	h{71{107, 120}}(Bool)
+
+	but should be:
+
+	h{67{107}}(Int)
+	h{71{120}}(Bool)

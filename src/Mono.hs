@@ -71,7 +71,7 @@ mono cia tmod = do
   -- 1. substitute environments
   -- 2. check function usage and remove unused EnvDefs
 
-  mmod <- withEnvContext envs monoCtx.envInstantiations $ do
+  (_, mmod) <- withEnvContext envs monoCtx.envInstantiations $ do
     mstmts <- mfAnnStmts mistmts
     pure $ M.Mod { M.toplevelStatements = mstmts }
 
@@ -180,10 +180,10 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
 
   pure $ M.TypedExpr mt mexpr
 
-withEnv :: Maybe M.IFunction -> T.Env -> Context a -> Context (a, M.IEnv)
+withEnv :: Maybe (UniqueVar, M.Function) -> T.Env -> Context a -> Context (a, M.IEnv)
 withEnv mfn env cx = do
   let showOldVars ovs = Common.ppList (Common.ppTup3 . (\(l, m, r) -> (ppVar Local l, M.mtType m, Common.ppSet T.tTVar $ Set.toList r))) $ Set.toList ovs
-  let printUsedVarsState uvType uvTypeTag uvs = ctxPrint' $ printf "%s%s: USED VARS %s WITH ENV%s: %s" (Common.ppEnvID $ T.envID env) (uvTypeTag :: Common.Context) (uvType :: Common.Context) (case mfn of { Nothing -> "" :: Common.Context; Just fn -> fromString $ printf " (%s)" $ ppVar Local fn.functionDeclaration.functionId }) (showOldVars uvs)
+  let printUsedVarsState uvType uvTypeTag uvs = ctxPrint' $ printf "%s%s: USED VARS %s WITH ENV%s: %s" (Common.ppEnvID $ T.envID env) (uvTypeTag :: Common.Context) (uvType :: Common.Context) (case mfn of { Nothing -> "" :: Common.Context; Just (v, _) -> fromString $ printf " (%s)" $ ppVar Local v }) (showOldVars uvs)
 
   oldVars <- State.gets usedVars
   State.modify $ \c -> c { usedVars = mempty }
@@ -227,20 +227,20 @@ withEnv mfn env cx = do
     T.RecursiveEnv {} -> error "SHOULD NOT HAPPEN."  -- pure $ M.IDRecursiveEnv eid isEmpty
 
 
-  ctxPrint' $ printf "%sM: %s =WITH ENV%s=> %s" (Common.ppEnvID $ T.envID env) (T.tEnv env) (case mfn of { Nothing -> "" :: Common.Context; Just fn -> fromString $ printf " (%s)" $ ppVar Local fn.functionDeclaration.functionId }) (M.mtIEnvDef menv)
-  registerEnvMono mfn (T.envID env) menv vars
+  ctxPrint' $ printf "%sM: %s =WITH ENV%s=> %s" (Common.ppEnvID $ T.envID env) (T.tEnv env) (case mfn of { Nothing -> "" :: Common.Context; Just (v, _) -> fromString $ printf " (%s)" $ ppVar Local v }) (M.mtIEnvDef menv)
+  registerEnvMono (snd <$> mfn) (T.envID env) menv vars
 
   pure (x, menv)
 
 needsLateInitialization :: T.Variable -> Context M.LateInit
 needsLateInitialization = const (pure False)
 
-findUsedVarsInExpr :: M.IExpr -> Set (M.IVariable, M.IType)
+findUsedVarsInExpr :: M.IExpr -> Set (M.Variable, M.IType)
 findUsedVarsInExpr = cata $ \(M.TypedExpr t expr) -> case expr of
   M.Var _ v -> Set.singleton (v, t)
   e -> fold e
 
-findUsedVarsInFunction :: NonEmpty M.AnnIStmt -> Set (M.IVariable, M.IType)
+findUsedVarsInFunction :: NonEmpty M.AnnIStmt -> Set (M.Variable, M.IType)
 findUsedVarsInFunction = foldMap $ cata $ bifold . first findUsedVarsInExpr . M.deannAnnIStmt
 
 mCase :: T.Case M.IExpr M.AnnIStmt -> Context M.ICase
@@ -277,7 +277,7 @@ mDecon = cata $ fmap embed . \case
 
 
 
-variable :: T.Variable -> (T.Type, M.IType) -> Context M.IVariable  -- NOTE: we're taking in both types, because we need to know which TVars were mapped to types and which to other tvars.
+variable :: T.Variable -> (T.Type, M.IType) -> Context M.Variable  -- NOTE: we're taking in both types, because we need to know which TVars were mapped to types and which to other tvars.
 variable (T.DefinedVariable uv) _ = pure $ M.DefinedVariable uv
 variable (T.DefinedFunction vfn snapshot assocs) (instType, et) = do
   ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
@@ -322,12 +322,14 @@ variable (T.DefinedFunction vfn snapshot assocs) (instType, et) = do
 
       -- add memo, THEN traverse body.
       let fn = M.Function { M.functionDeclaration = fundec, M.functionBody = body } :: M.IFunction
-      addMemo fn
-      (body, env) <- withEnv (Just fn) tfn.functionDeclaration.functionEnv $ mStmts tfn.functionBody
+      let mfn = M.Function { M.functionDeclaration = fd, M.functionBody = stmts }
+      addMemo mfn
+      (body, env) <- withEnv (Just (uv, mfn)) tfn.functionDeclaration.functionEnv $ mStmts tfn.functionBody
 
+      (fd, stmts) <- mmFunction body env fn
       -- registerEnvMono (Just fn) (T.envID tfn.functionDeclaration.functionEnv) env usedVarsInFunction
 
-      pure fn
+      pure mfn
 
 variable (T.DefinedClassFunction cfd@(T.CFD cd _ cfdParams cfdRet) snapshot self uci) (instType, et) = do
   -- male feminists are seething rn
@@ -389,11 +391,54 @@ variable (T.DefinedClassFunction cfd@(T.CFD cd _ cfdParams cfdRet) snapshot self
 
 
       -- add memo, THEN traverse body.
+      addMemo mfn
       let fn = M.Function { M.functionDeclaration = fundec, M.functionBody = body } :: M.IFunction
-      addMemo fn
-      (body, env) <- withEnv (Just fn) tfn.functionDeclaration.functionEnv $ mStmts tfn.functionBody
+      let mfn = M.Function { M.functionDeclaration = fd, M.functionBody = stmts }
+      (body, env) <- withEnv (Just (uv, mfn)) tfn.functionDeclaration.functionEnv $ mStmts tfn.functionBody
 
-      pure fn
+      (fd, stmts) <- mmFunction body env fn
+
+      pure mfn
+
+-- TODO: bad name.
+-- TODO: all these extra parameters are like this due to funny laziness. they should all be extracted from IFunction normally.
+mmFunction :: NonEmpty M.AnnIStmt -> M.IEnv -> M.IFunction -> Context (M.FunDec, NonEmpty M.AnnStmt)
+mmFunction ibody ienv fun = contextToEnvContext $ do
+  ctxPrint' $ printf "MF function %s" (Common.ppVar Local fun.functionDeclaration.functionId)
+  -- ctxPrint M.mtFunction fun
+
+  -- just map everything.
+  let fundec = fun.functionDeclaration
+  ctxPrint' "WTF2"
+  env <- mfEnvDef ienv
+  ctxPrint' "WTF"
+  params <- traverse (bitraverse mfDecon mfType) fundec.functionParameters
+  ret <- mfType fundec.functionReturnType
+  ctxPrint' "After params and ret"
+
+  let mfundec = M.FD { M.functionEnv = env, M.functionId = fundec.functionId, M.functionParameters = params, M.functionReturnType = ret }
+
+  body <- mfAnnStmts $ NonEmpty.toList ibody
+  let completedBody = case body of
+        [] ->
+          -- TODO: we need to automatically insert return values based on flow analysis (but that should be part of typechecking?)
+          let pass = Fix (O (Annotated [] M.Pass))
+          in pass :| []
+
+        (s:ss) -> s :| ss
+
+  pure (mfundec, completedBody)
+
+contextToEnvContext :: EnvContext a -> Context a
+contextToEnvContext ecx = do
+  envInsts <- State.gets envInstantiations
+  envs <- Map.mapKeys (fmap snd) . memoToMap <$> State.gets memoEnv
+
+  -- TODO: also remember the memoed datatypes. but that's for later.
+  (envrem, x) <- liftIO $ withEnvContext envs envInsts ecx
+  State.modify $ \s -> s { envInstantiations = foldr Map.delete s.envInstantiations envrem }
+  pure x
+
 
 -- CRINGE: FUCK.
 -- EDIT: 29.04.25 WHAT IS THIS????
@@ -421,7 +466,7 @@ cringeMapClassType lpt rpt = case (project lpt, project rpt) of
 
 
 -- Registers a single environment monomorphization. later used to track which environments monomoprhised to what.
-registerEnvMono :: Maybe M.IFunction -> EnvID -> M.IEnv -> Set (UniqueVar, M.IType, Set T.TVar) -> Context ()
+registerEnvMono :: Maybe M.Function -> EnvID -> M.IEnv -> Set (UniqueVar, M.IType, Set T.TVar) -> Context ()
 registerEnvMono mvar oldEID nuEnv _ | null (foldMap ftvButIgnoreUnions nuEnv) = do
   State.modify $ \mctx -> mctx { envInstantiations = Map.insertWith (<>) (M.idenvID nuEnv) (Set.singleton (EnvUse mvar nuEnv)) (Map.insertWith (<>) oldEID (Set.singleton (EnvUse mvar nuEnv)) mctx.envInstantiations) }
 
@@ -704,7 +749,7 @@ mEnv = \case
 data Context' = Context
   { tvarMap :: TypeMap  -- this describes the temporary mapping of tvars while monomorphizing.
   , tvarInsts :: Map T.TVar (Map T.ClassDef T.InstDef)  -- TODO: smell.
-  , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.IEnvF M.IType) M.IFunction
+  , memoFunction :: Memo (T.Function, [M.IType], M.IType, M.IEnvF M.IType) M.Function
   , memoDatatype :: Memo (T.DataDef, TypeMap) (M.IDataDef, Map T.DataCon M.IDataCon)
   , memoEnv :: Memo (T.EnvF (T.Type, M.IType)) M.IEnv
   , memoUnion :: Memo (T.EnvUnionF M.IType) M.IEnvUnion
@@ -827,8 +872,8 @@ newUnionID = do
 --------------------------------------------------------
 
 
-withEnvContext :: Map (T.EnvF M.IType) M.IEnv -> Map M.IEnvID (Set EnvUse) -> EnvContext a -> IO a
-withEnvContext menvs allInstantiations x = fst <$> RWS.evalRWST x envUse envMemo
+withEnvContext :: Map (T.EnvF M.IType) M.IEnv -> Map M.IEnvID (Set EnvUse) -> EnvContext a -> IO (Set EnvID, a)
+withEnvContext menvs allInstantiations x = fst <$> RWS.evalRWST (x >>= \xx -> (,xx) <$> RWS.gets envsToRemove) envUse envMemo
   where
     envUse = EnvContextUse
       { allInsts = allInstantiations
@@ -837,11 +882,13 @@ withEnvContext menvs allInstantiations x = fst <$> RWS.evalRWST x envUse envMemo
 
     envMemo = EnvMemo
       { memoIDatatype = emptyMemo
+      , envsToRemove = mempty
       }
 
 
 mfAnnStmts :: [M.AnnIStmt] -> EnvContext [M.AnnStmt]
 mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)) -> do
+  ctxPrint' "MFFFFF"
   stmt' <- bitraverse mfExpr id stmt
   let s = pure . Just
   let
@@ -896,6 +943,7 @@ mfDecon = cata $ fmap embed . \case
 
 mfExpr :: M.IExpr -> EnvContext M.Expr
 mfExpr expr = flip cata expr $ \(M.TypedExpr imt imexpr) -> do
+  ctxPrint' "EXPR"
   mt <- mfType imt
   fmap (embed . M.TypedExpr mt) $ case imexpr of
     M.Var loc v -> M.Var loc <$> mfVariable v
@@ -924,18 +972,17 @@ mfExpr expr = flip cata expr $ \(M.TypedExpr imt imexpr) -> do
     M.Op l op r -> M.Op <$> l <*> pure op <*> r
     M.Call c args -> M.Call <$> c <*> sequenceA args
 
-mfVariable :: M.IVariable -> EnvContext M.Variable
-mfVariable = \case
-  M.DefinedVariable uv -> pure $ M.DefinedVariable uv
-  M.DefinedFunction fun -> do
-    mfun <- mfFunction fun
-    pure $ M.DefinedFunction mfun
+mfVariable :: M.Variable -> EnvContext M.Variable
+mfVariable = pure -- \case
+  -- M.DefinedVariable uv -> pure $ M.DefinedVariable uv
+  -- M.DefinedFunction fun -> pure $ M.DefinedFunction fun
 
 
 mfEnvDef :: M.IEnv -> EnvContext M.Env
 mfEnvDef = \case
   M.IDRecursiveEnv eid isEmpty -> error "RECURSIVE ENV YO." -- pure $ M.RecursiveEnv eid isEmpty
   M.IDEnv eid envContent -> do
+    ctxPrint' "In mfEnvDef"
     menvContent <- traverse (\(v, l, li, t) -> mfType t >>= \t' -> (,l,li,t') <$> mfVariable v) envContent  -- the weird monad shit is so we 
     pure $ M.Env eid menvContent
 
@@ -1032,11 +1079,12 @@ mfUnion union = do
 expandEnvironments :: [EnvID] -> EnvContext [(M.Function, M.Env)]
 expandEnvironments envIDs = do
   envInsts <- RWS.asks allInsts
-  ctxPrint' $ printf "expand: %s\n%s" (ppList ppEnvID envIDs) (ppMap $ Map.toList envInsts <&> \(eid, euse) -> (ppEnvID eid, ppList (\(EnvUse mfn env) -> case mfn of { Just fn -> "(" <> ppVar Local fn.functionDeclaration.functionId <>  ", " <> ppEnvID (M.idenvID env) <> ")"; Nothing -> ppEnvID (M.idenvID env) }) $ Set.toList euse))
+  -- ctxPrint' $ printf "expand: %s\n%s" (ppList ppEnvID envIDs) (ppMap $ Map.toList envInsts <&> \(eid, euse) -> (ppEnvID eid, ppList (\(EnvUse mfn env) -> case mfn of { Just fn -> "(" <> ppVar Local fn.functionDeclaration.functionId <>  ", " <> ppEnvID (M.idenvID env) <> ")"; Nothing -> ppEnvID (M.idenvID env) }) $ Set.toList euse))
+  RWS.modify $ \em -> em { envsToRemove = em.envsToRemove <> Set.fromList envIDs }
   fmap concat $ for envIDs $ \envID ->
     case envInsts !? envID of
       Just envs -> do
-        traverse (bitraverse mfFunction mfEnvDef) $ mapMaybe (\(EnvUse fn env) -> fn <&> (,env)) $ Set.toList envs
+        traverse (traverse mfEnvDef) $ mapMaybe (\(EnvUse fn env) -> fn <&> (,env)) $ Set.toList envs
       Nothing -> pure []
 
 
@@ -1159,7 +1207,7 @@ data EnvContextUse = EnvContextUse
   , envs     :: Map (T.EnvF M.IType) M.IEnv
   }
 
-data EnvUse = EnvUse (Maybe M.IFunction) M.IEnv
+data EnvUse = EnvUse (Maybe M.Function) M.IEnv
 
 instance Eq EnvUse where
   EnvUse _ le == EnvUse _ re = le == re
@@ -1168,8 +1216,9 @@ instance Ord EnvUse where
   EnvUse _ le `compare` EnvUse _ re = le `compare` re
 
 
-newtype EnvMemo = EnvMemo
+data EnvMemo = EnvMemo
   { memoIDatatype :: Memo (M.IDataDef, [M.EnvUnion]) (M.DataDef, Map M.IDataCon M.DataCon)
+  , envsToRemove :: Set EnvID  -- HACK HACK HACK: we want to remove the ID in expand environments, because it's local. but there's probably a generally better structure, so don't pay attention to this. there's going to be a rewrite anyway.
   }
 
 

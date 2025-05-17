@@ -96,7 +96,7 @@ data IEnvF t
 
 -- Used only in environment definitions during the IMono phase.
 data IEnvDefF t
-  = IDEnv EnvID [(IVariable, Locality, LateInit, t)]  -- only in definitions: functions, lambdas, mappings.
+  = IDEnv EnvID [(Variable, Locality, LateInit, t)]  -- only in definitions: functions, lambdas, mappings.
   | IDRecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
 
@@ -298,7 +298,7 @@ type NeedsImplicitEnvironment = Bool
 
 data ExprF envtype a
   = Lit LitType
-  | Var Locality (Variable' envtype)
+  | Var Locality Variable
   | Con (DataCon' envtype)
 
   | RecCon (DataDef' envtype) (NonEmpty (UniqueMem, a))
@@ -324,16 +324,13 @@ expr2type (Fix (TypedExpr t _)) = t
 
 
 
-data Variable' envtype
+data Variable
   = DefinedVariable UniqueVar
-  | DefinedFunction (Function' envtype)
+  | DefinedFunction Function
   deriving (Eq, Ord)
 
-type IVariable = Variable' IncompleteEnv
-type Variable = Variable' FullEnv
 
-
-asUniqueVar :: Variable' envtype -> UniqueVar
+asUniqueVar :: Variable -> UniqueVar
 asUniqueVar = \case
   DefinedVariable uv -> uv
   DefinedFunction fn -> fn.functionDeclaration.functionId
