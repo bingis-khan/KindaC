@@ -31,17 +31,26 @@ inst MyStr MyStrPtr a
 		print ptr-const
 		print-str(x)
 
-MyStrConcat l r
-	MyStrConcat l r
 
-const = 88
-inst MyStr MyStrConcat l r
-	print-str (MyStrConcat(l, r)) -> Unit
-		print const
+nn (a)
+	print a
+	return
+
+
+f () -> Unit
+	g (l, r)
 		print-str(l)
 		print-str(r)
+		return
 
+	g(1, 2)
+	g(Unit, True)
+
+	print-str(MyStrPtr(MyStrPtr(1)))
+	return
+
+f()
 
 # print-str(MyStrConcat(MyStrConcat(MyStrPtr(MyStrConcat(MyStrConcat(True, 69), Unit)), Unit), MyStrConcat(True, False)))
-print-str(MyStrPtr(MyStrConcat(MyStrPtr(1), 2)))
+#print-str(MyStrPtr(MyStrConcat(MyStrPtr(1), 2)))
 #print-str(MyStrConcat(MyStrPtr(1), 2))

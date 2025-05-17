@@ -79,9 +79,14 @@ type family Type' envtype
 -- I think I'll keep the separate-but-same-structure environments until codegen, because it might be nice information to have?
 -- I'll do deduplication during the codegen phase
 data EnvF t
-  = Env EnvID [(Variable, Locality, t)]
+  = Env EnvID [(Variable, Locality, LateInit, t)]
   | RecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
+
+-- This is to denote class functions, which need to be initialized separately.
+-- It's due to possible recursion.
+-- TODO: CRINGE: it's not very good, because here a DefinedVariable may never be a "LateInit".
+type LateInit = Bool
 
 -- What I'm currently trying is saving EnvID in the AST and then 
 data IEnvF t
@@ -89,8 +94,9 @@ data IEnvF t
   | IRecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
 
+-- Used only in environment definitions during the IMono phase.
 data IEnvDefF t
-  = IDEnv EnvID [(IVariable, Locality, t)]  -- only in definitions: functions, lambdas, mappings.
+  = IDEnv EnvID [(IVariable, Locality, LateInit, t)]  -- only in definitions: functions, lambdas, mappings.
   | IDRecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
 
@@ -541,7 +547,7 @@ tEnv = tEnv' . fmap tType
 
 tEnv' :: EnvF Context -> Context
 tEnv' (RecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
-tEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (asUniqueVar v) <+> t) vs)
+tEnv' (Env eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, li, t) -> ppVar loc (asUniqueVar v) <+> t <+?> if li then Just "<late>" else Nothing) vs)
 
 tBody :: (Foldable f) => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt
@@ -653,7 +659,7 @@ mtIEnvDef = mtIEnvDef' . fmap mtType
 
 mtIEnvDef' :: IEnvDefF Context -> Context
 mtIEnvDef' (IDRecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
-mtIEnvDef' (IDEnv eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (asUniqueVar v) <+> t) vs)
+mtIEnvDef' (IDEnv eid vs) = ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, li, t) -> ppVar loc (asUniqueVar v) <+> t <+?> if li then Just "<late>" else Nothing) vs)
 
 mtEnv' :: IEnvF Context -> Context
 mtEnv' (IRecursiveEnv eid isEmpty) = fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)

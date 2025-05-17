@@ -1,0 +1,5 @@
+This is stuff for the next rewrite:
+
+- GHC-style phases
+
+- Move debug printing functions down or outside, as they clutter everything. (might do it very very soon anyway).

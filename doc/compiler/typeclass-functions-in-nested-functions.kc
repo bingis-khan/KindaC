@@ -1,0 +1,122 @@
+Another shit thing.
+
+#[print-str(a), print-str(b)]  <- wtf
+f () -> Unit
+	#[print-str(a), print-str(b)]
+	g (l a, r b)
+		print-str(l)
+		print-str(r)
+		return
+
+	g(1, 2)
+	g(Unit, True)
+
+	print-str(MyStrPtr(MyStrPtr(1)))
+	return
+
+
+Similar problem to that other one with polymorphic nested functions.
+But it's not treated as this by default. Why? It should be I think.
+
+	Basically, it's good that this gets propagated so long - we don't yet know from where the instance will come.
+	Also remember to "trim" the extra env shit -> this should automatically happen with env expansion.
+	but, see next paragraph.
+
+
+Basically, while the env expansion for normal functions happens only in unions, here it happens in the function's environment - no outside union.
+
+In this case, f's env should be:
+[print-str(Int), print-str(Int), print-str(Unit), print-str(Bool)]
+
+This is the intuitive behavior... right?
+
+
+Also, another thing here:
+
+class A
+	do-sth (x _) -> Unit
+
+inst A Int
+	do-sth (x Int) -> Unit
+		print x
+		return
+
+
+f ()
+	bool-const = 10
+	inst A Bool
+		do-sth (x Bool) -> Unit
+			print bool-const
+			if x
+				print 1
+			else
+				print 0
+			return
+
+	do-sth(True)
+	return
+
+f()
+
+This don't fukin' work. If I had a test before that it worked, it was because the function didn't have any environment, so it was instantiated as a single function pointer, which meant it could be instantiated anywhere.
+
+	Also note, that in case a function doesn't have an environment, we just omit assigning to the .env part of the function union -> refer to "compiling-mutually-recursive-class-functions.kc"
+
+
+here, we need to remove "outstanding" environment functions (the wtf part). in our current setup, should probably be done in Mono phase alongside Env expansion.
+
+	Honestly, I kinda want RemoveUnused back now. It would be pretty easy to check which instances are local to current scope, and based on this eliminate extraneous environments.
+
+	Or maybe remove it during Typechecking? wait, I think I'm experiencing deja vu. I was already thinking about this...
+
+
+But we need to implement this "Env Extension", but for envs only for typeclasses. This would also remove unused envs.
+
+This also doesn't work!!
+
+	f (x a)
+		print x
+		return
+
+	g ()
+		const = 88
+		h (nn n)
+			print const
+			f(nn)
+			return
+
+		h(1)
+		h(True)
+
+		return
+
+	g()
+
+But the error is different: g's environment becomes empty instead of failing - why?
+
+It's because in `withEnv` we filter out variables, which are not used.
+Each is a pair (UniqueVar, Type). So:
+	used var set: {(f, Int -> ()), (f, Bool -> ()), (f, Unit -> ())}
+	our type: (f, a<g> -> ())
+
+	not in set, so it gets dropped.
+
+Question: in a situation like this, can we encounter a tvar from outside of the function, which should be expanded, but won't be? Or a tvar, which should NOT be expanded, but gets expanded?
+
+	I'm not sure. But we can try expanding it when TVars are encountered.
+
+	Also, when f is used outside of h, it's another function there. So the env is: [(f, a<h> -> ()), (f, Int -> ())]
+	But, we can exploit the fact, that we're operating on sets: since it would already be appended to the environment, we can just replace the 'a' with all instances of f?
+	[see nested-function-weird-stuff-example.kc for everything we can do to 'em]
+
+	When there's a second inner function that uses f? Yeah, that's a problem. Used 'f's, even from other functions are all in the same "basket".
+
+
+Good news is that class functions will work almost the same way! We just need to remember to substitute the variable AND locality (it might be from a local instance.)
+
+	Also, in withEnv (and with that data or something we are tracking), do not include class function instantiations, which come from a local instance. It also must be done recursively.
+
+	I know what I need.
+
+Also, they seem to only appear in the enclosing function's scopes, yo. (also in recursive definitions, but that should not matter, because of RecursiveEnv, which does not store them)
+

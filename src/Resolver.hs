@@ -687,7 +687,9 @@ getInstancesForClassInCurrentScope c = do
 getScopeSnapshot :: Ctx R.ScopeSnapshot
 getScopeSnapshot = do
   allScopes <- getScopes
-  pure $ foldMap instScope allScopes
+
+  -- Merge scopes into a flattened projection. Choose left keys, as they are from inner scopes.
+  pure $ foldr (Map.unionWith (<>) . instScope) Map.empty allScopes
 
 
 registerInst :: R.InstDef -> Ctx ()

@@ -1,0 +1,126 @@
+
+
+inst StrPtr
+	...
+
+inst StrConcat
+	...
+
+
+print-str(StrPtr(StrConcat(1, 2))
+
+
+StrConcat is defined after StrPtr. But, when we monomorphise, then:
+
+StrPtr env -> StrConcat env.
+
+This means, it's undefined, and so the C code produces an error..
+
+It's a problem, because any initialization can happen for each function. We want to store that.
+
+x = 420
+inst StrPtr ...
+
+x <= 69
+inst StrConcat ...
+
+
+Solution:
+late initialize the class function environment.
+When environment is first instantiated, first initialize all non-class functions.
+Then, before it's called or mentioned, initialize its class function environments.
+
+So:
+
+1. EnvDef init
+2. EnvDef + class functions.
+
+
+What about nested-ness?
+
+inst StrPtr ...
+
+g ()
+	# instantiations where?
+	# actually, in g() and h() are two difference insts, so it'll be okay.
+	# instantiate classes here.
+	inst StrConcat ...
+	print-str(StrPtr(StrConcat(3, 4)))
+
+f ()
+	# 2. and here
+	inst StrConcat ...
+	print-str(StrPtr(StrConcat(1, 2)))
+
+
+Okay, what now?
+
+# these will be expanded.
+inst StrPtr ...
+f (x a)
+	inst Str StrConcat
+		print-str(StrConcat(l, r) _) -> Unit
+			print x
+			...
+
+	# instantiate classes here.
+	print-str(StrPtr(StrConcat(1, 2)))
+
+
+Okay, look at this:
+
+x = 1
+inst StrPtr .. [x]
+
+x <= 2
+inst StrPtr' .. [x]
+
+print-str(StrPtr(StrPtr'(StrPtr(StrPtr'(69)))))
+
+How would instantiations look?
+
+x = 1
+inst StrPtr # 1
+inst StrPtr # 3
+
+x <= 2
+inst StrPtr' # 2
+inst StrPtr' # 4
+
+
+Circular dependencies complicate things a bit. Now, with environment "patching" (also, I've added more insts to better show the problem):
+
+x = 1
+inst StrPtr # 1
+inst-incomplete StrPtr # 3
+inst-incomplete StrPtr # 5
+
+x <= 2
+inst StrPtr' # 2
+inst-incomplete StrPtr' # 4
+inst-incomplete StrPtr' # 6
+
+# here, we patch stuff
+inst-patch StrPtr # 3
+inst-patch StrPtr' # 4
+inst-patch StrPtr # 5
+inst-patch StrPtr' # 6
+
+See? We need a proper ordering for this. How do we represent this?
+
+Either while compiling to C or in Mono. The first option is only viable for a quick hack, as this would complicate other backends.
+
+With the second, we can either:
+1. Do this in the first compilation phase.
+2. Do a second phase to add it.
+	But this will make the first "Mono" phase incorrect - should we add datatypes for this second phase?
+	If so, maybe I should switch to the Haskell architecture with type families and shit to make more phases with the same AST types.
+	Also, Mono already has two phases...
+
+
+
+So, how do we compile it?
+
+
+NOTE: I'm not sure it's any good. I think there will be a few bugs it'll cause. Maybe there will be some better way?
+

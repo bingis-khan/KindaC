@@ -1,0 +1,25 @@
+
+class A
+	do-sth (x _) -> Unit
+
+inst A Int
+	do-sth (x Int) -> Unit
+		print x
+		return
+
+
+f ()
+	bool-const = 10
+	inst A Bool
+		do-sth (x Bool) -> Unit
+			print bool-const
+			if x
+				print 1
+			else
+				print 0
+			return
+
+	do-sth(True)
+	return
+
+f()

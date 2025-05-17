@@ -1,0 +1,63 @@
+TestDupa
+	TestDupa
+	AAADupa
+
+Axs
+	Axs
+	Bxs
+
+Cxs
+	Cxs
+	Dxs
+
+f (x a)
+	print x
+	return
+
+fffff ()
+	hooo (x abc)
+		f(x)
+		return
+
+	hooo(1)
+	hooo(Cxs)
+	return
+
+fff = :Unit
+g ()
+	oooo = True
+	aaaa ()
+		print oooo
+		const = 88
+		h (nn n)
+			print const
+			f(nn)
+			return
+
+		hconst = 420
+		hh (hnn hn)
+			print hconst
+			f(hnn)
+			return
+
+		inn ()
+			h(Unit)
+			return
+
+		inn()
+		h(1)
+		h(True)
+		f(TestDupa)
+		fffff()
+
+		return
+	aaaa()
+	return
+
+nnnnn()
+	g()
+	return
+
+fff <= nnnnn
+
+fff()

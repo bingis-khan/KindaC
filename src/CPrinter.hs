@@ -293,8 +293,8 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compile
         error "[COMPILER ERROR]: Called `cEnv` with an empty environment. I can ignore it, but this is probably a bug. This should be checked beforehand btw. Why? sometimes, it requires special handling, so making it an error kind of makes me aware of this."
 
       let uniqueVars = fmap snd $ Map.toList $ Map.fromList $ vars <&> \case
-            tup@(v@(M.DefinedFunction _), _, t) | doesFunctionNeedExplicitEnvironment t -> ((v, Just t), tup)
-            tup@(v, _, _) -> ((v, Nothing), tup)
+            tup@(v@(M.DefinedFunction _), _, _, t) | doesFunctionNeedExplicitEnvironment t -> ((v, Just t), tup)
+            tup@(v, _, _, _) -> ((v, Nothing), tup)
 
       let envVarName v t = case v of
               M.DefinedVariable uv -> cVarName uv
@@ -302,7 +302,7 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compile
               M.DefinedFunction fn -> cFunction t fn
 
       let varTypes =
-            uniqueVars <&> \(v, _, t) -> statement $ do
+            uniqueVars <&> \(v, _, _, t) -> statement $ do
             cDefinition t $ envVarName v t
 
       let etype = "struct" § "et" & pls (hashUnique eid.fromEnvID)
@@ -311,7 +311,7 @@ cEnv = Memo.memo (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compile
 
 
       let name = "et" & pls (hashUnique eid.fromEnvID) & "s"
-      let cvarInsts = uniqueVars <&> \(v, loc, t) -> "." & envVarName v t § "=" § cVar t loc v
+      let cvarInsts = uniqueVars <&> \(v, loc, _, t) -> "." & envVarName v t § "=" § cVar t loc v
       let inst = enclose "{ " " }" $ sepBy ", " cvarInsts
       pure EnvNames { envType = etype, envName = name, envInstantiation = inst }
 

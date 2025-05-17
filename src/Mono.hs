@@ -38,6 +38,7 @@ import qualified Data.IORef as IORef
 import AST.Typed (defaultEmpty)
 import Data.String (fromString)
 import Data.List (find)
+import Data.Bool (bool)
 
 
 
@@ -136,7 +137,8 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
 
         T.Var locality v -> do
           mv <- variable v (t, mt)
-          State.modify $ \c -> c { usedVars = Set.insert (T.asUniqueVar v, mt) c.usedVars }
+          let tvarsInType = ftvTButIgnoreUnions t
+          State.modify $ \c -> c { usedVars = Set.insert (T.asUniqueVar v, mt, tvarsInType) c.usedVars }
 
           pure $ M.Var locality mv
 
@@ -180,13 +182,20 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
 
 withEnv :: Maybe M.IFunction -> T.Env -> Context a -> Context (a, M.IEnv)
 withEnv mfn env cx = do
+  let showOldVars ovs = Common.ppList (Common.ppTup3 . (\(l, m, r) -> (ppVar Local l, M.mtType m, Common.ppSet T.tTVar $ Set.toList r))) $ Set.toList ovs
+  let printUsedVarsState uvType uvTypeTag uvs = ctxPrint' $ printf "%s%s: USED VARS %s WITH ENV%s: %s" (Common.ppEnvID $ T.envID env) (uvTypeTag :: Common.Context) (uvType :: Common.Context) (case mfn of { Nothing -> "" :: Common.Context; Just fn -> fromString $ printf " (%s)" $ ppVar Local fn.functionDeclaration.functionId }) (showOldVars uvs)
+
   oldVars <- State.gets usedVars
   State.modify $ \c -> c { usedVars = mempty }
+  printUsedVarsState "BEFORE" "B" oldVars
 
   x <- cx
 
   vars <- State.gets usedVars
+  printUsedVarsState "INSIDE" "I" vars
   State.modify $ \c -> c { usedVars = oldVars <> c.usedVars }
+  allVars <- State.gets usedVars
+  printUsedVarsState "AFTER " "A" allVars  -- padding for logs to line up.
 
 
   itenv <- traverse (\t -> (t,) <$> mType t) env
@@ -194,16 +203,37 @@ withEnv mfn env cx = do
     T.Env _ envContent -> do
       -- filters 
       newEID <- newEnvID
-      let filteredEnv = filter (\(v, _, (_, mt)) -> Set.member (T.asUniqueVar v, mt) vars) envContent
-      menvContent <- traverse (\(v, l, (tt, mt)) -> variable v (tt, mt) <&> (,l,mt)) filteredEnv
+
+      -- TODO: "expand" function calls here. when they have tvars, they can be expanded here.
+      let varsWithoutTVars = Set.map (\(l, m, _) -> (l, m)) vars
+      expandedEnvContext <- fmap concat $ for envContent $ \ev@(v, loc, (tt, mt)) -> do
+        let tvs = ftvButIgnoreUnions mt
+        if null tvs
+          then
+            pure $ bool [] [ev] $ Set.member (T.asUniqueVar v, mt) varsWithoutTVars
+          else do
+            -- TODO: here's the special part.
+            pure $ map (\(_, mmt, _) -> (v, loc, (tt, mmt)))
+              $ filter (\(uv, _, uvTvs) -> uv == T.asUniqueVar v && tvs `Set.isSubsetOf` uvTvs)
+              $ Set.toList vars
+
+      let toEnvVar (v, l, (tt, mt)) = do
+            v' <- variable v (tt, mt)
+            li <- needsLateInitialization v
+            pure (v', l, li, mt)
+      menvContent <- traverse toEnvVar expandedEnvContext
       pure $ M.IDEnv newEID menvContent
 
     T.RecursiveEnv {} -> error "SHOULD NOT HAPPEN."  -- pure $ M.IDRecursiveEnv eid isEmpty
 
 
+  ctxPrint' $ printf "%sM: %s =WITH ENV%s=> %s" (Common.ppEnvID $ T.envID env) (T.tEnv env) (case mfn of { Nothing -> "" :: Common.Context; Just fn -> fromString $ printf " (%s)" $ ppVar Local fn.functionDeclaration.functionId }) (M.mtIEnvDef menv)
   registerEnvMono mfn (T.envID env) menv vars
 
   pure (x, menv)
+
+needsLateInitialization :: T.Variable -> Context M.LateInit
+needsLateInitialization = const (pure False)
 
 findUsedVarsInExpr :: M.IExpr -> Set (M.IVariable, M.IType)
 findUsedVarsInExpr = cata $ \(M.TypedExpr t expr) -> case expr of
@@ -391,7 +421,7 @@ cringeMapClassType lpt rpt = case (project lpt, project rpt) of
 
 
 -- Registers a single environment monomorphization. later used to track which environments monomoprhised to what.
-registerEnvMono :: Maybe M.IFunction -> EnvID -> M.IEnv -> Set (UniqueVar, M.IType) -> Context ()
+registerEnvMono :: Maybe M.IFunction -> EnvID -> M.IEnv -> Set (UniqueVar, M.IType, Set T.TVar) -> Context ()
 registerEnvMono mvar oldEID nuEnv _ | null (foldMap ftvButIgnoreUnions nuEnv) = do
   State.modify $ \mctx -> mctx { envInstantiations = Map.insertWith (<>) (M.idenvID nuEnv) (Set.singleton (EnvUse mvar nuEnv)) (Map.insertWith (<>) oldEID (Set.singleton (EnvUse mvar nuEnv)) mctx.envInstantiations) }
 
@@ -688,7 +718,8 @@ data Context' = Context
   -- like, maybe env usage can be merged into that kekekek.
   , envInstantiations :: Map EnvID (Set EnvUse)
 
-  , usedVars :: Set (UniqueVar, M.IType)  -- FROM RemoveUnused. this thing tracks which (monomorphized) variables were used. remember that it should not carry between scopes.
+  , usedVars :: Set (UniqueVar, M.IType, Set T.TVar)  -- FROM RemoveUnused. this thing tracks which (monomorphized) variables were used. remember that it should not carry between scopes.
+  -- added Set TVar to fix the nested function environment expansion problem. Let's see if it works.
 
   , classInstantiationAssociations :: T.ClassInstantiationAssocs
   }
@@ -905,7 +936,7 @@ mfEnvDef :: M.IEnv -> EnvContext M.Env
 mfEnvDef = \case
   M.IDRecursiveEnv eid isEmpty -> error "RECURSIVE ENV YO." -- pure $ M.RecursiveEnv eid isEmpty
   M.IDEnv eid envContent -> do
-    menvContent <- traverse (\(v, l, t) -> mfType t >>= \t' -> (,l,t') <$> mfVariable v) envContent  -- the weird monad shit is so we 
+    menvContent <- traverse (\(v, l, li, t) -> mfType t >>= \t' -> (,l,li,t') <$> mfVariable v) envContent  -- the weird monad shit is so we 
     pure $ M.Env eid menvContent
 
 mfEnv :: T.EnvF M.IType -> EnvContext (Maybe M.Env)
@@ -1087,6 +1118,13 @@ ftvButIgnoreUnions = cata $ \case
   M.ITVar tv -> Set.singleton tv
   M.ITCon _ ts _ -> mconcat ts
   M.ITFun _ args ret -> mconcat args <> ret
+
+ftvTButIgnoreUnions :: T.Type -> Set T.TVar
+ftvTButIgnoreUnions = cata $ \case
+  T.TVar tv -> Set.singleton tv
+  T.TCon _ ts _ -> mconcat ts
+  T.TFun _ args ret -> mconcat args <> ret
+  T.TyVar _ -> error "Encountered a tyvar."
 
 
 

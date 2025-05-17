@@ -721,7 +721,7 @@ generalize ifn = do
   let fn = subst csu unsuFn
   (su, scheme, assocs) <- constructSchemeForFunctionDeclaration fn.functionDeclaration
 
-  ctxPrint' $ printf "Scheme: %s" (T.tScheme scheme)
+  ctxPrint' $ printf "Scheme for %s: %s" (Common.ppVar Local fn.functionDeclaration.functionId) (T.tScheme scheme)
   let generalizedFn = subst su fn
 
 
@@ -1534,7 +1534,7 @@ instance Substitutable T.Function where
 
 instance Substitutable T.FunDec where
   ftv (T.FD _ _ params ret _ assocs _) = ftv params <> ftv ret <> ftv assocs -- <> ftv env  -- TODO: env ignored here, because we expect these variables to be defined outside. If it's undefined, it'll come up in ftv from the function body. 
-  subst su (T.FD env fid params ret scheme assocs classInstantiationAssocs) = T.FD (subst su env) fid (subst su params) (subst su ret) scheme (subst su assocs) (Map.fromList $ fmap (bimap (subst su) (subst su)) $ Map.toList classInstantiationAssocs)
+  subst su (T.FD env fid params ret scheme assocs classInstantiationAssocs) = T.FD (subst su env) fid (subst su params) (subst su ret) scheme (subst su assocs) (subst su <$> classInstantiationAssocs)
 
 instance Substitutable T.TypeAssociation where
   ftv (T.TypeAssociation from to _ _) = ftv from <> ftv to

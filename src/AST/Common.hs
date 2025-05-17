@@ -379,6 +379,9 @@ ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v)
 ppTup :: (Context, Context) -> Context
 ppTup (l, r) = encloseSepBy "(" ")" ", " [l, r]
 
+ppTup3 :: (Context, Context, Context) -> Context
+ppTup3 (l, m, r) = encloseSepBy "(" ")" ", " [l, m, r]
+
 ppSet :: (a -> Context) -> [a] -> Context
 ppSet f = encloseSepBy "{" "}" ", " . fmap f
 
