@@ -45,3 +45,137 @@ But I have to remember, that it's not all correct. Here, environments are unifie
 
 	h{67{107}}(Int)
 	h{71{120}}(Bool)
+
+
+Fuck, I broke something. The first test was 1_t05.kc
+
+It's because I'm doing the last monomorphization step when not all env uses are resolved when I'm fully monomorphizing.
+
+
+
+
+
+
+g (n a)
+	h (x)
+		pass
+
+	h(1)
+	return :h(n)
+	
+
+g(1)  :: {[a<g> = Int]}
+
+
+
+[check doc/compiler/env-filtering]
+
+
+Yeah, we need to track env instantiations, because we need to know how much EnvDef gets to be "expanded".
+Current way is really hacky - we simply filter the envs that are from outside - from the environment.
+What's bad about it, is that I'm not sure if we should recursively check environments or not.
+	Probably not, but it's only intuition.
+	Yeah, no. See 1_t07.
+
+Okay, 1_t05.kc and bb.kc worked.
+
+Now 1_t07.kc is breaking:
+
+n = 69
+printn ()
+	print n
+	return
+
+printn2 ()
+	print 2
+	printn()
+	return
+
+printn3 ()
+	print 3
+	printn2()
+	return
+
+
+printn3()
+
+
+Here, printn's environment is not getting instantiated - probably same reason. So, something about key restriction is incorrect.
+
+
+Ill try to simulate it:
+So, three envs:
+
+n = 69
+printn:  [n]
+printn2: [printn]
+printn3: [printn2]
+
+beginning insts:
+printn3 [printn2]
+	insts = {}
+	printn2 [printn]
+		insts = {}
+		printn [n]
+			...
+
+		insts = {printn}
+
+	insts = {printn2, printn}
+		=> {printn2}, because printn gets filtered.
+
+okay, i know what's happening. So how do we properly get the list of *environments which are instantiated outside of the function?*
+I guess we should recursively check these environments.
+	1. Something is in the environment if it was declared outside.
+	2. It was outside, so go to this environment. (if it was outside, then everything in this environment must also be from outside)
+	3. goto 1
+
+
+Okay, it work.
+
+One last test that is not compiling: 1_t15_inner-function-not-generalizing-outer-tvar.kc
+C code is generated, but it's incorrect C code.
+
+Interesting, I think I screwed up instantiations.
+	f$28 = ((outer$62 :: 61{65[]}(Int$55) -> 56{64[n$26 Int$55]}() -> Int$55)((69 :: Int$55)) :: 56{64[n$26 Int$55]}() -> Int$55)
+	g$29 = ((outer$67 :: 66{65[]}(Int$55) -> 57{64[n$26 Int$55]}() -> Int$55)((420 :: Int$55)) :: 57{64[n$26 Int$55]}() -> Int$55)
+	h$30 = ((outer$69 :: 68{65[]}(Unit$58) -> 60{71[n$26 Unit$58]}() -> Unit$58)((@Unit$59 :: Unit$58)) :: 60{71[n$26 Unit$58]}() -> Unit$58)
+
+	notice, that f and g should refer to the same function, but they don't.
+
+So, there are three functions and two Int functions and ONLY ONE has no env instantiation.
+
+Ah shid, It's different because of different unions. It's bad, but like, technically correct.
+It can be mitigated by monomorphising unions that are essentially the same, together.
+However, it might also prevent better optimization down the line, as it "connects" two unions in two different places together.
+I'll see if I ever use this feature of tracking differnet unions, then I can actually do it.
+
+So, I guess it's something to do with memoization.
+Yeah, 'outer' does not get memoized, but 'inner' does.
+But should we still be able to get the instantiation?
+Oh, because we rely on `registerEnvMono` to actually add the instantiation, which seems to be incorrect.
+I'll try moving it out of it.
+One more reason to fix this shit architecture - I should think of how it can be fixed here.
+
+
+Okay, everything seems to be solved now.... except tvars in environments.
+
+# 55[oooo$42 Bool$3, ^ f$34 61{57[]}(n<h$45>{}) -> Unit$1, ^ f$34 61{57[]}(Int$6) -> Unit$1, ^ f$34 61{57[]}(Bool$3) -> Unit$1, ^ f$34 87{57[]}(TestDupa$25) -> Unit$1, ^ fffff$36 104{88[f$34 92{57[]}(Int$6) -> Unit$1, f$34 92{57[]}(Cxs$31) -> Unit$1]}() -> Unit$1]
+aaaa$43 () Unit$1 {} {}
+    $$$: 56[const$44 Int$6, ^ f$34 61{57[]}(n<h$45>{}) -> Unit$1]
+    # 56[const$44 Int$6, ^ f$34 61{57[]}(n<h$45>{}) -> Unit$1]
+    h$45 (nn$46 n<h$45>{}) Unit$1 {n<h$45>{}} {}
+      print (^ const$44 :: Int$6)
+      ((^ f$34&F :: 61{57[]}(n<h$45>{}) -> Unit$1)((nn$46 :: n<h$45>{})) :: Unit$1)
+      return (@Unit$2 :: Unit$1)
+
+Maybe it's a bug with instantiateVariable? technically, it should be instantiated by default.
+Yeah, seems like a bug - normal instantiations have instantiated types in them. bruh.
+	Okay, I know why. We map the environment, but we should also map the environment in the type and not the declaration.
+	So we have to inspect the type. But then, do we go through all environments in the union or just this function's? I think just this function's.
+
+	CONTROVERSIAL: Yeah, I'm not sure. I wonder if it's possible for such a union to have multiple envs which are NOT instantiated in the function and should not be included. Right now we instantiate all envs with the ID of this function, but it might be incorrect. I have to think of a counterexample.
+
+		I think it's correct. We're only checking out environments of LOCAL functions to add to the environment of the outer function.
+			These local functions are declared inside that outer function.
+		This means, that whatever the local function has must also go through the outer function, so we'll end up expanding all environments anyway.

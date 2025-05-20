@@ -1,0 +1,29 @@
+#$ Inner function calling nested outer functions.
+# True
+# 420
+
+id (x)
+	return x
+
+a ()
+	aaa (x)
+		print x
+		return x
+
+	g ()
+		f ()
+			print id(True)
+			aaa(420)
+			return
+
+		f2 ()
+			f()
+			return
+
+		f2()
+		return
+
+	g()
+	return
+
+a()

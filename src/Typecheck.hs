@@ -233,7 +233,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
               T.Env _ env -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
               _ -> error "FUKKK"
 
-        RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
+        -- RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
 
         pure $ T.EnvDef fn
 
@@ -245,7 +245,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
               T.Env _ env -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
               _ -> error "FUKKK"
 
-        RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
+        -- RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
 
         pure $ T.InstDefDef inst
 
@@ -301,7 +301,7 @@ inferExpr = cata (fmap embed . inferExprType)
 
 
         R.Var loc v -> do
-          (t, v') <- instantiateVariable =<< inferVariable v
+          (t, v') <- instantiateVariable loc =<< inferVariable v
 
           when (loc == FromEnvironment) $ do
             addEnv v' t
@@ -789,7 +789,8 @@ substAssociations = do
 
             -- hope it's correct....
             let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
-            (instFunType, T.DefinedFunction _ _ instAssocs) <- instantiateFunction baseFunctionScopeSnapshot instFun.instFunction
+            -- TODO: FromEnvironment locality only here, because it means we won't add anything extra to the instantiations.
+            (instFunType, T.DefinedFunction _ _ instAssocs, _) <- instantiateFunction baseFunctionScopeSnapshot instFun.instFunction
 
             to `uni` instFunType
 
@@ -1065,11 +1066,35 @@ inferDecon = cata $ fmap embed . \case
 ------
 
 -- TODO: merge it with 'inferVariable'.
-instantiateVariable :: T.Variable -> Infer (T.Type, T.Variable)
-instantiateVariable = \case
+instantiateVariable :: Locality -> T.Variable -> Infer (T.Type, T.Variable)
+instantiateVariable loc = \case
   T.DefinedVariable v -> var v <&> (,T.DefinedVariable v)
   T.DefinedFunction fn snapshot _ -> do
-    instantiateFunction snapshot fn
+    (t, v, env) <- instantiateFunction snapshot fn
+
+    -- add instantiations!
+    --  only when it's a local function should you add stuff from its environment to instantiations.
+    let gatherInstsFromEnvironment :: T.Env -> Set (T.Variable, T.Type)
+        gatherInstsFromEnvironment = \case
+            T.RecursiveEnv _ _ -> mempty
+            T.Env _ vars -> flip foldMap vars $ \case
+              (envVar@(T.DefinedFunction fn _ _), Local, t) ->
+                -- NOTE: we need mapped envs, so we have to dig through the type. but, are we too permissive? should we only choose this current env? or all of them? how do we distinguish the "current" one?
+                let currentEnvID = T.envID fn.functionDeclaration.functionEnv
+                    envs = case project t of
+                      T.TFun union _ _ -> filter (\e -> T.envID e == currentEnvID) union.union
+                      _ -> error "impossible, it's a function type."
+                in Set.insert (envVar, t) (foldMap gatherInstsFromEnvironment envs)
+              (envVar, _, t) -> Set.singleton (envVar, t)
+
+        theseInsts = if loc == Local
+        then gatherInstsFromEnvironment env
+        else mempty
+
+    RWS.modify $ \s -> s { instantiations = Set.insert (v, t) $ theseInsts <> s.instantiations }
+
+    pure (t, v)
+
 
   T.DefinedClassFunction cfd@(T.CFD cd funid params ret) snapshot self _ -> do
     -- TODO: a lot of it is duplicated from DefinedFunction. sussy
@@ -1108,7 +1133,8 @@ instantiateVariable = \case
 
     pure (fnType, T.DefinedClassFunction cfd snapshot self uci)
 
-instantiateFunction :: T.ScopeSnapshot -> T.Function -> Infer (T.Type, T.Variable)
+-- NOTE: these last two parameters are basically a hack. I don't yet know what to do when we're dealing with an instance function, so we're only doing it here for now. (we should probably do the same thing there, but it's not local, so modifying the state then would be bad. I'll have to think about it.)
+instantiateFunction :: T.ScopeSnapshot -> T.Function -> Infer (T.Type, T.Variable, T.Env)
 instantiateFunction snapshot fn = do
     let fundec = fn.functionDeclaration
     let (Scheme schemeTVars schemeUnions) = fundec.functionScheme
@@ -1126,7 +1152,8 @@ instantiateFunction snapshot fn = do
 
 
     -- Create type from function declaration
-    fnUnion <- singleEnvUnion (mapTVs <$> fundec.functionEnv)
+    let mappedEnv = mapTVs <$> fundec.functionEnv
+    fnUnion <- singleEnvUnion mappedEnv
     let fnType = Fix $ T.TFun fnUnion (mapTVs . snd <$> fundec.functionParameters) (mapTVs fundec.functionReturnType)
 
     -- add new associations
@@ -1136,10 +1163,11 @@ instantiateFunction snapshot fn = do
       associateType from mto cfd (fromMaybe mempty $ snapshot !? cd) uci  -- TEMP
       pure mto
 
+    let v = T.DefinedFunction fn snapshot assocs
 
     ctxPrint' $ printf "After instantiation: %s" (T.tType fnType)
 
-    pure (fnType, T.DefinedFunction fn snapshot assocs)
+    pure (fnType, v, mappedEnv)
 
 
 associateType :: T.Type -> T.Type -> T.ClassFunDec -> T.PossibleInstances -> UniqueClassInstantiation -> Infer ()

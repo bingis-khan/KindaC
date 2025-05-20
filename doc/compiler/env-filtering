@@ -1,0 +1,8 @@
+
+
+Unions are not very good. We keep uninstantiated unions - the current env filtering scheme is flat out incorrect. How would I fix this?
+
+Like, envs are okay by default, but the contents of unions are not - they depend on what gets instantiated.
+The current env filtering scheme seems to be incorrect (as we only filter by EnvID).
+
+

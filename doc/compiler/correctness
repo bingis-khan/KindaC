@@ -1,0 +1,5 @@
+I just did a thing, where I gather all instantiations during typechecking.
+This seems pretty logical and easy, but the problem is that it might compromise correctness?
+Whether you reference a function or not might change how a program behaves (a mutually recursive function might produce an error)
+But the reference might be removed after typechecking, because we're not calling that function.
+For now, I can't think of any errors that might arise from typechecking it that way, but this lazy style is very zig-like (bad, it's harder to know what's wrong).

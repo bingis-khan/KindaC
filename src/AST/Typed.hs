@@ -367,6 +367,9 @@ data StmtF expr a
 type Stmt = StmtF Expr AnnStmt
 type AnnStmt = Fix (Annotated :. StmtF Expr)
 
+deannAnnStmt :: (Annotated :. StmtF Expr) a -> StmtF Expr a
+deannAnnStmt (O (Annotated _ stmt)) = stmt
+
 $(deriveBifunctor ''Case)
 $(deriveBifoldable ''Case)
 $(deriveBitraversable ''Case)

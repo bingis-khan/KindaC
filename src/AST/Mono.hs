@@ -96,7 +96,7 @@ data IEnvF t
 
 -- Used only in environment definitions during the IMono phase.
 data IEnvDefF t
-  = IDEnv EnvID [(Variable, Locality, LateInit, t)]  -- only in definitions: functions, lambdas, mappings.
+  = IDEnv EnvID [(IVariable, Locality, LateInit, t)]  -- only in definitions: functions, lambdas, mappings.
   | IDRecursiveEnv EnvID IsEmpty
   deriving (Functor, Foldable, Traversable)
 
@@ -298,7 +298,7 @@ type NeedsImplicitEnvironment = Bool
 
 data ExprF envtype a
   = Lit LitType
-  | Var Locality Variable
+  | Var Locality (Variable' envtype)
   | Con (DataCon' envtype)
 
   | RecCon (DataDef' envtype) (NonEmpty (UniqueMem, a))
@@ -324,13 +324,16 @@ expr2type (Fix (TypedExpr t _)) = t
 
 
 
-data Variable
+data Variable' envtype
   = DefinedVariable UniqueVar
-  | DefinedFunction Function
+  | DefinedFunction (Function' envtype)
   deriving (Eq, Ord)
 
+type IVariable = Variable' IncompleteEnv
+type Variable = Variable' FullEnv
 
-asUniqueVar :: Variable -> UniqueVar
+
+asUniqueVar :: Variable' envtype -> UniqueVar
 asUniqueVar = \case
   DefinedVariable uv -> uv
   DefinedFunction fn -> fn.functionDeclaration.functionId
@@ -395,7 +398,7 @@ deannAnnIStmt (O (Annotated _ stmt)) = stmt
 
 
 type family EnvDef envtype
-type instance EnvDef IncompleteEnv = NonEmpty EnvID  -- EnvDefs are being redone, so we need to keep EnvID only.
+type instance EnvDef IncompleteEnv = NonEmpty (IFunction, IEnv)  -- EnvDefs are being redone, so we need to keep EnvID only.
 type instance EnvDef FullEnv = [(Function, Env)]  -- I think Function is not needed here, but we might as well use it here for easier debugging (printing these functions in EnvDefs).
 
 
@@ -584,7 +587,7 @@ mtStmt stmt = case stmt of
   EnvDef funEnv -> fromString $ printf "[ENV]: %s" (mtEnvDef funEnv)
 
 mtEnvDef :: EnvDef IncompleteEnv -> Context
-mtEnvDef = ppList ppEnvID . NonEmpty.toList
+mtEnvDef = ppList (mtIEnvDef' . fmap mtType . snd) . NonEmpty.toList
 
 mtCase :: ICase -> Context
 mtCase kase = mtBody (mtDecon kase.deconstruction <+?> fmap mtExpr kase.caseCondition) kase.body
