@@ -51,7 +51,7 @@ import Data.Bool (bool)
 
 mono :: T.ClassInstantiationAssocs -> [T.AnnStmt] -> IO M.Module
 mono cia tmod = do
-  liftIO $ ctxPrint' $ printf "CIA: %s" (Common.ppMap $ fmap (bimap (fromString . show) (Common.encloseSepBy "[" "]" ", " . fmap (Common.ppTup . bimap T.tType (Common.ppTup . bimap (Common.encloseSepBy "[" "]" ", " . fmap T.tType) (\ifn -> Common.ppVar Local ifn.instFunction.functionDeclaration.functionId))))) $ Map.toList cia)
+  liftIO $ ctxPrint' $ printf "CIA: %s" (Common.ppMap $ fmap (bimap (fromString . show) (Common.encloseSepBy "[" "]" ", " . fmap (Common.ppTup . bimap T.tType (Common.ppTup . bimap (Common.encloseSepBy "[" "]" ", " . fmap T.tType) (\ifn -> Common.ppVar Local ifn.instFunction.functionDeclaration.functionId))))) $ fmap2 (fmap $ \(l, r, _) -> (l, r)) $ Map.toList cia)
 
   -- Step 1: Just do monomorphization with a few quirks*.
   (mistmts, monoCtx) <- flip State.runStateT (startingContext cia) $ do
@@ -163,13 +163,32 @@ mExpr = cata $ fmap embed . \(T.TypedExpr t expr) -> do
           mv <- variable v (t, mt)
           State.modify $ \c -> c { usedVars = Set.insert (T.asUniqueVar v, mt) c.usedVars }
 
-          pure $ M.Var locality mv
+          newLocality <- case v of
+                T.DefinedClassFunction _ _ self uci -> do
+                  -- NOTE: ANOTHER COPYPASTA TO KNOW THE OG INSTANCE OF THIS FUNCTION.
+                  ucis <- State.gets classInstantiationAssociations
+                  mself <- mType self
+                  (ifnts, ivfn) <- case ucis !? uci of
+                        Just ts -> do
+                          candidates <- traverse (bitraverse mType pure) $ ts <&> \(l, r, _) -> (l, r)
+                          case find ((==mself) . fst) candidates of
+                            Just (_, (l, r)) -> pure (l, r)
+                            Nothing -> error "aisndlknsadlkjsad"
+                        Nothing -> error "AOSJDOJSADOJSAJODJSAOJDASODSAJ"
+                  let vfn = ivfn.instFunction
+                  let (T.Env _ _ _ level) = vfn.functionDeclaration.functionEnv
+                  cl <- State.gets currentLevel
+                  pure $ if level == cl then Local else FromEnvironment
+
+                _ -> pure locality
+
+          pure $ M.Var newLocality mv
 
         T.Con eid c -> do
           mc <- constructor c t
 
           -- don't forget to register usage. (for codegen)
-          void $ withEnv Nothing (T.Env eid []) (pure ())
+          void $ withEnv Nothing (T.Env eid [] mempty 0) (pure ())
 
           pure $ M.Con mc
 
@@ -211,8 +230,13 @@ withEnv mfn env cx = do
   -- oldVars <- State.gets usedVars
   -- State.modify $ \c -> c { usedVars = mempty }
   -- printUsedVarsState "BEFORE" "B" oldVars
-
+  prevlev <- State.gets currentLevel
+  let curlev = case env of
+        T.Env _ _ _ lev -> lev
+        _ -> undefined
+  State.modify $ \c -> c { currentLevel = curlev + 1 }
   x <- cx
+  State.modify $ \c -> c { currentLevel = prevlev }
 
   -- vars <- State.gets usedVars
   -- printUsedVarsState "INSIDE" "I" vars
@@ -223,15 +247,52 @@ withEnv mfn env cx = do
 
   itenv <- traverse (\t -> (t,) <$> mType t) env
   menv <- memo' memoEnv (\m c -> c { memoEnv = m }) itenv $ \env' _ -> case env' of
-    T.Env _ envContent -> do
+    T.Env oldEID envContent locs currentLevel -> do
       newEID <- newEnvID
 
       let toEnvVar (v, l, (tt, mt)) = do
             v' <- variable v (tt, mt)
             li <- needsLateInitialization v
-            pure (v', l, li, mt)
+            case v of
+              T.DefinedClassFunction _ _ self uci -> do
+                  ucis <- State.gets classInstantiationAssociations
+                  mself <- mType self
+                  (ifnts, ivfn) <- case ucis !? uci of
+                        Just ts -> do
+                          candidates <- traverse (bitraverse mType pure) $ ts <&> \(l, r, _) -> (l, r)
+                          case find ((==mself) . fst) candidates of
+                            Just (_, (l, r)) -> pure (l, r)
+                            Nothing -> error "aisndlknsadlkjsad"
+                        Nothing -> error "AOSJDOJSADOJSAJODJSAOJDASODSAJ"
+                  let vfn = ivfn.instFunction
+                  let T.Env cureid _ _ instanceLevel = vfn.functionDeclaration.functionEnv
+                  if currentLevel < instanceLevel
+                    then do
+                      let envs = case project tt of
+                            T.TFun union _ _ -> union.union
+                            _ -> error "Immmmmmmpossible"
+
+                          tryLocalizeEnv (T.Env _ envContent _ _) = sequenceA $ flip mapMaybe envContent $ \(vEnv, _, tEnv) -> 
+                              locs !? T.asProto vEnv <&> \newLoc -> do
+                                mtEnv <- mType tEnv
+                                mvEnv <- variable vEnv (tEnv, mtEnv)
+                                li <- needsLateInitialization vEnv
+                                pure (mvEnv, newLoc, li, mtEnv)
+                          tryLocalizeEnv _ = error "impossssssible"
+
+                      instanceEnv <- fmap concat $ traverse tryLocalizeEnv $ filter ((==cureid) . T.envID) envs
+                      ctxPrint' $ printf "LOCALITIES of %s->%s:\n%s" (Common.ppEnvID oldEID) (Common.ppEnvID newEID) $ Common.ppMap $ fmap (bimap (Common.ppVar Local . (\case { T.PDefinedVariable uv -> uv; T.PDefinedFunction fn -> fn.functionDeclaration.functionId; T.PDefinedClassFunction (T.CFD _ uv _ _) -> uv })) (fromString . show)) $ Map.toList locs
+                      ctxPrint (Common.ppList T.tEnv) envs
+                      ctxPrint (Common.ppList $ \(v, _, _, _) -> Common.ppVar Local $ M.asUniqueVar v) instanceEnv
+                      pure instanceEnv
+                    else
+                      pure [(v', l, li, mt)]
+
+
+              _ -> do
+                pure [(v', l, li, mt)]
       menvContent <- traverse toEnvVar envContent
-      pure $ M.IDEnv newEID menvContent
+      pure $ M.IDEnv newEID $ concat menvContent
 
     T.RecursiveEnv {} -> error "SHOULD NOT HAPPEN."  -- pure $ M.IDRecursiveEnv eid isEmpty
 
@@ -351,7 +412,7 @@ variable (T.DefinedFunction vfn snapshot assocs) (instType, et) = do
 
         let usedEnvIDs curenv = case curenv of
               -- NOTE: in the future, we might also need to insert the current env's ID due to recursiveness?
-              T.Env _ vars -> flip foldMap vars $ \case
+              T.Env _ vars _ _ -> flip foldMap vars $ \case
                 (T.DefinedFunction fn _ _, _, _) -> Set.insert (T.envID fn.functionDeclaration.functionEnv) (usedEnvIDs fn.functionDeclaration.functionEnv)
                 _ -> mempty
               _ -> error "RECURSIVE"
@@ -384,7 +445,7 @@ variable (T.DefinedClassFunction cfd@(T.CFD cd _ cfdParams cfdRet) snapshot self
   mself <- mType self
   (ifnts, ivfn) <- case ucis !? uci of
         Just ts -> do
-          candidates <- traverse (bitraverse mType pure) ts
+          candidates <- traverse (bitraverse mType pure) $ ts <&> \(l, r, _) -> (l, r)
           case find ((==mself) . fst) candidates of
             Just (_, (l, r)) -> pure (l, r)
             Nothing -> error "aisndlknsadlkjsad"
@@ -433,7 +494,8 @@ variable (T.DefinedClassFunction cfd@(T.CFD cd _ cfdParams cfdRet) snapshot self
       -- add memo, THEN traverse body.
       let fn = M.Function { M.functionDeclaration = fundec, M.functionBody = body } :: M.IFunction
       addMemo fn
-      (body, env) <- withEnv (Just fn) tfn.functionDeclaration.functionEnv $ mStmts tfn.functionBody
+      (body, env) <- withEnv (Just fn) tfn.functionDeclaration.functionEnv $ do
+        mStmts tfn.functionBody
 
       pure fn
 
@@ -651,7 +713,7 @@ withClassInstanceAssociations :: T.ClassInstantiationAssocs -> Context a -> Cont
 withClassInstanceAssociations ucis a = do
   ogTM <- State.gets classInstantiationAssociations
 
-  liftIO $ ctxPrint' $ printf "CIA: %s" (Common.ppMap $ fmap (bimap (fromString . show) (Common.encloseSepBy "[" "]" ", " . fmap (Common.ppTup . bimap T.tType (Common.ppTup . bimap (Common.encloseSepBy "[" "]" ", " . fmap T.tType) (\ifn -> Common.ppVar Local ifn.instFunction.functionDeclaration.functionId))))) $ Map.toList ogTM)
+  liftIO $ ctxPrint' $ printf "CIA: %s" (Common.ppMap $ fmap (bimap (fromString . show) (Common.encloseSepBy "[" "]" ", " . fmap (Common.ppTup . bimap T.tType (Common.ppTup . bimap (Common.encloseSepBy "[" "]" ", " . fmap T.tType) (\ifn -> Common.ppVar Local ifn.instFunction.functionDeclaration.functionId))))) $ fmap2 (fmap $ \(l, r, _) -> (l, r)) $ Map.toList ogTM)
 
   x <- State.withStateT (\s -> s { classInstantiationAssociations = ucis <> s.classInstantiationAssociations }) a
   State.modify $ \s -> s { classInstantiationAssociations = ogTM }
@@ -742,6 +804,7 @@ mUnion tunion = do
 
 
 
+-- NOTE: This is only used to correctly monomorphize the function this env belongs to. It does not actually monomorphize envs in types.
 mEnv' :: T.EnvF T.Type -> Context (M.IEnvF M.IType)
 mEnv' env = do
   env' <- traverse mType env
@@ -755,11 +818,12 @@ mEnv = \case
     T.RecursiveEnv eid isEmpty -> M.IRecursiveEnv eid isEmpty
 
     -- xdddd, we don't create a new env id when it has shit inside.
-    T.Env eid params | not (null (foldMap (\(_, _, t) -> ftvButIgnoreUnions t) params)) -> do
+    -- NOTE: 21.05.25: I don't think it's relevant anymore?
+    T.Env eid params _ _ | not (null (foldMap (\(_, _, t) -> ftvButIgnoreUnions t) params)) -> do
       -- we have to preserve the original ID to later replace it with all the type permutations.
       M.IEnv eid $ params <&> \(_, _, t) -> t
 
-    T.Env eid params -> do
+    T.Env eid params _ _ -> do
       M.IEnv eid  $ params <&> \(_, _, t) -> t
 
 
@@ -785,13 +849,14 @@ data Context' = Context
 
   -- burh, this is shit, literally
   -- like, maybe env usage can be merged into that kekekek.
-  , envInstantiations :: Map EnvID (Set EnvUse)
+  , envInstantiations :: Map EnvID (Set EnvUse)  -- NOTE: FUTURE TYPECHECK
   -- i think it's also not needed now.
 
-  , usedVars :: Set (UniqueVar, M.IType)  -- FROM RemoveUnused. this thing tracks which (monomorphized) variables were used. remember that it should not carry between scopes.
+  , usedVars :: Set (UniqueVar, M.IType)  -- FROM RemoveUnused. this thing tracks which (monomorphized) variables were used. remember that it should not carry between scopes.-- NOTE: FUTURE TYPECHECK (also unused now)
   -- added Set TVar to fix the nested function environment expansion problem. Let's see if it works.
 
   , classInstantiationAssociations :: T.ClassInstantiationAssocs
+  , currentLevel :: Int  -- HACK: it's for knowing when instances should be local or not.
   }
 type Context = StateT Context' IO
 
@@ -811,6 +876,7 @@ startingContext cia = Context
 
   , usedVars = mempty
   , classInstantiationAssociations = cia
+  , currentLevel = 0  -- BAD
   }
 
 

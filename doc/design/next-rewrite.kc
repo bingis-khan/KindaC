@@ -3,3 +3,100 @@ This is stuff for the next rewrite:
 - GHC-style phases
 
 - Move debug printing functions down or outside, as they clutter everything. (might do it very very soon anyway).
+
+
+Okay, I think I'm closer to what I want to do.
+Should I eliminate class functions during typechecking? It's possible and might actually be better.
+
+ - right now, out architecture allows us to do this during Mono, but that is probably not great.
+
+
+
+LETS DO A REWRITE, I CANT ANYMORE.
+
+The stuff that's left to implement is:
+
+ - nonlocal instances and their environments.
+ - late instantiation for environments.
+ - declared associated types
+
+plus all the other known stuff like:
+ - recursion
+ - pointers
+ - recursive datatypes
+ - size tvars (no arithmetic or anything, just this)
+ and other shiz
+
+
+
+-------------------------
+
+Parser
+ |
+Resolver
+ > resolve names, exports and shiz. it'll still be a different phase from typecheck, but maybe not for long
+ |
+Typecheck
+ > typechecking, should remove typeclasses, also should do partial environment initialization.
+ Actual Typecheck (including instantiations)
+ | <- this should produce a "Module" datatype, which contains both the code and exports (remember to also export typeclasses!)
+[Export] <- the "Module" datatype, not actually a step.
+ |
+Fixup
+ > it cannot be fused with Typecheck. Typecheck is module-based, but to, for example, finish all env defs, we must know *all* of the program.
+ Remove Typeclasses step (this is controversial, but it'll simplify Mono. right know I just want to finish this shiz)
+ > Currently, I think locking in EnvDefs should happen here, as we will already have access to all instances. 
+ |
+Mono
+ > must monomoprhize and map the "cucked unions", unions, which contain TVars from nested functions.
+ Incomplete Mono
+ Full Mono
+ |
+C Printer (not changed)
+ 
+
+--
+
+What about environment "fix ups"? This happens, when the instance function makes use of functions defined earlier.
+
+An example:
+
+sumtin (x, y)
+ inst ToStr StrConcat l r
+  to-str(StrConcat(l, r))
+   # to cement the fact that this is an inner function.
+   print x
+   print y # part of environment
+   return to-str(l) <> to-str(r)
+
+  return to-str(StrConcat(x, y))
+#[partial 'sumtin' envdef]
+
+inst ToStr Int, Bool, Unit  # instance definitions omitted
+#[inst envdef]
+#[completed 'sumtin' envdef]
+
+sumtin(1, True)
+sumtin(Unit, Unit)
+
+This also cannot be done during simple Typechecking. We need to know all callers of this function.
+Let's do it the simple way for now, where each function env def has "dependencies" listed, after which it should be completed.
+Should this be a separate pass?
+
+---- 
+
+
+I imagine we have typechecking done.
+The typechecking part also can leave an "asymetrical" AST -> I know all env defs inside function scopes and such will not depend on the outer scope.
+ Thus, the inner part of the function can have a slightly different AST, where env defs are already "taken care of" and so it'll be easier to "fixup" later.
+So, Typechecking might have a function type like: T.Fun (T.FunDec) (NonEmpty Fixup.Stmt)
+
+In Fixup, we need to collect all top level instantiations. We have to go through the code and replace EnvDefs.
+ > NOTE: all top level env defs' types will be MONOMORPHIC - they should not have any TVars.
+ > NOTE NOTE: However, inside unions, it's still possible, as they can refer to variables, which refer to inner functions.
+
+Fixup will also serve as a way to "remove unused".
+Second, (probably should do it at the same time) add EnvDef completions, as we're gonna have enough info for us to do this. Just use Deps = Set EnvID or Deps = Set (EnvID, Type)
+ > NOTE: should we already create different environments then? Because "completing" environments is different for each applied type.
+  > Well, shouldn't we monomorphize it then at this point? I mean... it's kinda similar. When it comes to cucked unions, we can technically count all instantiations of a function those TVar is assigned to it. Eh, I'll see.
+ > PROBLEM: what if the defined environment is not yet completed? Probably only mark it as completed when it's fully completed. Yuh.

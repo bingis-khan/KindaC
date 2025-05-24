@@ -230,7 +230,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
         -- be sure to copy the environment HERE!
         let varsFromNestedFun = case fn.functionDeclaration.functionEnv of
-              T.Env _ env -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
+              T.Env _ env _ _ -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
               _ -> error "FUKKK"
 
         -- RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
@@ -242,7 +242,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
         -- be sure to copy the environment HERE!
         let varsFromNestedFun = fold $ inst.instFunctions <&> \fn -> case fn.instFunction.functionDeclaration.functionEnv of
-              T.Env _ env -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
+              T.Env _ env _ _ -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
               _ -> error "FUKKK"
 
         -- RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
@@ -272,7 +272,7 @@ inferExpr = cata (fmap embed . inferExprType)
 
           -- be sure to copy the environment HERE!
           let varsFromNestedFun = case fenv of
-                T.Env _ env -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
+                T.Env _ env _ _ -> Set.fromList $ env <&> \(v, _, t) -> (v, t)
                 _ -> error "FUKKK"
 
           RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
@@ -571,10 +571,10 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
     addMemo fun
 
     -- Infer body.
-    (envc, body) <- withEnv' rfundec.functionEnv $ withReturn ret $ inferStmts rfn.functionBody
+    (envc, locs, body) <- withEnv' rfundec.functionEnv $ withReturn ret $ inferStmts rfn.functionBody
 
     -- now, replace it with a non-recursive environment.
-    let env = T.Env envID envc
+    let env = T.Env envID envc locs rfundec.functionEnv.level
     let fundec' = fundec { T.functionEnv = env }
     let fun' = fun { T.functionDeclaration = fundec' }
 
@@ -683,10 +683,10 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
       let fun = T.Function { T.functionDeclaration = fundec, T.functionBody = body }
 
       -- Infer body.
-      (envc, body) <- withEnv' rfundec.functionEnv $ withReturn ret $ inferStmts rfn.classFunctionBody
+      (envc, locs, body) <- withEnv' rfundec.functionEnv $ withReturn ret $ inferStmts rfn.classFunctionBody
 
       -- now, replace it with a non-recursive environment.
-      let env = T.Env envID envc
+      let env = T.Env envID envc locs rfundec.functionEnv.level
       let fundec' = fundec { T.functionEnv = env }
       let fun' = fun { T.functionDeclaration = fundec' }
       pure fun'
@@ -744,7 +744,7 @@ substAccessAndAssociations = do
       didAccessProgressedSubstitutions <- substAccess
       classInstantiationAssocs <- substAssociations
       let didAssociationsProgressedSubstitutions = not $ null classInstantiationAssocs
-      liftIO $ ctxPrint' $ printf "CIA: %s" (Common.ppMap $ fmap (bimap (fromString . show) (Common.encloseSepBy "[" "]" ", " . fmap (Common.ppTup . bimap T.tType (Common.ppTup . bimap (Common.encloseSepBy "[" "]" ", " . fmap T.tType) (\ifn -> Common.ppVar Local ifn.instFunction.functionDeclaration.functionId))))) $ Map.toList classInstantiationAssocs)
+      liftIO $ ctxPrint' $ printf "CIA: %s" (Common.ppMap $ fmap (bimap (fromString . show) (Common.encloseSepBy "[" "]" ", " . fmap (Common.ppTup . bimap T.tType (Common.ppTup . bimap (Common.encloseSepBy "[" "]" ", " . fmap T.tType) (\ifn -> Common.ppVar Local ifn.instFunction.functionDeclaration.functionId))))) $ fmap2 (fmap $ \(l, r, _) -> (l, r)) $ Map.toList classInstantiationAssocs)
 
       if didAccessProgressedSubstitutions || didAssociationsProgressedSubstitutions
         then Map.unionWith (++) classInstantiationAssocs <$> go
@@ -790,11 +790,12 @@ substAssociations = do
             -- hope it's correct....
             let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
             -- TODO: FromEnvironment locality only here, because it means we won't add anything extra to the instantiations.
-            (instFunType, T.DefinedFunction _ _ instAssocs, _) <- instantiateFunction baseFunctionScopeSnapshot instFun.instFunction
+            (instFunType, T.DefinedFunction fn _ instAssocs, _) <- instantiateFunction baseFunctionScopeSnapshot instFun.instFunction
 
             to `uni` instFunType
 
-            pure ((t, True), Map.singleton uci [(from, (instAssocs, instFun))])
+            let (T.Env _ _ _ level) = fn.functionDeclaration.functionEnv
+            pure ((t, True), Map.singleton uci [(from, (instAssocs, instFun), level)])
 
           Nothing -> do
             pure ((t, False), mempty)  -- error.
@@ -917,7 +918,7 @@ constructSchemeForFunctionDeclaration dec = do
       -- For a variable, use the actual type as nothing is instantiated!
   let digOutTyVarsAndUnionsFromEnv :: T.Env -> (Set TyVar, Set T.EnvUnion)
       digOutTyVarsAndUnionsFromEnv (T.RecursiveEnv _ _) = mempty
-      digOutTyVarsAndUnionsFromEnv (T.Env _ env) = foldMap (\(v, _ ,t) -> digThroughVar t v) env
+      digOutTyVarsAndUnionsFromEnv (T.Env _ env _ _) = foldMap (\(v, _ ,t) -> digThroughVar t v) env
         where
           digThroughVar :: T.Type -> T.Variable -> (Set TyVar, Set T.EnvUnion)
           digThroughVar t = \case
@@ -1077,7 +1078,7 @@ instantiateVariable loc = \case
     let gatherInstsFromEnvironment :: T.Env -> Set (T.Variable, T.Type)
         gatherInstsFromEnvironment = \case
             T.RecursiveEnv _ _ -> mempty
-            T.Env _ vars -> flip foldMap vars $ \case
+            T.Env _ vars _ _ -> flip foldMap vars $ \case
               (envVar@(T.DefinedFunction fn _ _), Local, t) ->
                 -- NOTE: we need mapped envs, so we have to dig through the type. but, are we too permissive? should we only choose this current env? or all of them? how do we distinguish the "current" one?
                 let currentEnvID = T.envID fn.functionDeclaration.functionEnv
@@ -1193,7 +1194,7 @@ instantiateConstructor envID = \case
     let ret = Fix $ T.TCon dd tvs unions
 
     -- don't forget the empty env!
-    let emptyEnv = T.Env envID []
+    let emptyEnv = T.Env envID [] mempty 0
     union <- singleEnvUnion emptyEnv
 
     pure $ Fix $ T.TFun union ts ret
@@ -1240,15 +1241,15 @@ mapTVsWithMap tvmap unionmap =
 -- Creates a new env alongside inferring an environment (TODO: why?)
 withEnv :: R.Env -> Infer a -> Infer (T.Env, a)
 withEnv renv x = do
-  (tenv, x') <- withEnv' renv x
+  (tenv, locs, x') <- withEnv' renv x
   envID <- newEnvID
-  pure (T.Env envID tenv, x')
+  pure (T.Env envID tenv locs renv.level, x')
 
 
 -- Constructs an environment from all the instantiations.
 --  We need the instantiations, because not all instantiations of a function can come up in the environment.
 --  But, when there is a TVar in the type, it means all instantiated types of TVars must be there.
-withEnv' :: R.Env -> Infer a -> Infer ([(T.Variable, Locality, T.Type)], a)
+withEnv' :: R.Env -> Infer a -> Infer ([(T.Variable, Locality, T.Type)], Map T.VariableProto Locality, a)
 withEnv' renv x = do
 
   -- 1. clear environment - we only collect things from this scope.
@@ -1261,7 +1262,7 @@ withEnv' renv x = do
 
   -- 3. then filter the stuff that actually is from the environment
   --  TODO: this might not be needed, since we conditionally add an instantiation if it's FromEnvironment.
-  renvQuery <- Map.fromList <$> traverse (\(v, t) -> (,t) <$> inferVariableProto v) (R.fromEnv renv)
+  renvQuery <- Map.fromList <$> traverse (\(v, l) -> (,l) <$> inferVariableProto v) (R.fromEnv renv)
   let newEnv = mapMaybe (\(v, t) -> Map.lookup (T.asProto v) renvQuery <&> (v,,t)) $ Set.toList modifiedInstantiations
 
 
@@ -1269,7 +1270,7 @@ withEnv' renv x = do
   -- let usedInstantiations = Set.fromList $ fmap (\(v, _, t) -> (v, t)) newEnv
   RWS.modify $ \s -> s { instantiations = outOfEnvInstantiations }
 
-  pure (newEnv, x')
+  pure (newEnv, renvQuery, x')
 
 
 addEnv :: T.Variable -> T.Type -> Infer ()
@@ -1477,6 +1478,10 @@ instance Substitutable T.Module  where
     , T.instances = subst su <$> m.instances
     }
 
+instance Substitutable Int where
+  ftv = mempty
+  subst su = id
+
 instance Substitutable T.ClassDef where
   ftv = mempty  -- no FTVs in declarations. will need to get ftvs from associated types and default functions when they'll be implemented.
   subst su cd = cd  -- TODO: not sure if there is anything to substitute.
@@ -1609,11 +1614,11 @@ instance Substitutable (T.EnvUnionF (Fix T.TypeF)) where
       Nothing -> T.EnvUnion uid $ subst su envs
 
 instance Substitutable (T.EnvF (Fix T.TypeF)) where
-  ftv (T.Env _ vars) = foldMap (\(_, _, t) -> ftv t) vars
+  ftv (T.Env _ vars _ _) = foldMap (\(_, _, t) -> ftv t) vars
   ftv (T.RecursiveEnv _ _) = mempty
 
   -- redundant work. memoize this shit also.
-  subst su (T.Env eid env) = T.Env eid ((\(v, l, t) -> (subst su v, l, subst su t)) <$> env)
+  subst su (T.Env eid env locs lev) = T.Env eid ((\(v, l, t) -> (subst su v, l, subst su t)) <$> env) locs lev
   subst su env = fmap (subst su) env
 
 

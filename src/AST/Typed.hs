@@ -65,7 +65,8 @@ instance Ord DataRec where
 ----------
 
 data EnvF t
-  = Env EnvID [(Variable, Locality, t)] -- t is here, because of recursion schemes. UniqueVar, because we don't know which environments will be used in the end. We will replace it with a `Variable` equivalent AFTER we monomorphise.
+  = Env EnvID [(Variable, Locality, t)] (Map VariableProto Locality) Int -- t is here, because of recursion schemes. UniqueVar, because we don't know which environments will be used in the end. We will replace it with a `Variable` equivalent AFTER we monomorphise.
+  -- The last map is a HACK
   | RecursiveEnv EnvID IsEmpty  -- Recursive functions won't have access to their environment while typechecking... kinda stupid. ehh... but we're solving an actual issue here. `IsEmpty` is used in Mono to let us know if this function's environment was empty or not.
   deriving (Functor, Foldable, Traversable)
 type Env = EnvF Type
@@ -74,24 +75,24 @@ type IsEmpty = Bool
 
 envID :: EnvF t -> EnvID
 envID = \case
-  Env eid _ -> eid
+  Env eid _ _ _ -> eid
   RecursiveEnv eid _ -> eid
 
 
 instance Eq t => Eq (EnvF t) where
-  Env lid lts == Env rid rts = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
+  Env lid lts _ _ == Env rid rts _ _ = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
   l == r  = envID l == envID r
 
 instance Ord t => Ord (EnvF t) where
-  Env lid lts `compare` Env rid rts = (lid, lts <&> \(_, _, x) -> x) `compare` (rid, rts <&> \(_, _, x) -> x)
+  Env lid lts _ _ `compare` Env rid rts _ _ = (lid, lts <&> \(_, _, x) -> x) `compare` (rid, rts <&> \(_, _, x) -> x)
   l `compare` r = envID l `compare` envID r
 
 instance Eq1 EnvF where
-  liftEq f (Env lid lts) (Env rid rts) = lid == rid && and (zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts)
+  liftEq f (Env lid lts _ _) (Env rid rts _ _) = lid == rid && and (zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts)
   liftEq _ l r = envID l == envID r
 
 instance Ord1 EnvF where
-  liftCompare f (Env lid lts) (Env rid rts) = case lid `compare` rid of
+  liftCompare f (Env lid lts _ _) (Env rid rts _ _) = case lid `compare` rid of
     EQ -> mconcat $ zipWith (\(_, _, l) (_, _, r) -> f l r) lts rts
     ord -> ord
   liftCompare _ l r = envID l `compare` envID r
@@ -176,7 +177,7 @@ data FunDec = FD
   }
 
 -- TODO: note, "recursive" calls to instance functions redefine UCI. This is a quick fix. I'll have to rethink how all of it is structured.
-type ClassInstantiationAssocs = Map UniqueClassInstantiation [(Type, ([Type], InstanceFunction))]
+type ClassInstantiationAssocs = Map UniqueClassInstantiation [(Type, ([Type], InstanceFunction), Int)]
 
 instance Eq FunDec where
   FD _ uv _ _ _ _ _ == FD _ uv' _ _ _ _ _ = uv == uv'
@@ -669,7 +670,7 @@ tEnv = tEnv' . fmap tType
 
 tEnv' :: EnvF Context -> Context
 tEnv' = \case
-  Env eid vs -> ppEnvID eid <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (asUniqueVar v) <+> t) vs)
+  Env eid vs _ lev -> ppEnvID eid <> fromString (printf "(%s)" (show lev)) <> encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> ppVar loc (asUniqueVar v) <+> t) vs)
   RecursiveEnv eid isEmpty -> fromString $ printf "%s[REC%s]" (ppEnvID eid) (if isEmpty then "(empty)" else "(some)" :: Context)
 
 tBody :: Foldable f => Context -> f AnnStmt -> Context

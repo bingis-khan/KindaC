@@ -80,12 +80,12 @@ type ClassType = Fix ClassTypeF
 -- Expression --
 ----------------
 
-newtype Env = Env { fromEnv :: [(VariableProto, Locality)]}
+data Env = Env { fromEnv :: [(VariableProto, Locality)], level :: Int }
 instance Eq Env where
-  Env env == Env env' = fmap (first asPUniqueVar) env == fmap (first asPUniqueVar) env'
+  Env env _ == Env env' _ = fmap (first asPUniqueVar) env == fmap (first asPUniqueVar) env'
 
 instance Ord Env where
-  Env env `compare` Env env' = fmap (first asPUniqueVar) env `compare` fmap (first asPUniqueVar) env'
+  Env env _ `compare` Env env' _ = fmap (first asPUniqueVar) env `compare` fmap (first asPUniqueVar) env'
 
 
 data ExprF a
@@ -486,7 +486,7 @@ tType = cata $ \case
   TFun args ret -> encloseSepBy "(" ")" ", " args <+> "->" <+> ret
 
 tEnv :: Env -> Context
-tEnv (Env env) = encloseSepBy "[" "]" ", " $ env <&> \(v, l) -> ppVar l $ asPUniqueVar v
+tEnv (Env env _) = encloseSepBy "[" "]" ", " $ env <&> \(v, l) -> ppVar l $ asPUniqueVar v
 
 tBody :: Foldable f => Context -> f AnnStmt -> Context
 tBody = ppBody tAnnStmt

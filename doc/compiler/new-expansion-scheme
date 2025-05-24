@@ -179,3 +179,13 @@ Yeah, seems like a bug - normal instantiations have instantiated types in them. 
 		I think it's correct. We're only checking out environments of LOCAL functions to add to the environment of the outer function.
 			These local functions are declared inside that outer function.
 		This means, that whatever the local function has must also go through the outer function, so we'll end up expanding all environments anyway.
+
+
+But the current problem is instance functions and their uses - they can be known only at the end, but we ideally need to expand them there.
+Fortunately, we have a sort of "sentinel value" in the form of a "ClassDef" in the environment - replace it with either an instance OR variables the instance uses in its environment (needed to instantiate the instance).
+
+
+We can actually add an additional step, which will simply remove instance calls and then remap environments?
+Oh wait, we have UCI. So, we should know (with additional info) when either the instance or variables should be passed.
+
+	We can 

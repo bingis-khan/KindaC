@@ -124,3 +124,26 @@ So, how do we compile it?
 
 NOTE: I'm not sure it's any good. I think there will be a few bugs it'll cause. Maybe there will be some better way?
 
+
+We can make it more automatic (by dependencies - we automatically insert late initializations):
+
+x = 1
+inst StrPtr # 1
+inst-incomplete StrPtr # 3
+inst-incomplete StrPtr # 5
+
+x <= 2
+inst StrPtr' # 2
+inst-patch StrPtr # 3
+inst StrPtr' # 4
+inst-patch StrPtr # 5
+inst StrPtr' # 6
+
+Do we need this stuff monomorphized? Or can we do it with the typechecked structure? Yeah, we can do typechecked.
+
+
+Okay, but how do we represent the late initialization?
+	1. Should I create intermediate types?
+		We might use nested structs to make constructing easier on the C codegen.
+	2. Or should I use a single-sized type which I mutate?
+

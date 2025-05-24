@@ -303,6 +303,9 @@ rStmts = traverse -- traverse through the list with Ctx
     rBody :: Traversable t => t (Ctx a) -> Ctx (t a)
     rBody = scope . sequenceA
 
+currentLevel :: Ctx Int
+currentLevel = subtract 1 . length <$> RWS.gets scopes
+
 
 rConstraints :: R.Class -> [(UnboundTVar, R.TVar)] -> [U.ClassConstraint] -> Ctx R.ClassConstraints
 rConstraints boundKlass tvars constraints = do
@@ -833,8 +836,9 @@ data ResolveError
 -- environment stuff
 mkEnv :: Set VariableProto -> Ctx Env
 mkEnv innerEnv = do
+  curlev <- currentLevel
   locality <- localityOfVariablesAtCurrentScope
-  pure $ Env $ mapMaybe (\v -> (locality !? R.asPUniqueVar v) <&> \(_, loc) -> (v, loc)) $ Set.toList innerEnv  -- filters variables to ones that are in the environment.
+  pure $ Env (mapMaybe (\v -> (locality !? R.asPUniqueVar v) <&> \(_, loc) -> (v, loc)) $ Set.toList innerEnv) curlev  -- filters variables to ones that are in the environment.
 
 localityOfVariablesAtCurrentScope :: Ctx (Map UniqueVar (R.VariableProto, Locality))
 localityOfVariablesAtCurrentScope = do
@@ -849,6 +853,7 @@ gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesF
     let dec = fn.functionDeclaration
         envVars = Set.fromList $ fst <$> dec.functionEnv.fromEnv
     in envVars
+  R.InstDefDef idef -> foldMap (\fn -> Set.fromList $ fst <$> fn.classFunctionDeclaration.functionEnv.fromEnv) idef.instFunctions
   stmt -> bifold stmt
 
 -- used for lambdas

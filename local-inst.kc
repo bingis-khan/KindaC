@@ -8,18 +8,30 @@ inst A Int
 		return
 
 
+outer-const = 420
 f ()
 	bool-const = 10
-	inst A Bool
-		do-sth (x Bool) -> Unit
-			print bool-const
-			if x
-				print 1
-			else
-				print 0
-			return
+	g()
+		h-const = 69
+		h()
+			boop-const = Unit
+			inst A Bool
+				do-sth (x Bool) -> Unit
+					print bool-const
+					print outer-const
+					print h-const
+					print boop-const
+					if x
+						print 1
+					else
+						print 0
+					return
 
-	do-sth(True)
+			do-sth(True)
+			return
+		h()
+		return
+	g()
 	return
 
 f()
