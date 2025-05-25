@@ -20,18 +20,10 @@ extra-source-files:
 library
   exposed-modules:
       AST.Common
-      AST.Converged
-      AST.Mono
-      AST.Resolved
-      AST.Typed
+      AST.Def
       AST.Untyped
-      CPrinter
       Misc.Memo
-      Mono
       Parser
-      Pipeline
-      Resolver
-      Typecheck
   other-modules:
       Paths_KindaC
   hs-source-dirs:

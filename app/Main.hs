@@ -3,7 +3,10 @@ module Main (main) where
 
 import qualified Data.Text.IO as TextIO
 import System.Environment (getArgs)
-import Pipeline (loadPrelude, loadModule, finalizeModule)
+import Parser (parse)
+import qualified AST.Def as Def
+import AST.Def (PP(..))
+-- import Pipeline (loadPrelude, loadModule, finalizeModule)
 
 
 main :: IO ()
@@ -11,20 +14,26 @@ main = do
   (filename, outputC) <- parseArgs
 
   -- first, get dat prelude
-  prelude <- loadPrelude
+  -- prelude <- loadPrelude
 
   -- try compile module
-  emod <- loadModule (Just prelude) filename
-  case emod of
-    Left errs -> TextIO.putStrLn errs
-    Right modul -> do
+  -- emod <- loadModule Nothing filename
 
-      -- all good, finalize.
-      cmod <- finalizeModule prelude modul
+  source <- TextIO.readFile filename
+  case parse filename source of
+    Left err -> TextIO.putStrLn err
+    Right ast -> Def.ctxPrint pp ast
+  pure ()
+  -- case emod of
+  --   Left errs -> TextIO.putStrLn errs
+  --   Right modul -> do
 
-      if outputC 
-        then TextIO.writeFile "test.c" cmod
-        else TextIO.putStrLn cmod
+  --     -- all good, finalize.
+  --     cmod <- finalizeModule prelude modul
+
+  --     if outputC 
+  --       then TextIO.writeFile "test.c" cmod
+  --       else TextIO.putStrLn cmod
 
 
 

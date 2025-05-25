@@ -1,471 +1,319 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DeriveTraversable #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE TemplateHaskell #-}
 module AST.Common (module AST.Common) where
 
-import Data.Text (Text)
-import Data.Unique (Unique, hashUnique)
-import qualified Data.Text as Text
-import Control.Monad.Trans.Reader (Reader, runReader, ask)
-import Prettyprinter (Doc)
-import Data.String (IsString (..))
-import qualified Prettyprinter as PP
-import Data.Foldable (fold)
-import Data.List (intersperse)
-import qualified Text.Printf
-import Text.Printf (PrintfArg(..), formatString)
-import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad (unless)
-import Data.Char (toUpper)
+import qualified AST.Def as Def
 import Data.List.NonEmpty (NonEmpty)
+import Data.Fix (Fix (..))
+import AST.Def ((:.) (..), Annotated, PP (..), (<+>), Op (..), (<+?>))
+import Data.Functor.Foldable (cata)
+import Data.Foldable (foldl')
+import Data.Bifunctor.TH (deriveBifunctor)
+import Data.Bifunctor (first)
 import qualified Data.List.NonEmpty as NonEmpty
-import Data.Set (Set)
-import Data.Map (Map)
-import qualified Data.Map as Map
-import Data.Bitraversable (bitraverse)
-import qualified Data.Set as Set
 
 
--- set printing config
-defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = dc
+type family XTCon phase
+type family XTVar phase
 
-dc = debugContext
-rc = runtimeContext
-
--- context for debugging with all messages enabled.
-debugContext = CtxData
-  { silent = False
-  , printIdentifiers = True
-  , displayTypeParameters = False
-  }
-
--- disable debug messages for "runtime".
-runtimeContext = CtxData
-  { silent = True
-  , printIdentifiers = False
-  , displayTypeParameters = False
-  }
-
--- show types and stuffi for the user (display types accurately to their definition, etc.)
-showContext = CtxData
-  { silent = False
-  , printIdentifiers = False
-  , displayTypeParameters = True
-  }
-
-
--- General composition operator (easier Fix usage)
---  copied from TypeCompose package (I didn't need the whole thing, so I just copied the definition)
---  Now you can use type composition.
-infixl 9 :.
-newtype (g :. f) a = O (g (f a)) deriving (Eq, Ord, Functor, Foldable, Traversable)
-
-unO :: (g :. f) a -> g (f a)
-unO (O gfa) = gfa
-
-
--- Type safety definitions
-newtype UnboundTVar = UTV { fromUTV :: Text } deriving (Show, Eq, Ord)
-newtype TCon = TC { fromTC :: Text } deriving (Show, Eq, Ord)
-newtype ConName = CN { fromCN :: Text } deriving (Show, Eq, Ord)
-newtype VarName = VN { fromVN :: Text } deriving (Show, Eq, Ord)
-newtype MemName = MN { fromMN :: Text } deriving (Show, Eq, Ord)
-newtype ClassName = TCN { fromTN :: Text } deriving (Show, Eq, Ord)
-
-data Op
-  = Plus
-  | Minus
-  | Times
-  | Divide
-
-  | Equals
-  | NotEquals
-  deriving (Eq, Ord, Show)
-
-data LitType
-  -- Number types. They have infinite precision, because I don't want to lose the information and give the appropriate message.
-  = LInt Integer
-  | LFloat Rational
-
-  -- | LString Text
-  deriving (Eq, Ord, Show)
-
--- Different annotation types.
--- TODO: right now they are parsed and typed properly. But they don't really have to be.
-data Ann
-  = ACType Text
-  | ACLit Text
-  | ACStdInclude Text
-  deriving (Show, Eq, Ord)
-
--- Annotation decorator thing.
-data Annotated a = Annotated [Ann] a deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
-
--- Variable uniqueness
-data UniqueVar = VI
-  { varID :: Unique
-  , varName :: VarName
-  }
-
-
-data UniqueCon = CI
-  { conID :: Unique
-  , conName :: ConName
-  -- add info about constructor for later compilation
-  }
-
-data UniqueType = TI
-  { typeID :: Unique
-  , typeName :: TCon
-  -- add info about structure for later compilation
-  }
-
-data UniqueMem = MI  -- unlike the previous ones, used after (and including) Mono module.
-  { memID :: Unique
-  , memName :: MemName
-  }
-
-data UniqueClass = TCI
-  { classID :: Unique
-  , className :: ClassName
-  }
-
--- This associates types for class associations with the types.
--- Normal function calls store it with their instantiation, but I can't do that with class instantiations - associations depend on the selected type, which means I can't create them when I'm building the AST - only later, when association is resolved.
--- 
--- TODO: this is kinda bad. It should probably be done in subst or something, but I want it done quick.
-newtype UniqueClassInstantiation = UCI { fromUCI :: Unique } deriving (Eq, Ord)
-
--- I need to use classes in the same context as types.. but I use different types.
--- Q: should I just remove UniqueClass?
--- A: Nah, Resolver should decide between UniqueType and UniqueClass
-uniqueClassAsTypeName :: UniqueClass -> TCon
-uniqueClassAsTypeName TCI { className = cn } = TC cn.fromTN
-
-data Binding
-  = BindByType UniqueType
-  | BindByVar  UniqueVar
-  | BindByInst UniqueClass
-  deriving (Eq, Ord)
-
-
-
--- type instances for the small datatypes
-
-instance Eq UniqueVar where
-  VI { varID = l } == VI { varID = r } = l == r
-
-instance Ord UniqueVar where
-  VI { varID = l } `compare` VI { varID = r } = l `compare` r
-
--- temporary instance
-instance Show UniqueVar where
-  show (VI { varID = vid, varName = vname }) = "v" <> show (hashUnique vid) <> Text.unpack (fromVN vname)
-
-
-instance Show UniqueCon where
-  show (CI { conID = cid, conName = name }) = show name <> "@" <> show (hashUnique cid)
-
-instance Eq UniqueCon where
-  CI { conID = l } == CI { conID = r } = l == r
-
-instance Ord UniqueCon where
-  CI { conID = l } `compare` CI { conID = r } = l `compare` r
-
-
-instance Show UniqueType where
-  show (TI { typeID = tid, typeName = name }) = show name <> "@" <> show (hashUnique tid)
-
-instance Eq UniqueType where
-  TI { typeID = l } == TI { typeID = r } = l == r
-
-instance Ord UniqueType where
-  TI { typeID = l } `compare` TI { typeID = r } = l `compare` r
-
-instance Show UniqueMem where
-  show (MI { memID = tid, memName = name }) = show name <> "@" <> show (hashUnique tid)
-
-instance Eq UniqueMem where
-  MI { memID = l } == MI { memID = r } = l == r
-
-instance Ord UniqueMem where
-  MI { memID = l } `compare` MI { memID = r } = l `compare` r
-
-instance Eq UniqueClass where
-  TCI { classID = l } == TCI { classID = r } = l == r
-
-instance Ord UniqueClass where
-  TCI { classID = l } `compare` TCI { classID = r } = l `compare` r
-
-instance Show UniqueClass where
-  show (TCI { className = name, classID = l }) = show name.fromTN <> "@#" <> show (hashUnique l)
-
-
-instance Show UniqueClassInstantiation where
-  show (UCI { fromUCI = un }) = printf "UCI%d" (hashUnique un)
-
-
--- ...plus additional tags
-data Locality = Local | FromEnvironment deriving (Show, Eq, Ord)
-
-
--- simplifies printing functions - not really needed..?
-newtype UnionID = UnionID { fromUnionID :: Unique } deriving (Eq, Ord)
-newtype EnvID = EnvID { fromEnvID :: Unique } deriving (Eq, Ord)
-
-instance Show UnionID where
-  show = show . hashUnique . fromUnionID
-
-instance Show EnvID where
-  show = show . hashUnique . fromEnvID
-
-
-
----------------------
-
-----------------
--- Useful stuff
-----------------
-
-fromResult :: Result e a -> Either e a
-fromResult = \case
-  Failure e -> Left e
-  Success x -> Right x
-
-toResult :: Either e a -> Result e a
-toResult = \case
-  Left e -> Failure e
-  Right a -> Success a
-
-data Result e a
-  = Failure e
-  | Success a
+data TypeF phase a
+  = TCon (XTCon phase) [a]
+  | TVar (XTVar phase)
+  | TFun [a] a
   deriving (Functor, Foldable, Traversable)
-
-instance Semigroup e => Applicative (Result e) where
-  Failure e <*> Failure e' = Failure $ e <> e'
-  Failure e <*> _ = Failure e
-  _ <*> Failure e = Failure e
-  Success f <*> Success x = Success (f x)
-
-  pure = Success
+type Type phase = Fix (TypeF phase)
 
 
-------------------
--- More Useful Stuff
-----------------
+type family XVar phase
+type family XCon phase
+type family XMem phase
 
-mustOr :: String -> Maybe a -> a
-mustOr err Nothing = error err
-mustOr _ (Just x) = x
+data ExprF phase a
+  = Lit Def.LitType  -- NOTE: all these types are not set in stone. If I need to change it later (to be dependent on phase) then I should do it.
+  | Var (XVar phase)
+  | Con (XCon phase)
+
+  | RecCon (XTCon phase) (NonEmpty (XMem phase, a))
+  | RecUpdate a (NonEmpty (XMem phase, a))
+  | MemAccess a (XMem phase)
+
+  | Op a Def.Op a
+  | Call a [a]
+  | As a (Type phase)
+  | Lam [XVar phase] a
+  deriving (Functor, Foldable, Traversable)
+type Expr phase = Fix (ExprF phase)
 
 
+---------------
+-- Data Defs --
+---------------
 
------------------
--- Printing stuff
------------------
-
--- Context that stores the pretty printer Doc + data + help with, for example, names.
-type Context = Reader CtxData (Doc ())  -- I guess I can add syntax coloring or something with the annotation (the () in Doc)
-data CtxData = CtxData  -- basically stuff like printing options or something (eg. don't print types)
-  { silent :: Bool
-  , printIdentifiers :: Bool
-  , displayTypeParameters :: Bool
+data DataCon phase = DC
+  { con :: XCon phase
+  , conTypes :: [Type phase]
   }
 
-ctxPrint :: MonadIO io => (a -> Context) -> a -> io ()
-ctxPrint f x = unless defaultContext.silent $ liftIO $ putStrLn $ ctx f x
-
-ctxPrint' :: MonadIO io => String -> io ()
-ctxPrint' = unless defaultContext.silent . liftIO . putStrLn
-
-ctxPrint'' :: MonadIO io => Context -> io ()
-ctxPrint'' = unless defaultContext.silent . liftIO . putStrLn . ctx id
-
-phase :: String -> IO ()
-phase text =
-  let n = 10
-  in ctxPrint' $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
-
-ctx :: (a -> Context) -> a -> String
-ctx = ctx' defaultContext
-
-sctx :: Context -> String
-sctx = ctx' showContext id
-
-ctx' :: CtxData -> (a -> Context) -> a -> String
-ctx' c f = if c.silent
-  then mempty
-  else show . flip runReader c . f
-
-ppBody :: Foldable t => (a -> Context) -> Context -> t a -> Context
-ppBody f header = indent header . ppLines f
-
-printf :: Text.Printf.PrintfType r => String -> r
-printf = Text.Printf.printf
-
-instance Text.Printf.PrintfArg Context where
-  formatArg = Text.Printf.formatString . ctx id
+data DataDef phase = DD
+  { ddName :: XTCon phase
+  , tvars  :: [XTVar phase]
+  , cons   :: [Annotated (DataCon phase)]
+  }
 
 
--- Technically should be something like Text for the annotation type, but I need to have access to context in annotations
-comment :: Context -> Context -> Context
-comment s cctx = "#" <+> s <\> cctx
-
-annotate :: [Ann] -> Context -> Context
-annotate [] actx = actx
-annotate xs actx = "\n" <> ppAnn xs <\> actx
-
-encloseSepBy :: Monoid a => a -> a -> a -> [a] -> a
-encloseSepBy l r p cs = l <> sepBy p cs <> r
-
-sepBy :: Monoid a => a -> [a] -> a
-sepBy p = fold . intersperse p
-
-indent :: Context -> Context -> Context
-indent header = (header <>) . fmap (PP.nest 2) . ("\n" <>)
-
-ppLines :: Foldable t => (a -> Context) -> t a -> Context
-ppLines f = foldMap ((<>"\n") . f)
-
-ppLines' :: Foldable t => t Context -> Context
-ppLines' = foldMap (<> "\n")
+data DataRec phase = DR
+  { drName :: XTCon phase
+  , tvars :: [XTVar phase]
+  , members :: NonEmpty (Annotated (XMem phase, Type phase))
+  }
 
 
-ppVar :: Locality -> UniqueVar -> Context
-ppVar l v = localTag <?+> pretty (fromVN v.varName) <> ppIdent ("$" <> pretty (hashUnique v.varID))
+
+----------
+-- Case --
+----------
+
+data DeconF phase a
+  = CaseVariable (XVar phase)
+  | CaseConstructor (XCon phase) [a]
+  | CaseRecord (XTCon phase) (NonEmpty (XMem phase, a))
+  deriving Functor
+type Decon phase = Fix (DeconF phase)
+
+data CaseF phase expr stmt = Case
+  { deconstruction :: Decon phase
+  , caseCondition :: Maybe expr
+  , caseBody :: NonEmpty stmt
+  } deriving (Functor, Foldable, Traversable)
+type Case phase = CaseF phase (Expr phase) (AnnStmt phase)
+
+
+
+----------
+-- Stmt --
+----------
+
+data IfStmt phase expr a = IfStmt  -- it's own datatype, because it's quite complicated.
+  { condition :: expr
+  , ifTrue    :: NonEmpty a
+  , elifs     :: [(expr, NonEmpty a)]
+  , mElse     :: Maybe (NonEmpty a)
+  } deriving (Functor, Foldable, Traversable)
+
+
+type family XFunDef phase
+type family XInstDef phase
+type family XReturn phase
+type family XOther phase
+
+data StmtF phase expr a
+  = Pass
+
+  | Print expr
+  | Assignment (XVar phase) expr
+  | Mutation (XVar phase) expr
+
+  | If (IfStmt phase expr a)
+  | Switch expr (NonEmpty (CaseF phase expr a))
+  | ExprStmt expr  -- NOTE: in the future add typing to distinguish available expressions.
+  | Return (XReturn phase)  -- NOTE: kinda bad... this is the only part which does not use "expr" tvar.
+
+  | Fun (XFunDef phase)
+  | Inst (XInstDef phase)
+
+  | Other (XOther phase)
+  deriving (Functor, Foldable, Traversable)
+type Stmt phase = StmtF phase (Expr phase) (AnnStmt phase)
+type AnnStmt phase = Fix (Annotated :. StmtF phase (Expr phase))
+
+$(deriveBifunctor ''IfStmt)
+$(deriveBifunctor ''CaseF)
+$(deriveBifunctor ''StmtF)
+
+
+--------------
+-- Function --
+--------------
+
+type family XEnv phase
+
+data FunDec phase = FD
+  { functionEnv :: XEnv phase
+  , functionId :: XVar phase
+  , functionParameters :: [(Decon phase, Maybe (Type phase))]
+  , functionReturnType :: Maybe (Type phase)
+  }
+
+
+-----------------
+-- Typeclasses --
+-----------------
+
+type family XClass phase
+
+data ClassDef phase = ClassDef
+  { classID :: XClass phase
+  -- , classDependentTypes :: [Dependent]
+  , classFunctions :: [ClassFunDec phase]
+  }
+
+data ClassFunDec phase = CFD (XVar phase) [(Decon phase, ClassType phase)] (ClassType phase)
+
+data ClassTypeF phase a
+  = Self
+  | NormalType (TypeF phase a)
+  deriving (Functor, Foldable, Traversable)
+type ClassType phase = Fix (ClassTypeF phase)
+
+
+
+data InstDef phase = InstDef
+  { instClassName :: XClass phase
+  , instType :: (XTCon phase, [XTVar phase])
+  , instFuns :: [InstFun phase]
+  }
+
+data InstFun phase = InstFun
+  { instFunDec :: FunDec phase
+  , instFunBody :: NonEmpty (AnnStmt phase)
+  }
+
+
+type family Module phase
+
+
+--------------------
+-- Printing stuff --
+--------------------
+
+instance (PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase)) => PP (AnnStmt phase) where
+  pp (Fix (O (Def.Annotated ann stmt))) = Def.annotate ann $ pp stmt
+
+instance (PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XTVar phase), PP (XVar phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase)) => PP (Stmt phase) where
+  pp stmt = case first pp stmt of
+    Print e -> "print" <+> e
+    Assignment v e -> pp v <+> "=" <+> e
+    Pass -> "pass"
+    Mutation v e -> pp v <+> "<=" <+> e
+    If ifs ->
+      Def.ppBody' pp ("if" <+> ifs.condition) ifs.ifTrue <>
+      foldMap (\(cond, elseIf) ->
+          Def.ppBody' pp ("elif" <+> cond) elseIf) ifs.elifs <>
+      maybe mempty (Def.ppBody' pp "else") ifs.mElse
+    Switch switch cases ->
+      Def.ppBody' pp switch cases
+    ExprStmt e -> e
+    Return e -> "return" <+> pp e
+    Fun fd -> pp fd
+    Inst idef -> pp idef
+    Other other -> pp other
+    -- EnvDef fn -> fromString $ printf "[ENV]: %s" $ tEnv fn.functionDeclaration.functionEnv
+    -- InstDefDef inst -> tInst inst
+
+instance (PP (XTVar phase), PP (XCon phase), PP (XVar phase), PP (XTCon phase), PP (XMem phase)) => PP (Expr phase) where
+  pp = cata $ \case
+    Lit l -> pp l
+    Var v -> pp v
+    Con c -> pp c
+
+  
+    RecCon dd inst -> pp dd <+> ppRecordMems inst
+    RecUpdate c upd -> c <+> ppRecordMems upd
+    MemAccess c mem -> c <> "." <> pp mem
+
+    Op l op r -> l <+> ppOp op <+> r
+    Call f args -> f <> Def.encloseSepBy "(" ")" ", " args
+    As x at -> x <+> "as" <+> pp at
+    Lam params e -> Def.encloseSepBy "(" ")" ", " (map pp params) <> ":" <+> e
+    where
+      ppOp op = case op of
+        Plus -> "+"
+        Minus -> "-"
+        Times -> "*"
+        Divide -> "/"
+        Equals -> "=="
+        NotEquals -> "/="
+
+ppRecordMems :: PP mem => NonEmpty (mem, Def.Context) -> Def.Context
+ppRecordMems = Def.encloseSepBy "{" "}" ", " . fmap (\(mem, e) -> pp mem <> ":" <+> e) . NonEmpty.toList
+
+instance
+  (PP expr, PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase))
+  => PP (CaseF phase expr (AnnStmt phase)) where
+  pp kase = Def.ppBody' pp (pp kase.deconstruction <+?> fmap pp kase.caseCondition) kase.caseBody
+
+instance
+  (PP (XMem phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase))
+  => PP (Decon phase) where
+  pp = cata $ \case
+    CaseVariable uv -> pp uv
+    CaseConstructor uc [] -> pp uc
+    CaseConstructor uc args@(_:_) -> pp uc <> Def.encloseSepBy "(" ")" ", " args
+    CaseRecord dd args -> pp dd <+> ppRecordMems args
+
+instance (PP a, PP (XTVar phase), PP (XTCon phase)) => PP (TypeF phase a) where
+  pp = \case
+    TCon tcon params ->
+      foldl' (<+>) (pp tcon) (pp <$> params)
+    TVar x -> pp x
+    TFun args ret -> Def.encloseSepBy "(" ")" ", " (pp <$> args) <+> "->" <+> pp ret
+
+instance (PP (XTVar phase), PP (XTCon phase)) => PP (Type phase) where
+  pp = cata pp
+
+instance (PP (XTVar phase), PP (XTCon phase)) => PP (ClassType phase) where
+  pp = cata $ \case
+    Self -> "_"
+    NormalType nt -> pp nt
+
+instance (PP (XEnv phase), PP (XVar phase), PP (XMem phase), PP (XCon phase), PP (XTVar phase), PP (XTCon phase)) => PP (FunDec phase) where
+  pp (FD fenv v params retType) = do
+    pp v <+> Def.encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> pp pName <+?> fmap pp pType) params) <+?> fmap pp retType
+
+instance
+  (PP (XVar phase), PP (XCon phase), PP (XEnv phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XTVar phase), PP (XClass phase), PP (XTCon phase))
+  => PP (InstDef phase) where
+  pp inst =
+    let
+      header = "inst" <+> pp inst.instClassName <+> pp (fst inst.instType) <+> Def.sepBy " " (pp <$> snd inst.instType)
+    in Def.ppBody
+      (\ifn -> Def.ppBody' pp (pp ifn.instFunDec) ifn.instFunBody)
+      header
+      inst.instFuns
+
+
+instance (PP (XTVar phase), PP (XTCon phase), PP (XCon phase)) => PP (DataDef phase) where
+  pp (DD tid tvs dcons) = Def.ppBody pp (foldl' (\x tv -> x <+> pp tv) (pp tid) tvs) dcons
+
+instance (PP (XTVar phase), PP (XTCon phase), PP (XCon phase)) => PP (DataCon phase) where
+  pp (DC g t) = foldl' (<+>) (pp g) $ tTypes t
+
+tTypes :: (PP (XTVar phase), PP (XTCon phase), Functor t) => t (Type phase) -> t Def.Context
+tTypes = fmap $ \t@(Fix t') -> case t' of
+  TCon _ (_:_) -> enclose t
+  TFun {} -> enclose t
+  _ -> pp t
   where
-    localTag = case l of
-      Local -> Nothing
-      FromEnvironment -> Just "^"
-
-ppUniqueClass :: UniqueClass -> Context
-ppUniqueClass klass = fromString $ printf "%d@%s" (hashUnique klass.classID) (fromTN klass.className)
-
--- annotate constructors with '@'
-ppTCon :: TCon -> Context
-ppTCon = pretty . fromTC
-
-ppMem :: MemName -> Context
-ppMem = pretty . fromMN
-
-ppCon :: UniqueCon -> Context
-ppCon con = "@" <> pretty (fromCN con.conName) <> ppIdent ("$" <> pretty (hashUnique con.conID))
-
-ppTypeInfo :: UniqueType -> Context
-ppTypeInfo t = pretty (fromTC t.typeName) <> ppIdent ("$" <> pretty (hashUnique t.typeID))
-
-ppUniqueMem :: UniqueMem -> Context
-ppUniqueMem um = ppMem um.memName <> ppIdent ("#" <> pretty (hashUnique um.memID))
+    enclose x = "(" <> pp x <> ")"
 
 
-ppEnvID :: EnvID -> Context
-ppEnvID = pretty . hashUnique . fromEnvID
-
-ppUnionID :: UnionID -> Context
-ppUnionID = pretty . hashUnique . fromUnionID
-
-ppUnique :: Unique -> Context
-ppUnique = pretty . hashUnique
-
-ppMap :: [(Context, Context)] -> Context
-ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v)
-
-ppTup :: (Context, Context) -> Context
-ppTup (l, r) = encloseSepBy "(" ")" ", " [l, r]
-
-ppTup3 :: (Context, Context, Context) -> Context
-ppTup3 (l, m, r) = encloseSepBy "(" ")" ", " [l, m, r]
-
-ppSet :: (a -> Context) -> [a] -> Context
-ppSet f = encloseSepBy "{" "}" ", " . fmap f
-
-ppList :: (a -> Context) -> [a] -> Context
-ppList f = encloseSepBy "[" "]" ", " . fmap f
+instance (PP (XTVar phase), PP (XTCon phase), PP (XMem phase)) => PP (DataRec phase) where
+  pp (DR tid tvs recs) = Def.ppBody' tRec (foldl' (\x tv -> x <+> pp tv) (pp tid) tvs) recs
+    where
+      tRec (Def.Annotated ann (mem, t)) = Def.annotate ann (pp mem <+> pp t)
 
 
-ppRecordMems :: NonEmpty (MemName, Context) -> Context
-ppRecordMems = encloseSepBy "{" "}" ", " . fmap (\(mem, e) -> ppMem mem <> ":" <+> e) . NonEmpty.toList
+instance (PP (XClass phase), PP (XVar phase), PP (XMem phase), PP (XTVar phase), PP (XCon phase), PP (XTCon phase)) => PP (ClassDef phase) where
+  pp c = Def.ppBody pp (pp c.classID) c.classFunctions
 
-
-ppAnn :: [Ann] -> Context
-ppAnn [] = mempty
-ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
-  where
-    ann :: Ann -> Context
-    ann = \case
-      ACType s -> "ctype" <+> quote s
-      ACStdInclude s -> "cstdinclude" <+> quote s
-      ACLit s -> "clit" <+> quote s
-
-    quote = pure . PP.squotes . PP.pretty
-
-ppIdent :: Context -> Context
-ppIdent ident = do
-  c <- ask
-  if c.printIdentifiers
-    then ident
-    else ""
-
-infixr 6 <+>
-(<+>) :: Context -> Context -> Context
-x <+> y = liftA2 (PP.<+>) x y
-
-infixr 6 <+?>
-(<+?>) :: Context -> Maybe Context -> Context
-x <+?> Nothing = x
-x <+?> Just y = x <+> y
-
-infixr 6 <?+>
-(<?+>) :: Maybe Context -> Context -> Context
-Nothing <?+> x = x
-Just y <?+> x = y <+> x
-
-infixr 5 <\>
-(<\>) :: Context -> Context -> Context
-x <\> y = x <> "\n" <> y
-
-
-
-instance Semigroup Context where
-  x <> y = liftA2 (<>) x y
-
-instance Monoid Context where
-  mempty = pure mempty
-
-instance IsString Context where
-  fromString = pretty
-
-pretty :: PP.Pretty a => a -> Context
-pretty = pure . PP.pretty
-
-
-fromEither :: Either a a -> a
-fromEither = \case
-  Left x -> x
-  Right x -> x
-
-eitherToMaybe :: Either e a -> Maybe a
-eitherToMaybe (Left _) = Nothing
-eitherToMaybe (Right x) = Just x
-
-
-fmap2 :: (Functor f1, Functor f2) => (a -> b) -> f1 (f2 a) -> f1 (f2 b)
-fmap2 = fmap . fmap
-
-traverse2 :: (Applicative f, Traversable t1, Traversable t2) => (a -> f b) -> t1 (t2 a) -> f (t1 (t2 b))
-traverse2 = traverse . traverse
-
-sequenceA2 :: (Applicative f, Traversable t1, Traversable t2) => t1 (t2 (f a)) -> f (t1 (t2 a))
-sequenceA2 = traverse sequenceA
-
-traverseSet :: (Applicative t, Ord b) => (a -> t b) -> Set a -> t (Set b)
-traverseSet f = fmap Set.fromList . traverse f . Set.toList
-
-bitraverseMap :: (Applicative t, Ord k') => (k -> t k') -> (a -> t b) -> Map k a -> t (Map k' b)
-bitraverseMap f g = fmap Map.fromList . traverse (bitraverse f g) . Map.toList
+instance (PP (XVar phase), PP (XMem phase), PP (XTVar phase), PP (XCon phase), PP (XTCon phase)) => PP (ClassFunDec phase) where
+  pp (CFD v params ret) = pp v <+> Def.encloseSepBy "(" ")" ", " (fmap (\(pDecon, pType) -> pp pDecon <+> pp pType) params) <+> pp ret

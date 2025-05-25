@@ -3,6 +3,8 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use <$>" #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 module Parser (parse) where
 
@@ -26,26 +28,27 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Common (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..))
-import AST.Untyped (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), uType, Case, DataRec (..), DependentType (..), ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), uClassType, ClassConstraint (..))
+import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), PP (pp))
+import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module (..), Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, DataRec (..), ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..))
 import Data.Functor.Foldable (embed, cata)
 import Control.Monad ((<=<))
 import Data.Either (partitionEithers)
 import Data.Biapplicative (bimap)
+import AST.Untyped (Untyped, U, UntypedStmt (..))
 
 
 type Parser = Parsec MyParseError Text
 type FileName = String
 
-parse :: FileName -> Text -> Either Text Module
+parse :: FileName -> Text -> Either Text (Module Untyped)
 parse filename = first (Text.pack . errorBundlePretty) . TM.parse (scn >> topLevels <* eof) filename
 
 
 -- Top level
-topLevels :: Parser Module
+topLevels :: Parser (Module Untyped)
 topLevels = do
   eas <- many $ recoverStmt (L.nonIndented sc  (annotationOr statement)) <* scn
-  Mod <$> annotateStatements eas
+  annotateStatements eas
 
 
 
@@ -53,7 +56,7 @@ topLevels = do
 -- Parsing statements --
 ------------------------
 
-statement :: Parser Stmt
+statement :: Parser (Stmt Untyped)
 statement = choice
   [ sPass
   , sCase
@@ -74,19 +77,19 @@ statement = choice
   ]
 
 -- Each statement
-sPass :: Parser Stmt
+sPass :: Parser (Stmt Untyped)
 sPass = do
   keyword "pass"
   pure Pass
 
-sIf :: Parser Stmt
+sIf :: Parser (Stmt U)
 sIf = do
   (cond, ifBody) <- scope (,) (keyword "if" >> expression)
   elifs <- many $ scope (,) (keyword "elif" >> expression)
   elseBody <- optional $ scope (const id) (keyword "else")
-  pure $ If cond ifBody elifs elseBody
+  pure $ If $ IfStmt cond ifBody elifs elseBody
 
-sCase :: Parser Stmt
+sCase :: Parser (Stmt U)
 sCase = recoverableIndentBlock $ do
   -- case header
   keyword "case"
@@ -95,7 +98,7 @@ sCase = recoverableIndentBlock $ do
   -- switch inner
   pure $ L.IndentSome Nothing (pure . Switch condition . NE.fromList) sSingleCase
 
-sSingleCase :: Parser Case
+sSingleCase :: Parser (Case U)
 sSingleCase = scope id $ do
   -- deconstructor
   decon <- sDeconstruction
@@ -103,7 +106,7 @@ sSingleCase = scope id $ do
   -- parse expression here in the future
   pure $ Case decon Nothing
 
-sDeconstruction :: Parser Decon
+sDeconstruction :: Parser (Decon U)
 sDeconstruction = caseVariable <|> caseRecord <|> caseConstructor
  where
     caseVariable = Fix . CaseVariable <$> variable
@@ -123,50 +126,50 @@ sDeconstruction = caseVariable <|> caseRecord <|> caseConstructor
     args = do
       between (symbol "(") (symbol ")") (sepBy1 sDeconstruction (symbol ",")) <|> pure []
 
-sPrint :: Parser Stmt
+sPrint :: Parser (Stmt U)
 sPrint = do
   keyword "print"
   expr <- expression
   pure $ Print expr
 
-sDefinition :: Parser Stmt
+sDefinition :: Parser (Stmt U)
 sDefinition = do
   name <- try $ variable <* symbol "="
   rhs <- expression
   pure $ Assignment name rhs
 
-sMutAssignment :: Parser Stmt
+sMutAssignment :: Parser (Stmt U)
 sMutAssignment = do
   name <- try $ variable <* symbol "<="
   rhs <- expression
   pure $ Mutation name rhs
 
-sReturn :: Parser Stmt
+sReturn :: Parser (Stmt U)
 sReturn = do
   keyword "return"
   expr <- optional expression
   pure $ Return expr
 
 
-sClass :: Parser Stmt
+sClass :: Parser (Stmt U)
 sClass = recoverableIndentBlock $ do
   keyword "class"
   name <- className
-  return $ flip (L.IndentMany Nothing) sDepOrFunctionDec $ \depsOrFunctions ->
-    let (deps, funs) = partitionEithers depsOrFunctions
-    in pure $ ClassDefinition $ ClassDef
+  return $ flip (L.IndentMany Nothing) sDefinedFunctionHeader $ \funs ->
+    -- let (deps, funs) = partitionEithers depsOrFunctions
+    pure $ Other $ ClassDefinition $ ClassDef
       { classID = name
-      , classDependentTypes = deps
+      -- , classDependentTypes = deps  -- TODO: add later
       , classFunctions = funs
       }
 
-sDepOrFunctionDec :: Parser (Either DependentType ClassFunDec)
-sDepOrFunctionDec = Left <$> sDepDec <|> Right <$> sDefinedFunctionHeader
+-- sDepOrFunctionDec :: Parser (Either DependentType ClassFunDec)
+-- sDepOrFunctionDec = Left <$> sDepDec <|> Right <$> sDefinedFunctionHeader
 
-sDepDec :: Parser DependentType
-sDepDec = Dep <$> typeName
+-- sDepDec :: Parser DependentType
+-- sDepDec = Dep <$> typeName
 
-sDefinedFunctionHeader :: Parser ClassFunDec
+sDefinedFunctionHeader :: Parser (ClassFunDec U)
 sDefinedFunctionHeader = do
   name <- variable
 
@@ -179,7 +182,7 @@ sDefinedFunctionHeader = do
   pure $ CFD name params ret
 
 
-sInst :: Parser Stmt
+sInst :: Parser (Stmt Untyped)
 sInst = recoverableIndentBlock $ do
   keyword "inst"
   name <- className
@@ -189,46 +192,46 @@ sInst = recoverableIndentBlock $ do
     targs <- many generic
     pure (tcon, targs)
 
-  constraints <- sClassConstraints
+  -- constraints <- sClassConstraints
 
-  pure $ flip (L.IndentMany Nothing) sDepOrFunctionDef $ \depOrFunctions ->
-    let (deps, funs) = partitionEithers depOrFunctions
-    in pure $ InstDefinition $ InstDef
+  pure $ flip (L.IndentMany Nothing) sInstFunction $ \funs ->
+    -- let (deps, funs) = partitionEithers depOrFunctions
+    pure $ Inst $ InstDef
       { instClassName = name
       , instType = instType
-      , instConstraints = constraints
-      , instDependentTypes = deps
-      , instFunctions = funs
+      -- , instConstraints = constraints
+      -- , instDependentTypes = deps
+      , instFuns = funs
       }
 
 
-sClassConstraints :: Parser [ClassConstraint]
-sClassConstraints = do
-  mConstraints <- optional $ do
-    symbol "<="  -- I might change it to "|"? may look prettier?
-    sepBy sClassConstraint (symbol ",")
+-- sClassConstraints :: Parser [ClassConstraint]
+-- sClassConstraints = do
+--   mConstraints <- optional $ do
+--     symbol "<="  -- I might change it to "|"? may look prettier?
+--     sepBy sClassConstraint (symbol ",")
 
-  pure $ fromMaybe [] mConstraints
+--   pure $ fromMaybe [] mConstraints
 
-sClassConstraint :: Parser ClassConstraint
-sClassConstraint = do
-  name <- className
-  tv <- generic
-  pure $ CC name tv
+-- sClassConstraint :: Parser ClassConstraint
+-- sClassConstraint = do
+--   name <- className
+--   tv <- generic
+--   pure $ CC name tv
 
 
-sDepOrFunctionDef :: Parser (Either (DependentType, ClassType) (FunDec, NonEmpty AnnStmt))
-sDepOrFunctionDef = Left <$> sDepDef <|> Right <$> sInstFunction
+-- sDepOrFunctionDef :: Parser (Either (DependentType, ClassType) (FunDec, NonEmpty AnnStmt))
+-- sDepOrFunctionDef = Left <$> sDepDef <|> Right <$> sInstFunction
 
-sDepDef :: Parser (DependentType, ClassType)
-sDepDef = do
-  depname <- sDepDec
-  symbol "="
-  typ <- pClassType
+-- sDepDef :: Parser (DependentType, ClassType)
+-- sDepDef = do
+--   depname <- sDepDec
+--   symbol "="
+--   typ <- pClassType
 
-  pure (depname, typ)
+--   pure (depname, typ)
 
-sInstFunction :: Parser (FunDec, NonEmpty AnnStmt)
+sInstFunction :: Parser (InstFun U)
 sInstFunction = recoverableIndentBlock $ do
   (header, mExpr) <- functionHeader
   case mExpr of
@@ -236,14 +239,14 @@ sInstFunction = recoverableIndentBlock $ do
       let expr2stmt = Fix . O . Annotated [] . Return . Just
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
-      in pure $ L.IndentNone (header, body)
+      in pure $ L.IndentNone $ InstFun { instFunDec = header, instFunBody = body }
     Nothing -> do
       pure $ flip (L.IndentSome Nothing) (recoverStmt (annotationOr statement)) $ \annsOrStmts -> do
         stmts <- NonEmpty.fromList <$> annotateStatements annsOrStmts
-        pure (header, stmts)
+        pure $ InstFun { instFunDec = header, instFunBody = stmts }
 
 
-sExpression :: Parser Stmt
+sExpression :: Parser (Stmt U)
 sExpression = do
   from <- getOffset
   expr@(Fix chkExpr) <- expression
@@ -258,7 +261,7 @@ sExpression = do
 checkIfFunction :: Parser ()
 checkIfFunction = void $ lookAhead (functionHeader >> eol)
 
-sFunctionOrCall :: Parser Stmt
+sFunctionOrCall :: Parser (Stmt U)
 sFunctionOrCall = recoverableIndentBlock $ do
   (header, mExpr) <- functionHeader
 
@@ -268,30 +271,29 @@ sFunctionOrCall = recoverableIndentBlock $ do
       let expr2stmt = Fix . O . Annotated [] . Return . Just
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
-      in L.IndentNone $ FunctionDefinition header body
+      in L.IndentNone $ Fun (header, body)
 
     Nothing ->
       -- If that's a normal function, we check if any types were defined
-      let (FD name params rett) = header
-          types = rett : map snd params
+      let types = header.functionReturnType : map snd header.functionParameters
       in if any isJust types
-        then L.IndentSome Nothing (fmap (FunctionDefinition header . NonEmpty.fromList) . annotateStatements) $ recoverStmt (annotationOr statement)
+        then L.IndentSome Nothing (fmap (Fun . (header,) . NonEmpty.fromList) . annotateStatements) $ recoverStmt (annotationOr statement)
         else flip (L.IndentMany Nothing) (recoverStmt (annotationOr statement)) $ \case
-          stmts@(_:_) -> FunctionDefinition header . NonEmpty.fromList <$> annotateStatements stmts
+          stmts@(_:_) -> Fun . (header,) . NonEmpty.fromList <$> annotateStatements stmts
           [] ->
-            let args = map (deconToExpr . fst) params
-                funName = Fix $ Var name
+            let args = map (deconToExpr . fst) header.functionParameters
+                funName = Fix $ Var header.functionId
             in pure $ ExprStmt $ Fix $ Call funName args
 
 -- some construction might also be misrepresented as a deconstruction.
-deconToExpr :: Decon -> Expr
+deconToExpr :: Decon U -> Expr U
 deconToExpr = cata $ embed . \case
   CaseVariable v                  -> Var v
   CaseConstructor con []          -> Con con
   CaseConstructor con exprs@(_:_) -> Call (Fix $ Con con) exprs
   CaseRecord con mems             -> RecCon con mems
 
-functionHeader :: Parser (FunDec, Maybe Expr)
+functionHeader :: Parser (FunDec U, Maybe (Expr U))
 functionHeader = do
   let param = liftA2 (,) sDeconstruction (optional pType)
   name <- variable
@@ -302,24 +304,24 @@ functionHeader = do
     ]
 
   return $ case ret of
-    Left expr -> (FD name params Nothing, Just expr)
-    Right mType -> (FD name params mType, Nothing)
+    Left expr -> (FD () name params Nothing, Just expr)
+    Right mType -> (FD () name params mType, Nothing)
 
 
 -- Data definitions.
 --   Either a normal ADT or a record type.
-sDataDefinition :: Parser Stmt
+sDataDefinition :: Parser (Stmt U)
 sDataDefinition = recoverableIndentBlock $ do
   tname <- typeName
   polys <- many generic
   return $ flip (L.IndentMany Nothing) (recoverCon conOrRecOrAnnotation) $ toRecordOrADT tname polys <=< assignAnnotations Annotated
    where
-    conOrRecOrAnnotation :: Parser (Either [Ann] (Either DataRec DataCon))
+    conOrRecOrAnnotation :: Parser (Either [Ann] (Either (XMem U, Type U) (DataCon U)))
     conOrRecOrAnnotation = Left <$> annotation <|> Right . Left <$> dataRec <|> Right . Right <$> dataCon
 
-    toRecordOrADT :: TCon -> [UnboundTVar] -> [Annotated (Either DataRec DataCon)] -> Parser Stmt
+    toRecordOrADT :: TCon -> [UnboundTVar] -> [Annotated (Either (XMem U, Type U) (DataCon U))] -> Parser (Stmt U)
     -- empty datatype
-    toRecordOrADT tname polys [] = pure $ DataDefinition $ DD tname polys (Right [])
+    toRecordOrADT tname polys [] = pure $ Other $ DataDefinition $ Right $ DD tname polys []
     
     toRecordOrADT tname polys ((Annotated ann first) : rest) = 
       let (records, cons) = partitionEithers $ (\(Annotated ann x) -> bimap (Annotated ann) (Annotated ann) x) <$> rest
@@ -327,7 +329,7 @@ sDataDefinition = recoverableIndentBlock $ do
         Left rec ->
           case cons of
             [] ->
-              pure $ DataDefinition $ DD tname polys $ Left $ Annotated ann rec :| records
+              pure $ Other $ DataDefinition $ Left $ DR tname polys $ Annotated ann rec :| records
 
             _:_ -> do
               fail "Encountered constructors in a Record definition."
@@ -335,18 +337,18 @@ sDataDefinition = recoverableIndentBlock $ do
         Right dc -> 
           case records of
             [] -> 
-              pure $ DataDefinition $ DD tname polys $ Right $ Annotated ann dc : cons
+              pure $ Other $ DataDefinition $ Right $ DD tname polys $ Annotated ann dc : cons
             _:_ -> do
               fail "Encountered record fields in an ADT definition."  -- should not end parsing, but im lazy.
 
 
-dataRec :: Parser DataRec
+dataRec :: Parser (XMem U, Type U)
 dataRec = do
   recordName <- member
   recordType <- pType
-  pure $ DR recordName recordType
+  pure (recordName, recordType)
 
-dataCon :: Parser DataCon
+dataCon :: Parser (DataCon U)
 dataCon = do
   conName <- dataConstructor
   types <- many typeTerm
@@ -379,7 +381,7 @@ annotation = do
         where
           ann = pure . Just
 
-annotateStatements :: [Either [Ann] Stmt] -> Parser [AnnStmt]
+annotateStatements :: [Either [Ann] (Stmt U)] -> Parser [AnnStmt U]
 annotateStatements = assignAnnotations $ \anns stmt -> Fix $ O $ Annotated anns stmt
 
 assignAnnotations :: ([Ann] -> a -> b) -> [Either [Ann] a] -> Parser [b]
@@ -402,10 +404,10 @@ annotationOr x = Left <$> annotation <|> Right <$> x
 -- Expressions --
 -----------------
 
-expression :: Parser Expr
+expression :: Parser (Expr U)
 expression = makeExprParser term operatorTable
 
-operatorTable :: [[Operator Parser Expr]]
+operatorTable :: [[Operator Parser (Expr U)]]
 operatorTable =
   [ [ subscriptOrCall
     , recordUpdate
@@ -433,29 +435,29 @@ operatorTable =
 binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
 binary s f = InfixL $ f <$ symbol s
 
-subscriptOrCall :: Operator Parser Expr
+subscriptOrCall :: Operator Parser (Expr U)
 subscriptOrCall = Postfix $ fmap (foldl1 (.) . reverse) $ some (subscript <|> call)
 
-subscript :: Parser (Expr -> Expr)
+subscript :: Parser (Expr U -> Expr U)
 subscript = (symbol "." >> member) <&> \memname e -> Fix $ MemAccess e memname
 
-call :: Parser (Expr -> Expr)
+call :: Parser (Expr U -> Expr U)
 call = do
     args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
     return $ Fix . flip Call args
 
-recordUpdate :: Operator Parser Expr
+recordUpdate :: Operator Parser (Expr U)
 recordUpdate = Postfix $ between (symbol "{") (symbol "}") $ do
   mems <- NonEmpty.fromList <$> sepBy1 memberdef (symbol ",")
   return $ Fix . flip RecUpdate mems
 
-as :: Operator Parser Expr
+as :: Operator Parser (Expr U)
 as = Postfix $ do
     symbol "as"
     t <- pType
     return $ Fix . flip As t
 
-lambda :: Operator Parser Expr
+lambda :: Operator Parser (Expr U)
 lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
   params <- try $ (variable `sepBy` symbol ",") <* symbol ":"
   return $ Fix . Lam params
@@ -465,7 +467,7 @@ lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
 -- Terms --
 -----------
 
-term :: Parser Expr
+term :: Parser (Expr U)
 term = choice
   [ eDecimal
   , eGrouping
@@ -473,27 +475,27 @@ term = choice
   , eIdentifier
   ]
 
-eDecimal :: Parser Expr
+eDecimal :: Parser (Expr U)
 eDecimal = do
   decimal <- lexeme (L.signed sc L.decimal)
   retf $ Lit $ LInt decimal
 
-eGrouping :: Parser Expr
+eGrouping :: Parser (Expr U)
 eGrouping = between (symbol "(") (symbol ")") expression
 
-eIdentifier :: Parser Expr
+eIdentifier :: Parser (Expr U)
 eIdentifier = do
   id <- (Var <$> variable) <|> (Con <$> dataConstructor)
   retf id
 
-eRecordConstruction :: Parser Expr
+eRecordConstruction :: Parser (Expr U)
 eRecordConstruction = do
   name <- try $ typeName <* lookAhead (symbol "{")
   recordDef <- NonEmpty.fromList <$> between (symbol "{") (symbol "}") (sepBy1 memberdef (symbol ","))
 
   retf $ RecCon name recordDef
 
-memberdef :: Parser (MemName, Expr)
+memberdef :: Parser (MemName, Expr U)
 memberdef = do
       mem <- member
       symbol ":"
@@ -505,7 +507,7 @@ memberdef = do
 -----------
 
 -- This is used to parse a standalone type
-pType :: Parser Type
+pType :: Parser (Type U)
 pType = do
   term <- choice
     [ (:[]) <$> concrete
@@ -519,7 +521,7 @@ pType = do
   case fun of
     Nothing -> case term of
       [t] -> return t
-      ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap (ctx uType) ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
+      ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap (ctx pp) ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
     Just ret -> return $ Fix $ TFun term ret
 
   where
@@ -531,7 +533,7 @@ pType = do
 
 -- This is used to parse a type "term", for example if you're parsing a data definition.
 -- Ex. you cannot do this: Int -> Int, you have to do this: (Int -> Int)
-typeTerm :: Parser Type
+typeTerm :: Parser (Type U)
 typeTerm = choice
   [ grouping
   , poly
@@ -543,12 +545,12 @@ typeTerm = choice
       tname <- typeName
       retf $ TCon tname []
 
-poly :: Parser Type
+poly :: Parser (Type U)
 poly = Fix . TVar <$> generic
 
 
 -- COPIED FROM pType n shit. uhh.... Because I don't have an "identity" constructor in the TypeF datatype, I can't use fixpoint functions.
-pClassType :: Parser ClassType
+pClassType :: Parser (ClassType U)
 pClassType
   =   Fix Self <$ symbol "_"
   <|> do
@@ -564,7 +566,7 @@ pClassType
         case fun of
           Nothing -> case term of
             [t] -> return t
-            ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap (ctx uClassType) ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
+            ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap (ctx pp) ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
           Just ret -> return $ Fix $ NormalType $ TFun term ret
 
         where
@@ -574,7 +576,7 @@ pClassType
             return $ Fix $ NormalType $ TCon tcon targs
           groupingOrParams = between (symbol "(") (symbol ")") $ sepBy pClassType (symbol ",")
 
-classTypeTerm :: Parser ClassType
+classTypeTerm :: Parser (ClassType U)
 classTypeTerm = choice
   [ grouping
   , Fix . NormalType . TVar <$> generic
@@ -650,7 +652,7 @@ symbol = void . L.symbol sc
 keyword :: Text -> Parser ()
 keyword kword = void $ lexeme (try $ string kword <* notFollowedBy identifierChar)
 
-scope :: (a -> NonEmpty AnnStmt -> b) -> Parser a -> Parser b
+scope :: (a -> NonEmpty (AnnStmt U) -> b) -> Parser a -> Parser b
 scope f ref = recoverableIndentBlock $ do
   x <- ref
   return $ L.IndentSome Nothing (fmap (f x . NE.fromList) . annotateStatements) (annotationOr statement)
@@ -709,10 +711,10 @@ registerExpect offset found expected = registerParseError $ TrivialError offset 
     text2token = NE.fromList . T.unpack
 
 
-recoverStmt :: Parser (Either [Ann] Stmt) -> Parser (Either [Ann] Stmt)
+recoverStmt :: Parser (Either [Ann] (Stmt U)) -> Parser (Either [Ann] (Stmt U))
 recoverStmt = recoverLine (Right Pass)
 
-recoverCon :: Parser (Either [Ann] (Either DataRec DataCon)) -> Parser (Either [Ann] (Either DataRec DataCon))
+recoverCon :: Parser (Either [Ann] (Either (XMem U, Type U) (DataCon U))) -> Parser (Either [Ann] (Either (XMem U, Type U) (DataCon U)))
 recoverCon = recoverLine $ Right $ Right $ DC (CN "PLACEHOLDER") []
 
 recoverLine :: a -> Parser a -> Parser a
