@@ -14,7 +14,7 @@ import Text.Megaparsec.Char
 import qualified Text.Megaparsec as TM (parse)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Control.Monad.Combinators.Expr
-import Data.Bifunctor (first, bimap)
+import Data.Bifunctor (first)
 import Data.Functor (void, ($>), (<&>))
 import Data.Fix (Fix(Fix))
 import Data.List.NonEmpty (NonEmpty ((:|)))
@@ -314,7 +314,7 @@ sDataDefinition :: Parser (Stmt U)
 sDataDefinition = recoverableIndentBlock $ do
   tname <- typeName
   polys <- many generic
-  return $ flip (L.IndentMany Nothing) (recoverCon conOrRecOrAnnotation) $ toRecordOrADT tname polys <=< assignAnnotations (\ann -> bimap (Annotated ann) (\fdc -> fdc ann))
+  return $ flip (L.IndentMany Nothing) (recoverCon conOrRecOrAnnotation) $ toRecordOrADT tname polys <=< assignAnnotations (\_ _ -> undefined)
    where
     conOrRecOrAnnotation :: Parser (Either [Ann] (Either (XMem U, Type U) ([Ann] -> DataCon U)))
     conOrRecOrAnnotation = Left <$> annotation <|> Right . Left <$> dataRec <|> Right . Right <$> dataCon

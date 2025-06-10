@@ -100,3 +100,15 @@ Second, (probably should do it at the same time) add EnvDef completions, as we'r
  > NOTE: should we already create different environments then? Because "completing" environments is different for each applied type.
   > Well, shouldn't we monomorphize it then at this point? I mean... it's kinda similar. When it comes to cucked unions, we can technically count all instantiations of a function those TVar is assigned to it. Eh, I'll see.
  > PROBLEM: what if the defined environment is not yet completed? Probably only mark it as completed when it's fully completed. Yuh.
+
+
+
+----
+
+Notes from the rewrite
+
+It's taking longer than expected, but looks okay.
+
+I've found a certain pattern: there is stuff which is only available after we do resolving (which will probably stay the same for later phases), but we're making another type family for it. Maybe a better way would be to make a type family Other and like Rec just make it () during Parsing and 'a' from Resolving onwards.
+
+I will first do all the phases to see if it holds up.

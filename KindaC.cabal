@@ -21,9 +21,14 @@ library
   exposed-modules:
       AST.Common
       AST.Def
+      AST.Prelude
+      AST.Resolved
+      AST.Typed
       AST.Untyped
+      Entry
       Misc.Memo
       Parser
+      Resolver
   other-modules:
       Paths_KindaC
   hs-source-dirs:

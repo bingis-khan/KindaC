@@ -248,6 +248,9 @@ instance PP a => PP (Annotated a) where
 instance PP () where
   pp = const mempty
 
+instance PP Text where
+  pp = pretty
+
 instance PP LitType where
   pp (LInt i) = pretty i
   pp (LFloat f) = fromString $ show f
@@ -269,6 +272,23 @@ instance PP MemName where
 
 instance PP ClassName where
   pp cn = pretty cn.fromTN
+
+instance PP UniqueVar where
+  pp uv = pp uv.varName
+
+instance PP UniqueCon where
+  pp uc = pp uc.conName
+
+instance PP UniqueType where
+  pp ut = pp ut.typeName
+
+instance PP UniqueClass where
+  pp ucl = pp ucl.className
+
+instance PP Locality where
+  pp = \case
+    Local -> ""
+    FromEnvironment -> "^"
 
 
 ----------------
