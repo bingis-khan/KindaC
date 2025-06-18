@@ -2,6 +2,10 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveFunctor #-}
 module AST.Resolved (module AST.Resolved) where
 
 import AST.Common
@@ -11,7 +15,10 @@ import Data.Map (Map)
 import Data.Set (Set)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Functor ((<&>))
-import AST.Def (PP (..))
+import AST.Def (PP (..), (<+>))
+import Data.Fix (Fix)
+import Data.Functor.Foldable (cata)
+import Data.Foldable (Foldable(..))
 
 data Resolved
 type R = Resolved
@@ -21,6 +28,7 @@ type instance XVar Resolved = Variable
 type instance XVarOther Resolved = Def.Locality
 type instance XLVar Resolved = Def.UniqueVar
 type instance XCon Resolved = Constructor
+type instance XConOther Resolved = ()
 type instance XTCon Resolved = DataType
 type instance XDTCon Resolved = Def.UniqueType
 type instance XReturn Resolved = Expr R
@@ -35,6 +43,14 @@ type instance XDClass Resolved = Def.UniqueClass
 type instance XInstDef Resolved = InstDef R
 type instance ClassConstraints Resolved = Map (TVar R) (Set Class)
 type instance XOther Resolved = ()
+type instance XFunOther Resolved = ()
+type instance XTOther Resolved = TVar R
+type instance XTFun Resolved = ()
+type instance XTConOther Resolved = ()
+type instance XNode Resolved = ()
+type instance XFunType Resolved = DeclaredType R
+type instance XDataScheme Resolved = [TVar R]
+
 
 data Env = Env { fromEnv :: [(VariableProto, Def.Locality)], level :: Int }
 data LamDec = LamDec Def.UniqueVar Env

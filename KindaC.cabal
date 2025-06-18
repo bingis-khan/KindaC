@@ -24,11 +24,13 @@ library
       AST.Prelude
       AST.Resolved
       AST.Typed
+      AST.TypedWithClasses
       AST.Untyped
       Entry
       Misc.Memo
       Parser
       Resolver
+      Typecheck
   other-modules:
       Paths_KindaC
   hs-source-dirs:

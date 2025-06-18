@@ -47,6 +47,7 @@ import Data.List (find)
 import AST.Def (type (:.)(O), Annotated (..), Binding (..))
 import qualified AST.Def as Def
 import AST.Prelude (Prelude (..))
+import qualified AST.Common as Common
 
 
 
@@ -144,7 +145,7 @@ rStmts = traverse -- traverse through the list with Ctx
           Just re -> pure re
           Nothing -> do
             uc <- unit
-            pure $ Fix (Con uc)
+            pure $ Fix $ N () (Con uc ())
 
         stmt $ Return re
       Other (U.DataDefinition dd) -> mdo
@@ -155,7 +156,7 @@ rStmts = traverse -- traverse through the list with Ctx
         registerDatatype dataDef
 
 
-        let tvars = mkTVars (Def.BindByType tid) dd.ddTVars
+        let tvars = mkTVars (Def.BindByType tid) dd.ddScheme
         rCons <- bindTVars tvars $ case dd.ddCons of
           Right cons ->
             fmap Right $ for cons $ \(DC () cname ctys conAnns) -> do
@@ -176,27 +177,27 @@ rStmts = traverse -- traverse through the list with Ctx
 
         pass
 
-      Fun (FD () name params ret, body) -> do
+      Fun (U.FunDef (FD () name params ret ()) body) -> do
         vid <- generateVar name  -- NOTE: this is added to scope in `newFunction` (for some reason.) TODO: change it later (after I finish implementing records.) TODO: to what?????
 
         -- get all unbound tvars
-        let allTypes = catMaybes $ ret : (snd <$> params)
+        let allTypes = catNotDeclared $ ret : (snd <$> params)
         tvars <- fmap mconcat $ for allTypes $ cata $ \case
-              TVar utv -> tryResolveTVar utv <&> \case
+              TO utv -> tryResolveTVar utv <&> \case
                 Just _ ->  Set.empty  -- don't rebind existing tvars.
                 Nothing -> Set.singleton $ bindTVar (BindByVar vid) utv
               t -> fold <$> sequenceA t
 
         rec
-          let function = Function (FD env vid rparams rret) rbody
+          let function = Function (FD env vid rparams rret (error "what should the scheme be here?")) rbody
           newFunction function
 
           (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure $ do
             rparams' <- traverse (\(n, t) -> do
               rn <- rDecon n
-              rt <- traverse rType t
+              rt <- rDeclaredType t
               return (rn, rt)) params
-            rret' <- traverse rType ret
+            rret' <- rDeclaredType ret
             rbody' <- rBody $ rStmt' <$> body
             pure (rparams', rret', rbody')
 
@@ -232,7 +233,7 @@ rStmts = traverse -- traverse through the list with Ctx
             -- get all unbound tvars (HACK: copied from DefinedFunction)
             let allTypes = ret : (snd <$> params)
             tvars <- fmap mconcat $ for allTypes $ cata $ \case
-                  NormalType (TVar utv) -> tryResolveTVar utv <&> \case
+                  NormalType (TO utv) -> tryResolveTVar utv <&> \case
                     Just _ ->  Set.empty  -- don't rebind existing tvars.
                     Nothing -> Set.singleton $ R.bindTVar (BindByVar funid) utv
                   t -> fold <$> sequenceA t
@@ -277,9 +278,9 @@ rStmts = traverse -- traverse through the list with Ctx
           vid <- generateVar ifn.instFunDec.functionId
 
           -- get all unbound tvars
-          let allTypes = catMaybes $ ifn.instFunDec.functionReturnType : (snd <$> ifn.instFunDec.functionParameters)
+          let allTypes = catNotDeclared $ ifn.instFunDec.functionReturnType : (snd <$> ifn.instFunDec.functionParameters)
           tvars <- fmap mconcat $ for allTypes $ cata $ \case
-                TVar utv -> tryResolveTVar utv <&> \case
+                TO utv -> tryResolveTVar utv <&> \case
                   Just _ ->  Set.empty  -- don't rebind existing tvars.
                   Nothing -> Set.singleton $ R.bindTVar (BindByVar vid) utv
                 t -> fold <$> sequenceA t
@@ -287,9 +288,9 @@ rStmts = traverse -- traverse through the list with Ctx
           (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure $ do
             rparams' <- traverse (\(n, t) -> do
               rn <- rDecon n
-              rt <- traverse rType t
+              rt <- rDeclaredType t
               return (rn, rt)) ifn.instFunDec.functionParameters
-            rret' <- traverse rType ifn.instFunDec.functionReturnType
+            rret' <- rDeclaredType ifn.instFunDec.functionReturnType
             rbody' <- rBody $ rStmt' <$> ifn.instFunBody
             pure (rparams', rret', rbody')
 
@@ -298,7 +299,7 @@ rStmts = traverse -- traverse through the list with Ctx
           -- TODO: maybe just make it a part of 'closure'?
           let innerEnv = Set.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
           env <- mkEnv innerEnv
-          let fundec = FD env vid rparams rret
+          let fundec = FD env vid rparams rret ()
 
           pure InstFun
             { instFunDec = fundec
@@ -343,7 +344,7 @@ rConstraints boundKlass tvars constraints = do
   pure $ Map.fromListWith (<>) $ fmap Set.singleton <$> tvclasses
 
 rDecon :: Decon U -> Ctx (Decon R)
-rDecon = transverse $ \case
+rDecon = transverse $ \(N () d) -> fmap (N ()) $ case d of
   CaseVariable var -> do
     rvar <- newVar var
     pure $ CaseVariable rvar
@@ -381,19 +382,19 @@ rDecon = transverse $ \case
     pure $ CaseRecord ty mems
 
 rExpr :: Expr U -> Ctx (Expr R)
-rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
+rExpr = cata $ \(N () e) -> embed . N () <$> case e of  -- transverse, but unshittified
   Lit x -> pure $ Lit x
   Var v () -> do
     (l, vid) <- resolveVar v
     pure $ Var vid l
-  Con conname -> do
+  Con conname () -> do
     con <- resolveCon conname >>= \case
       Just con -> pure con
       Nothing -> do
         err $ UndefinedConstructor conname
         placeholderCon conname
 
-    pure $ Con con
+    pure $ Con con ()
   MemAccess expr memname -> do
     rexpr <- expr
     pure $ MemAccess rexpr memname
@@ -451,6 +452,11 @@ rExpr = cata $ fmap embed . \case  -- transverse, but unshittified
 rType :: Type U -> Ctx (Type R)
 rType = transverse rType'
 
+rDeclaredType :: DeclaredType U -> Ctx (DeclaredType R)
+rDeclaredType = \case
+  TypeNotDeclared -> pure TypeNotDeclared
+  DeclaredType t -> DeclaredType <$> rType t
+
 rClassType :: ClassType U -> Ctx (ClassType R)
 rClassType = transverse $ \case
   Self -> pure Self
@@ -458,17 +464,17 @@ rClassType = transverse $ \case
 
 rType' :: TypeF U (Ctx a) -> Ctx (TypeF R a)
 rType' = \case
-  TCon t tapps -> do
+  TCon t tapps () -> do
     rt <- resolveType t
     rtApps <- sequenceA tapps
-    pure $ TCon rt rtApps
-  TVar v -> do
+    pure $ TCon rt rtApps ()
+  TO v -> do
     tv <- resolveTVar v
-    pure $ TVar tv
-  TFun args ret -> do
+    pure $ TO tv
+  TFun () args ret -> do
     rArgs <- sequence args
     rret <- ret
-    pure $ TFun rArgs rret
+    pure $ TFun () rArgs rret
 
 
 ------------
@@ -877,7 +883,7 @@ gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesF
 
 -- used for lambdas
 gatherVariablesFromExpr :: Expr R -> Set VariableProto
-gatherVariablesFromExpr = cata $ \case
+gatherVariablesFromExpr = cata $ \(N () e) -> case e of
   Var v _ -> Set.singleton (R.asProto v)  -- TODO: Is this... correct? It's used for making the environment, but now we can just use this variable to know. This is todo for rewrite.
                                 --   Update: I don't understand the comment above.
   expr -> fold expr

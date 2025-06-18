@@ -16,7 +16,7 @@ import Prettyprinter (Doc)
 import Data.String (IsString (..))
 import qualified Prettyprinter as PP
 import Data.Foldable (fold)
-import Data.List (intersperse)
+import Data.List (intersperse, intercalate)
 import qualified Text.Printf
 import Text.Printf (PrintfArg(..), formatString)
 import Control.Monad.IO.Class (MonadIO (..))
@@ -25,11 +25,12 @@ import Data.Char (toUpper)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Set (Set)
-import Data.Map (Map)
+import Data.Map (Map, (!?))
 import qualified Data.Map as Map
 import Data.Bitraversable (bitraverse)
 import qualified Data.Set as Set
 import Data.Foldable1 (foldl1', Foldable1)
+import Data.Maybe (fromMaybe)
 
 
 -- set printing config
@@ -245,11 +246,20 @@ instance PP Context where
 instance PP a => PP (Annotated a) where
   pp (Annotated ann c) = annotate ann (pp c)
 
+instance PP a => PP [a] where
+  pp ps = sepBy " " $ pp <$> ps
+
 instance PP () where
   pp = const mempty
 
 instance PP Text where
   pp = pretty
+
+instance (PP a, PP b) => PP (a, b) where
+  pp (l, r) = pp l <+> pp r
+
+instance PP (g (f a)) => PP ((g :. f) a) where
+  pp (O x) = pp x
 
 instance PP LitType where
   pp (LInt i) = pretty i
@@ -277,7 +287,7 @@ instance PP UniqueVar where
   pp uv = pp uv.varName
 
 instance PP UniqueCon where
-  pp uc = pp uc.conName
+  pp uc = ppCon uc
 
 instance PP UniqueType where
   pp ut = pp ut.typeName
@@ -289,6 +299,12 @@ instance PP Locality where
   pp = \case
     Local -> ""
     FromEnvironment -> "^"
+
+instance PP UnionID where
+  pp = ppUnionID
+
+instance PP EnvID where
+  pp = ppEnvID
 
 
 ----------------
@@ -327,6 +343,8 @@ mustOr :: String -> Maybe a -> a
 mustOr err Nothing = error err
 mustOr _ (Just x) = x
 
+defaultEmpty :: (Monoid v, Ord k) => k -> Map k v -> v
+defaultEmpty k m = fromMaybe mempty $ m !? k
 
 
 -----------------

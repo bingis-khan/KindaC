@@ -29,12 +29,13 @@ import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
 import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), PP (pp))
-import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), ClassConstraints)
+import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), ClassConstraints, Node (..), DeclaredType (..))
 import Data.Functor.Foldable (embed, cata)
 import Control.Monad ((<=<))
 import Data.Either (partitionEithers)
 import AST.Untyped (Untyped, U, UntypedStmt (..), ClassConstraint (..))
 import qualified AST.Untyped as U
+import qualified AST.Common as Common
 
 
 type Parser = Parsec MyParseError Text
@@ -109,12 +110,12 @@ sSingleCase = scope id $ do
 sDeconstruction :: Parser (Decon U)
 sDeconstruction = caseVariable <|> caseRecord <|> caseConstructor
  where
-    caseVariable = Fix . CaseVariable <$> variable
-    caseConstructor = fmap Fix $ CaseConstructor <$> dataConstructor <*> args
+    caseVariable = node . CaseVariable <$> variable
+    caseConstructor =  fmap node $ CaseConstructor <$> dataConstructor <*> args
     caseRecord = do
       name <- try $ typeName <* lookAhead (symbol "{")
       decons <- NonEmpty.fromList <$> between (symbol "{") (symbol "}") (sepBy1 recordFieldDecon (symbol ","))
-      pure $ Fix $ CaseRecord name decons
+      pure $ node $ CaseRecord name decons
 
     recordFieldDecon = do
       fieldName <- member
@@ -249,7 +250,7 @@ sInstFunction = recoverableIndentBlock $ do
 sExpression :: Parser (Stmt U)
 sExpression = do
   from <- getOffset
-  expr@(Fix chkExpr) <- expression
+  expr@(Fix (N _ chkExpr)) <- expression
   to <- getOffset
   case chkExpr of
     Call _ _ -> pure $ ExprStmt expr
@@ -271,31 +272,31 @@ sFunctionOrCall = recoverableIndentBlock $ do
       let expr2stmt = Fix . O . Annotated [] . Return . Just
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
-      in L.IndentNone $ Fun (header, body)
+      in L.IndentNone $ Fun $ U.FunDef header body
 
     Nothing ->
       -- If that's a normal function, we check if any types were defined
       let types = header.functionReturnType : map snd header.functionParameters
-      in if any isJust types
-        then L.IndentSome Nothing (fmap (Fun . (header,) . NonEmpty.fromList) . annotateStatements) $ recoverStmt (annotationOr statement)
+      in if any Common.isTypeDeclared types
+        then L.IndentSome Nothing (fmap (Fun . U.FunDef header . NonEmpty.fromList) . annotateStatements) $ recoverStmt (annotationOr statement)
         else flip (L.IndentMany Nothing) (recoverStmt (annotationOr statement)) $ \case
-          stmts@(_:_) -> Fun . (header,) . NonEmpty.fromList <$> annotateStatements stmts
+          stmts@(_:_) -> Fun . U.FunDef header . NonEmpty.fromList <$> annotateStatements stmts
           [] ->
             let args = map (deconToExpr . fst) header.functionParameters
-                funName = Fix $ Var header.functionId ()
-            in pure $ ExprStmt $ Fix $ Call funName args
+                funName = node $ Var header.functionId ()
+            in pure $ ExprStmt $ node $ Call funName args
 
 -- some construction might also be misrepresented as a deconstruction.
 deconToExpr :: Decon U -> Expr U
-deconToExpr = cata $ embed . \case
+deconToExpr = cata $ \(N _ decon) -> node $ case decon of
   CaseVariable v                  -> Var v ()
-  CaseConstructor con []          -> Con con
-  CaseConstructor con exprs@(_:_) -> Call (Fix $ Con con) exprs
+  CaseConstructor con []          -> Con con ()
+  CaseConstructor con exprs@(_:_) -> Call (node $ Con con ()) exprs
   CaseRecord con mems             -> RecCon con mems
 
 functionHeader :: Parser (FunDec U, Maybe (Expr U))
 functionHeader = do
-  let param = liftA2 (,) sDeconstruction (optional pType)
+  let param = liftA2 (,) sDeconstruction (undefined <$> optional pType)
   name <- variable
   params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
   ret <- choice
@@ -304,8 +305,8 @@ functionHeader = do
     ]
 
   return $ case ret of
-    Left expr -> (FD () name params Nothing, Just expr)
-    Right mType -> (FD () name params mType, Nothing)
+    Left expr -> (FD () name params TypeNotDeclared (), Just expr)
+    Right mType -> (FD () name params (Common.fromMaybeToDeclaredType mType) (), Nothing)
 
 
 -- Data definitions.
@@ -429,7 +430,7 @@ operatorTable =
   , [ lambda
     ]
   ] where
-    binary' name op = binary name $ \x y -> Fix (Op x op y)
+    binary' name op = binary name $ \x y -> Fix $ N () $ Op x op y
 
 
 binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
@@ -439,29 +440,31 @@ subscriptOrCall :: Operator Parser (Expr U)
 subscriptOrCall = Postfix $ fmap (foldl1 (.) . reverse) $ some (subscript <|> call)
 
 subscript :: Parser (Expr U -> Expr U)
-subscript = (symbol "." >> member) <&> \memname e -> Fix $ MemAccess e memname
+subscript = (symbol "." >> member) <&> \memname e -> node $ MemAccess e memname
 
 call :: Parser (Expr U -> Expr U)
 call = do
     args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
-    return $ Fix . flip Call args
+    return $ node . flip Call args
 
 recordUpdate :: Operator Parser (Expr U)
 recordUpdate = Postfix $ between (symbol "{") (symbol "}") $ do
   mems <- NonEmpty.fromList <$> sepBy1 memberdef (symbol ",")
-  return $ Fix . flip RecUpdate mems
+  return $ node . flip RecUpdate mems
 
 as :: Operator Parser (Expr U)
 as = Postfix $ do
     symbol "as"
     t <- pType
-    return $ Fix . flip As t
+    return $ node . flip As t
 
 lambda :: Operator Parser (Expr U)
 lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
   params <- try $ (variable `sepBy` symbol ",") <* symbol ":"
-  return $ Fix . Lam () params
+  return $ node . Lam () params
 
+node :: nodeF U (Fix (Node U nodeF)) -> Fix (Node U nodeF)
+node = Fix . N ()
 
 -----------
 -- Terms --
@@ -478,22 +481,22 @@ term = choice
 eDecimal :: Parser (Expr U)
 eDecimal = do
   decimal <- lexeme (L.signed sc L.decimal)
-  retf $ Lit $ LInt decimal
+  retfe $ Lit $ LInt decimal
 
 eGrouping :: Parser (Expr U)
 eGrouping = between (symbol "(") (symbol ")") expression
 
 eIdentifier :: Parser (Expr U)
 eIdentifier = do
-  id <- (flip Var () <$> variable) <|> (Con <$> dataConstructor)
-  retf id
+  id <- (flip Var () <$> variable) <|> (Con <$> dataConstructor <*> pure ())
+  retfe id
 
 eRecordConstruction :: Parser (Expr U)
 eRecordConstruction = do
   name <- try $ typeName <* lookAhead (symbol "{")
   recordDef <- NonEmpty.fromList <$> between (symbol "{") (symbol "}") (sepBy1 memberdef (symbol ","))
 
-  retf $ RecCon name recordDef
+  retfe $ RecCon name recordDef
 
 memberdef :: Parser (MemName, Expr U)
 memberdef = do
@@ -522,13 +525,13 @@ pType = do
     Nothing -> case term of
       [t] -> return t
       ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap (ctx pp) ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
-    Just ret -> return $ Fix $ TFun term ret
+    Just ret -> return $ Fix $ TFun () term ret
 
   where
     concrete = do
       tcon <- typeName
       targs <- many typeTerm
-      return $ Fix $ TCon tcon targs
+      return $ Fix $ TCon tcon targs ()
     groupingOrParams = between (symbol "(") (symbol ")") $ sepBy pType (symbol ",")
 
 -- This is used to parse a type "term", for example if you're parsing a data definition.
@@ -543,10 +546,10 @@ typeTerm = choice
     grouping = between (symbol "(") (symbol ")") pType
     concreteType = do
       tname <- typeName
-      retf $ TCon tname []
+      retf $ TCon tname [] ()
 
 poly :: Parser (Type U)
-poly = Fix . TVar <$> generic
+poly = Fix . TO <$> generic
 
 
 -- COPIED FROM pType n shit. uhh.... Because I don't have an "identity" constructor in the TypeF datatype, I can't use fixpoint functions.
@@ -556,7 +559,7 @@ pClassType
   <|> do
         term <- choice
           [ (:[]) <$> concrete
-          , (:[]) . Fix . NormalType . TVar <$> generic
+          , (:[]) . Fix . NormalType . TO <$> generic
           , groupingOrParams
           ]
 
@@ -567,26 +570,26 @@ pClassType
           Nothing -> case term of
             [t] -> return t
             ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap (ctx pp) ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
-          Just ret -> return $ Fix $ NormalType $ TFun term ret
+          Just ret -> return $ Fix $ NormalType $ TFun () term ret
 
         where
           concrete = do
             tcon <- typeName
             targs <- many classTypeTerm
-            return $ Fix $ NormalType $ TCon tcon targs
+            return $ Fix $ NormalType $ TCon tcon targs ()
           groupingOrParams = between (symbol "(") (symbol ")") $ sepBy pClassType (symbol ",")
 
 classTypeTerm :: Parser (ClassType U)
 classTypeTerm = choice
   [ grouping
-  , Fix . NormalType . TVar <$> generic
+  , Fix . NormalType . TO <$> generic
   , concreteType
   ]
   where
     grouping = between (symbol "(") (symbol ")") pClassType
     concreteType = do
       tname <- typeName
-      retf $ NormalType $ TCon tname []
+      retf $ NormalType $ TCon tname [] ()
 
 
 
@@ -678,6 +681,9 @@ lexeme = L.lexeme sc
 
 retf :: f (Fix f) -> Parser (Fix f)
 retf = return . Fix
+
+retfe :: ExprF U (Expr U) -> Parser (Expr U)
+retfe = return . Fix . N ()
 
 -- As a complement to retf
 ret :: a -> Parser a
