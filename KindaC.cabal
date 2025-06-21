@@ -24,11 +24,11 @@ library
       AST.Prelude
       AST.Resolved
       AST.Typed
-      AST.TypedWithClasses
       AST.Untyped
       Entry
       Misc.Memo
       Parser
+      Pipeline
       Resolver
       Typecheck
   other-modules:

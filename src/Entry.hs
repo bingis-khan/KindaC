@@ -10,6 +10,9 @@ import qualified AST.Def as Def
 import AST.Def (PP(..))
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Typecheck (typecheck)
+import Data.Foldable (for_)
+import Pipeline (loadPrelude, loadModule)
 -- import Pipeline (loadPrelude, loadModule, finalizeModule)
 
 
@@ -18,30 +21,23 @@ compilerMain = do
   (filename, outputC) <- parseArgs
 
   -- first, get dat prelude
-  -- prelude <- loadPrelude
+  prelude <- loadPrelude
 
   -- try compile module
-  -- emod <- loadModule Nothing filename
+  emod <- loadModule (Just prelude) filename
 
-  source <- TextIO.readFile filename
-  case parse filename source of
-    Left err -> TextIO.putStrLn err
-    Right ast -> do
-      (errs, mod) <- resolve Nothing ast
-      Def.ctxPrint pp mod
+  case emod of
+    Left errs -> TextIO.putStrLn errs
+    Right modul -> do
+      -- Def.ctxPrint pp modul
+      pure ()
 
-      
-  pure ()
-  -- case emod of
-  --   Left errs -> TextIO.putStrLn errs
-  --   Right modul -> do
+      -- all good, finalize.
+      -- cmod <- finalizeModule prelude modul
 
-  --     -- all good, finalize.
-  --     cmod <- finalizeModule prelude modul
-
-  --     if outputC 
-  --       then TextIO.writeFile "test.c" cmod
-  --       else TextIO.putStrLn cmod
+      -- if outputC 
+      --   then TextIO.writeFile "test.c" cmod
+      --   else TextIO.putStrLn cmod
 
 
 s2t :: (Functor f, Show a) => f a -> f Text

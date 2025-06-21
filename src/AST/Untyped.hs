@@ -27,6 +27,7 @@ type instance XDataScheme Untyped = [Def.UnboundTVar]
 
 type instance XVar Untyped = Def.VarName
 type instance XVarOther Untyped = ()
+type instance XLamVar Untyped = Def.VarName
 type instance XLVar Untyped = Def.VarName
 type instance XCon Untyped = Def.ConName
 type instance XConOther Untyped = ()
@@ -57,7 +58,8 @@ data UntypedStmt
   | DataDefinition (DataDef U)
 type instance XOther Untyped = UntypedStmt
 
-type instance Module Untyped = [AnnStmt Untyped]
+newtype Mod = Mod [AnnStmt Untyped]
+type instance Module Untyped = Mod
 
 
 
@@ -65,8 +67,8 @@ type instance Module Untyped = [AnnStmt Untyped]
 -- PP --
 --------
 
-instance PP [AnnStmt U] where
-  pp = Def.ppLines pp
+instance PP Mod where
+  pp (Mod stmts) = Def.ppLines pp stmts
 
 instance PP FunDef where
   pp (FunDef fd body) = Def.ppBody' pp (pp fd) body

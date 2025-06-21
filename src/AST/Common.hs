@@ -15,7 +15,7 @@ module AST.Common (module AST.Common) where
 import qualified AST.Def as Def
 import Data.List.NonEmpty (NonEmpty)
 import Data.Fix (Fix (..))
-import AST.Def ((:.) (..), Annotated (..), PP (..), (<+>), Op (..), (<+?>), UniqueVar)
+import AST.Def ((:.) (..), Annotated (..), PP (..), (<+>), Op (..), (<+?>), UniqueVar, PPDef (..))
 import Data.Functor.Foldable (cata)
 import Data.Foldable (foldl')
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
@@ -77,6 +77,7 @@ type family XVarOther phase
 type family XCon phase
 type family XConOther phase
 type family XMem phase
+type family XLamVar phase
 type family XLamOther phase
 
 type family XNode phase
@@ -85,7 +86,7 @@ data Node phase nodeF a = N (XNode phase) (nodeF phase a) deriving (Functor, Fol
 -- Basically, get extra information in node.
 -- I only have plans for a type in node, so i can call this function that way if I want.
 typeOfNode :: Fix (Node phase nodeF) -> XNode phase
-typeOfNode = undefined
+typeOfNode (Fix (N t _)) = t
 
 
 data ExprF phase a
@@ -100,7 +101,7 @@ data ExprF phase a
   | Op a Def.Op a
   | Call a [a]
   | As a (Type phase)
-  | Lam (XLamOther phase) [XLVar phase] a
+  | Lam (XLamOther phase) [XLamVar phase] a
   deriving (Functor, Foldable, Traversable)
 type Expr phase = Fix (Node phase ExprF)
 
@@ -236,6 +237,7 @@ data Function phase = Function
 
 type family XClass phase
 type family XDClass phase
+type family XClassFunDec phase
 
 data ClassDef phase = ClassDef
   { classID :: XDClass phase
@@ -265,7 +267,7 @@ data InstDef phase = InstDef
 data InstFun phase = InstFun
   { instFunDec :: FunDec phase
   , instFunBody :: NonEmpty (AnnStmt phase)
-  , instClassFunDec :: Rec phase (ClassFunDec phase)
+  , instClassFunDec :: Rec phase (XClassFunDec phase)
   , instDef :: Rec phase (InstDef phase)
   }
 
@@ -392,7 +394,7 @@ instance (PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), 
     -- EnvDef fn -> fromString $ printf "[ENV]: %s" $ tEnv fn.functionDeclaration.functionEnv
     -- InstDefDef inst -> tInst inst
 
-instance (PP (XTVar phase), PP (XCon phase), PP (XVar phase), PP (XLVar phase), PP (XTCon phase), PP (XMem phase), PP (XVarOther phase), PP (XLamOther phase), PP (Type phase)) => PP (Expr phase) where
+instance (PP (XTVar phase), PP (XCon phase), PP (XVar phase), PP (XLVar phase), PP (XTCon phase), PP (XMem phase), PP (XVarOther phase), PP (XLamOther phase), PP (Type phase), PP (XLamVar phase)) => PP (Expr phase) where
   pp = cata $ \(N _ e) -> case e of
     Lit l -> pp l
     Var v other -> pp other <> pp v  -- HACK (other is probably only going to be "Locality")
@@ -426,8 +428,14 @@ instance
 instance (PP (XNode phase), PP (XMem phase), PP (XLVar phase), PP (XCon phase), PP (XTCon phase)) => PP (Decon phase) where
   pp = cata pp
 
+instance (PP (XMem phase), PP (XLVar phase), PP (XCon phase), PP (XTCon phase)) => PPDef (Decon phase) where
+  ppDef = cata ppDef
+
 instance (PP (nodeF phase a), PP (XNode phase)) => PP (Node phase nodeF a) where
-  pp (N xn n) = pp n <+> "::" <+> pp xn
+  pp (N xn n) = "(" <> pp n <+> "::" <+> pp xn <> ")"
+
+instance (PP (nodeF phase a)) => PPDef (Node phase nodeF a) where
+  ppDef (N _ n) = pp n
 
 instance
   (PP (XMem phase), PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP a)
@@ -438,14 +446,14 @@ instance
     CaseConstructor uc args@(_:_) -> pp uc <> Def.encloseSepBy "(" ")" ", " (pp <$> args)
     CaseRecord recordDD args -> pp recordDD <+> ppRecordMems  (Def.fmap2 pp args)
 
-instance (PP a, PP (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (TypeF phase a) where
+instance (PP a, PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (TypeF phase a) where
   pp = \case
     TCon tcon params _ ->
-      foldl' (<+>) (pp tcon) (pp <$> params)
+      foldl' (<+>) (ppDef tcon) (pp <$> params)
     TO x -> pp x
     TFun tfOther args ret -> pp tfOther <> Def.encloseSepBy "(" ")" ", " (pp <$> args) <+> "->" <+> pp ret
 
-instance (PP (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (Type phase) where
+instance (PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (Type phase) where
   pp = cata pp
 
 instance (PP (TypeF phase Def.Context), Functor (ClassTypeF phase)) => PP (ClassType phase) where
@@ -455,13 +463,13 @@ instance (PP (TypeF phase Def.Context), Functor (ClassTypeF phase)) => PP (Class
 
 instance (PP (XEnv phase), PP (XFunVar phase), PP (XLVar phase), PP (XMem phase), PP (XCon phase), PP (Type phase), PP (XTCon phase), PP (XNode phase), PP (XFunType phase)) => PP (FunDec phase) where
   pp (FD fenv v params retType scheme) = do
-    pp v <+> Def.encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> pp pName <+> pp pType) params) <+> pp retType
+    pp v <+> Def.encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppDef pName) params) <+> pp retType <+> pp fenv
 
 instance
-  (PP (XVar phase), PP (XLVar phase), PP (XFunVar phase), PP (XCon phase), PP (XEnv phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XTVar phase), PP (XClass phase), PP (XTCon phase), PP (XVarOther phase), PP (XLamOther phase), PP (Type phase), PP (XNode phase), PP (XFunType phase)) => PP (InstDef phase) where
+  (PP (XVar phase), PP (XLVar phase), PP (XFunVar phase), PP (XCon phase), PP (XEnv phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XTVar phase), PP (XClass phase), PP (XTCon phase), PP (XVarOther phase), PP (XLamOther phase), PP (Type phase), PP (XNode phase), PP (XFunType phase), PPDef (XClass phase), PPDef (XTCon phase), PP (XLamVar phase)) => PP (InstDef phase) where
   pp inst =
     let
-      header = "inst" <+> pp inst.instClass <+> pp (fst inst.instType) <+> Def.sepBy " " (pp <$> snd inst.instType)
+      header = "inst" <+> ppDef inst.instClass <+> ppDef (fst inst.instType) <+> Def.sepBy " " (pp <$> snd inst.instType)
     in Def.ppBody
       (\ifn -> Def.ppBody' pp (pp ifn.instFunDec) ifn.instFunBody)
       header
@@ -471,6 +479,9 @@ instance
 instance (PP (XTVar phase), PP (XTCon phase), PP (XMem phase), PP (XDCon phase), PP (XCon phase), PP (XDTCon phase), PP (Type phase), PP (XDataScheme phase)) => PP (DataDef phase) where
   pp (DD tid tvs (Right dcons) _) = Def.ppBody pp (pp tid <+> pp tvs) dcons
   pp (DD tid tvs (Left mems) _) = Def.ppBody (\(Annotated _ (mem, t)) -> pp mem <+> pp t) (pp tid <+> pp tvs) $ NonEmpty.toList mems
+
+instance PP (XDTCon phase) => PPDef (DataDef phase) where
+  ppDef dd = pp dd.ddName
 
 instance (PP (XTVar phase), PP (XDCon phase), PP (XTCon phase), PP (XCon phase), PP (Type phase)) => PP (DataCon phase) where
   pp (DC _ g t _) = foldl' (<+>) (pp g) $ pp <$> t
@@ -503,13 +514,16 @@ instance (PP (XClass phase), PP (XDClass phase), PP (XFunVar phase), PP (XLVar p
 instance (PP (XLVar phase), PP (XFunVar phase), PP (XMem phase), PP (XTVar phase), PP (XCon phase), PP (XTCon phase), PP (TypeF phase Def.Context), Functor (ClassTypeF phase), PP (XNode phase)) => PP (ClassFunDec phase) where
   pp (CFD _ v params ret) = pp v <+> Def.encloseSepBy "(" ")" ", " (fmap (\(pDecon, pType) -> pp pDecon <+> pp pType) params) <+> pp ret
 
-instance (PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XTVar phase), PP (XVar phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XEnv phase), PP (XFunVar phase), PP (Type phase), PP (XNode phase), PP (XFunType phase)) => PP (Function phase) where
+instance (PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XTVar phase), PP (XVar phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XEnv phase), PP (XFunVar phase), PP (Type phase), PP (XNode phase), PP (XFunType phase), PP (XLamVar phase)) => PP (Function phase) where
   pp fn = Def.ppBody' pp (pp fn.functionDeclaration) fn.functionBody
 
 instance (PP (XMem phase), PP (XLVar phase), PP (XCon phase), PP (XTCon phase)) => PP (Fix (DeconF phase)) where
   pp = cata pp
 
-instance (PP (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (DeclaredType phase) where
+instance (PP (XTCon phase), PP (XTOther phase), PP (XTFun phase), PPDef (XTCon phase)) => PP (DeclaredType phase) where
   pp = \case
     TypeNotDeclared -> ""
     DeclaredType t -> " " <> pp t  -- HACK: we know the context it's used in, so we add a space whenever there is a type.
+
+instance PP (XDClass phase) => PPDef (ClassDef phase) where
+  ppDef cd = pp cd.classID

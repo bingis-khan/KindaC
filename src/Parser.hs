@@ -49,7 +49,8 @@ parse filename = first (Text.pack . errorBundlePretty) . TM.parse (scn >> topLev
 topLevels :: Parser (Module Untyped)
 topLevels = do
   eas <- many $ recoverStmt (L.nonIndented sc  (annotationOr statement)) <* scn
-  annotateStatements eas
+  ustmts <- annotateStatements eas
+  pure $ U.Mod ustmts
 
 
 
@@ -296,7 +297,7 @@ deconToExpr = cata $ \(N _ decon) -> node $ case decon of
 
 functionHeader :: Parser (FunDec U, Maybe (Expr U))
 functionHeader = do
-  let param = liftA2 (,) sDeconstruction (undefined <$> optional pType)
+  let param = liftA2 (,) sDeconstruction (Common.fromMaybeToDeclaredType <$> optional pType)
   name <- variable
   params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
   ret <- choice

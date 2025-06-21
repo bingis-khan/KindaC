@@ -54,7 +54,7 @@ import qualified AST.Common as Common
 
 -- Resolves variables, constructors and types and replaces them with unique IDs.
 resolve :: Maybe Prelude -> Module U -> IO ([ResolveError], Module R)
-resolve mPrelude ustmts = do
+resolve mPrelude (U.Mod ustmts) = do
   let newState = maybe emptyState mkState mPrelude
   (rstmts, state, errs) <- RWST.runRWST (rStmts ustmts) () newState
 
@@ -274,7 +274,7 @@ rStmts = traverse -- traverse through the list with Ctx
 
 
         fns <- for rinst.instFuns $ \ifn -> do
-          protovid <- findFunctionInClass ifn.instFunDec.functionId klass
+          cfd <- findFunctionInClass ifn.instFunDec.functionId klass
           vid <- generateVar ifn.instFunDec.functionId
 
           -- get all unbound tvars
@@ -304,7 +304,9 @@ rStmts = traverse -- traverse through the list with Ctx
           pure InstFun
             { instFunDec = fundec
             , instFunBody = rbody
+            , instDef = inst
             -- , classFunctionPrototypeUniqueVar = protovid  -- TEMP remove
+            , instClassFunDec = cfd
             }
 
 
@@ -689,19 +691,21 @@ resolveClass cn = do
 placeholderClass :: Def.ClassName -> Ctx R.Class
 placeholderClass = undefined
 
-findFunctionInClass :: Def.VarName -> R.Class -> Ctx Def.UniqueVar
+findFunctionInClass :: Def.VarName -> R.Class -> Ctx (XClassFunDec R)
 findFunctionInClass vn ecd =
   let
-    fns = case ecd of
-      R.DefinedClass cd -> cd.classFunctions <&> \(CFD _ uv _ _) -> uv
-      R.ExternalClass cd -> cd.classFunctions <&> \(CFD _ uv _ _) -> uv
+    mcfd = case ecd of
+      R.DefinedClass cd -> R.DefinedClassFunDec <$> find (\(CFD _ uv _ _) -> uv.varName == vn) cd.classFunctions
+      R.ExternalClass cd -> R.ExternalClassFunDec <$> find (\(CFD _ uv _ _) -> uv.varName == vn) cd.classFunctions
     cid = R.asUniqueClass ecd
-    muv = find (\uv -> uv.varName == vn) fns
-  in case muv of
-    Just uv -> pure uv
+  in case mcfd of
+    Just cfd -> pure cfd
     Nothing -> do
       err $ UndefinedFunctionOfThisClass cid vn
-      generateVar vn
+      uv <- generateVar vn
+      pure $ case ecd of
+        R.DefinedClass cd -> R.DefinedClassFunDec $ CFD cd uv [] (Fix Self)
+        R.ExternalClass cd -> R.ExternalClassFunDec $ CFD cd uv [] (Fix Self)
 
 
 getInstancesForClassInCurrentScope :: R.Class -> Ctx R.PossibleInstances
@@ -874,6 +878,7 @@ localityOfVariablesAtCurrentScope = do
 gatherVariables :: AnnStmt R -> Set R.VariableProto
 gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesFromExpr bstmt of
   Mutation v expr -> Set.insert (R.PDefinedVariable v) expr
+  Return expr -> gatherVariablesFromExpr expr
   Fun fn ->
     let dec = fn.functionDeclaration
         envVars = Set.fromList $ fst <$> dec.functionEnv.fromEnv

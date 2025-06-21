@@ -38,6 +38,7 @@ Resolver
  |
 Typecheck
  > typechecking, should remove typeclasses, also should do partial environment initialization.
+  > EDIT: constrained tvars *will* exist, but only bound by declaration. all other should be resolved.
  Actual Typecheck (including instantiations)
  | <- this should produce a "Module" datatype, which contains both the code and exports (remember to also export typeclasses!)
 [Export] <- the "Module" datatype, not actually a step.

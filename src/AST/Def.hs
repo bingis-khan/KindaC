@@ -239,6 +239,12 @@ class PP a where
   default pp :: Show a => a -> Context
   pp = pretty . show
 
+class PPDef a where
+  ppDef :: a -> Context
+
+  default ppDef :: Show a => a -> Context
+  ppDef = pretty . show
+
 instance PP Context where
   pp = id
 
@@ -252,11 +258,19 @@ instance PP a => PP [a] where
 instance PP () where
   pp = const mempty
 
+instance PP Int
+
+instance PP Unique where
+  pp = pp . hashUnique
+
 instance PP Text where
   pp = pretty
 
 instance (PP a, PP b) => PP (a, b) where
   pp (l, r) = pp l <+> pp r
+
+instance PP a => PPDef (a, b) where
+  ppDef (l, _) = pp l  -- for XLVar basiclaly. kinda stupid (it's a general tuple thing), but good for now.
 
 instance PP (g (f a)) => PP ((g :. f) a) where
   pp (O x) = pp x
@@ -277,14 +291,20 @@ instance PP ConName where
 instance PP TCon where
   pp tc = pretty tc.fromTC
 
+instance PPDef TCon where
+  ppDef tc = pretty tc.fromTC
+
 instance PP MemName where
   pp mn = pretty mn.fromMN
 
 instance PP ClassName where
   pp cn = pretty cn.fromTN
 
+instance PPDef ClassName where
+  ppDef cn = pretty cn.fromTN
+
 instance PP UniqueVar where
-  pp uv = pp uv.varName
+  pp uv = pp uv.varName <> "@" <> pp uv.varID
 
 instance PP UniqueCon where
   pp uc = ppCon uc
@@ -305,6 +325,9 @@ instance PP UnionID where
 
 instance PP EnvID where
   pp = ppEnvID
+
+instance PP UniqueClassInstantiation where
+  pp uci = "U" <> (fromString . show . hashUnique) uci.fromUCI
 
 
 ----------------

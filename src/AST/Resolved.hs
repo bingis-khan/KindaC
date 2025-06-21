@@ -10,15 +10,15 @@ module AST.Resolved (module AST.Resolved) where
 
 import AST.Common
 import qualified AST.Def as Def
-import AST.Typed (T)
 import Data.Map (Map)
 import Data.Set (Set)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Functor ((<&>))
-import AST.Def (PP (..), (<+>))
+import AST.Def (PP (..), (<+>), PPDef)
 import Data.Fix (Fix)
 import Data.Functor.Foldable (cata)
 import Data.Foldable (Foldable(..))
+import AST.Typed (TC)
 
 data Resolved
 type R = Resolved
@@ -27,6 +27,7 @@ type R = Resolved
 type instance XVar Resolved = Variable
 type instance XVarOther Resolved = Def.Locality
 type instance XLVar Resolved = Def.UniqueVar
+type instance XLamVar Resolved = Def.UniqueVar
 type instance XCon Resolved = Constructor
 type instance XConOther Resolved = ()
 type instance XTCon Resolved = DataType
@@ -39,6 +40,7 @@ type instance XMem Resolved = Def.MemName
 type instance XFunVar Resolved = Def.UniqueVar
 type instance XFunDef Resolved = Function R
 type instance XClass Resolved = Class
+type instance XClassFunDec Resolved = ClassFun
 type instance XDClass Resolved = Def.UniqueClass
 type instance XInstDef Resolved = InstDef R
 type instance ClassConstraints Resolved = Map (TVar R) (Set Class)
@@ -68,18 +70,18 @@ data VariableProto
   = PDefinedVariable Def.UniqueVar
 
   | PDefinedFunction (Function R)
-  | PExternalFunction (Function T)  -- it's only defined as external, because it's already typed. nothing else should change.
+  | PExternalFunction (Function TC)  -- it's only defined as external, because it's already typed. nothing else should change.
 
   | PDefinedClassFunction (ClassFunDec R)
-  | PExternalClassFunction (ClassFunDec T)
+  | PExternalClassFunction (ClassFunDec TC)
   deriving (Eq, Ord)
 
 data Variable
   = DefinedVariable Def.UniqueVar
   | DefinedFunction (Function R) ScopeSnapshot
-  | ExternalFunction (Function T) ScopeSnapshot
+  | ExternalFunction (Function TC) ScopeSnapshot
   | DefinedClassFunction (ClassFunDec R) ScopeSnapshot
-  | ExternalClassFunction (ClassFunDec T) ScopeSnapshot
+  | ExternalClassFunction (ClassFunDec TC) ScopeSnapshot
 
 asPUniqueVar :: VariableProto -> Def.UniqueVar
 asPUniqueVar = \case
@@ -102,11 +104,11 @@ asProto = \case
 
 data Constructor
   = DefinedConstructor (DataCon R)
-  | ExternalConstructor (DataCon T)
+  | ExternalConstructor (DataCon TC)
 
 data DataType
   = DefinedDatatype (DataDef R)
-  | ExternalDatatype (DataDef T)
+  | ExternalDatatype (DataDef TC)
   deriving (Eq, Ord)
 
 asUniqueType :: DataType -> Def.UniqueType
@@ -124,7 +126,7 @@ tryGetMembersFromDatatype = \case
 -- I'll see the context in which they are used.
 data Class
   = DefinedClass (ClassDef R)
-  | ExternalClass (ClassDef T)
+  | ExternalClass (ClassDef TC)
   deriving (Eq, Ord)
 
 asUniqueClass :: Class -> Def.UniqueClass
@@ -132,9 +134,13 @@ asUniqueClass = \case
   DefinedClass cd -> cd.classID
   ExternalClass cd -> cd.classID
 
+data ClassFun
+  = DefinedClassFunDec (ClassFunDec R)
+  | ExternalClassFunDec (ClassFunDec TC)
+
 data Inst
   = DefinedInst (InstDef R)
-  | ExternalInst (InstDef T)
+  | ExternalInst (InstDef TC)
   
 
 type PossibleInstances = Map DataType Inst
@@ -171,8 +177,14 @@ instance PP Constructor where
 instance PP DataType where
   pp = pp . asUniqueType
 
+instance PPDef DataType where
+  ppDef = pp . asUniqueType
+
 instance PP Class where
   pp = pp . asUniqueClass
+
+instance PPDef Class where
+  ppDef = pp . asUniqueClass
 
 instance PP LamDec where
   pp (LamDec uv e) = pp uv <> pp e

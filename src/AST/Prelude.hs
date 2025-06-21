@@ -2,8 +2,9 @@
 module AST.Prelude (module AST.Prelude) where
 
 import qualified AST.Def as Def
-import AST.Typed (T)
-import AST.Common (Module, DataCon, Expr, Type)
+import AST.Typed (TC)
+import AST.Common (Module, DataCon, Expr, Type, Node (..))
+import Data.Fix (Fix(..))
 
 
 -- the funny anti-cyclic (cucklic) module dependency
@@ -15,14 +16,14 @@ import AST.Common (Module, DataCon, Expr, Type)
 
 
 data Prelude = Prelude
-  { tpModule       :: Module T
+  { tpModule       :: Module TC
 
   -- extra stuff for resolving/typechecking that is always needed.
-  , unitValue      :: DataCon T
-  , toplevelReturn :: Expr  T-- includes the type one should refer to. should be Int (later U8)
-  , boolType       :: Type T
-  , intType        :: Type T
-  , floatType      :: Type T
+  , unitValue      :: DataCon TC
+  , toplevelReturn :: Expr  TC  -- includes the type one should refer to. should be Int (later U8)
+  , boolType       :: Type TC
+  , intType        :: Type TC
+  , floatType      :: Type TC
   }
 
 
@@ -38,11 +39,11 @@ unitTypeName     = Def.TC "Unit"
 
 
 -- Kinda of a weird solution. This "pack" describes the way a type could be found without Prelude.
-data PreludeFind = PF Def.TCon (Prelude -> Type T)
+data PreludeFind = PF Def.TCon (Prelude -> Type TC)
 
 -- since we have TCs, not sure if we need the added types (int, bool). maybe we can just find them normally, through conNames/tyNames.
 tlReturnFind, boolFind, intFind, floatFind :: PreludeFind
-tlReturnFind = undefined  -- TODO: PF tlReturnTypeName ((\(Fix (TypedExpr t _)) -> t) . toplevelReturn)
+tlReturnFind = PF tlReturnTypeName ((\(Fix (N t _)) -> t) . toplevelReturn)
 boolFind = PF boolTypeName boolType
 intFind = PF intTypeName intType
 floatFind = PF floatTypeName floatType
