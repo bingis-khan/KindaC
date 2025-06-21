@@ -146,7 +146,9 @@ data Scheme = Scheme [TVar TC] [EnvUnion]
 data FunctionTypeAssociation = FunctionTypeAssociation (TVar TC) (Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation
 
 -- I'm not sure about level. We don't need type applications now.
-type ClassInstantiationAssocs = Map Def.UniqueClassInstantiation (NonEmpty (Type TC, ([Type TC], InstFun TC), Int))
+-- It's needed to check if we need to keep it in the environment or not.
+type Level = Int
+type ClassInstantiationAssocs = Map Def.UniqueClassInstantiation (Type TC, ([Type TC], InstFun TC), Level)
 data TypeAssociation = TypeAssociation (Type TC) (Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation
 
 

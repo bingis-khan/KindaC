@@ -293,8 +293,7 @@ inferExpr = cata (fmap embed . inferExprType)
             su <- RWS.gets typeSubstitution
             let replacedBody = replaceInExpr su classInstantiationAssocs exprBody
 
-            let uciToThrowAway = Map.keysSet classInstantiationAssocs
-            pure (uciToThrowAway, replacedBody)
+            pure (classInstantiationAssocs, replacedBody)
 
           -- be sure to copy the environment HERE!
           let varsFromNestedFun = case fenv of
@@ -611,8 +610,7 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
       su <- RWS.gets typeSubstitution
       let replacedStmts = replaceClassFunsWithInstantiations su classInstantiationAssocs stmts
 
-      let uciToThrowAway = Map.keysSet classInstantiationAssocs
-      pure (uciToThrowAway, replacedStmts)
+      pure (classInstantiationAssocs, replacedStmts)
 
     -- now, replace it with a non-recursive environment.
     let env = T.Env envID envc locs rfundec.functionEnv.level
@@ -640,11 +638,7 @@ replaceInExpr su cia = cata $ \(N t e) -> embed $ N t $ case e of
     let mself = subst su self
     in case cia !? uci of
       Nothing -> Var v loc
-      Just candidates -> case find (\(t, _, _) -> t == mself) candidates of
-
-        Nothing -> error "aisndlknsadlkjsad"
-
-        Just (_, (typeApplication, ifn), _) -> Var (T.DefinedFunction (Function ifn.instFunDec ifn.instFunBody) snapshot typeApplication) loc
+      Just (_, (typeApplication, ifn), _) -> Var (T.DefinedFunction (Function ifn.instFunDec ifn.instFunBody) snapshot typeApplication) loc
 
   expr -> expr
 
@@ -764,8 +758,7 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
         su <- RWS.gets typeSubstitution
         let replacedStmts = replaceClassFunsWithInstantiations su classInstantiationAssocs stmts
 
-        let uciToThrowAway = Map.keysSet classInstantiationAssocs
-        pure (uciToThrowAway, replacedStmts)
+        pure (classInstantiationAssocs, replacedStmts)
 
       -- now, replace it with a non-recursive environment.
       let env = T.Env envID envc locs rfundec.functionEnv.level
@@ -827,10 +820,11 @@ substAccessAndAssociations = do
       didAccessProgressedSubstitutions <- substAccess
       classInstantiationAssocs <- substAssociations
       let didAssociationsProgressedSubstitutions = not $ null classInstantiationAssocs
-      liftIO $ Def.ctxPrint' $ printf "CIA: %s" (Def.ppMap $ fmap (bimap (fromString . show) (Def.encloseSepBy "[" "]" ", " . fmap (Def.ppTup . bimap pp (Def.ppTup . bimap (Def.encloseSepBy "[" "]" ", " . fmap pp) (\ifn -> pp ifn.instFunDec.functionId))))) $ Def.fmap2 (fmap (\(l, r, _) -> (l, r)) . NonEmpty.toList) $ Map.toList classInstantiationAssocs)
+      -- liftIO $ Def.ctxPrint' $ printf "CIA: %s" (Def.ppMap $ fmap (bimap (fromString . show) (Def.encloseSepBy "[" "]" ", " . fmap (Def.ppTup . bimap pp (Def.ppTup . bimap (Def.encloseSepBy "[" "]" ", " . fmap pp) (\ifn -> pp ifn.instFunDec.functionId))))) $ fmap (fmap (\(l, r, _) -> (l, r))) $ Map.toList classInstantiationAssocs)
 
+      -- There should be no more than one UCI for a type. These are already selected.
       if didAccessProgressedSubstitutions || didAssociationsProgressedSubstitutions
-        then Map.unionWith (<>) classInstantiationAssocs <$> go
+        then Map.unionWith (error "more than one assoc for uci should not happen") classInstantiationAssocs <$> go
         else do
           liftIO $ Def.phase "END SUBST ACCESS"
           pure mempty
@@ -863,7 +857,7 @@ substAssociations = do
   csu <- RWS.gets typeSubstitution
   let subAssociations = first (subst csu) <$> assocs
   liftIO $ Def.ctxPrint' $ printf "Associations (before): %s" (Def.encloseSepBy "[" "]" ", " $ subAssociations <&> \(T.TypeAssociation from to _ _, _) -> printf "%s: %s" (pp from) (pp to) :: String)
-  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval (foldr (Map.unionWith (<>)) Map.empty) . unzip) $ for subAssociations $ \t@(T.TypeAssociation from to (CFD _ uv _ _) uci, insts) -> do
+  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval (foldr (Map.unionWith (error "fuck")) Map.empty) . unzip) $ for subAssociations $ \t@(T.TypeAssociation from to (CFD _ uv _ _) uci, insts) -> do
     case project from of
         TCon dd _ _ -> case insts !? dd of
           Just inst -> do
@@ -878,7 +872,7 @@ substAssociations = do
             to `uni` instFunType
 
             let (T.Env _ _ _ level) = fn.functionDeclaration.functionEnv
-            pure ((t, True), Map.singleton uci (NonEmpty.singleton (from, (instAssocs, instFun), level)))
+            pure ((t, True), Map.singleton uci (from, (instAssocs, instFun), level))
 
           Nothing -> do
             pure ((t, False), mempty)  -- error.
@@ -1322,7 +1316,7 @@ mapTVsWithMap tvmap unionmap =
 
 
 -- Creates a new env alongside inferring an environment (TODO: why?)
-withEnv :: R.Env -> Infer (Set Def.UniqueClassInstantiation, a) -> Infer (T.Env, a)
+withEnv :: R.Env -> Infer (T.ClassInstantiationAssocs, a) -> Infer (T.Env, a)
 withEnv renv x = do
   (tenv, locs, x') <- withEnv' renv x
   envID <- newEnvID
@@ -1332,7 +1326,7 @@ withEnv renv x = do
 -- Constructs an environment from all the instantiations.
 --  We need the instantiations, because not all instantiations of a function can come up in the environment.
 --  But, when there is a TVar in the type, it means all instantiated types of TVars must be there.
-withEnv' :: R.Env -> Infer (Set Def.UniqueClassInstantiation, a) -> Infer ([(T.Variable, Def.Locality, Type TC)], Map T.VariableProto Def.Locality, a)
+withEnv' :: R.Env -> Infer (T.ClassInstantiationAssocs, a) -> Infer ([(T.Variable, Def.Locality, Type TC)], Map T.VariableProto Def.Locality, a)
 withEnv' renv x = do
 
   -- 1. clear environment - we only collect things from this scope.
@@ -1347,7 +1341,15 @@ withEnv' renv x = do
   --  TODO: this might not be needed, since we conditionally add an instantiation if it's FromEnvironment.
   renvQuery <- Map.fromList <$> traverse (\(v, l) -> (,l) <$> inferVariableProto v) (R.fromEnv renv)
   let newEnv
-        = filter (\case { (T.DefinedClassFunction _ _ _ uci, _, _) -> Set.notMember uci ucis; _ -> True })
+        = mapMaybe (\case
+          { v@(T.DefinedClassFunction _ snapshot _ uci, loc, t) -> case ucis !? uci of
+            { Just (_, (typeApplication, ifn), level) -> if renv.level > level  -- BAD: literally same thing as replace function.
+              then Nothing  -- throw away if the instance is from this function.
+              else Just (T.DefinedFunction (Function ifn.instFunDec ifn.instFunBody) snapshot typeApplication, loc, t)
+            ; Nothing -> Just v
+            }
+          ; v -> Just v
+          })
         $ mapMaybe (\(v, t) -> Map.lookup (T.asProto v) renvQuery <&> (v,,t)) $ Set.toList modifiedInstantiations
 
   -- 4. and put that filtered stuff back. ? NO. ONLY IN ENV DEFS. SO WE COPY THAT ENVIRONMENT THERE NIGGA. inferFunction can be called for normal variables.
