@@ -1590,7 +1590,9 @@ instance Substitutable (Exports TC) where
   subst su e = e { functions = subst su e.functions }
 
 instance Substitutable (AnnStmt TC) where
-  ftv = cata $ \(O (Def.Annotated _ stmt)) -> bifold $ first ftv stmt
+  ftv = cata $ \(O (Def.Annotated _ stmt)) -> case first ftv stmt of
+    Return ret -> ftv ret
+    s -> bifold s
 
   subst su = cata $ embed . sub
     where
@@ -1601,6 +1603,7 @@ instance Substitutable (AnnStmt TC) where
           in Switch cond' cases'
         Fun env -> Fun $ subst su env
         Inst inst -> Inst $ subst su inst
+        Return ret -> Return  $ subst su ret
         s -> first (subst su) s
 
 instance (Substitutable expr, Substitutable stmt) => Substitutable (CaseF TC expr stmt) where

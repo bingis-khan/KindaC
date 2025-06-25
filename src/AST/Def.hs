@@ -6,6 +6,7 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE UndecidableInstances #-}
 module AST.Def (module AST.Def) where
 
 import Data.Text (Text)
@@ -31,11 +32,13 @@ import Data.Bitraversable (bitraverse)
 import qualified Data.Set as Set
 import Data.Foldable1 (foldl1', Foldable1)
 import Data.Maybe (fromMaybe)
+import Data.Fix (Fix)
+import Data.Functor.Foldable (cata)
 
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = rc
+defaultContext = dc
 
 dc = debugContext
 rc = runtimeContext
@@ -251,6 +254,9 @@ class PPDef a where
 instance PP Context where
   pp = id
 
+instance PPDef Context where
+  ppDef = id
+
 
 instance PP a => PP (Annotated a) where
   pp (Annotated ann c) = annotate ann (pp c)
@@ -271,6 +277,9 @@ instance PP Unique where
 
 instance PP Text where
   pp = pretty
+
+instance {-# OVERLAPPABLE #-} (Functor a, PP (a Context)) => PP (Fix a) where
+  pp = cata pp
 
 instance (PP a, PP b) => PP (a, b) where
   pp (l, r) = pp l <+> pp r

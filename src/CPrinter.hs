@@ -87,9 +87,9 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
           Unit -> do
             bareExpression e
             statement $ cPrintf "()\\n" []
-          CustomType dd -> do
+          CustomType dd ts unions -> do
             bareExpression e
-            statement $ cPrintf (Def.ctx' (Def.defaultContext { silent = False, printIdentifiers = False, displayTypeParameters = True }) pp (Fix (TCon dd undefined undefined) :: Type M) <> "\\n") []
+            statement $ cPrintf (Def.ctx' (Def.defaultContext { silent = False, printIdentifiers = False, displayTypeParameters = True }) pp (Fix (TCon dd ts []) :: Type M) <> "\\n") []
           Function union args ret ->
             let e' =
                   if M.areAllEnvsEmpty union
@@ -917,17 +917,17 @@ data SpecialTypeForPrinting
   | Bool
   | Unit
   | Function M.EnvUnion [Type M] (Type M)
-  | CustomType (DataDef M)
+  | CustomType (DataDef M) [Type M] [M.EnvUnion]
 
 typeFromExpr :: Expr M -> SpecialTypeForPrinting
 typeFromExpr (Fix (N t _)) = case project t of
   TFun union ts ret -> Function union ts ret
   -- Brittle, but it's temporary anyway.
-  TCon dd _ _
+  TCon dd ts unions
     | dd.ddName.typeName == Def.TC "Bool" -> Bool
     | dd.ddName.typeName == Def.TC "Int" -> Integer
     | dd.ddName.typeName == Def.TC "Unit" -> Unit
-    | otherwise -> CustomType dd
+    | otherwise -> CustomType dd ts unions
 
 find :: (a -> Maybe b) -> [a] -> Maybe b
 find f = listToMaybe . mapMaybe f

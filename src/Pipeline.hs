@@ -71,6 +71,8 @@ finalizeModule prel modul = do
 
   phase "Monomorphizing"
   mmod <- mono joinedStatements  --TODO: classInstantiationAssociations = funny
+
+  phase "Monomorphized statements"
   Def.ctxPrint pp mmod
 
   -- phase "C-ing"

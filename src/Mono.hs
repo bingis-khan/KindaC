@@ -79,7 +79,7 @@ mono tmod = do
   Def.ctxPrint (Def.ppMap . fmap (bimap pp pp) . Map.toList) envs
 
   phase "Monomorphisation (first part)"
-  Def.ctxPrint pp mistmts
+  Def.ctxPrint (Def.ppLines pp) mistmts
 
 
   -- Step 2 consists of:
@@ -1149,8 +1149,8 @@ mfEnv env = do
 mfType :: Type IM -> EnvContext (Type M)
 mfType = para $ fmap embed . \case
   TCon dd ts unions -> do
-    munions <- traverse (mfUnion . undefined fst) unions
-    mts <- traverse undefined ts
+    munions <- traverse mfUnion unions
+    mts <- traverse snd ts
     mdd <- fst <$> mfDataDef (dd, munions)
     pure $ TCon mdd mts munions
 
