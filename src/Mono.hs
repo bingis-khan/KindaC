@@ -324,7 +324,9 @@ findUsedVarsInExpr = cata $ \(N t expr) -> case expr of
   e -> fold e
 
 findUsedVarsInFunction :: Foldable t => t (AnnStmt TC) -> Set (T.Variable, Type TC)
-findUsedVarsInFunction = foldMap $ cata $ bifold . first findUsedVarsInExpr . Def.deannotate . Def.unO
+findUsedVarsInFunction = foldMap $ cata $ \(O (Annotated _ stmt)) -> case first findUsedVarsInExpr stmt of
+  Return expr -> findUsedVarsInExpr expr
+  s -> bifold s
 
 mCase :: CaseF TC (Expr IM) (AnnStmt IM) -> Context (Case IM)
 mCase kase = do
