@@ -228,6 +228,10 @@ mapUnion ut (Fix t) = case t of
   TFun u args ret -> [u] <> concatMap (mapUnion ut) args <> mapUnion ut ret
   TO _ -> []
 
+isUnionEmpty :: EnvUnionF t -> Bool
+isUnionEmpty (EnvUnion _ []) = True
+isUnionEmpty _ = False
+
 
 -----------
 
@@ -289,7 +293,7 @@ instance PP Variable where
     DefinedClassFunction (CFD cd uv _ _) insts _ uci -> pp uv <> "&" <> pp uci <>"&C" <> fromString (Def.printf "[%s]" (Def.sepBy ", " $ fmap (pp . ddName . fst . instType) (Map.elems (Def.defaultEmpty cd insts))))
 
 instance PP LamDec where
-  pp = undefined
+  pp (LamDec uv env) = pp env <> pp uv
 
 instance PP Scheme where
   pp (Scheme tvars unions) = Def.ppSet pp tvars <+> Def.ppSet pp unions

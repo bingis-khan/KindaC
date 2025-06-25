@@ -35,7 +35,7 @@ import Data.Maybe (fromMaybe)
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = dc
+defaultContext = rc
 
 dc = debugContext
 rc = runtimeContext
@@ -107,7 +107,10 @@ data Ann
   deriving (Show, Eq, Ord)
 
 -- Annotation decorator thing.
-data Annotated a = Annotated [Ann] a deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+data Annotated a = Annotated
+  { annotations :: [Ann]
+  , deannotate :: a
+  } deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 -- Variable uniqueness
 data UniqueVar = VI
@@ -255,6 +258,9 @@ instance PP a => PP (Annotated a) where
 instance PP a => PP [a] where
   pp ps = sepBy " " $ pp <$> ps
 
+instance PP a => PP (NonEmpty a) where
+  pp ps = sepBy " " $ pp <$> NonEmpty.toList ps
+
 instance PP () where
   pp = const mempty
 
@@ -271,6 +277,11 @@ instance (PP a, PP b) => PP (a, b) where
 
 instance PP a => PPDef (a, b) where
   ppDef (l, _) = pp l  -- for XLVar basiclaly. kinda stupid (it's a general tuple thing), but good for now.
+
+instance (PP l, PP r) => PP (Either l r) where
+  pp = \case
+    Left l -> pp l
+    Right r -> pp r
 
 instance PP (g (f a)) => PP ((g :. f) a) where
   pp (O x) = pp x
@@ -314,6 +325,9 @@ instance PP UniqueType where
 
 instance PP UniqueClass where
   pp ucl = pp ucl.className
+
+instance PP UniqueMem where
+  pp ucl = pp ucl.memName
 
 instance PP Locality where
   pp = \case
@@ -579,3 +593,4 @@ traverseSet f = fmap Set.fromList . traverse f . Set.toList
 
 bitraverseMap :: (Applicative t, Ord k') => (k -> t k') -> (a -> t b) -> Map k a -> t (Map k' b)
 bitraverseMap f g = fmap Map.fromList . traverse (bitraverse f g) . Map.toList
+

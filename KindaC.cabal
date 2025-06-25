@@ -21,12 +21,16 @@ library
   exposed-modules:
       AST.Common
       AST.Def
+      AST.IncompleteMono
+      AST.Mono
       AST.Prelude
       AST.Resolved
       AST.Typed
       AST.Untyped
+      CPrinter
       Entry
       Misc.Memo
+      Mono
       Parser
       Pipeline
       Resolver

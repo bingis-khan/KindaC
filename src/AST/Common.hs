@@ -358,6 +358,9 @@ instance Ord (TVar phase) where
 instance Eq (XDCon phase) => Eq (DataCon phase) where
   DC _ uc _ _ == DC _ uc' _ _ = uc == uc'
 
+instance Ord (XDCon phase) => Ord (DataCon phase) where
+  DC _ uc _ _ `compare` DC _ uc' _ _ = uc `compare` uc'
+
 instance Eq (XDTCon phase) => Eq (DataDef phase) where
   DD ut _ _ _ == DD ut' _ _ _ = ut == ut'
 

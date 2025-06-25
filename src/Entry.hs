@@ -12,7 +12,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Typecheck (typecheck)
 import Data.Foldable (for_)
-import Pipeline (loadPrelude, loadModule)
+import Pipeline (loadPrelude, loadModule, finalizeModule)
 -- import Pipeline (loadPrelude, loadModule, finalizeModule)
 
 
@@ -29,15 +29,15 @@ compilerMain = do
   case emod of
     Left errs -> TextIO.putStrLn errs
     Right modul -> do
-      -- Def.ctxPrint pp modul
-      pure ()
+      Def.ctxPrint pp modul
+      cmod <- finalizeModule prelude modul
 
       -- all good, finalize.
       -- cmod <- finalizeModule prelude modul
 
-      -- if outputC 
-      --   then TextIO.writeFile "test.c" cmod
-      --   else TextIO.putStrLn cmod
+      if outputC 
+        then TextIO.writeFile "test.c" cmod
+        else TextIO.putStrLn cmod
 
 
 s2t :: (Functor f, Show a) => f a -> f Text

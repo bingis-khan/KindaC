@@ -1,0 +1,123 @@
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
+module AST.Mono (module AST.Mono) where
+import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef)
+import qualified AST.Def as Def
+import AST.Def (Locality, PP (..), (<+>))
+import Data.List.NonEmpty (NonEmpty)
+import AST.Typed (TC)
+import qualified Data.List.NonEmpty as NonEmpty
+import Data.String (fromString)
+
+
+data Mono
+type M = Mono
+
+type instance Rec M a = a
+type instance Module M = Mod
+type instance XFunDef M = [(Function M, Env)]
+type instance XLVar M = Def.UniqueVar
+type instance XReturn M = Expr M
+type instance XNode M = Type M
+type instance XMem M = Def.UniqueMem
+type instance XCon M = DataCon M
+type instance XVar M = Variable
+type instance XVarOther M = Def.Locality
+type instance XLamOther M = Env
+type instance XLamVar M = (Def.UniqueVar, Type M)
+type instance XConOther M = ()
+type instance XTCon M = DataDef M
+type instance XTFun M = EnvUnion
+type instance XTConOther M = [EnvUnion]
+type instance XDataScheme M = OtherDD
+type instance XDCon M = Def.UniqueCon
+type instance XEnv M = Env
+type instance XFunVar M = Def.UniqueVar
+type instance XFunType M = Type M
+type instance XFunOther M = ()
+type instance XDTCon M = Def.UniqueType
+type instance XTOther M = ()
+type instance XTVar M = ()
+type instance XOther M = ()
+type instance XInstDef M = ()
+
+
+data Variable
+  = DefinedFunction (Function M)
+  | DefinedVariable Def.UniqueVar
+  deriving (Eq, Ord)
+
+type IsRecursive = Bool
+data Env
+  = Env Def.EnvID [(Variable, Locality, Type M)]
+  | RecursiveEnv Def.EnvID IsRecursive
+
+data OtherDD = OtherDD
+  { appliedTypes :: [Type M]
+  , ogDataDef :: DataDef TC
+  }
+
+envID :: Env -> Def.EnvID
+envID = \case
+  Env eid _ -> eid
+  RecursiveEnv eid _ -> eid
+
+data EnvUnion = EnvUnion
+  { unionID :: Def.UnionID
+  , union :: NonEmpty Env
+  }
+
+newtype Mod = Mod { topLevelStatements :: [AnnStmt M] }
+
+
+---------
+
+areAllEnvsEmpty :: EnvUnion -> Bool
+areAllEnvsEmpty envUnion = all isEnvEmpty envUnion.union
+
+isEnvEmpty :: Env -> Bool
+isEnvEmpty = \case
+  RecursiveEnv _ isEmpty -> isEmpty
+  Env _ envs -> null envs
+
+
+---------
+
+instance Eq EnvUnion where
+  u == u' = u.unionID == u'.unionID
+
+instance Ord EnvUnion where
+  u `compare` u' = u.unionID `compare` u'.unionID
+
+instance Eq Env where
+  e == e' = envID e == envID e'
+
+instance Ord Env where
+  e `compare` e' = envID e `compare` envID e'
+
+
+---------
+-- PP
+--------
+
+instance PP Mod where
+  pp m = Def.ppLines pp m.topLevelStatements
+
+instance PP OtherDD where
+  pp _ = mempty
+
+instance PP EnvUnion where
+  pp EnvUnion { unionID = uid, union = us } = pp uid <> Def.encloseSepBy "{" "}" ", " (pp <$> NonEmpty.toList us)
+
+instance PP Env where
+  pp = \case
+    Env eid vs -> pp eid <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp v <+> pp t) vs)
+    RecursiveEnv eid isEmpty -> fromString $ Def.printf "%s[REC%s]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+
+
+instance PP Variable where
+  pp = \case
+    DefinedVariable v -> pp v
+    DefinedFunction f -> pp f.functionDeclaration.functionId <> "&F"

@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedRecordDot, ApplicativeDo #-}
-module Pipeline (loadModule, loadPrelude) where
+module Pipeline (loadModule, loadPrelude, finalizeModule) where
 
 import qualified Data.Text.IO as TextIO
 import Parser (parse)
@@ -23,6 +23,8 @@ import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF 
 import qualified AST.Def as Def
 import AST.Typed (TC)
 import AST.Def (Result(..), phase, PP (..), LitType (..))
+import Mono (mono)
+import CPrinter (cModule)
 
 
 
@@ -58,22 +60,22 @@ loadModule mPrelude filename = do
           Left $ Text.unlines errors
 
 
--- finalizeModule :: Prelude -> T.Module -> IO Text
--- finalizeModule prel modul = do
---   -- join both modules
---   let joinedStatements = prel.tpModule.toplevelStatements ++ modul.toplevelStatements
+finalizeModule :: Prelude -> Module TC -> IO Text
+finalizeModule prel modul = do
+  -- join both modules
+  let joinedStatements = prel.tpModule.topLevelStatements ++ modul.topLevelStatements
 
---   -- phase "Removing Unused"
---   -- let removedUnused = removeUnused joinedStatements
---   -- ctxPrint T.tStmts removedUnused
+  -- phase "Removing Unused"
+  -- let removedUnused = removeUnused joinedStatements
+  -- ctxPrint T.tStmts removedUnused
 
---   phase "Monomorphizing"
---   mmod <- mono modul.classInstantiationAssociations joinedStatements  --TODO: classInstantiationAssociations = funny
---   ctxPrint M.mModule mmod
+  phase "Monomorphizing"
+  mmod <- mono joinedStatements  --TODO: classInstantiationAssociations = funny
+  Def.ctxPrint pp mmod
 
---   phase "C-ing"
---   let cmod = cModule mmod
---   pure cmod
+  -- phase "C-ing"
+  let cmod = cModule mmod
+  pure cmod
 
 
 

@@ -1303,14 +1303,15 @@ instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
   pure (tyvs, unions)
 
 
+-- Should recursively map all the TVars in the type. (including in the unions.)
 mapTVsWithMap :: Map (TVar TC) (Type TC) -> Map Def.UnionID T.EnvUnion -> Type TC -> Type TC
 mapTVsWithMap tvmap unionmap =
   let
     mapTVs :: Type TC -> Type TC
     mapTVs = cata $ (.) embed $ \case
       t@(TO (TVar tv)) -> maybe t project (tvmap !? tv)
-      TFun union ts tret -> TFun (fromMaybe union (unionmap !? union.unionID)) ts tret
-      TCon dd ts unions -> TCon dd ts $ unions <&> \union -> fromMaybe union (unionmap !? union.unionID)
+      TFun union ts tret -> TFun (fromMaybe (mapTVs <$> union) (unionmap !? union.unionID)) ts tret
+      TCon dd ts unions -> TCon dd ts $ unions <&> \union -> fromMaybe (mapTVs <$> union) (unionmap !? union.unionID)
       t -> t
   in mapTVs
 
