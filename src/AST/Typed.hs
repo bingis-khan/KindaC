@@ -11,12 +11,12 @@
 {-# LANGUAGE UndecidableInstances #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, DeconF, WithType, ExprF, XNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, ClassType, Rec, Decon, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, ClassConstraints, XClassFunDec, XLamVar)
+import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, DeconF, WithType, ExprF, XNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, ClassType, Rec, Decon, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, ClassConstraints, XClassFunDec, XLamVar, instFunDec, functionOther)
 import qualified AST.Def as Def
 import Data.Map (Map)
 import Data.Text (Text)
 import Data.Fix (Fix (..))
-import AST.Def ((:.), Annotated, PP (..), (<+>))
+import AST.Def ((:.), Annotated, PP (..), (<+>), PPDef)
 import Data.Biapplicative (bimap)
 import Data.Functor.Classes (Ord1 (..), Eq1 (..))
 import Data.Functor ((<&>))
@@ -109,9 +109,11 @@ type ScopeSnapshot = Map (ClassDef TC) PossibleInstances
 data Variable
   = DefinedVariable Def.UniqueVar
   -- scope snapshots might not be needed!
-  | DefinedFunction (Function TC) ScopeSnapshot [Type TC]
+  -- Here, we need to store the instances. They must also be up for substitution. How would I represent it?
+  -- TODO: Right now, we are substituting UCIs at the end of a function. What we can do right now, is we can also substitute this map. I can do this better probably - maybe we can associate function instantiations with a specific TVar?
+  | DefinedFunction (Function TC) ClassInstantiationAssocs [Type TC] ScopeSnapshot Def.UniqueFunctionInstantiation
   | DefinedClassFunction (ClassFunDec TC) ScopeSnapshot (Type TC) Def.UniqueClassInstantiation  -- which class function and which instances are visible at this point. 
-  deriving (Eq, Ord)
+  -- deriving (Eq, Ord)
 
 data VariableProto
   = PDefinedVariable Def.UniqueVar
@@ -128,7 +130,7 @@ type Env = EnvF (Type TC)
 
 data EnvUnionF t = EnvUnion
   { unionID :: Def.UnionID
-  , union :: [EnvF t]  -- List can be empty for types written by the programmer (which also don't have any other function's environment yet). This is okay, because functions are not yet monomorphised.
+  , union :: [(Maybe Def.UniqueClassInstantiation, Def.UniqueFunctionInstantiation, [t], EnvF t)]  -- (ufi, assocs, env) -- List can be empty for types written by the programmer (which also don't have any other function's environment yet). This is okay, because functions are not yet monomorphised.
   } deriving (Eq, Ord, Functor, Foldable, Traversable)
 
 type EnvUnion = EnvUnionF (Type TC)
@@ -148,8 +150,8 @@ data FunctionTypeAssociation = FunctionTypeAssociation (TVar TC) (Type TC) (Clas
 -- I'm not sure about level. We don't need type applications now.
 -- It's needed to check if we need to keep it in the environment or not.
 type Level = Int
-type ClassInstantiationAssocs = Map Def.UniqueClassInstantiation (Type TC, ([Type TC], InstFun TC), Level)
-data TypeAssociation = TypeAssociation (Type TC) (Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation
+type ClassInstantiationAssocs = Map (Maybe (Def.UniqueFunctionInstantiation, Type TC), Def.UniqueClassInstantiation) (Type TC, ([Type TC], InstFun TC), Level, Def.UniqueFunctionInstantiation)
+data TypeAssociation = TypeAssociation (Type TC) (Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation (Maybe Def.UniqueFunctionInstantiation)
 
 
 data Mod phase = Mod
@@ -197,7 +199,7 @@ envID = \case
 asProto :: Variable -> VariableProto
 asProto = \case
   DefinedVariable v -> PDefinedVariable v
-  DefinedFunction fn _ _ -> PDefinedFunction fn
+  DefinedFunction fn _ _ _ _ -> PDefinedFunction fn
   DefinedClassFunction cd _ _ _ -> PDefinedClassFunction cd
 
 ---------
@@ -262,9 +264,27 @@ instance Ord TyVar where
   tyv `compare` tyv' = tyv.fromTyV `compare` tyv'.fromTyV
 
 
+instance Eq Variable where
+  l == r = case (l, r) of
+    (DefinedVariable uv, DefinedVariable uv') -> uv == uv'
+    (DefinedFunction fn _ ts _ ufi, DefinedFunction fn' _ ts' _ ufi') -> (fn, ts, ufi) == (fn', ts', ufi')
+    (DefinedClassFunction cfd _ t uci, DefinedClassFunction cfd' _ t' uci') -> (cfd, t, uci) == (cfd', t', uci')
+    _ -> False
 
---------
--- PP --
+instance Ord Variable where
+  l `compare` r = case (l, r) of
+    (DefinedVariable uv, DefinedVariable uv') -> uv `compare` uv'
+    (DefinedFunction fn _ ts _ ufi, DefinedFunction fn' _ ts' _ ufi') -> (fn, ts, ufi') `compare` (fn', ts', ufi')
+    (DefinedClassFunction cfd _ t uci, DefinedClassFunction cfd' _ t' uci') -> (cfd, t, uci) `compare` (cfd', t', uci')
+
+    (DefinedVariable {}, _) -> LT
+
+    (DefinedFunction {}, DefinedVariable {}) -> GT
+    (DefinedFunction {}, _) -> LT
+
+    (DefinedClassFunction {}, _) -> GT
+
+
 --------
 
 instance (PP (XLVar phase), PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XTOther phase), PP (XTFun phase), PP (XNode phase), Def.PPDef (XTCon phase), PP (XLamVar phase)) => PP (Mod phase) where
@@ -289,8 +309,8 @@ instance PP TyVar where
 instance PP Variable where
   pp = \case
     DefinedVariable v -> pp v
-    DefinedFunction f _ _ -> pp f.functionDeclaration.functionId <> "&F"
-    DefinedClassFunction (CFD cd uv _ _) insts _ uci -> pp uv <> "&" <> pp uci <>"&C" <> fromString (Def.printf "[%s]" (Def.sepBy ", " $ fmap (pp . ddName . fst . instType) (Map.elems (Def.defaultEmpty cd insts))))
+    DefinedFunction f assocs _ _ ufi -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv _ _ uci) -> pp (tv, uci)) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet (\(l, r) -> fromString $ Def.printf "%s: %s" l (pp (r :: Def.Context))) (bimap pp (\(self, (_, inst), _, _) -> fromString $ Def.printf "(%s: %s)" (pp self) (pp inst.instFunDec.functionId)) <$> Map.toList assocs) <> ")"
+    DefinedClassFunction (CFD cd uv _ _) insts self uci -> pp uv <> "&" <> pp uci <>"&C" <> "<" <> pp self <> ">" <> fromString (Def.printf "[%s]" (Def.sepBy ", " $ fmap (pp . ddName . fst . instType) (Map.elems (Def.defaultEmpty cd insts))))
 
 instance PP LamDec where
   pp (LamDec uv env) = pp env <> pp uv
@@ -298,4 +318,5 @@ instance PP LamDec where
 instance PP Scheme where
   pp (Scheme tvars unions) = Def.ppSet pp tvars <+> Def.ppSet pp unions
 
-
+instance {-# OVERLAPPING #-} PP ClassInstantiationAssocs where
+  pp classInstantiationAssocs = fromString $ Def.printf "CIA: %s" (Def.ppMap $ fmap (bimap pp (Def.ppTup . bimap pp (Def.ppTup . bimap (Def.encloseSepBy "[" "]" ", " . fmap pp) (\ifn -> pp ifn.instFunDec.functionId)))) $ fmap (\(ufiuci, (l, r, _, _)) -> (ufiuci, (l, r))) $ Map.toList classInstantiationAssocs)

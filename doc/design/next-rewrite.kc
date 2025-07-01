@@ -46,6 +46,7 @@ Typecheck
 Fixup
  > it cannot be fused with Typecheck. Typecheck is module-based, but to, for example, finish all env defs, we must know *all* of the program.
  Remove Typeclasses step (this is controversial, but it'll simplify Mono. right know I just want to finish this shiz)
+  > EDIT: kinda hard. the problem is associating the instance AND its applied assoc types to the class function. see belooooow.
  > Currently, I think locking in EnvDefs should happen here, as we will already have access to all instances. 
  |
 Mono
@@ -113,3 +114,39 @@ It's taking longer than expected, but looks okay.
 I've found a certain pattern: there is stuff which is only available after we do resolving (which will probably stay the same for later phases), but we're making another type family for it. Maybe a better way would be to make a type family Other and like Rec just make it () during Parsing and 'a' from Resolving onwards.
 
 I will first do all the phases to see if it holds up.
+
+
+==========
+
+okay, in practice it does not hold up that well... or at all. i'll have to think of more passes or something.
+
+....
+
+The big problem, the million dollar question is getting to associate an instance PLUS its applied types with a specific place in the AST.
+Or rather, in which circumstances does it even work and is fully robust?
+
+so basically, we have to FIND a specific place and substitute the function with it.
+it also needs to be recursive - some assocs might depend on a type from outside! we have to handle those cases as well.
+
+- the env mapping approach might be possible: do not substitute AST, just substitute the environment. The top level environment will have no TVars (*most likely*, remember the tvar expansion case), so it should "just" work.
+- also, we need them to be recursive.
+  - i tried the scopesnapshot approach, where I just pipe the scope snapshot through the whole thing (if it's not initialized).
+  - this seems to BE CORRECT, but I have no way of getting the assocs (despite being able to select the instance itself!)
+  - maybe the correct way would be to substitute them at some specific point (like generalization), which makes the whole thing correct?
+- The problem is: how do we substitute them WITH assocs?
+ also, how "low" do we have to go?
+
+  - we have to make sure the "uppermost" layer is substituted. we must also substitute *inside* other functions.
+  - we have the same ClassInstanceAssocs
+  - we can recursively do this ting. but, the problem i had before is: how do i even distinguish two different pairs of UFI and type, if they have the same type, but may use different instances?
+
+  - omg.... i can just add assocs to the environment.... aside from UFI.
+
+
+ff (x)
+ as-bool(x)
+
+f <= ff(123)
+inst AsBool Bool
+ ....
+f <= ff(123)  # different environments for AsBool!!!!!!!

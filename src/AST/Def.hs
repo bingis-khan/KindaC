@@ -149,6 +149,7 @@ data UniqueClass = TCI
 -- 
 -- TODO: this is kinda bad. It should probably be done in subst or something, but I want it done quick.
 newtype UniqueClassInstantiation = UCI { fromUCI :: Unique } deriving (Eq, Ord)
+newtype UniqueFunctionInstantiation = UFI { fromUFI :: Unique } deriving (Eq, Ord)  -- TODO: this is used to match "instances". it also bad.
 
 -- I need to use classes in the same context as types.. but I use different types.
 -- Q: should I just remove UniqueClass?
@@ -262,7 +263,7 @@ instance PP a => PP (Annotated a) where
   pp (Annotated ann c) = annotate ann (pp c)
 
 instance PP a => PP [a] where
-  pp ps = sepBy " " $ pp <$> ps
+  pp ps = encloseSepBy "[" "]" ", " $ pp <$> ps
 
 instance PP a => PP (NonEmpty a) where
   pp ps = sepBy " " $ pp <$> NonEmpty.toList ps
@@ -271,6 +272,11 @@ instance PP () where
   pp = const mempty
 
 instance PP Int
+
+instance PP a => PP (Maybe a) where
+  pp = \case
+    Nothing -> "Nothing"
+    Just a -> "Just " <> pp a
 
 instance PP Unique where
   pp = pp . hashUnique
@@ -283,6 +289,12 @@ instance {-# OVERLAPPABLE #-} (Functor a, PP (a Context)) => PP (Fix a) where
 
 instance (PP a, PP b) => PP (a, b) where
   pp (l, r) = pp l <+> pp r
+
+instance (PP a, PP b, PP c) => PP (a, b, c) where
+  pp (l, r, rr) = pp l <+> pp r <+> pp rr
+
+instance (PP a, PP b, PP c, PP d) => PP (a, b, c, d) where
+  pp (l, r, rr, rrr) = encloseSepBy "(" ")" ", " $ [pp l, pp r, pp rr, pp rrr]
 
 instance PP a => PPDef (a, b) where
   ppDef (l, _) = pp l  -- for XLVar basiclaly. kinda stupid (it's a general tuple thing), but good for now.
@@ -351,6 +363,9 @@ instance PP EnvID where
 
 instance PP UniqueClassInstantiation where
   pp uci = "U" <> (fromString . show . hashUnique) uci.fromUCI
+
+instance PP UniqueFunctionInstantiation where
+  pp uci = "F" <> (fromString . show . hashUnique) uci.fromUFI
 
 
 ----------------

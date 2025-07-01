@@ -454,7 +454,7 @@ instance (PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (Type
     TCon tcon params _ ->
       foldl' (<+>) (ppDef tcon) (ppEnclosable <$> params)
     TO x -> pp x
-    TFun tfOther args ret -> pp tfOther <> Def.encloseSepBy "(" ")" ", " (pp <$> args) <+> "->" <+> pp ret
+    TFun tfOther args ret -> pp tfOther <> Def.encloseSepBy "(" ")" ", " (snd <$> args) <+> "->" <+> snd ret
     where
       -- ppEnclosable :: (Type phase, Def.Context) -> Def.Context
       ppEnclosable (t, c) = case project t of

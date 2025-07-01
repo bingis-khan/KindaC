@@ -39,12 +39,13 @@ import Data.String (fromString)
 import Data.List (find)
 import Data.Bool (bool)
 import AST.Typed (TC)
-import AST.Common (AnnStmt, Module, StmtF (..), Expr, Node (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), ClassType, DataDef (..), ClassTypeF (..), DataCon (..), ClassDef, InstDef, IfStmt (..))
+import AST.Common (AnnStmt, Module, StmtF (..), Expr, Node (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), ClassType, DataDef (..), ClassTypeF (..), DataCon (..), ClassDef, InstDef, IfStmt (..), InstFun)
 import AST.Mono (M)
 import AST.IncompleteMono (IM)
 import AST.Def ((:.) (..), Annotated (..), Locality (..), phase, PP (..), fmap2, PPDef (..), traverse2, sequenceA2)
 import qualified AST.IncompleteMono as IM
 import qualified AST.Def as Def
+import Data.Tuple (swap)
 
 
 
@@ -59,6 +60,7 @@ mono tmod = do
   -- Step 1: Just do monomorphization with a few quirks*.
   (mistmts, monoCtx) <- flip State.runStateT startingContext $ do
     let usedVarsInCurrentScope = findUsedVarsInFunction tmod
+    Def.ctxPrint' $ Def.printf "Top level vars: %s" $ Def.ppSet (\(v, _) -> pp v) $ Set.toList usedVarsInCurrentScope
     insts <- fmap fold $ for (Set.toList usedVarsInCurrentScope) $ \(v, t) -> do
       mt <- mType t
       mv <- variable v (t, mt)
@@ -172,16 +174,18 @@ mExpr = cata $ fmap embed . \(N t expr) -> do
           State.modify $ \c -> c { usedVars = Set.insert (v, mt) c.usedVars }
 
           newLocality <- case v of
-                T.DefinedClassFunction _ _ self uci -> do
+                T.DefinedClassFunction cfd _ self uci -> do
                   -- NOTE: ANOTHER COPYPASTA TO KNOW THE OG INSTANCE OF THIS FUNCTION.
                   ucis <- State.gets classInstantiationAssociations
                   mself <- mType self
-                  (ifnts, ivfn) <- case ucis !? uci of
-                        Just (l, r, _) -> do
-                          (foundSelf, inst) <- bitraverse mType pure (l, r)  -- ts <&> \(l, r, _) -> (l, r)
-                          if foundSelf == mself
-                            then pure inst
-                            else error $ Def.printf "ASSIGNED INSTANCE NOT MATCHED. current %s =/= found %s" (pp foundSelf) (pp mself)
+                  -- let selfTVar = case project self of
+                  --       TO (T.TVar tv) -> tv
+                  --       _ -> error "this is bad, because we're looking for the corresponding \"self\" tvar. we should add it to this definition."
+                  ivfn <- case ucis !? uci of
+                        Just insts -> do
+                          let inst = mustSelectInstance mself insts
+                          let instfun = fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns
+                          pure instfun
                         Nothing -> error "AOSJDOJSADOJSAJODJSAOJDASODSAJ"
 
                   let vfn = Function ivfn.instFunDec ivfn.instFunBody
@@ -264,15 +268,17 @@ withEnv mfn env cx = do
             v' <- variable v (tt, mt)
             li <- needsLateInitialization v
             case v of
-              T.DefinedClassFunction _ _ self uci -> do
+              T.DefinedClassFunction cfd _ self uci -> do
                   ucis <- State.gets classInstantiationAssociations
                   mself <- mType self
-                  (ifnts, ivfn) <- case ucis !? uci of
-                        Just (l, r, _) -> do
-                          (foundSelf, inst) <- bitraverse mType pure (l, r)  -- ts <&> \(l, r, _) -> (l, r)
-                          if foundSelf == mself
-                            then pure inst
-                            else error $ Def.printf "ASSIGNED INSTANCE NOT MATCHED. current %s =/= found %s" (pp foundSelf) (pp mself)
+                  let selfTVar = case project self of
+                        TO (T.TVar tv) -> tv
+                        _ -> error "this is bad, because we're looking for the corresponding \"self\" tvar. we should add it to this definition."
+                  ivfn <- case ucis !? uci of
+                        Just insts -> do
+                          let inst = mustSelectInstance mself insts
+                          let instfun = fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns
+                          pure instfun
                         Nothing -> error "AOSJDOJSADOJSAJODJSAOJDASODSAJ"
 
                   let vfn = Function ivfn.instFunDec ivfn.instFunBody
@@ -291,7 +297,7 @@ withEnv mfn env cx = do
                                 pure (mvEnv, newLoc, li, mtEnv)
                           tryLocalizeEnv _ = error "impossssssible"
 
-                      instanceEnv <- fmap concat $ traverse tryLocalizeEnv $ filter ((==cureid) . T.envID) envs
+                      instanceEnv <- fmap concat $ traverse tryLocalizeEnv $ filter ((==cureid) . T.envID) $ envs <&> \(_, _, _, env) -> env  -- WARNING: should probably use UFI instead of this.
                       Def.ctxPrint' $ Def.printf "LOCALITIES of %s->%s:\n%s" (pp oldEID) (pp newEID) $ Def.ppMap $ fmap (bimap (pp . (\case { T.PDefinedVariable uv -> uv; T.PDefinedFunction fn -> fn.functionDeclaration.functionId; T.PDefinedClassFunction (CFD _ uv _ _) -> uv })) (fromString . show)) $ Map.toList locs
                       Def.ctxPrint (Def.ppList pp) envs
                       Def.ctxPrint (Def.ppList $ \(v, _, _, _) ->  ppDef v) instanceEnv
@@ -362,12 +368,15 @@ mDecon = cata $ fmap embed . \(N t d) -> do
 
 variable :: T.Variable -> (Type TC, Type IM) -> Context IM.Variable  -- NOTE: we're taking in both types, because we need to know which TVars were mapped to types and which to other tvars.
 variable (T.DefinedVariable uv) _ = pure $ IM.DefinedVariable uv
-variable (T.DefinedFunction vfn snapshot assocs) (instType, et) = do
+variable (T.DefinedFunction vfn ucis assocs _ ufi) (instType, et) = do
   Def.ctxPrint' $ "in function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
 
   -- male feminists are seething rn
   let (tts, tret) = case project et of
         TFun _ mts mret -> (mts, mret)
+        _ -> undefined
+  let (_, _, _, tenv) = case project instType of
+        TFun (T.EnvUnion { T.union = union }) _ _ -> fromJust $ find ((==ufi) . (\(_, ufi', _, _) -> ufi')) $ union
         _ -> undefined
 
 
@@ -375,6 +384,7 @@ variable (T.DefinedFunction vfn snapshot assocs) (instType, et) = do
   Def.ctxPrint' $ Def.printf "Decl (nomemo): %s -> %s" (Def.encloseSepBy "(" ")" ", " $ pp <$> tts) (pp tret)
 
   let tassocs = vfn.functionDeclaration.functionOther.functionAssociations <&> \(T.FunctionTypeAssociation _ t _ _) -> t
+  Def.ctxPrint' $ Def.printf "t assocs: %s" (Def.sepBy ", " $ pp <$> assocs)
   massocs <- traverse mType assocs
 
   -- creates a type mapping for this function.
@@ -383,9 +393,9 @@ variable (T.DefinedFunction vfn snapshot assocs) (instType, et) = do
   let fd = vfn.functionDeclaration
   let genType = Fix $ TFun undefined (snd <$> fd.functionParameters) fd.functionReturnType
   let tvtvMap = cringeGetReinstantiatedVariables fd.functionId genType instType
-  -- withClassInstanceAssociations fd.functionOther.functionClassInstantiationAssociations
+  withClassInstanceAssociations tenv $
     -- $ withTVarInsts tvtvMap snapshot fd.functionId typemap
-  withTypeMap typemap $ do
+    withTypeMap typemap $ do
     -- NOTE: Env must be properly monomorphised with the type map though albeit.
     menv <- mEnvTypes' vfn.functionDeclaration.functionEnv
 
@@ -426,7 +436,7 @@ variable (T.DefinedFunction vfn snapshot assocs) (instType, et) = do
         let usedEnvIDs curenv = case curenv of
               -- NOTE: in the future, we might also need to insert the current env's ID due to recursiveness?
               T.Env _ vars _ _ -> flip foldMap vars $ \case
-                (T.DefinedFunction fn _ _, _, _) -> Set.insert (T.envID fn.functionDeclaration.functionEnv) (usedEnvIDs fn.functionDeclaration.functionEnv)
+                (T.DefinedFunction fn _ _ _ _, _, _) -> Set.insert (T.envID fn.functionDeclaration.functionEnv) (usedEnvIDs fn.functionDeclaration.functionEnv)
                 _ -> mempty
               _ -> error "RECURSIVE"
 
@@ -445,24 +455,31 @@ variable (T.DefinedFunction vfn snapshot assocs) (instType, et) = do
     registerEnvMono (Just fn) (T.envID vfn.functionDeclaration.functionEnv) fn.functionDeclaration.functionEnv mempty
     pure $ IM.DefinedFunction fn
 
-variable (T.DefinedClassFunction cfd@(CFD cd _ cfdParams cfdRet) snapshot self uci) (instType, et) = do
+variable (T.DefinedClassFunction cfd@(CFD cd cfdId cfdParams cfdRet) snapshot self uci) (instType, et) = do
   -- male feminists are seething rn
   let (tts, tret) = case project et of
         TFun _ mts mret -> (mts, mret)
         _ -> undefined
 
+  let (_, _, ifnts, tenv) = case project et of
+        TFun (IM.EnvUnion { IM.oldUnion = union }) _ _ -> fromJust $ find ((\case { (Just uci', _, _, _) -> uci == uci'; _ -> False })) $ union.union
+        _ -> undefined
 
   -- FIX: Fix for class functions not instantiating tvars, but it's bad.
   Def.ctxPrint' $ Def.printf "Self: %s" (pp self)
   ucis <- State.gets classInstantiationAssociations
   mself <- mType self
-  (ifnts, ivfn) <- case ucis !? uci of
-      Just (l, r, _) -> do
-        (foundSelf, inst) <- bitraverse mType pure (l, r)  -- ts <&> \(l, r, _) -> (l, r)
-        if foundSelf == mself
-          then pure inst
-          else error $ Def.printf "ASSIGNED INSTANCE NOT MATCHED. current %s =/= found %s" (pp foundSelf) (pp mself)
-      Nothing -> error "AOSJDOJSADOJSAJODJSAOJDASODSAJ"
+
+  let selfTVar = case project self of
+        TO (T.TVar tv) -> tv
+        _ -> error "this is bad, because we're looking for the corresponding \"self\" tvar. we should add it to this definition."
+  ivfn <- case ucis !? uci of
+      Just insts -> do
+        let inst = mustSelectInstance mself insts
+        let instfun = fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns
+        pure instfun
+      Nothing -> do
+        error $ Def.printf "COULD NOT FIND INSTANCE (tvar: %s, uci: %s, mt: %s) in %s (could get: (%s))" (pp selfTVar) (pp uci) (pp et) (pp cfdId) (Def.ppSet pp $ Set.toList $ Map.keysSet ucis)
 
   let vfn = Function ivfn.instFunDec ivfn.instFunBody
 
@@ -485,9 +502,9 @@ variable (T.DefinedClassFunction cfd@(CFD cd _ cfdParams cfdRet) snapshot self u
   let fd = vfn.functionDeclaration
   let genType = Fix $ TFun undefined (snd <$> fd.functionParameters) fd.functionReturnType
   let tvtvMap = cringeGetReinstantiatedVariables fd.functionId genType instType
-  -- withClassInstanceAssociations fd.functionClassInstantiationAssociations
+  withClassInstanceAssociations tenv
     -- $ withTVarInsts tvtvMap snapshot fd.functionId typemap
-  withTypeMap typemap $ do
+    $ withTypeMap typemap $ do
     -- NOTE: Env must be properly monomorphised with the type map though albeit.
     menv <- mEnvTypes' vfn.functionDeclaration.functionEnv
 
@@ -516,6 +533,7 @@ variable (T.DefinedClassFunction cfd@(CFD cd _ cfdParams cfdRet) snapshot self u
     registerEnvMono (Just fn) (T.envID vfn.functionDeclaration.functionEnv) fn.functionDeclaration.functionEnv mempty
     pure $ IM.DefinedFunction fn
 
+
 gatherInstsFromEnvironment :: IM.Variable -> Set (IM.Variable, Type IM)
 gatherInstsFromEnvironment = \case
   IM.DefinedFunction fn -> case fn.functionDeclaration.functionEnv of
@@ -528,6 +546,7 @@ gatherInstsFromEnvironment = \case
 
 -- CRINGE: FUCK.
 -- EDIT: 29.04.25 WHAT IS THIS????
+-- EDIT: 27.06.25 FUCK I THINK I KNOW. WE WANT TO KNOW WHICH VARIABLES ARE "NEXT"
 cringeGetReinstantiatedVariables :: Def.UniqueVar -> Type TC -> Type TC -> Map (TVar TC) (TVar TC)
 cringeGetReinstantiatedVariables binding gen inst = case (project gen, project inst) of
   (TO (T.TVar to), TO (T.TVar from)) | to.binding == Def.BindByVar binding -> Map.singleton from to
@@ -576,7 +595,7 @@ constructor tdc@(DC dd@(DD ut _ _ _) _ _ _) et = do
   mtypes <- traverse mType ttypes
 
   noEmptyUnions <- hideEmptyUnions tunions
-  munions <- (mUnion . fmap mType) `traverse2` noEmptyUnions  -- ISSUE(unused-constructor-elimination): filters unions kind of randomly. We expect that it's because a constructor is unused and not because of some other issue.
+  munions <- mUnion `traverse2` noEmptyUnions  -- ISSUE(unused-constructor-elimination): filters unions kind of randomly. We expect that it's because a constructor is unused and not because of some other issue.
   -- TODO: also, in this place, we should eliminate unused constructors. (either here or in mfDataDef!)
 
   -- Like in typechecking, find this constructor by performing an unsafe lookup!
@@ -600,7 +619,7 @@ mType = cata $ \case
     TCon dd pts unions -> do
       params <- sequenceA pts
 
-      noEmptyUnions <- hideEmptyUnions (fmap2 mType unions)
+      noEmptyUnions <- hideEmptyUnions unions
       munions <- mUnion `traverse2` noEmptyUnions  -- ISSUE(unused-constructor-elimination): very hacky, but should work. I think it echoes the need for a datatype that correctly represents what we're seeing here - a possible environment definition, which might not be initialized.
       -- we need to represent this shit differently.
 
@@ -610,7 +629,7 @@ mType = cata $ \case
       pure mt
 
     TFun union params ret -> do
-      union' <- mUnion $ mType <$> union
+      union' <- mUnion union
       params' <- sequenceA params
       ret' <- ret
 
@@ -724,13 +743,22 @@ withTypeMap tm a = do
   pure x
 
 
-withClassInstanceAssociations :: T.ClassInstantiationAssocs -> Context a -> Context a
-withClassInstanceAssociations ucis a = do
+type CurrentInstances = Map Def.UniqueClassInstantiation T.PossibleInstances
+withClassInstanceAssociations :: T.Env -> Context a -> Context a
+withClassInstanceAssociations ci a = do
+  -- ucis' <- fmap Map.fromList $ traverse (bitraverse (\(Just (_, t), uci) -> (,uci) <$> mType t) pure) $ Map.toList ucis
   ogTM <- State.gets classInstantiationAssociations
 
-  liftIO $ Def.ctxPrint' $ Def.printf "CIA: %s" (Def.ppMap $ fmap (bimap (fromString . show) (Def.encloseSepBy "[" "]" ", " . fmap (Def.ppTup . bimap pp (Def.ppTup . bimap (Def.encloseSepBy "[" "]" ", " . fmap pp) (\ifn -> pp ifn.instFunDec.functionId))))) $ fmap2 (\(l, r, _) -> pure (l, r)) $ Map.toList ogTM)
+  -- liftIO $ Def.ctxPrint' $ Def.printf "CIA: %s" (Def.ppMap $ fmap (bimap pp (Def.encloseSepBy "[" "]" ", " . fmap (Def.ppTup . bimap pp (Def.ppTup . bimap (Def.encloseSepBy "[" "]" ", " . fmap pp) (\ifn -> pp ifn.instFunDec.functionId))))) $ fmap2 (\(l, r, _, _) -> pure (l, r)) $ Map.toList ogTM)
 
-  x <- State.withStateT (\s -> s { classInstantiationAssociations = ucis <> s.classInstantiationAssociations }) a
+  -- let mapTVars = Map.fromList . mapMaybe (\((k, uci), v) -> (,v) . (,uci) <$> (tvmap !? k)) . Map.toList
+
+  let classFuns = Map.fromList $ case ci of
+        T.Env _ vars _ _ -> mapMaybe (\case { (T.DefinedClassFunction (CFD cd _ _ _) snapshot _ uci, _, _) -> Just (uci, snapshot ! cd); _ -> Nothing }) vars
+        _ -> undefined
+
+  -- this should probably be a reader thing.
+  x <- State.withStateT (\s -> s { classInstantiationAssociations = classFuns }) a
   State.modify $ \s -> s { classInstantiationAssociations = ogTM }
 
   pure x
@@ -765,7 +793,7 @@ withClassInstanceAssociations ucis a = do
 
 
 
-mUnion :: T.EnvUnionF (Context (Type IM)) -> Context IM.EnvUnion
+mUnion :: T.EnvUnionF (Type TC) -> Context IM.EnvUnion
 mUnion tunion = do
 
   -- NOTE: check `TypeMap` definition as to why its needed *and* retarded.
@@ -774,9 +802,9 @@ mUnion tunion = do
     Just mru -> pure mru
     Nothing -> do
       -- this adds instantiations from this specific union instantiation to cucked unions.
-      let addCuckedUnionEnvs :: T.EnvUnionF (Context (Type IM)) -> IM.EnvUnion -> Context ()
+      let addCuckedUnionEnvs :: T.EnvUnionF (Type TC) -> IM.EnvUnion -> Context ()
           addCuckedUnionEnvs tuni cuckuni = do
-            envs <- sequenceA2 tuni.union
+            envs <- sequenceA2 $ fmap (\(_, _, _, env) -> mType <$> env) tuni.union
             let instantiatedEnvs = Set.fromList $ filter (null . foldMap ftvButIgnoreUnions) envs
             State.modify $ \c -> c { cuckedUnionInstantiation = Map.insertWith (<>) cuckuni instantiatedEnvs c.cuckedUnionInstantiation }
       -- check if we previously encountered this environment and it contained TVars that weren't mapped.
@@ -785,23 +813,23 @@ mUnion tunion = do
         Just mu -> do
           addCuckedUnionEnvs tunion mu
           pure mu
-        Nothing -> do
 
+        Nothing -> do
           -- it wasn't... but it's still possible.
-          tunion' <- sequenceA tunion
+          tunion' <- sequenceA $ mType <$> tunion
           let unionFTV = foldMap ftvButIgnoreUnions tunion'
           if not (null unionFTV)
             then do
               -- had TVars -> remember it.
               ieu <- memo' cuckedUnions (\mem mctx -> mctx { cuckedUnions = mem }) tunion'.unionID $ \eid _ -> do
-                let menvs = tunion'.union
+                let menvs = tunion'.union <&> \(_, _, _, env) -> env
                 case menvs of
                   -- literally impossible as there would be no FTVs otherwise...
                   [] -> error $ Def.printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
 
                   (e:es) -> do
                     -- preserve ID!!!!
-                    pure $ IM.EnvUnion { IM.unionID = eid, IM.union = e :| es }
+                    pure $ IM.EnvUnion { IM.unionID = eid, IM.union = e :| es, IM.oldUnion = tunion }
 
               addCuckedUnionEnvs tunion ieu
               pure ieu
@@ -809,13 +837,13 @@ mUnion tunion = do
             else
               -- normal union - all TVars mapped. safe to memoize.
               memo' memoUnion (\mem mctx -> mctx { memoUnion = mem }) tunion' $ \tunion'' _ -> do
-                let menvs = tunion''.union
+                let menvs = tunion''.union <&> \(_, _, _, env) -> env
                 case menvs of
                   [] -> error $ Def.printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
 
                   (e:es) -> do
                     nuid <- newUnionID
-                    pure $ IM.EnvUnion { IM.unionID = nuid, IM.union = e :| es }
+                    pure $ IM.EnvUnion { IM.unionID = nuid, IM.union = e :| es, IM.oldUnion = tunion }
 
 
 mEnv :: T.EnvF (Type IM) -> IM.Env
@@ -875,7 +903,7 @@ data Context' = Context
   , usedVars :: Set (T.Variable, Type IM)  -- FROM RemoveUnused. this thing tracks which (monomorphized) variables were used. remember that it should not carry between scopes.-- NOTE: FUTURE TYPECHECK (also unused now)
   -- added Set TVar to fix the nested function environment expansion problem. Let's see if it works.
 
-  , classInstantiationAssociations :: T.ClassInstantiationAssocs
+  , classInstantiationAssociations :: CurrentInstances
   , currentLevel :: Int  -- HACK: it's for knowing when instances should be local or not.
   }
 type Context = StateT Context' IO
@@ -1356,3 +1384,11 @@ instance Foldable ((,,) a b) where
 
 instance Traversable ((,,) a b) where
   traverse f (a, b, x) = (a, b,) <$> f x
+
+
+mustSelectInstance :: Type IM -> T.PossibleInstances -> InstDef TC
+mustSelectInstance (Fix (TCon mdd _ _)) insts =
+  case insts !? mdd.ddScheme.ogDataDef of
+    Just instdef -> instdef
+    Nothing -> error "INSTANCE DOES NOT EXIST."
+mustSelectInstance _ _ = error "TRYING TO SELECT AN INSTANCE FOR A FUNCTION."

@@ -82,6 +82,7 @@ envID = \case
 data EnvUnion = EnvUnion
   { unionID :: Def.UnionID
   , union :: NonEmpty (T.EnvF (Type IM))
+  , oldUnion :: T.EnvUnion
   }
 
 

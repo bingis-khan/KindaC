@@ -73,8 +73,8 @@ instance PP Mod where
 instance PP FunDef where
   pp (FunDef fd body) = Def.ppBody' pp (pp fd) body
 
-instance PP (Maybe (Expr U)) where
-  pp = maybe mempty pp
+-- instance PP (Maybe (Expr U)) where
+--   pp = maybe mempty pp
 
 instance PP UntypedStmt where
   pp = \case
