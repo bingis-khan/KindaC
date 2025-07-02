@@ -32,13 +32,12 @@ import AST.Untyped (U)
 import qualified AST.Untyped as U
 import AST.Resolved
 import qualified AST.Resolved as R
--- import qualified AST.Typed as T
 import qualified AST.Typed (Mod(..))
 import Data.Fix (Fix(..))
 import Data.Functor ((<&>))
 import Data.Biapplicative (first)
 import qualified Data.Text as Text
-import Data.Maybe (mapMaybe, catMaybes)
+import Data.Maybe (mapMaybe)
 import Data.Semigroup (sconcat)
 import Data.Traversable (for)
 import qualified Control.Monad.Trans.RWS as RWS
@@ -47,7 +46,6 @@ import Data.List (find)
 import AST.Def (type (:.)(O), Annotated (..), Binding (..))
 import qualified AST.Def as Def
 import AST.Prelude (Prelude (..))
-import qualified AST.Common as Common
 
 
 
@@ -225,7 +223,7 @@ rStmts = traverse -- traverse through the list with Ctx
 
           -- TODO: define dependent types... at least, later
           -- let _ = cd.classDependentTypes
-          let deps = []
+          -- let deps = []
 
           fundecs <- for cd.classFunctions $ \(CFD () name params ret) -> do
             funid <- generateVar name
@@ -384,7 +382,7 @@ rDecon = transverse $ \(N () d) -> fmap (N ()) $ case d of
     pure $ CaseRecord ty mems
 
 rExpr :: Expr U -> Ctx (Expr R)
-rExpr = cata $ \(N () e) -> embed . N () <$> case e of  -- transverse, but unshittified
+rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but unshittified
   Lit x -> pure $ Lit x
   Var v () -> do
     (l, vid) <- resolveVar v
@@ -397,8 +395,8 @@ rExpr = cata $ \(N () e) -> embed . N () <$> case e of  -- transverse, but unshi
         placeholderCon conname
 
     pure $ Con con ()
-  MemAccess expr memname -> do
-    rexpr <- expr
+  MemAccess e memname -> do
+    rexpr <- e
     pure $ MemAccess rexpr memname
   RecCon tyname mems -> do
     ty <- resolveType tyname
@@ -593,8 +591,9 @@ lambdaVar = do
 
 resolveVar :: Def.VarName -> Ctx (Def.Locality, R.Variable)
 resolveVar name = do
+  curlev <- currentLevel
   allScopes <- getScopes
-  case lookupScope name (fmap varScope allScopes) of
+  case lookupScope curlev name (fmap varScope allScopes) of
     Just (l, v) -> (l,) <$> protoVariableToVariable v
     Nothing -> do
       err $ UndefinedVariable name
@@ -609,15 +608,10 @@ protoVariableToVariable = \case
   R.PExternalFunction fn -> do
     snapshot <- getScopeSnapshot
     pure $ R.ExternalFunction fn snapshot
-  R.PDefinedClassFunction cfd@(CFD cd _ _ _) -> do
-    -- insts <- getInstancesForClassInCurrentScope $ R.DefinedClass cd
-    -- let definedInsts = insts <&> \case
-    --       R.DefinedInst inst -> inst
-    --       R.ExternalInst _ -> error "[COMPILER ERROR]: SHOULD NOT HAPPEN!"
+  R.PDefinedClassFunction cfd -> do
     snapshot <- getScopeSnapshot
     pure $ R.DefinedClassFunction cfd snapshot
-  R.PExternalClassFunction cfd@(CFD cd _ _ _) -> do
-    -- insts <- getInstancesForClassInCurrentScope $ R.ExternalClass cd
+  R.PExternalClassFunction cfd -> do
     snapshot <- getScopeSnapshot
     pure $ R.ExternalClassFunction cfd snapshot
 
@@ -638,10 +632,11 @@ newCon dc = do
 resolveCon :: Def.ConName -> Ctx (Maybe R.Constructor)
 resolveCon name = do
   allScopes <- getScopes
+  curlev <- currentLevel
   -- This has been generalized to return Maybe instead of throwing an error.
   --   WHY? I needed this function somewhere else AND I the usage should be the same.
   --    This is more in line with the spiritual usage of Haskell - bubble up errors and handle them there. this makes it obvious what is happening with the value - no need to check inside the function. (remember this :3)
-  let maybeCon = snd <$> lookupScope name (fmap conScope allScopes)
+  let maybeCon = snd <$> lookupScope curlev name (fmap conScope allScopes)
   pure maybeCon
 
 placeholderCon :: Def.ConName -> Ctx R.Constructor
@@ -678,8 +673,9 @@ registerClass cd = do
 resolveClass :: Def.ClassName -> Ctx R.Class
 resolveClass cn = do
   allScopes <- getScopes
+  curlev <- currentLevel
   let cnAsTCon = Def.TC cn.fromTN :: Def.TCon
-  case lookupScope cnAsTCon (fmap tyScope allScopes) of
+  case lookupScope curlev cnAsTCon (fmap tyScope allScopes) of
     Just (_, Left c) -> pure c
     Just (_, Right dd) -> do
       err $ ExpectedClassNotDatatype cn (R.asUniqueType dd)
@@ -707,13 +703,6 @@ findFunctionInClass vn ecd =
         R.DefinedClass cd -> R.DefinedClassFunDec $ CFD cd uv [] (Fix Self)
         R.ExternalClass cd -> R.ExternalClassFunDec $ CFD cd uv [] (Fix Self)
 
-
-getInstancesForClassInCurrentScope :: R.Class -> Ctx R.PossibleInstances
-getInstancesForClassInCurrentScope c = do
-  allScopes <- getScopes
-  case lookupScope c (instScope <$> allScopes) of
-    Just (_, dds) -> pure dds
-    Nothing -> pure mempty  -- TODO: maybe report an error here?
 
 getScopeSnapshot :: Ctx R.ScopeSnapshot
 getScopeSnapshot = do
@@ -796,7 +785,8 @@ placeholderTVar utv = do
 resolveType :: Def.TCon -> Ctx R.DataType
 resolveType name = do
   allScopes <- getScopes
-  case lookupScope name (fmap tyScope allScopes) of
+  curlev <- currentLevel
+  case lookupScope curlev name (fmap tyScope allScopes) of
     Just (_, Right c) -> pure c  -- rn we will ignore the scope
     Just (_, Left c) -> do
       let cid = R.asUniqueClass c
@@ -820,8 +810,8 @@ modifyThisScope f =
   let modifyFirstScope (sc :| scs) = f sc :| scs
   in RWST.modify $ \sctx -> sctx { scopes = modifyFirstScope sctx.scopes }
 
-lookupScope :: (Ord b) => b -> NonEmpty (Map b c) -> Maybe (Def.Locality, c)
-lookupScope k = foldr (\(locality, l) r -> (locality,) <$> Map.lookup k l <|> r) Nothing . (\(cur :| envs) -> (Def.Local, cur) :| fmap (Def.FromEnvironment,) envs)
+lookupScope :: (Ord b) => Int -> b -> NonEmpty (Map b c) -> Maybe (Def.Locality, c)
+lookupScope curlev k = foldr (\(locality, l) r -> (locality,) <$> Map.lookup k l <|> r) Nothing . (\(cur :| envs) -> (Def.Local, cur) :| fmap (\(l, sc) -> (Def.FromEnvironment l, sc)) (zip [curlev-1, curlev-2 .. 0] envs))
 
 
 unit :: Ctx R.Constructor
@@ -872,7 +862,8 @@ mkEnv innerEnv = do
 localityOfVariablesAtCurrentScope :: Ctx (Map Def.UniqueVar (R.VariableProto, Def.Locality))
 localityOfVariablesAtCurrentScope = do
   allScopes <- getScopes
-  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (R.asPUniqueVar v, (v, locality))) $ Map.elems l.varScope) <> r) mempty $ (\(cur :| envs) -> (Def.Local, cur) :| fmap (Def.FromEnvironment,) envs) allScopes
+  curlev <- currentLevel
+  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (R.asPUniqueVar v, (v, locality))) $ Map.elems l.varScope) <> r) mempty $ (\(cur :| envs) -> (Def.Local, cur) :| fmap (\(l, sc) -> (Def.FromEnvironment l, sc)) (zip [curlev-1, curlev-2 .. 0] envs)) allScopes
 
 -- used for function definitions
 gatherVariables :: AnnStmt R -> Set R.VariableProto

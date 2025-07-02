@@ -30,7 +30,7 @@ import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
 import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), PP (pp))
 import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), ClassConstraints, Node (..), DeclaredType (..))
-import Data.Functor.Foldable (embed, cata)
+import Data.Functor.Foldable (cata)
 import Control.Monad ((<=<))
 import Data.Either (partitionEithers)
 import AST.Untyped (Untyped, U, UntypedStmt (..), ClassConstraint (..))
@@ -241,11 +241,11 @@ sInstFunction = recoverableIndentBlock $ do
       let expr2stmt = Fix . O . Annotated [] . Return . Just
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
-      in pure $ L.IndentNone $ InstFun { instFunDec = header, instFunBody = body }
+      in pure $ L.IndentNone $ InstFun { instFunDec = header, instFunBody = body, instClassFunDec = (), instDef = () }
     Nothing -> do
       pure $ flip (L.IndentSome Nothing) (recoverStmt (annotationOr statement)) $ \annsOrStmts -> do
         stmts <- NonEmpty.fromList <$> annotateStatements annsOrStmts
-        pure $ InstFun { instFunDec = header, instFunBody = stmts }
+        pure $ InstFun { instFunDec = header, instFunBody = stmts, instClassFunDec = (), instDef = () }
 
 
 sExpression :: Parser (Stmt U)
@@ -525,7 +525,7 @@ pType = do
   case fun of
     Nothing -> case term of
       [t] -> return t
-      ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap (ctx pp) ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
+      ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap ctx ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
     Just ret -> return $ Fix $ TFun () term ret
 
   where
@@ -570,7 +570,7 @@ pClassType
         case fun of
           Nothing -> case term of
             [t] -> return t
-            ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap (ctx pp) ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
+            ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap ctx ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
           Just ret -> return $ Fix $ NormalType $ TFun () term ret
 
         where

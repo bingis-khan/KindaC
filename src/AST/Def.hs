@@ -17,7 +17,7 @@ import Prettyprinter (Doc)
 import Data.String (IsString (..))
 import qualified Prettyprinter as PP
 import Data.Foldable (fold)
-import Data.List (intersperse, intercalate)
+import Data.List (intersperse)
 import qualified Text.Printf
 import Text.Printf (PrintfArg(..), formatString)
 import Control.Monad.IO.Class (MonadIO (..))
@@ -57,7 +57,7 @@ runtimeContext = CtxData
   , displayTypeParameters = False
   }
 
--- show types and stuffi for the user (display types accurately to their definition, etc.)
+-- show types and stuff for the user (display types accurately to their definition, etc.)
 showContext = CtxData
   { silent = False
   , printIdentifiers = False
@@ -146,7 +146,7 @@ data UniqueClass = TCI
 
 -- This associates types for class associations with the types.
 -- Normal function calls store it with their instantiation, but I can't do that with class instantiations - associations depend on the selected type, which means I can't create them when I'm building the AST - only later, when association is resolved.
--- 
+
 -- TODO: this is kinda bad. It should probably be done in subst or something, but I want it done quick.
 newtype UniqueClassInstantiation = UCI { fromUCI :: Unique } deriving (Eq, Ord)
 newtype UniqueFunctionInstantiation = UFI { fromUFI :: Unique } deriving (Eq, Ord)  -- TODO: this is used to match "instances". it also bad.
@@ -221,7 +221,8 @@ instance Show UniqueClassInstantiation where
 
 
 -- ...plus additional tags
-data Locality = Local | FromEnvironment deriving (Show, Eq, Ord)
+type Level = Int
+data Locality = Local | FromEnvironment Level deriving (Show, Eq, Ord)  -- NOTE: level probably kinda bad here, but it's used right now for removing classes and "readding" variables.
 
 
 -- simplifies printing functions - not really needed..?
@@ -294,7 +295,7 @@ instance (PP a, PP b, PP c) => PP (a, b, c) where
   pp (l, r, rr) = pp l <+> pp r <+> pp rr
 
 instance (PP a, PP b, PP c, PP d) => PP (a, b, c, d) where
-  pp (l, r, rr, rrr) = encloseSepBy "(" ")" ", " $ [pp l, pp r, pp rr, pp rrr]
+  pp (l, r, rr, rrr) = encloseSepBy "(" ")" ", " [pp l, pp r, pp rr, pp rrr]
 
 instance PP a => PPDef (a, b) where
   ppDef (l, _) = pp l  -- for XLVar basiclaly. kinda stupid (it's a general tuple thing), but good for now.
@@ -339,7 +340,7 @@ instance PP UniqueVar where
   pp uv = pp uv.varName <> "@" <> pp uv.varID
 
 instance PP UniqueCon where
-  pp uc = ppCon uc
+  pp = ppCon
 
 instance PP UniqueType where
   pp ut = pp ut.typeName
@@ -353,7 +354,7 @@ instance PP UniqueMem where
 instance PP Locality where
   pp = \case
     Local -> ""
-    FromEnvironment -> "^"
+    FromEnvironment level -> fromString $ printf "^(%d)" level
 
 instance PP UnionID where
   pp = ppUnionID
@@ -420,25 +421,25 @@ data CtxData = CtxData  -- basically stuff like printing options or something (e
   , displayTypeParameters :: Bool
   }
 
-ctxPrint :: MonadIO io => (a -> Context) -> a -> io ()
-ctxPrint f x = unless defaultContext.silent $ liftIO $ putStrLn $ ctx f x
+ctxPrint :: (MonadIO io, PP a) => a -> io ()
+ctxPrint = unless defaultContext.silent . liftIO . putStrLn . ctx
 
 ctxPrint' :: MonadIO io => String -> io ()
 ctxPrint' = unless defaultContext.silent . liftIO . putStrLn
 
 ctxPrint'' :: MonadIO io => Context -> io ()
-ctxPrint'' = unless defaultContext.silent . liftIO . putStrLn . ctx id
+ctxPrint'' = unless defaultContext.silent . liftIO . putStrLn . ctx
 
 phase :: String -> IO ()
 phase text =
   let n = 10
   in ctxPrint' $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
 
-ctx :: (a -> Context) -> a -> String
-ctx = ctx' defaultContext
+ctx :: PP a => a -> String
+ctx = ctx' defaultContext pp
 
-sctx :: Context -> String
-sctx = ctx' showContext id
+sctx :: PP a => a -> String
+sctx = ctx' showContext pp
 
 ctx' :: CtxData -> (a -> Context) -> a -> String
 ctx' c f = if c.silent
@@ -459,7 +460,7 @@ printf :: Text.Printf.PrintfType r => String -> r
 printf = Text.Printf.printf
 
 instance Text.Printf.PrintfArg Context where
-  formatArg = Text.Printf.formatString . ctx id
+  formatArg = Text.Printf.formatString . ctx
 
 -- Technically should be something like Text for the annotation type, but I need to have access to context in annotations
 comment :: Context -> Context -> Context
@@ -476,7 +477,7 @@ sepBy :: Monoid a => a -> [a] -> a
 sepBy p = fold . intersperse p
 
 indent :: Context -> Context -> Context
-indent header body = (fmap (PP.nest 2) $ liftA2 (\l r -> PP.vsep [l, r]) header body) <> "\n"
+indent header body = fmap (PP.nest 2) (liftA2 (\l r -> PP.vsep [l, r]) header body) <> "\n"
 
 ppLines :: Foldable t => (a -> Context) -> t a -> Context
 ppLines f = foldMap ((<>"\n") . f)
@@ -490,7 +491,7 @@ ppVar l v = localTag <?+> pretty (fromVN v.varName) <> ppIdent ("$" <> pretty (h
   where
     localTag = case l of
       Local -> Nothing
-      FromEnvironment -> Just "^"
+      FromEnvironment level -> Just $ fromString $ printf "^(%d)" level
 
 ppUniqueClass :: UniqueClass -> Context
 ppUniqueClass klass = fromString $ printf "%d@%s" (hashUnique klass.classID) (fromTN klass.className)

@@ -75,13 +75,13 @@ mono tmod = do
   let envs = Map.mapKeys (fmap snd) $ memoToMap monoCtx.memoEnv
 
   phase "Monomorphisation (env instantiations)"
-  Def.ctxPrint (Def.ppMap . fmap (bimap pp (Def.encloseSepBy "[" "]" ", " . fmap (\(EnvUse _ env) -> pp env) . Set.toList)) . Map.toList) monoCtx.envInstantiations
+  Def.ctxPrint $ (Def.ppMap . fmap (bimap pp (Def.encloseSepBy "[" "]" ", " . fmap (\(EnvUse _ env) -> pp env) . Set.toList)) . Map.toList) monoCtx.envInstantiations
 
   phase "Monomorphisation (just envs)"
-  Def.ctxPrint (Def.ppMap . fmap (bimap pp pp) . Map.toList) envs
+  Def.ctxPrint $ (Def.ppMap . fmap (bimap pp pp) . Map.toList) envs
 
   phase "Monomorphisation (first part)"
-  Def.ctxPrint (Def.ppLines pp) mistmts
+  Def.ctxPrint $ (Def.ppLines pp) mistmts
 
 
   -- Step 2 consists of:
@@ -174,7 +174,7 @@ mExpr = cata $ fmap embed . \(N t expr) -> do
           State.modify $ \c -> c { usedVars = Set.insert (v, mt) c.usedVars }
 
           newLocality <- case v of
-                T.DefinedClassFunction cfd _ self uci -> do
+                T.DefinedClassFunction cfd@(CFD cd _ _ _) snapshot self uci -> do
                   -- NOTE: ANOTHER COPYPASTA TO KNOW THE OG INSTANCE OF THIS FUNCTION.
                   ucis <- State.gets classInstantiationAssociations
                   mself <- mType self
@@ -186,12 +186,21 @@ mExpr = cata $ fmap embed . \(N t expr) -> do
                           let inst = mustSelectInstance mself insts
                           let instfun = fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns
                           pure instfun
-                        Nothing -> error "AOSJDOJSADOJSAJODJSAOJDASODSAJ"
+
+                        Nothing ->
+                          let dd = case project mself of
+                                TCon mdd _ _ -> mdd.ddScheme.ogDataDef
+                                _ -> error "WHAT THJE FUCK"
+                          in case snapshot !? cd >>= (!? dd) of
+                            Just inst ->
+                              let instfun = fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns
+                              in pure instfun
+                            Nothing -> error "AOSJDOJSADOJSAJODJSAOJDASODSAJ"
 
                   let vfn = Function ivfn.instFunDec ivfn.instFunBody
                   let (T.Env _ _ _ level) = vfn.functionDeclaration.functionEnv
                   cl <- State.gets currentLevel
-                  pure $ if level == cl then Local else FromEnvironment
+                  pure $ if level == cl then Local else FromEnvironment level
 
                 _ -> pure locality
 
@@ -299,8 +308,8 @@ withEnv mfn env cx = do
 
                       instanceEnv <- fmap concat $ traverse tryLocalizeEnv $ filter ((==cureid) . T.envID) $ envs <&> \(_, _, _, env) -> env  -- WARNING: should probably use UFI instead of this.
                       Def.ctxPrint' $ Def.printf "LOCALITIES of %s->%s:\n%s" (pp oldEID) (pp newEID) $ Def.ppMap $ fmap (bimap (pp . (\case { T.PDefinedVariable uv -> uv; T.PDefinedFunction fn -> fn.functionDeclaration.functionId; T.PDefinedClassFunction (CFD _ uv _ _) -> uv })) (fromString . show)) $ Map.toList locs
-                      Def.ctxPrint (Def.ppList pp) envs
-                      Def.ctxPrint (Def.ppList $ \(v, _, _, _) ->  ppDef v) instanceEnv
+                      Def.ctxPrint $ (Def.ppList pp) envs
+                      Def.ctxPrint $ (Def.ppList $ \(v, _, _, _) ->  ppDef v) instanceEnv
                       pure $ instanceEnv <&> \(v, l, _, mt) -> (v, l, mt)
                     else
                       pure [(v', l, mt)]
@@ -471,15 +480,25 @@ variable (T.DefinedClassFunction cfd@(CFD cd cfdId cfdParams cfdRet) snapshot se
   mself <- mType self
 
   let selfTVar = case project self of
-        TO (T.TVar tv) -> tv
-        _ -> error "this is bad, because we're looking for the corresponding \"self\" tvar. we should add it to this definition."
+        TO (T.TVar tv) -> Just tv
+        _ -> Nothing
   ivfn <- case ucis !? uci of
       Just insts -> do
         let inst = mustSelectInstance mself insts
         let instfun = fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns
         pure instfun
-      Nothing -> do
-        error $ Def.printf "COULD NOT FIND INSTANCE (tvar: %s, uci: %s, mt: %s) in %s (could get: (%s))" (pp selfTVar) (pp uci) (pp et) (pp cfdId) (Def.ppSet pp $ Set.toList $ Map.keysSet ucis)
+
+      -- we might be top level here, so we fall back to the snapshot.
+      Nothing ->
+        let dd = case project mself of
+              TCon mdd _ _ -> mdd.ddScheme.ogDataDef
+              _ -> error "WHAT THJE FUCK"
+        in case snapshot !? cd >>= (!? dd) of
+          Just inst ->
+            let instfun = fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns
+            in pure instfun
+          Nothing -> do
+            error $ Def.printf "COULD NOT FIND INSTANCE (tvar: %s, uci: %s, mt: %s) in %s (could get: (%s))" (pp selfTVar) (pp uci) (pp et) (pp cfdId) (Def.ppSet pp $ Set.toList $ Map.keysSet ucis)
 
   let vfn = Function ivfn.instFunDec ivfn.instFunBody
 
@@ -697,11 +716,11 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(tdd@(DD ut
   -- DEBUG: how datatypes are transformed.
   Def.ctxPrint' $ Def.printf "Mono: %s" (Def.ppTypeInfo ut)
   Def.ctxPrint' "======"
-  Def.ctxPrint pp tdcs
+  Def.ctxPrint tdcs
   Def.ctxPrint' "------"
-  Def.ctxPrint pp strippedDCs
+  Def.ctxPrint strippedDCs
   Def.ctxPrint' ",,,,,,"
-  Def.ctxPrint (either (const "n/a (it's a record.)") (Def.ppLines (\(DC _ uc _ _) -> Def.ppCon uc))) mdcs
+  Def.ctxPrint $ (either (const "n/a (it's a record.)") (Def.ppLines (\(DC _ uc _ _) -> Def.ppCon uc))) mdcs
   Def.ctxPrint' "======"
   Def.ctxPrint' $ Def.printf "Mono'd: %s" (pp nut)
 
@@ -732,7 +751,7 @@ withTypeMap tm a = do
 
   -- DEBUG: check typemap.
   Def.ctxPrint' "Type map:"
-  Def.ctxPrint ppTypeMap tm
+  Def.ctxPrint $ ppTypeMap tm
 
 
   -- temporarily set merge type maps, then restore the original one.
@@ -1261,7 +1280,7 @@ mfDataDef = memo memoIDatatype (\mem s -> s { memoIDatatype = mem }) $ \(idd, _)
 mfFunction :: Function IM -> EnvContext (Function M)
 mfFunction fun = do
   Def.ctxPrint' $ Def.printf "MF function %s" (pp fun.functionDeclaration.functionId)
-  Def.ctxPrint pp fun
+  Def.ctxPrint fun
 
   -- just map everything.
   let fundec = fun.functionDeclaration

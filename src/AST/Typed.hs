@@ -295,7 +295,7 @@ instance PP EnvUnion where
 
 instance PP a => PP (EnvF a) where
   pp = \case
-    Env eid vs _ lev -> pp eid <> fromString (Def.printf "(%s)" (show lev)) <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp v <+> pp t) vs)
+    Env eid vs _ lev -> pp eid <> fromString (Def.printf "(%s)" (show lev)) <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
     RecursiveEnv eid isEmpty -> fromString $ Def.printf "%s[REC%s]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 instance PP TOTF where

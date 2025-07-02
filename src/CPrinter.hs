@@ -568,11 +568,11 @@ cRecordStruct recs = "struct" <§ cBlock
 
 cVar :: Type M -> Locality -> M.Variable -> PL
 cVar _ Def.Local (M.DefinedVariable uv) = cVarName uv
-cVar _ Def.FromEnvironment (M.DefinedVariable uv) = "env->" <> cVarName uv
-cVar t Def.FromEnvironment (M.DefinedFunction fun) | doesFunctionNeedExplicitEnvironment t  =
+cVar _ Def.FromEnvironment{} (M.DefinedVariable uv) = "env->" <> cVarName uv
+cVar t Def.FromEnvironment{} (M.DefinedFunction fun) | doesFunctionNeedExplicitEnvironment t  =
   "env->" & cEnvFunctionVarName (cFunction t fun) t
 
-cVar t Def.FromEnvironment (M.DefinedFunction fun) =
+cVar t Def.FromEnvironment{} (M.DefinedFunction fun) =
   "env->" & cFunction t fun
 
 cVar t Def.Local (M.DefinedFunction fun) = do

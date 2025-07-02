@@ -9,7 +9,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
 
-import qualified AST.Resolved as R
 import qualified AST.Typed as T
 import Data.List.NonEmpty (NonEmpty)
 import Data.Fix (Fix(..))
@@ -39,18 +38,15 @@ loadModule mPrelude filename = do
   case parse filename source of
     Left err -> pure $ Left err
     Right ast -> do
-      Def.ctxPrint pp ast
+      Def.ctxPrint ast
 
       phase "Resolving"
       (rerrs, rmod) <- resolve mPrelude ast
-      Def.ctxPrint pp rmod
+      Def.ctxPrint rmod
 
       
       phase "Typechecking"
       (terrs, tmod) <- typecheck mPrelude rmod
-
-      phase "Typechecking (After Substitution)"
-      Def.ctxPrint pp tmod
 
       let errors = s2t rerrs ++ s2t terrs
       pure $ case errors of
@@ -65,15 +61,11 @@ finalizeModule prel modul = do
   -- join both modules
   let joinedStatements = prel.tpModule.topLevelStatements ++ modul.topLevelStatements
 
-  -- phase "Removing Unused"
-  -- let removedUnused = removeUnused joinedStatements
-  -- ctxPrint T.tStmts removedUnused
-
   phase "Monomorphizing"
-  mmod <- mono joinedStatements  --TODO: classInstantiationAssociations = funny
+  mmod <- mono joinedStatements
 
   phase "Monomorphized statements"
-  Def.ctxPrint pp mmod
+  Def.ctxPrint mmod
 
   -- phase "C-ing"
   let cmod = cModule mmod

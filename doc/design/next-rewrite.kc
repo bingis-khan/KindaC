@@ -141,6 +141,7 @@ it also needs to be recursive - some assocs might depend on a type from outside!
   - we can recursively do this ting. but, the problem i had before is: how do i even distinguish two different pairs of UFI and type, if they have the same type, but may use different instances?
 
   - omg.... i can just add assocs to the environment.... aside from UFI.
+  - yes, that was the way.
 
 
 ff (x)
@@ -150,3 +151,31 @@ f <= ff(123)
 inst AsBool Bool
  ....
 f <= ff(123)  # different environments for AsBool!!!!!!!
+
+
+
+--------------------
+
+Okay, now it kinda works. Now the two things:
+
+ - nonlocal instances and their environments.
+ - late instantiation for environments.
+
+ The first one: I think I can just put it in Subst. VERY BAD. VERY UGLY. But it MIGHT JUST WORK YO.
+ Also, maybe I should think about a more GENERAL Substitutable class, as we need to do a lot of substitutions for different reasons.
+
+
+ Why do we want to put it in substitutable? Because the type MIGHT become known AT THE END of the program. This would need updates for the whole file. This would be what substitutable is for.
+
+ Okay, the algorithm.
+ I've added Level to FromEnvironment for this.
+
+ 1. For each ClassFunctionDef, we check if the selected instance is a TCon or not.
+ 2. If it is, put the instance function environment inside the current environment.
+  2.1: Get all variables (including their types) from the current environment.
+  2.2: Get all variables from the function's *instantiated env* and filter them by level and map the FromEnvironment to Local if level is the same.
+  2.3: Remove used variables from this new part of environment.
+  2.4: Create "DefinedFunction" for this.
+
+This actually worked! But now the second problem - local class, local instance. (which I didn't have before. it didn't work the last time, because it was a bug.)
+ This is because there are no explicit instances, so nothing gets added to the environment. So, there is nothing to expand.
