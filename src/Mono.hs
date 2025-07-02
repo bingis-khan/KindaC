@@ -277,7 +277,7 @@ withEnv mfn env cx = do
             v' <- variable v (tt, mt)
             li <- needsLateInitialization v
             case v of
-              T.DefinedClassFunction cfd _ self uci -> do
+              T.DefinedClassFunction cfd@(CFD cd _ _ _) snapshot self uci -> do
                   ucis <- State.gets classInstantiationAssociations
                   mself <- mType self
                   let selfTVar = case project self of
@@ -288,7 +288,16 @@ withEnv mfn env cx = do
                           let inst = mustSelectInstance mself insts
                           let instfun = fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns
                           pure instfun
-                        Nothing -> error "AOSJDOJSADOJSAJODJSAOJDASODSAJ"
+
+                        Nothing ->
+                          let dd = case project mself of
+                                TCon mdd _ _ -> mdd.ddScheme.ogDataDef
+                                _ -> error "WHAT THJE FUCK"
+                          in case snapshot !? cd >>= (!? dd) of
+                            Just inst ->
+                              let instfun = fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns
+                              in pure instfun
+                            Nothing -> error "AOSJDOJSADOJSAJODJSAOJDASODSAJ"
 
                   let vfn = Function ivfn.instFunDec ivfn.instFunBody
                   let T.Env cureid _ _ instanceLevel = vfn.functionDeclaration.functionEnv

@@ -1796,7 +1796,7 @@ instance Substitutable (T.EnvF (Type TC)) where
     where
       tryExpandEnvironmentOfClass :: (T.Variable, Def.Locality, Type TC) -> [(T.Variable, Def.Locality, Type TC)]
       tryExpandEnvironmentOfClass = \case
-        vlt@(T.DefinedClassFunction cfd@(CFD cd _ _ _) snap (Fix (TCon dd _ _)) uci, _, t) ->
+        vlt@(T.DefinedClassFunction cfd@(CFD cd _ _ _) snap self@(Fix (TCon dd _ _)) uci, _, t) ->
           -- failable: select instantiated function env. this might have been after errors, so we're not assuming anything.
           let mvars = do
                 insts <- snap !? cd
@@ -1815,7 +1815,7 @@ instance Substitutable (T.EnvF (Type TC)) where
                 let fnLocality = if instLevel < currentLevel
                       then Def.FromEnvironment instLevel
                       else Def.Local
-                in [(T.DefinedFunction (Function ifn.instFunDec ifn.instFunBody) (error "i think no one cares") assocs snap ufi, fnLocality, t)]
+                in [(T.DefinedClassFunction cfd (Map.singleton cd (Map.singleton dd ifn.instDef)) self uci, fnLocality, t)]  -- TEMP: we are redoing the "DefinedClassFunction" (instead of just dropping DefinedFunction), because currently in Mono we rely on this.
 
               -- we need "take out" variables from this function.
               | otherwise ->
