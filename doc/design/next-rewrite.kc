@@ -16,7 +16,7 @@ LETS DO A REWRITE, I CANT ANYMORE.
 
 The stuff that's left to implement is:
 
- - nonlocal instances and their environments.
+ - nonlocal instances and their environments. [done as of 03.07.25]
  - late instantiation for environments.
  - declared associated types
 
