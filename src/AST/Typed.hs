@@ -11,7 +11,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, DeconF, WithType, ExprF, XNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, ClassType, Rec, Decon, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, ClassConstraints, XClassFunDec, XLamVar, instFunDec, functionOther)
+import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, DeconF, WithType, ExprF, XNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, ClassType, Rec, Decon, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, ClassConstraints, XClassFunDec, XLamVar, instFunDec, functionOther, instFuns, instClassFunDec, functionEnv)
 import qualified AST.Def as Def
 import Data.Map (Map)
 import Data.Text (Text)
@@ -23,6 +23,8 @@ import Data.Functor ((<&>))
 import Data.String (fromString)
 import qualified Data.Map as Map
 import Data.List.NonEmpty (NonEmpty)
+import Data.Foldable (find)
+import Data.Maybe (fromJust)
 
 
 -- data Typed
@@ -151,7 +153,7 @@ data FunctionTypeAssociation = FunctionTypeAssociation (TVar TC) (Type TC) (Clas
 -- It's needed to check if we need to keep it in the environment or not.
 type Level = Int
 type ClassInstantiationAssocs = Map (Maybe (Def.UniqueFunctionInstantiation, Type TC), Def.UniqueClassInstantiation) (Type TC, ([Type TC], InstFun TC), Level, Def.UniqueFunctionInstantiation)
-data TypeAssociation = TypeAssociation (Type TC) (Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation (Maybe Def.UniqueFunctionInstantiation)
+data TypeAssociation = TypeAssociation (Type TC) (Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation (Maybe Def.UniqueFunctionInstantiation) [Def.EnvID]
 
 
 data Mod phase = Mod
@@ -310,7 +312,7 @@ instance PP Variable where
   pp = \case
     DefinedVariable v -> pp v
     DefinedFunction f assocs _ _ ufi -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv _ _ uci) -> pp (tv, uci)) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet (\(l, r) -> fromString $ Def.printf "%s: %s" l (pp (r :: Def.Context))) (bimap pp (\(self, (_, inst), _, _) -> fromString $ Def.printf "(%s: %s)" (pp self) (pp inst.instFunDec.functionId)) <$> Map.toList assocs) <> ")"
-    DefinedClassFunction (CFD cd uv _ _) insts self uci -> pp uv <> "&" <> pp uci <>"&C" <> "<" <> pp self <> ">" <> fromString (Def.printf "[%s]" (Def.sepBy ", " $ fmap (pp . ddName . fst . instType) (Map.elems (Def.defaultEmpty cd insts))))
+    DefinedClassFunction cfd@(CFD cd uv _ _) insts self uci -> pp uv <> "&" <> pp uci <>"&C" <> "<" <> pp self <> ">" <> fromString (Def.printf "[%s]" (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst <+> (pp $ functionEnv $ instFunDec $ fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns)) (Map.elems (Def.defaultEmpty cd insts))))
 
 instance PP LamDec where
   pp (LamDec uv env) = pp env <> pp uv

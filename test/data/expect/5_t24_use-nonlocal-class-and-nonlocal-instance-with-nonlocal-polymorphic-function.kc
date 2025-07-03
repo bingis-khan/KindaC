@@ -1,5 +1,8 @@
 #$ use nonlocal class and nonlocal instance with nonlocal polymorphic function.
 # 69
+# 420
+# 1337
+# True
 # 1
 
 outer-const = 420

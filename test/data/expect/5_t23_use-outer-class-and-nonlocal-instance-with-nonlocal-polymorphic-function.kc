@@ -1,6 +1,12 @@
-#$ use nonlocal class and nonlocal instance with nonlocal polymorphic function.
+#$ use outer class and nonlocal instance with nonlocal polymorphic function.
 # 69
+# 420
+# 1337
+# True
 # 1
+
+class A
+	do-sth (x _) -> Unit
 
 outer-const = 420
 f ()
@@ -9,9 +15,6 @@ f ()
 		print some-env
 		print asd
 		return asd
-
-	class A
-		do-sth (x _) -> Unit
 
 	g()
 		h-const = 69

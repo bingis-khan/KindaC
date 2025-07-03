@@ -1,0 +1,36 @@
+#$ use outer class and outer instance with environment inside.
+# 69
+# 1
+
+class A
+	do-sth (x _) -> Unit
+
+h-const = 69
+inst A Bool
+	do-sth (x Bool) -> Unit
+		print h-const
+		# print-id(x)
+		if x
+			print 1
+		else
+			print 0
+		return
+
+# outer-const = 420
+f ()
+	#some-env = 1337
+	#print-id (asd)
+	#	print some-env
+	#	print asd
+	#	return asd
+
+	g()
+		h()
+			do-sth(True)
+			return
+		h()
+		return
+	g()
+	return
+
+f()

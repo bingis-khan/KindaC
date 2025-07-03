@@ -1,0 +1,60 @@
+#$ Use class from outside, two of the same instances using a non-local polymorphic function.
+# 10
+# 420
+# 69
+# ()
+# 1337
+# True
+# 1
+# 10
+# 420
+# 69
+# ()
+# 1337
+# False
+# 0
+
+class A
+	do-sth (x _) -> Unit
+
+inst A Int
+	do-sth (x Int) -> Unit
+		print x
+		return
+
+outer-const = 420
+f ()
+	bool-const = 10
+	some-env = 1337
+	print-id (asd)
+		print some-env
+		print asd
+		return asd
+
+	g()
+		h-const = 69
+		h()
+			boop-const = Unit
+
+			inst A Bool
+				do-sth (x Bool) -> Unit
+					print bool-const
+					print outer-const
+					print h-const
+					print boop-const
+					print-id(x)
+					if x
+						print 1
+					else
+						print 0
+					return
+
+			do-sth(True)
+			do-sth(False)
+			return
+		h()
+		return
+	g()
+	return
+
+f()

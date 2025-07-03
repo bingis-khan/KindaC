@@ -484,7 +484,7 @@ variable (T.DefinedClassFunction cfd@(CFD cd cfdId cfdParams cfdRet) snapshot se
         _ -> undefined
 
   -- FIX: Fix for class functions not instantiating tvars, but it's bad.
-  Def.ctxPrint' $ Def.printf "Self: %s" (pp self)
+  Def.ctxPrint' $ Def.printf "Type: %s (typed: %s). Self: %s" (pp et) (pp instType) (pp self)
   ucis <- State.gets classInstantiationAssociations
   mself <- mType self
 
@@ -512,6 +512,7 @@ variable (T.DefinedClassFunction cfd@(CFD cd cfdId cfdParams cfdRet) snapshot se
   let vfn = Function ivfn.instFunDec ivfn.instFunBody
 
   Def.ctxPrint' $ Def.printf "Variable: %s.\n\tT Type: (%s) -> %s\n\tM Type: %s\n" (pp vfn.functionDeclaration.functionId) (Def.sepBy ", " $ pp . snd <$> vfn.functionDeclaration.functionParameters) (pp vfn.functionDeclaration.functionReturnType) (pp et)
+  Def.ctxPrint' $ Def.printf "Env: %s" (pp vfn.functionDeclaration.functionEnv)
 
   Def.ctxPrint' $ "in (class) function: " <> show vfn.functionDeclaration.functionId.varName.fromVN
 

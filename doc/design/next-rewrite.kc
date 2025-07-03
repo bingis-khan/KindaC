@@ -179,3 +179,23 @@ Okay, now it kinda works. Now the two things:
 
 This actually worked! But now the second problem - local class, local instance. (which I didn't have before. it didn't work the last time, because it was a bug.)
  This is because there are no explicit instances, so nothing gets added to the environment. So, there is nothing to expand.
+
+
+Okay, I fixed that also!
+I created a second constructor for TypeSubstitution to utilize the Substitution instances. (it leads to some unsafe deconstructions in code, but i don't mind - EnvAddition (the new constructor) is used only once and at the end)
+This one adds stuff to the environments. We run it at the end to add those additional variables.
+It uses two new fields in TypecheckingState: envStack [EnvID] (to know to which environments to add to, also "level" is implied) and envAdditions EnvAdditions (this just collects the whole env additions thing.)
+At the end, before the final substitution, we substitute the EnvAddition with the pre-final substitution. then we substitute statements with EnvAddition and we also have to do that to make the last substitution to substitute environments INSIDE env unions.
+I believe in some cases there might still be some tyvars left over in stmts, but now the last substitution has no tyvars, thus the last subsitution will remove all tyvars in case of a correct program.
+
+ Also, this actually takes care of "reinstantiating" the environment of an instance. So, now that last piece of code just returns an empty list instead of reinstantiated vars, because they will be added by EnvAdditions. This is obviously spaghetti as it grew naturally and I should redesign/rewrite it. That's a TODO.
+
+ Another thing is that I had a bug, because we are not memoizing stuff in `subst`, so recursive definitions are ignored and not "substed". This is obivously bad.
+ One of the reasons to add memoizing when I'm gonna be optimizing this shiz. This will probably be the cause of more subtle bugs if I don't remember to NOT use the recursive types for more than equality.
+
+
+OKAY, THIS PART LOOKS LIKE IT IS FINISHED. NEXT: LATE INITIALIZATION!
+ (curiously, I didn't need to add any additional compiler phases, so I might have just wasted a month of effort... at least, printing stuff is much better as I don't have to worry... this seems like a better architecture! maybe....)
+ ((to be frank, I the types are too general and don't really "reflect" my assumptions about code, so it might change in the future.))
+ (((AAAAAAAH, but still. it seems like it wasn't worth itttt kill meeee.)))
+ ((((if i were to start with a new project, should i make a more general architecture or a simpler one?!??!?!? asjdlksajdlkjalksjdlkajskdjkalsjdkasdlk ajslkdjlkashdlkhsalkdh lksahdlk hsaklhdksahd hlksahd lkas lsad kjsafdalkj lkjfalkjsfd i  am reatard i am wood))))
