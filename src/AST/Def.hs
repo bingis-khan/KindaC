@@ -34,11 +34,12 @@ import Data.Foldable1 (foldl1', Foldable1)
 import Data.Maybe (fromMaybe)
 import Data.Fix (Fix)
 import Data.Functor.Foldable (cata)
+import Data.Bifunctor (bimap)
 
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = rc
+defaultContext = dc
 
 dc = debugContext
 rc = runtimeContext
@@ -236,6 +237,16 @@ instance Show EnvID where
   show = show . hashUnique . fromEnvID
 
 
+type EnvStack = [EnvID]
+
+envStackToLevel :: EnvStack -> Level
+envStackToLevel = length
+
+-- HIGHER AS IN LOWER NUMERICALLY. 0 - top level, 1 -> getting more "in"
+isHigherOrSameLevel :: EnvStack -> EnvStack -> Bool
+es `isHigherOrSameLevel` es' | length es > length es' = False
+es `isHigherOrSameLevel` es' = and $ zipWith (==) (reverse es) (reverse es')
+
 
 --------------------
 -- Printing Stuff --
@@ -268,6 +279,19 @@ instance PP a => PP [a] where
 
 instance PP a => PP (NonEmpty a) where
   pp ps = sepBy " " $ pp <$> NonEmpty.toList ps
+
+instance (PP v) => PP (Set v) where
+  pp = encloseSepBy "{" "}" "," . fmap pp . Set.toList
+
+instance (PPDef v) => PPDef (Set v) where
+  ppDef = encloseSepBy "{" "}" "," . fmap ppDef . Set.toList
+
+instance (PPDef k, PP v) => PP (Map k v) where
+  pp = encloseSepBy "{" "}" "," . fmap (\(k, v) -> ppDef k <> ":" <+> pp v) . Map.toList
+
+instance (PPDef k, PPDef v) => PPDef (Map k v) where
+  ppDef = encloseSepBy "{" "}" "," . fmap (\(k, v) -> ppDef k <> ":" <+> ppDef v) . Map.toList
+
 
 instance PP () where
   pp = const mempty
@@ -362,8 +386,14 @@ instance PP UnionID where
 instance PP EnvID where
   pp = ppEnvID
 
+instance PPDef EnvID where
+  ppDef = ppEnvID
+
 instance PP UniqueClassInstantiation where
   pp uci = "U" <> (fromString . show . hashUnique) uci.fromUCI
+
+instance PPDef UniqueClassInstantiation where
+  ppDef uci = pp uci
 
 instance PP UniqueFunctionInstantiation where
   pp uci = "F" <> (fromString . show . hashUnique) uci.fromUFI

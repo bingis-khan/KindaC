@@ -25,6 +25,7 @@ import qualified Data.Map as Map
 import Data.List.NonEmpty (NonEmpty)
 import Data.Foldable (find)
 import Data.Maybe (fromJust)
+import qualified Data.Set as Set
 
 
 -- data Typed
@@ -108,14 +109,16 @@ data TyVar = TyV { fromTyV :: Text, tyvConstraints :: [(ClassDef TC, PossibleIns
 type PossibleInstances = Map (DataDef TC) (InstDef TC)
 type ScopeSnapshot = Map (ClassDef TC) PossibleInstances
 
-data Variable
+data VariableF t
   = DefinedVariable Def.UniqueVar
   -- scope snapshots might not be needed!
   -- Here, we need to store the instances. They must also be up for substitution. How would I represent it?
   -- TODO: Right now, we are substituting UCIs at the end of a function. What we can do right now, is we can also substitute this map. I can do this better probably - maybe we can associate function instantiations with a specific TVar?
-  | DefinedFunction (Function TC) ClassInstantiationAssocs [Type TC] ScopeSnapshot Def.UniqueFunctionInstantiation
-  | DefinedClassFunction (ClassFunDec TC) ScopeSnapshot (Type TC) Def.UniqueClassInstantiation  -- which class function and which instances are visible at this point. 
+  | DefinedFunction (Function TC) ClassInstantiationAssocs [t] ScopeSnapshot Def.UniqueFunctionInstantiation
+  | DefinedClassFunction (ClassFunDec TC) ScopeSnapshot t Def.UniqueClassInstantiation  -- which class function and which instances are visible at this point. 
   -- deriving (Eq, Ord)
+  deriving (Functor, Foldable, Traversable)
+type Variable = VariableF (Type TC)
 
 data VariableProto
   = PDefinedVariable Def.UniqueVar
@@ -124,7 +127,7 @@ data VariableProto
   deriving (Eq, Ord)
 
 data EnvF t
-  = Env Def.EnvID [(Variable, Def.Locality, t)] (Map VariableProto Def.Locality) Int -- t is here, because of recursion schemes. UniqueVar, because we don't know which environments will be used in the end. We will replace it with a `Variable` equivalent AFTER we monomorphise.
+  = Env Def.EnvID [(VariableF t, Def.Locality, t)] (Map VariableProto Def.Locality) Def.EnvStack -- t is here, because of recursion schemes. UniqueVar, because we don't know which environments will be used in the end. We will replace it with a `Variable` equivalent AFTER we monomorphise.
   -- The last map is a HACK
   | RecursiveEnv Def.EnvID IsEmpty  -- Recursive functions won't have access to their environment while typechecking... kinda stupid. ehh... but we're solving an actual issue here. `IsEmpty` is used in Mono to let us know if this function's environment was empty or not.
   deriving (Functor, Foldable, Traversable)
@@ -151,8 +154,7 @@ data FunctionTypeAssociation = FunctionTypeAssociation (TVar TC) (Type TC) (Clas
 
 -- I'm not sure about level. We don't need type applications now.
 -- It's needed to check if we need to keep it in the environment or not.
-type Level = Int
-type ClassInstantiationAssocs = Map (Maybe (Def.UniqueFunctionInstantiation, Type TC), Def.UniqueClassInstantiation) (Type TC, ([Type TC], InstFun TC), Level, Def.UniqueFunctionInstantiation)
+type ClassInstantiationAssocs = Map (Maybe (Def.UniqueFunctionInstantiation, Type TC), Def.UniqueClassInstantiation) (Type TC, ([Type TC], InstFun TC), Def.EnvStack, Def.UniqueFunctionInstantiation)
 data TypeAssociation = TypeAssociation (Type TC) (Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation (Maybe Def.UniqueFunctionInstantiation) [Def.EnvID]
 
 
@@ -237,6 +239,10 @@ isUnionEmpty (EnvUnion _ []) = True
 isUnionEmpty _ = False
 
 
+
+dbgSnapshot :: ScopeSnapshot -> Def.Context
+dbgSnapshot = Def.ppLines (\(cd, insts) -> fromString $ Def.printf "%s => %s" (Def.ppDef cd) (Def.encloseSepBy "[" "]" ", " $ fmap (\dd -> pp dd.ddName) $ Set.toList $ Map.keysSet insts)) . Map.toList
+
 -----------
 
 
@@ -308,11 +314,12 @@ instance PP TOTF where
 instance PP TyVar where
   pp (TyV t _) = "#" <> pp t
 
-instance PP Variable where
+instance PP a => PP (VariableF a) where
   pp = \case
     DefinedVariable v -> pp v
-    DefinedFunction f assocs _ _ ufi -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv _ _ uci) -> pp (tv, uci)) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet (\(l, r) -> fromString $ Def.printf "%s: %s" l (pp (r :: Def.Context))) (bimap pp (\(self, (_, inst), _, _) -> fromString $ Def.printf "(%s: %s)" (pp self) (pp inst.instFunDec.functionId)) <$> Map.toList assocs) <> ")"
-    DefinedClassFunction cfd@(CFD cd uv _ _) insts self uci -> pp uv <> "&" <> pp uci <>"&C" <> "<" <> pp self <> ">" <> fromString (Def.printf "[%s]" (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst <+> (pp $ functionEnv $ instFunDec $ fromJust $ find (\ifn -> ifn.instClassFunDec == cfd) inst.instFuns)) (Map.elems (Def.defaultEmpty cd insts))))
+    DefinedFunction f _ assocs _ ufi -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv _ _ uci) -> pp (tv, uci)) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet pp assocs <> ")"
+    DefinedClassFunction cfd@(CFD cd uv _ _) insts self uci ->
+      fromString $ Def.printf "%s&%s&C<%s>[%s]" (pp uv) (pp uci) (pp self) (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts)))
 
 instance PP LamDec where
   pp (LamDec uv env) = pp env <> pp uv

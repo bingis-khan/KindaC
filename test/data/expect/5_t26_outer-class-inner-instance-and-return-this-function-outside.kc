@@ -1,0 +1,15 @@
+#$ Outer class inner instance, return this function outside!!
+# 489
+
+class Dupsko
+	dupsko (x _) -> Int
+
+f () -> Int -> Int
+	sumtin = 420
+	inst Dupsko Int
+		dupsko (x Int) -> Int
+			return x + sumtin
+
+	return dupsko
+
+print f()(69)

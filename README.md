@@ -22,21 +22,23 @@ Also I decided to use a tag "ALGO", which should mark key moments with the typec
 - `doc/` - documentation (README inside)
 - `error-handling/` - put files here, when error is stupid or unreadable
 - `ctest/` - testing stuff in C
+- `incorrect/` - files which do not compile / produce incorrect results
 
 ## regressions
 
 - in test 5.08, there are two environments in the union instead of one for a generalized function over typeclass instance. i'll have to check if it also happens for normal functions, what kind of regression it is. happened after removing RemoveUnused, so it's obvious something like this would happen. check if there are any warnings in tests when compiling C programs.
 - fuck, RemoveUnused was probably better, as Mono now does a lot of things and it kinda sucks.
+  - NEVERMIND BUOY, we just track instantiations in typecheck. now it's all much better.
 
 
 ## todo larger
 
 - typeclasses (which features?)
-  - right now, I think I'll pass up on implementing type kinds?
+  - right now, I think I'll pass up on implementing type kinds? (no Fixpoint)
 - pointers
 - error location + actual errors
 - module importing and namespaces
-- integers in types (typed C arrays)
+- integers in types (typed C arrays)  (maybe put this earlier to support C-style arrays)
 - finish (actually fix) recursion
 
 

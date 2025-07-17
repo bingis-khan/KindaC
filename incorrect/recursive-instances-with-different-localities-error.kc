@@ -1,0 +1,19 @@
+class MyStr
+	do-sth (x _) -> Unit
+
+MyStrPtr a
+	MyStrPtr a
+
+inst MyStr Int
+	do-sth (x) -> Unit
+		print x
+
+
+f () -> Unit
+	inst MyStr MyStrPtr a
+		do-sth (MyStrPtr(x)) -> Unit
+			print 8008135
+			do-sth(x)
+	do-sth(MyStrPtr(MyStrPtr(420)))
+
+f()

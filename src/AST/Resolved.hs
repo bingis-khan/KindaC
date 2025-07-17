@@ -19,6 +19,7 @@ import Data.Fix (Fix)
 import Data.Functor.Foldable (cata)
 import Data.Foldable (Foldable(..))
 import AST.Typed (TC)
+import Data.String (fromString)
 
 data Resolved
 type R = Resolved
@@ -29,7 +30,7 @@ type instance XVarOther Resolved = Def.Locality
 type instance XLVar Resolved = Def.UniqueVar
 type instance XLamVar Resolved = Def.UniqueVar
 type instance XCon Resolved = Constructor
-type instance XConOther Resolved = ()
+type instance XConOther Resolved = Def.EnvID
 type instance XTCon Resolved = DataType
 type instance XDTCon Resolved = Def.UniqueType
 type instance XReturn Resolved = Expr R
@@ -54,7 +55,7 @@ type instance XFunType Resolved = DeclaredType R
 type instance XDataScheme Resolved = [TVar R]
 
 
-data Env = Env { fromEnv :: [(VariableProto, Def.Locality)], level :: Int }
+data Env = Env { envID :: Def.EnvID, envStackLevel :: Def.EnvStack, fromEnv :: [(VariableProto, Def.Locality)] }
 data LamDec = LamDec Def.UniqueVar Env
 
 type instance XEnv R = Env
@@ -190,4 +191,4 @@ instance PP LamDec where
   pp (LamDec uv e) = pp uv <> pp e
 
 instance PP Env where
-  pp env = Def.encloseSepBy "[" "]" ", " $ env.fromEnv <&> \(v, l) -> Def.ppVar l $ asPUniqueVar v
+  pp env = fromString $ Def.printf "%s(%s)%s" (pp env.envID) (pp env.envStackLevel) $ Def.encloseSepBy "[" "]" ", " $ env.fromEnv <&> \(v, l) -> Def.ppVar l $ asPUniqueVar v

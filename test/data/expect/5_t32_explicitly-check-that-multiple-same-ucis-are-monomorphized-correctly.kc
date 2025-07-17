@@ -1,0 +1,45 @@
+#$ A function which contains the same "UCI" has two different instantiations.
+# ()
+# 420
+# 111
+# True
+# 8008
+# ()
+# 111
+# True
+
+class MyStr
+	print-str(self _) -> Unit
+
+bool-const = 111
+inst MyStr Bool
+	print-str (self Bool) -> Unit
+		print bool-const
+		print self
+
+g (n)
+	print-str(n)
+	return
+
+int-const = Unit
+inst MyStr Int
+	print-str (self Int) -> Unit
+		print int-const
+		print self
+		return
+
+
+f (x)
+	g(x)
+	g(True)
+	return
+
+
+unit-const = 8008
+inst MyStr Unit
+	print-str (self Unit) -> Unit
+		print unit-const
+		print Unit
+
+f(420)
+f(Unit)

@@ -1,0 +1,27 @@
+#$ Late env init case 2
+# 8008
+# 420
+# 420
+
+MyStrPtr a
+	MyStrPtr a
+
+class MyStr
+	print-str (x _) -> Unit
+
+summ = 8008
+inst MyStr MyStrPtr a
+	print-str (MyStrPtr(x)) -> Unit
+		print summ
+		print-str(x)
+
+f (msp) -> Unit
+	print-str(msp)
+
+sumtin = 420
+inst MyStr Int
+	print-str (x Int) -> Unit
+		print sumtin
+		print x
+
+f(MyStrPtr(420))

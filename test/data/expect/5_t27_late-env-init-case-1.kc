@@ -1,0 +1,58 @@
+#$ Late env init case 1
+# 666
+# ()
+# 666
+# 666
+# 420
+# 3
+# 8001
+# True
+# 9090
+# ()
+# 420
+# 2
+
+
+class MyStr
+	print-str (x _) -> Unit
+
+MyStrPtr a
+	MyStrPtr a
+
+StrConcat l r
+	StrConcat l r
+
+
+mystrptr = Unit
+inst MyStr MyStrPtr a
+	print-str (MyStrPtr(x)) -> Unit
+		print mystrptr
+		print-str(x)
+
+str-concat-const = 666
+inst MyStr StrConcat l r
+	print-str (StrConcat(l, r)) -> Unit
+		print str-concat-const
+		print-str(l)
+		print-str(r)
+
+int-const = 420
+inst MyStr Int
+	print-str (x Int) -> Unit
+		print int-const
+		print x
+
+bool-const = 8001
+inst MyStr Bool
+	print-str (x Bool) -> Unit
+		print bool-const
+		print x
+
+unit-const = 9090
+inst MyStr Unit
+	print-str (x Unit) -> Unit
+		print unit-const
+		print x
+
+ccc = StrConcat(MyStrPtr(StrConcat(StrConcat(3, True), Unit)), 2)
+print-str(ccc)

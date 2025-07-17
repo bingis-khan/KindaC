@@ -516,9 +516,9 @@ instance (PP (XDCon phase), PP (Type phase)) => PP (DataCon phase) where
 instance PP (TVar phase) where
   pp tv =
     let bindingCtx = case tv.binding of
-          Def.BindByType ut -> pp ut.typeName
-          Def.BindByVar uv -> pp uv.varName
-          Def.BindByInst uc -> pp uc.className
+          Def.BindByType ut -> pp ut
+          Def.BindByVar uv -> pp uv
+          Def.BindByInst uc -> pp uc
     in pp tv.fromTV <> "<" <> bindingCtx <> ">"
 
 instance (PP (XDClass phase), PP (XFunVar phase), PP (XLVar phase), PP (XMem phase), PP (XCon phase), PP (XTCon phase), PP (XNode phase), PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (ClassDef phase) where

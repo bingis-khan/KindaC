@@ -3,8 +3,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE NamedFieldPuns #-}
 module AST.IncompleteMono (module AST.IncompleteMono, Def.EnvID) where
-import AST.Common (Function, Type, XLVar, XReturn, XNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef)
+import AST.Common (Function, Type, XLVar, XReturn, XNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody)
 import qualified AST.Def as Def
 import AST.Def (Locality, PP (..), (<+>), PPDef)
 import Data.List.NonEmpty (NonEmpty)
@@ -13,6 +14,9 @@ import qualified AST.Typed as T
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.String (fromString)
 import Data.Text (Text)
+import Data.Functor ((<&>))
+import Data.Map (Map)
+import Data.Set (Set)
 
 data IMono
 type IM = IMono
@@ -24,14 +28,14 @@ type instance XNode IM = Type IM
 type instance XLamOther IM = Env
 type instance XLamVar IM = (Def.UniqueVar, Type IM)
 type instance XVarOther IM = Locality
-type instance XFunDef IM = NonEmpty (Function IM, Env)
+type instance XFunDef IM = NonEmpty (Either EnvMod EnvDef)
 type instance XVar IM = Variable
 type instance XVarOther IM = Def.Locality
 type instance XCon IM = DataCon IM
 type instance XConOther IM = ()
 type instance XTCon IM = DataDef IM
 type instance XMem IM = Def.UniqueMem
-type instance XFunOther IM = ()
+type instance XFunOther IM = EnvInstantiations
 type instance XFunVar IM = Def.UniqueVar
 type instance XFunType IM = Type IM
 type instance XEnv IM = Env
@@ -42,8 +46,27 @@ type instance XDTCon IM = Def.UniqueType
 type instance XDataScheme IM = OtherDD
 type instance XDCon IM = Def.UniqueCon
 type instance XTVar IM = TVar
-type instance XOther IM = ()
+type instance XOther IM = ()  -- TODO: should probably be EnvMod, but I don't want to modify the mStmts code yet.
 type instance XInstDef IM = ()
+
+newtype EnvDefs = EnvDefs [Either EnvMod EnvDef]
+
+data EnvDef = EnvDef
+  { envDef :: Function IM
+
+  -- this tells us which functions are not yet instantiated and should be excluded.
+  , notYetInstantiated :: [Function IM]
+  }
+
+data EnvMod = EnvMod
+  { assigned :: Env
+  , assignee :: Function IM  -- Type IM  see AST/Mono
+  , varFromEnv :: VariableFromEnv
+  }
+
+data VariableFromEnv
+  = NotFromEnv
+  | VariableFromEnv (Function IM) (Type IM)
 
 newtype OtherT
   = TVar TVar
@@ -65,7 +88,7 @@ data Variable
   deriving (Eq, Ord)
 
 data Env
-  = Env Def.EnvID [(Variable, Locality, Type IM)]
+  = Env Def.EnvID [(Variable, Locality, Type IM)] Def.Level
   | RecursiveEnv Def.EnvID IsRecursive
 
 data EnvTypes
@@ -76,8 +99,13 @@ type IsRecursive = Bool
 
 envID :: Env -> Def.EnvID
 envID = \case
-  Env eid _ -> eid
+  Env eid _ _ -> eid
   RecursiveEnv eid _ -> eid
+
+envLevel :: Env -> Def.Level
+envLevel = \case
+  Env _ _ lvl -> lvl
+  RecursiveEnv {} -> undefined
 
 data EnvUnion = EnvUnion
   { unionID :: Def.UnionID
@@ -111,13 +139,28 @@ instance Ord Env where
 -- PP --
 --------
 
+instance PP EnvDefs where
+  pp (EnvDefs eds) = flip Def.ppLines eds $ \case
+    Left em -> pp em
+    Right ed -> pp ed
+
+instance PP EnvDef where
+  pp (EnvDef { envDef, notYetInstantiated = [] }) = pp envDef
+  pp (EnvDef { envDef, notYetInstantiated }) = Def.ppBody' pp (pp envDef.functionDeclaration <+>  "|" <+> Def.encloseSepBy "" "" ", " (notYetInstantiated <&> \fn -> pp fn.functionDeclaration.functionId)) envDef.functionBody
+
+instance PP EnvMod where
+  pp em = pp (envID em.assigned) <+> "<-" <+> pp (envID $ functionEnv $ functionDeclaration em.assignee)
+
 instance PP EnvUnion where
   pp EnvUnion { unionID = uid, union = us } = pp uid <> Def.encloseSepBy "{" "}" ", " (pp <$> NonEmpty.toList us)
 
 instance PP Env where
   pp = \case
-    Env eid vs -> pp eid <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp v <+> pp t) vs)
+    Env eid vs level -> fromString $ Def.printf "%s(%s)%s" (pp eid) (pp level) $ Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp v <+> pp t) vs)
     RecursiveEnv eid isEmpty -> fromString $ Def.printf "%s[REC%s]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+
+instance PP EnvTypes where
+  pp (EnvTypes eid ts) = pp eid <> pp ts
 
 instance PP Variable where
   pp = \case
@@ -142,3 +185,18 @@ instance PPDef Variable where
   ppDef = \case
     DefinedVariable uv -> pp uv
     DefinedFunction fn -> pp fn.functionDeclaration.functionId
+
+
+type EnvInstantiations = Map Def.EnvID (Set EnvUse)
+data EnvUse = EnvUse (Maybe (Function IM)) Env
+
+instance Eq EnvUse where
+  EnvUse _ le == EnvUse _ re = le == re
+
+instance Ord EnvUse where
+  EnvUse _ le `compare` EnvUse _ re = le `compare` re
+
+instance PP EnvUse where
+  pp (EnvUse Nothing e) = pp e
+  pp (EnvUse (Just fn) e) = pp fn.functionDeclaration.functionId <+> "=>" <+> pp e
+

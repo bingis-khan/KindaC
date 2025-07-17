@@ -6,6 +6,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Redundant &" #-}  -- BUG(LSP): LSP thinks it's the Data.Functor operator.
+{-# LANGUAGE NamedFieldPuns #-}
 
 module CPrinter (cModule) where
 
@@ -39,7 +40,7 @@ import Data.Traversable (for)
 import Data.Either (lefts)
 import qualified Data.Map as Map
 import AST.Common (Module, AnnStmt, StmtF (..), Decon, DeconF (..), DataCon (..), DataDef (..), Type, Expr, Node (..), ExprF (..), TypeF (..), Function, IfStmt (..))
-import AST.Mono (M)
+import AST.Mono (M, EnvMod (assignee, assigned))
 import AST.Def ((:.)(..), Annotated (..), CtxData (..), Op (..), Locality, pp, fmap2)
 import qualified AST.Def as Def
 
@@ -145,12 +146,15 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
         ]
 
 
-  Fun envs ->
-    for_ envs $ \(_, env) ->
-      unless (M.isEnvEmpty env) $
-        statement $ do
-          envNames <- cEnv env
-          envNames.envType § envNames.envName § "=" § envNames.envInstantiation
+  Fun (M.EnvDefs envs) ->
+    for_ envs $ \case
+      Left envmod -> cEnvMod envmod
+
+      Right envdef -> do
+        unless (M.isEnvEmpty envdef.envDef.functionDeclaration.functionEnv) $
+          statement $ do
+            envNames <- cEnvDef envdef
+            envNames.envType § envNames.envName § "=" § envNames.envInstantiation
 
   Inst () -> undefined
   Other () -> undefined
@@ -291,39 +295,75 @@ cUnion args ret union' =
           pure unionType
 
 
-
 cEnv :: M.Env -> PPL EnvNames
-cEnv = Memo.memo (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledEnvs = memo }) $ \menv _ -> do
-  case menv of
-    M.RecursiveEnv _ _ -> undefined
-    M.Env eid vars -> do
-      -- safety measure for bugs
-      when (M.isEnvEmpty menv) $
-        error "[COMPILER ERROR]: Called `cEnv` with an empty environment. I can ignore it, but this is probably a bug. This should be checked beforehand btw. Why? sometimes, it requires special handling, so making it an error kind of makes me aware of this."
+cEnv = cEnv' mempty
 
-      let uniqueVars = fmap snd $ Map.toList $ Map.fromList $ vars <&> \case
-            tup@(v@(M.DefinedFunction _), _, t) | doesFunctionNeedExplicitEnvironment t -> ((v, Just t), tup)
-            tup@(v, _, _) -> ((v, Nothing), tup)
+cEnvDef :: M.EnvDef -> PPL EnvNames
+cEnvDef envdef = cEnv' (Set.fromList envdef.notYetInstantiated) envdef.envDef.functionDeclaration.functionEnv
 
-      let envVarName v t = case v of
-              M.DefinedVariable uv -> cVarName uv
-              M.DefinedFunction fn | doesFunctionNeedExplicitEnvironment t -> cEnvFunctionVarName (cFunction t fn) t
-              M.DefinedFunction fn -> cFunction t fn
+-- a create-all function for Env.
+--  NOTE: missingInsts is functions which should not be initialized. this is a smell. memo does not account for them and I'm counting on it to be correct...
+--    UPDATE: nah, it didn't work. moved it out of memo.
+cEnv' :: Set (Function M) -> M.Env -> PPL EnvNames
+cEnv' _ (M.RecursiveEnv {}) = undefined
+cEnv' missingInsts menv@(M.Env _ vars) = do
+  let envVarName v t = case v of
+          M.DefinedVariable uv -> cVarName uv
+          M.DefinedFunction fn | doesFunctionNeedExplicitEnvironment t -> cEnvFunctionVarName (cFunction t fn) t
+          M.DefinedFunction fn -> cFunction t fn
 
-      let varTypes =
-            uniqueVars <&> \(v, _, t) -> statement $ do
-            cDefinition t $ envVarName v t
+  let uniqueDefVars = fmap snd $ Map.toList $ Map.fromList $ vars <&> \case
+        tup@(v@(M.DefinedFunction _), _, t) | doesFunctionNeedExplicitEnvironment t -> ((v, Just t), tup)
+        tup@(v, _, _) -> ((v, Nothing), tup)
 
-      let etype = "struct" § "et" & pls (hashUnique eid.fromEnvID)
-      let env = etype <§ cBlock varTypes §> ";"
-      addTopLevel env
+  (et, ename) <- Memo.memo' (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledEnvs = memo }) menv $ \menv _ -> case menv of
+        M.RecursiveEnv _ _ -> undefined
+        M.Env eid vars -> do
+          -- safety measure for bugs
+          when (M.isEnvEmpty menv) $
+            error "[COMPILER ERROR]: Called `cEnv` with an empty environment. I can ignore it, but this is probably a bug. This should be checked beforehand btw. Why? sometimes, it requires special handling, so making it an error kind of makes me aware of this."
+
+          -- let vars' = filter (\case { (M.DefinedFunction fn, _, _) -> Set.notMember fn missingInsts; _ -> True }) vars
 
 
-      let name = "et" & pls (hashUnique eid.fromEnvID) & "s"
-      let cvarInsts = uniqueVars <&> \(v, loc, t) -> "." & envVarName v t § "=" § cVar t loc v
-      let inst = enclose "{ " " }" $ sepBy ", " cvarInsts
-      pure EnvNames { envType = etype, envName = name, envInstantiation = inst }
+          let varTypes =
+                uniqueDefVars <&> \(v, _, t) -> statement $ do
+                cDefinition t $ envVarName v t
 
+          let etype = "struct" § "et" & pls (hashUnique eid.fromEnvID)
+          let env = etype <§ cBlock varTypes §> ";"
+          addTopLevel env
+
+
+
+          let name = "et" & pls (hashUnique eid.fromEnvID) & "s"
+          pure (etype, name)
+
+  let uniqueInstVars = filter (\case { (M.DefinedFunction fn, _, _) -> Set.notMember fn missingInsts; _ -> True }) uniqueDefVars
+  let cvarInsts = uniqueInstVars <&> \(v, loc, t) -> "." & envVarName v t § "=" § cVar t loc v
+  let inst = enclose "{ " " }" $ sepBy ", " cvarInsts
+  pure EnvNames { envType = et, envName = ename, envInstantiation = inst }
+
+cEnvMod :: M.EnvMod -> PP
+cEnvMod M.EnvMod { M.assigned = env@(M.Env _ vars), M.assignee = fn, M.varFromEnv = vfe } = do
+  -- _ <- cEnv env
+  -- TODO: copied.
+  let uniqueDefVars = fmap snd $ Map.toList $ Map.fromList $ vars <&> \case
+        tup@(v@(M.DefinedFunction _), _, t) | doesFunctionNeedExplicitEnvironment t -> ((v, Just t), tup)
+        tup@(v, _, _) -> ((v, Nothing), tup)
+  let currentInstVars = mapMaybe (\case { (M.DefinedFunction fn', l, t)| fn' == fn -> Just (fn', l, t); _ -> Nothing }) uniqueDefVars
+  let envVarName v t = if doesFunctionNeedExplicitEnvironment t
+      then cEnvFunctionVarName (cFunction t v) t
+      else cFunction t v
+
+  for_ currentInstVars $ \(fn, loc, t) -> do
+    statement $ do
+      env <- cEnv env
+      case vfe of
+        M.VariableFromEnv vfeFn vfeT -> "env->" & envVarName vfeFn vfeT & ".env." & env.envName & "." & envVarName fn t § "=" § cVar t loc (M.DefinedFunction fn)
+        M.NotFromEnv -> env.envName & "." & envVarName fn t § "=" § cVar t loc (M.DefinedFunction fn)
+
+cEnvMod _ = undefined
 
 
 cLambda :: M.Env -> [(Def.UniqueVar, Type M)] -> Type M -> PL -> PL
@@ -865,7 +905,7 @@ data Context = Context
   , topLevelBlocks :: [Text]
 
   , compiledUnions :: Memo M.EnvUnion PL
-  , compiledEnvs :: Memo M.Env EnvNames
+  , compiledEnvs :: Memo M.Env (PL, PL)
   , compiledFunctions :: Memo (Function M, NeedsImplicitEnvironment) PL
   , compiledTypes :: Memo (DataDef M) PL
   }

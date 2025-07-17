@@ -1,0 +1,220 @@
+
+aaa = 123
+inst Str MyStrPtr a
+	to-str (MyStrPtr(x))
+		print aaa
+		print x
+
+bbb = True
+inst Str Int
+	to-str (x Int)
+		print bbb
+		print x
+
+
+-----------
+
+we also have to make sure that they are ordered correctly! even the "recursive" definitions!
+
+MyStrPtr (MyStrPtr Int)
+^-- #2     ^-- #1   ^-- #0
+
+I need to find a basic structure for dependencies.
+
+Map Env [Env]
+
+Should be something like this.
+So each env has a specified number of dependencies.
+
+
+QUESTION: Can envs be added to other environments and after this still be updated?
+
+inst Str MyStrPtr a
+
+f (msp)
+	print-str(msp)  # do something with Str
+
+inst Str Int
+
+f(MyStrPtr(420))
+
+ANSWER: yes.... it's not the end of the world though... it's just... updates will be compounded. but it's a fairly rare case where functions and instances overlap i guess. it just needs to be correct.
+	OR MAYBE... we simply treat unfinished environments as if they were NOT initialized.
+
+[env MyStrPtr Int | Int]
+[env f | MyStrPtr Int]
+[env Int]
+[env MyStrPtr Int <- env Int]
+[env f <- env MyStrPtr Int]
+
+
+So with every env, we must also update a list of items that need to be updated?
+
+But also
+
+
+
+CASES
+
+CASE 0: EZ
+[assume all functions have something in the environment which won't be eliminated.]
+
+inst MyStrPtr a
+inst Int
+[MyStrPtr env <- Int Env]
+
+
+CASE 1: RECURSIVE
+
+inst Str MyStrPtr a
+
+inst Str StrConcat l r
+
+# we should sort env defs by their dependencies.
+StrConcat(MyStrPtr(StrConcat(StrConcat(Int, Bool), Unit)), Int)
+    ^-------^--------^-- we must also take into account other environments becoming completed.
+
+So, using something like substAssocs, we can order these environments:
+
+# MyStrPtr
+0[env MyStrPtr ... | env StrConcat ...]
+
+# StrConcat
+1[env StrConcat Int Bool]
+2[env StrConcat 1 Unit]
+[env MyStrPtr <- 2] 
+[env StrConcat 0 Int]
+
+
+CASE 2: STUPID SHIT
+
+inst Str MyStrPtr a
+
+f (msp)
+	print-str(msp)  # do something with Str
+
+inst Str Int
+
+f(MyStrPtr(420))
+
+
+Yeah, I explained it before:
+
+[env MyStrPtr Int | Int]
+[env f | MyStrPtr Int]
+[env Int]
+[env MyStrPtr Int <- env Int]
+[env f <- env MyStrPtr Int]
+
+
+CASE 3: NESTED INST
+
+inst Str MyStrPtr a
+
+f ()
+	inst Str Int
+	print-str(MyStrPtr(420))
+
+f()
+
+
+[env MyStrPtr | env Int]
+[env f]
+	[env Int]
+	[^env MyStrPtr Int <- env Int]  # ^ means it's external. during codegen, i guess we can assign straight to the parameter, like `env.ut69.env420.mspenv = intenv`.
+
+This was easy, but notice that we have to get inside the function to complete the environment!
+Compared to the previous example, we somehow have to know that we have to get inside the function to complete it instead of completing the environment earlier. Maybe each instance should have a "level" assigned, so we have to know if we should go deeper or not?
+
+If so, it should work. But what happens in a mixed case?
+
+
+CASE 3.5: MIXED INST
+
+inst Str ConcatStr 
+
+f (x a) -> Unit
+	inst Str Int
+	print-str(ConcatStr(x, Int))
+
+inst Str Bool
+f(True)
+
+[env ConcatStr | env Int, env Bool]
+[env f | env ConcatStr Int Bool]
+	[env Int]
+	[^env ConcatStr Int Bool <- env Int]
+
+[env Bool]
+[env ConcatStr Int Bool <- env Bool]
+[env f <- env ConcatStr Int Bool]
+
+that would be the correct env instantiation. note, that what's happening INSIDE the function is actually happening LAST.
+
+
+CASE 4: FUNCTIONS DEPEND ON EACH OTHER?!
+
+inst Str MyStrPtr a
+f (x a)
+	print-str(MyStrPtr(x))
+
+g (n a)
+	f(n)
+
+inst Str Bool
+g(MyStrPtr(True))
+
+[env MyStrPtr Bool | env Bool]
+[env f | env MyStrPtr Bool]
+[env g | env f]
+[env Bool]
+[env MyStrPtr Bool <- env Bool]
+[env f <- env MyStrPtr Bool]
+[env g <- env f]
+
+As you can see, functions clearly can depend on each other.
+
+
+
+Based on this, we can define some rules:
+
+1. We only include an environment if it's *complete*.
+2. An environment is complete only when all its dependent environments *from the current level* are complete.
+	> does it have to depend on the environment level? maybe there is some better way?
+
+Based on the above rules, we can also specify a way for multiple env defs of the same function to behave: (which monomorphised to different environments)
+	1. Order them, so that envdefs that depend on previous env defs are placed after them.
+	2. make sure to insert completions from other env defs as well and take them into account while ordering.
+		> env completion is that assignment to the environment.
+	3. for the same reason, you must do the same thing with functions, although i don't anything can depend on functiob]
+	4. cyclic graphs CANNOT HAPPEN if the code is written in a correct way.
+
+
+
+CASE 5: (actually, we are not done...)
+
+inst Str ConcatStr 
+
+f (x a) -> Unit
+	inst Str Int
+	print-str(ConcatStr(ConcatStr(x, Int), Int))
+
+inst Str Bool
+f(True)
+
+[env ConcatStr Int Bool | env Int, env Bool]
+[env ConcatStr (ConcatStr Bool Int) Int | env ConcatStr Bool Int]
+[env f | env ConcatStr (ConcatStr Bool Int) Int, env ConcatStr Bool Int]
+	[env Int]
+	# eh. i guess somehow track the environments. I don't want to needlessly increase the size of the environment, so I should probably update the env struct in multiple places.
+	[^env ConcatStr Bool Int <- env Int]
+	[^env ConcatStr (ConcatStr Bool Int) Int <- env ConcatStr Bool Int]
+
+[env Bool]
+[env ConcatStr Int Bool <- env Bool]
+[env f <- env ConcatStr Int Bool]
+
+
+=============================================
+
+im doing a mono rewrite. i think typechecking is okay now.

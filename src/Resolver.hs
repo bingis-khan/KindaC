@@ -143,7 +143,8 @@ rStmts = traverse -- traverse through the list with Ctx
           Just re -> pure re
           Nothing -> do
             uc <- unit
-            pure $ Fix $ N () (Con uc ())
+            eid <- newEnvID
+            pure $ Fix $ N () (Con uc eid)
 
         stmt $ Return re
       Other (U.DataDefinition dd) -> mdo
@@ -190,7 +191,8 @@ rStmts = traverse -- traverse through the list with Ctx
           let function = Function (FD env vid rparams rret (error "what should the scheme be here?")) rbody
           newFunction function
 
-          (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure $ do
+          eid <- newEnvID
+          (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure eid $ do
             rparams' <- traverse (\(n, t) -> do
               rn <- rDecon n
               rt <- rDeclaredType t
@@ -203,7 +205,7 @@ rStmts = traverse -- traverse through the list with Ctx
           --   NOTE: don't forget to remove self reference - it does not need to be in the environment.
           -- TODO: maybe just make it a part of 'closure'?
           let innerEnv = Set.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
-          env <- mkEnv innerEnv
+          env <- mkEnv eid innerEnv
 
         stmt $ Fun function
 
@@ -237,7 +239,7 @@ rStmts = traverse -- traverse through the list with Ctx
                   t -> fold <$> sequenceA t
 
             -- HACK: ALSO COPIED FROM DefinedFunction!!
-            (rparams, rret) <- bindTVars (Set.toList tvars) $ closure $ do
+            (rparams, rret) <- bindTVars (Set.toList tvars) $ do
               rparams' <- traverse (\(n, t) -> do
                 rn <- rDecon n
                 rt <- rClassType t
@@ -283,7 +285,8 @@ rStmts = traverse -- traverse through the list with Ctx
                   Nothing -> Set.singleton $ R.bindTVar (BindByVar vid) utv
                 t -> fold <$> sequenceA t
 
-          (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure $ do
+          eid <- newEnvID
+          (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure eid $ do
             rparams' <- traverse (\(n, t) -> do
               rn <- rDecon n
               rt <- rDeclaredType t
@@ -296,7 +299,7 @@ rStmts = traverse -- traverse through the list with Ctx
           --   NOTE: don't forget to remove self reference - it does not need to be in the environment.
           -- TODO: maybe just make it a part of 'closure'?
           let innerEnv = Set.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
-          env <- mkEnv innerEnv
+          env <- mkEnv eid innerEnv
           let fundec = FD env vid rparams rret ()
 
           pure InstFun
@@ -394,7 +397,8 @@ rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but
         err $ UndefinedConstructor conname
         placeholderCon conname
 
-    pure $ Con con ()
+    eid <- newEnvID
+    pure $ Con con eid
   MemAccess e memname -> do
     rexpr <- e
     pure $ MemAccess rexpr memname
@@ -439,13 +443,14 @@ rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but
   As e t -> As <$> e <*> rType t
   Lam () params body -> do
     lamId <- lambdaVar
-    (rParams, rBody) <- closure $ do
+    eid <- newEnvID
+    (rParams, rBody) <- closure eid $ do
       rParams <- traverse newVar params
       rBody <- scope body
       pure (rParams, rBody)
 
     let innerEnv = gatherVariablesFromExpr rBody -- TODO: environment making in 'closure' function.
-    env <- mkEnv innerEnv
+    env <- mkEnv eid innerEnv
     pure $ Lam (R.LamDec lamId env) rParams rBody
 
 
@@ -490,11 +495,11 @@ scope x = do
   return x'
 
 -- TODO: right now, it only creates a new scope... so it's a bit of a misnomer.
-closure :: Ctx a -> Ctx a
-closure x = do
+closure :: Def.EnvID -> Ctx a -> Ctx a
+closure eid x = do
   oldScope <- RWST.get          -- enter scope
 
-  RWST.modify $ \state@(CtxState { scopes = scopes' }) -> state { scopes = emptyScope <| scopes' }
+  RWST.modify $ \state@(CtxState { scopes = scopes', envStack = envStack' }) -> state { scopes = emptyScope <| scopes', envStack = eid : envStack' }
   x' <- x                       -- evaluate body
   RWST.put oldScope             -- exit scope
 
@@ -505,6 +510,7 @@ type Ctx = RWST () [ResolveError] CtxState IO  -- I might add additional context
 
 data CtxState = CtxState
   { scopes :: NonEmpty Scope
+  , envStack :: [Def.EnvID]
   , inLambda :: Bool  -- hack to check if we're in a lambda currently. the when the lambda is not in another lambda, we put "Local" locality.
   , tvarBindings :: Map Def.UnboundTVar (TVar R)
 
@@ -527,7 +533,7 @@ data Scope = Scope
 
 emptyState :: CtxState
 emptyState =
-  CtxState { scopes = NonEmpty.singleton emptyScope, tvarBindings = mempty, prelude = Nothing, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty, instances = mempty }
+  CtxState { scopes = NonEmpty.singleton emptyScope, envStack = mempty, tvarBindings = mempty, prelude = Nothing, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty, instances = mempty }
 
 emptyScope :: Scope
 emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty, instScope = mempty }
@@ -539,6 +545,7 @@ getScopes = RWST.gets scopes
 mkState :: Prelude -> CtxState
 mkState prel = CtxState
   { scopes = NonEmpty.singleton initialScope
+  , envStack = mempty
   , tvarBindings = mempty
   , prelude = Just prel
   , inLambda = False
@@ -853,11 +860,15 @@ data ResolveError
 
 
 -- environment stuff
-mkEnv :: Set VariableProto -> Ctx (XEnv R)
-mkEnv innerEnv = do
-  curlev <- currentLevel
+mkEnv :: Def.EnvID -> Set VariableProto -> Ctx (XEnv R)
+mkEnv eid innerEnv = do
+  currentEnvStack <- RWS.gets envStack
   locality <- localityOfVariablesAtCurrentScope
-  pure $ Env (mapMaybe (\v -> (locality !? R.asPUniqueVar v) <&> \(_, loc) -> (v, loc)) $ Set.toList innerEnv) curlev  -- filters variables to ones that are in the environment.
+  pure $ Env eid currentEnvStack (mapMaybe (\v -> (locality !? R.asPUniqueVar v) <&> \(_, loc) -> (v, loc)) $ Set.toList innerEnv)  -- filters variables to ones that are in the environment.
+
+-- Make a new env ID.
+newEnvID :: Ctx Def.EnvID
+newEnvID = Def.EnvID <$> liftIO newUnique
 
 localityOfVariablesAtCurrentScope :: Ctx (Map Def.UniqueVar (R.VariableProto, Def.Locality))
 localityOfVariablesAtCurrentScope = do

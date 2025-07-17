@@ -2,14 +2,16 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 module AST.Mono (module AST.Mono) where
-import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef)
+import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef, functionEnv, functionBody)
 import qualified AST.Def as Def
 import AST.Def (Locality, PP (..), (<+>))
 import Data.List.NonEmpty (NonEmpty)
 import AST.Typed (TC)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.String (fromString)
+import Data.Functor ((<&>))
 
 
 data Mono
@@ -17,7 +19,7 @@ type M = Mono
 
 type instance Rec M a = a
 type instance Module M = Mod
-type instance XFunDef M = [(Function M, Env)]
+type instance XFunDef M = EnvDefs
 type instance XLVar M = Def.UniqueVar
 type instance XReturn M = Expr M
 type instance XNode M = Type M
@@ -43,6 +45,24 @@ type instance XTVar M = ()
 type instance XOther M = ()
 type instance XInstDef M = ()
 
+newtype EnvDefs = EnvDefs [Either EnvMod EnvDef]
+
+data EnvDef = EnvDef
+  { envDef :: Function M 
+
+  -- this tells us which functions are not yet instantiated and should be excluded.
+  , notYetInstantiated :: [Function M]
+  }
+
+data EnvMod = EnvMod
+  { assigned :: Env
+  , assignee :: Function M  -- Type M  <- not sure if I need the type. Functions have their own types. But note, that we have to instantiate each field!
+  , varFromEnv :: VariableFromEnv
+  }
+
+data VariableFromEnv
+  = NotFromEnv
+  | VariableFromEnv (Function M) (Type M)
 
 data Variable
   = DefinedFunction (Function M)
@@ -104,6 +124,18 @@ instance Ord Env where
 
 instance PP Mod where
   pp m = Def.ppLines pp m.topLevelStatements
+
+instance PP EnvDefs where
+  pp (EnvDefs eds) = flip Def.ppLines eds $ \case
+    Left em -> pp em
+    Right ed -> pp ed
+
+instance PP EnvDef where
+  pp (EnvDef { envDef, notYetInstantiated = [] }) = pp envDef
+  pp (EnvDef { envDef, notYetInstantiated }) = Def.ppBody' pp (fromString $ Def.printf "%s \\\\ %s" (pp envDef.functionDeclaration) (Def.encloseSepBy "{" "}" ", " $ pp . functionDeclaration <$> notYetInstantiated)) envDef.functionBody -- Def.ppBody' pp (pp envDef.functionDeclaration <+>  "|" <+> Def.encloseSepBy "" "" ", " (notYetInstantiated <&> \fn -> pp fn.functionDeclaration.functionId)) envDef.functionBody
+
+instance PP EnvMod where
+  pp em = "MOD:" <+> pp (envID em.assigned) <+> "<-" <+> pp (envID $ functionEnv $ functionDeclaration em.assignee)
 
 instance PP OtherDD where
   pp _ = mempty
