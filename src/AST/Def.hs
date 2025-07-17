@@ -39,7 +39,7 @@ import Data.Bifunctor (bimap)
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = dc
+defaultContext = rc
 
 dc = debugContext
 rc = runtimeContext

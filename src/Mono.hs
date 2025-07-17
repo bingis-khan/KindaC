@@ -166,24 +166,30 @@ orderEnvironments = do
 
         -- NOTE: PROBABLY NOT GOOD
         currentLevel <- State.gets $ length . currentEnvStack
+        Def.ctxPrint' $ Def.printf "CURRENT LEVEL: %s" $ pp currentLevel
         let isFromCurrentEnv env = IM.envLevel env == currentLevel
+        let isFromOuterEnv env = IM.envLevel env < currentLevel
         let
+          filterOtherEnvs :: [Function IM] -> [Function IM]
+          filterOtherEnvs = filter (isFromCurrentEnv . functionEnv . functionDeclaration)
+
           filterOuterEnvs :: [Function IM] -> [Function IM]
-          filterOuterEnvs = filter (isFromCurrentEnv . functionEnv . functionDeclaration)
+          filterOuterEnvs = filter (not . isFromOuterEnv . functionEnv . functionDeclaration)
 
         let currentEnvsWithIncompletedEnvs = Def.fmap2 (filter ((\e -> e `Set.notMember` completedEnvs) . functionEnv . functionDeclaration)) currentEnvs
-
-        let complete = filter (null . snd . fmap filterOuterEnvs) currentEnvsWithIncompletedEnvs
+        Def.ctxPrint' $ Def.printf "CANDIDATES: %s" $ pp $ currentEnvsWithIncompletedEnvs <&> \(fn, deps) -> pp fn.functionDeclaration.functionId <+> pp (IM.envLevel fn.functionDeclaration.functionEnv) <+> (pp $ IM.envLevel . functionEnv . functionDeclaration <$> deps)
+        Def.ctxPrint' $ Def.printf "CANDIDATES (filtered outer): %s" $ pp $ currentEnvsWithIncompletedEnvs <&> \(fn, deps) -> pp fn.functionDeclaration.functionId <+> pp (IM.envLevel fn.functionDeclaration.functionEnv) <+> (pp $ IM.envLevel . functionEnv . functionDeclaration <$> filterOuterEnvs deps)
+        let complete = filter (null . snd . fmap filterOtherEnvs) currentEnvsWithIncompletedEnvs
         Def.ctxPrint' $ Def.printf "COMPLETE: %s" (pp $ functionId . functionDeclaration . fst <$> complete)
-        let incomplete = filter (not . null . snd . fmap filterOuterEnvs) currentEnvsWithIncompletedEnvs
+        let incomplete = filter (not . null . snd . fmap filterOtherEnvs) currentEnvsWithIncompletedEnvs
         Def.ctxPrint' $ Def.printf "INCOMPLETE: %s" (pp $ bimap (functionId . functionDeclaration) (fmap $ functionId . functionDeclaration) <$> incomplete)
         if null complete
           then do
             setIncomplete $ bimap (functionEnv . functionDeclaration) filterOuterEnvs <$> incomplete  -- there could be some incomplete envs, so we must add them here.
-            pure $ fmap Right $ incomplete <&> \(e, ds) -> IM.EnvDef { envDef = e, notYetInstantiated = ds }
+            pure $ fmap Right $ incomplete <&> \(e, ds) -> IM.EnvDef { envDef = e, notYetInstantiated = filterOuterEnvs ds }
           else do
             completeEnvs $ functionEnv . functionDeclaration . fst <$> complete
-            let completedStmts = complete <&> \(e, deps) -> Right $ IM.EnvDef { envDef = e, notYetInstantiated = deps }
+            let completedStmts = complete <&> \(e, deps) -> Right $ IM.EnvDef { envDef = e, notYetInstantiated = filterOuterEnvs deps }  -- NOTE: maybe we should filter out ONLY outer envs.
             envAdds <- Def.fmap2 Left completeEnvironments
             ((completedStmts <> envAdds) <>) <$> loop incomplete
 
