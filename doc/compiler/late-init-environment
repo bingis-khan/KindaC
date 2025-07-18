@@ -74,7 +74,7 @@ inst Str StrConcat l r
 StrConcat(MyStrPtr(StrConcat(StrConcat(Int, Bool), Unit)), Int)
     ^-------^--------^-- we must also take into account other environments becoming completed.
 
-So, using something like substAssocs, we can order these environments:
+So, with control flow akin to substAssocs, we can order these environments:
 
 # MyStrPtr
 0[env MyStrPtr ... | env StrConcat ...]
@@ -202,7 +202,7 @@ f (x a) -> Unit
 inst Str Bool
 f(True)
 
-[env ConcatStr Int Bool | env Int, env Bool]
+[env ConcatStr Bool Int | env Int, env Bool]
 [env ConcatStr (ConcatStr Bool Int) Int | env ConcatStr Bool Int]
 [env f | env ConcatStr (ConcatStr Bool Int) Int, env ConcatStr Bool Int]
 	[env Int]
@@ -217,4 +217,31 @@ f(True)
 
 =============================================
 
-im doing a mono rewrite. i think typechecking is okay now.
+
+also, to write down what i was thinking, I think due to case 5, some other cases are redundant / just optimizations.
+how would it look like with only case 5?
+
+- case 0 covered - it's so simple, it'll look the same.
+- case 1 covered (but recommended. reduces operations and visual noise)
+	without it, the example:
+	StrConcat(MyStrPtr(StrConcat(StrConcat(Int, Bool), Unit)), Int)
+	[env MyStrPtr | env StrConcat (StrConcat Int Bool) Unit]
+
+	
+	# assuming we plop them down ordered ONLY by themselves to simplify the example
+	[env StrConcat Int Bool]
+	[env StrConcat (StrConcat Int Bool) Unit]
+	[env StrConcat (MyStrPtr (...)) Int]
+
+	# now update. it would b
+	[env MyStrPtr <- env StrConcat (StrConcat Int Bool) Unit]
+	[env StrConcat (MyStrPtr (...)) <- env MyStrPtr (...)]
+
+	# (a good case! if we don't order them, there might be a lot of modifications.)
+
+- case 2 covered (we need to peek inside function environments.)
+- case 3 covered
+- case 3.5 covered
+- case 4 covered
+
+I guess I just wasted time implementing all of this................................................................................................................................kill me......................................................................................................................................................................
