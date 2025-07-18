@@ -348,17 +348,21 @@ cEnvMod :: M.EnvMod -> PP
 cEnvMod M.EnvMod { M.assigned = env@(M.Env _ vars), M.assignee = fn, M.varFromEnv = vfe } = do
   -- _ <- cEnv env
   -- TODO: copied.
+  -- NOTE 18.07.25 - what the fuck am i doing here.
+  --     Ah, right. We're getting all variables that much assignee. NOT SURE IF THERE IS GOING TO BE MORE THAN ONE FUNCTION, but just to be safe I guess. TODO: make an assert for this to find a counter example.
+  --     uniqueDefVars are finaly variables that will be put into that environment.
   let uniqueDefVars = fmap snd $ Map.toList $ Map.fromList $ vars <&> \case
         tup@(v@(M.DefinedFunction _), _, t) | doesFunctionNeedExplicitEnvironment t -> ((v, Just t), tup)
         tup@(v, _, _) -> ((v, Nothing), tup)
   let currentInstVars = mapMaybe (\case { (M.DefinedFunction fn', l, t)| fn' == fn -> Just (fn', l, t); _ -> Nothing }) uniqueDefVars
+
   let envVarName v t = if doesFunctionNeedExplicitEnvironment t
       then cEnvFunctionVarName (cFunction t v) t
       else cFunction t v
 
   for_ currentInstVars $ \(fn, loc, t) -> do
     statement $ do
-      env <- cEnv env
+      env <- cEnv env  -- Env which we assign TO.
       case vfe of
         M.VariableFromEnv vfeFn vfeT -> "env->" & envVarName vfeFn vfeT & ".env." & env.envName & "." & envVarName fn t § "=" § cVar t loc (M.DefinedFunction fn)
         M.NotFromEnv -> env.envName & "." & envVarName fn t § "=" § cVar t loc (M.DefinedFunction fn)

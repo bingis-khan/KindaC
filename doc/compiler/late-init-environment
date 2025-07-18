@@ -128,6 +128,28 @@ Compared to the previous example, we somehow have to know that we have to get in
 
 If so, it should work. But what happens in a mixed case?
 
+ 
+CASE 3.25: ENV-NESTED INST
+
+[that's a case i added later!]
+We need to handle insts when nested in an environment!
+
+inst MyStr MyStrPtr a
+
+f () -> Unit
+	int-const = 69
+	inst MyStr Int
+	print-str(MyStrPtr(MyStrPtr(420)))
+
+f()
+
+should turn to:
+[env MyStrPtr Int | env Int] (completed)  # the completed means that it should be treated as completed ON THIS LEVEL
+[env MyStrPtr (MyStrPtr Int) | env MyStrPtr (Int)] (completed)
+[env f]
+	[env Int]
+	[^env (MyStrPtr (MyStrPtr Int)) . env MyStrPtr Int <- env Int]
+
 
 CASE 3.5: MIXED INST
 
@@ -244,4 +266,53 @@ how would it look like with only case 5?
 - case 3.5 covered
 - case 4 covered
 
+[later edit]
+	# i guess this would be weird:
+	f ()
+		inst Int  # we can only substitute the RIGHT INT. we MUST NOT substitute the MyStrPtr part, as it will later be replaced by MyStrPtr instance. (i mean we can, but that's redundant work and it's logically incorrect.)
+		inst MyStrPtr
+		print-str(StrConcat(MyStrPtr(420), 1337))
+
+
 I guess I just wasted time implementing all of this................................................................................................................................kill me......................................................................................................................................................................
+
+
+What info do I need to properly generate these? How can I "traverse" them properly?
+
+	I guess, i have to get a tree of environments!
+		How? Go by DefinedFunctions! Not by types! Then we can be sure, that we're getting the right environment!
+		Obviously, somehow, we have to get a typed one later (like we do when we `tryGetType` in Mono)
+	Then somehow (i know how ig, but implementation detail) get dependencies of this environment.
+
+	Okay, how would EnvMod look like now?
+		Ehh, we would need to somehow represent access to all of them.
+		For this, a non-computationally intensive way is to precompute the "access tree" (which parts of the environment to access)
+		But... what we can also do is PROBABLY (that's the running theory) compute the access during codegen (bad, we want the backends to ideally NOT have to compute anything)
+			by having the root environment and recursively traversing it.
+
+			$ 1: So, in this case, we would leave it alone..?
+				No, there is one thing I forgot. Even if there is only one update, we might need to update a nested environment.
+				I added case 3.25.
+
+			$ 2: Then we recursively "check" the env tree and complete any environments that are left.
+				Huh, one problem. What happens if Int depends on (for example) MyStrPtr, which gets initialized later in the same function.
+				[!!!] Then we have to wait for MyStrPtr to get instantiated normally.
+				So we have to break the search on non-instantiated Envs.
+
+			Since we have to compute access information anyway, we can precompute it in EnvMod.
+
+			Due to $1, we need to be able to access inner environments. We can do it with a list: [Env]
+				The last element will be the actual environment to assign to.
+				We should probably make a new datatype for this to make it more clear:
+					EnvAccess
+						access NonEmpty (Function M, Type M)  # (more info i guess). should this be NonEmpty? yes! we only need to deep access if it's from environment!
+						assigned Env
+
+				The new EnvMod will be a list of [EnvAccess]. [EnvAccess] generalizes `VariableFromEnv` (bad name), because recursive assignments will only occur for functions from the environment.
+				So:
+					EnvMod
+						assigneds Either Env (NonEmpty EnvAccess)  # we can name it something else than Either!
+						assignee Function M
+
+
+
