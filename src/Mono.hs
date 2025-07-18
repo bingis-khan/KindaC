@@ -961,7 +961,7 @@ withTypeMap tm a = do
 
 
 type CurrentInstances = Map Def.UniqueClassInstantiation T.PossibleInstances
-type TypeMapping = Map (Either Def.UniqueClassInstantiation Def.UniqueFunctionInstantiation) (Type TC)
+type TypeMapping = Map (Either Def.UniqueClassInstantiation Def.UniqueFunctionInstantiation, Type IM) (Type TC)  -- TODO: weirdly backwards (need IM to get TC). might be a sign of bad synchronization with TypeMap.
 withClassInstanceAssociations :: T.Env -> Context a -> Context a
 withClassInstanceAssociations ci a = do
   -- ucis' <- fmap Map.fromList $ traverse (bitraverse (\(Just (_, t), uci) -> (,uci) <$> mType t) pure) $ Map.toList ucis
@@ -981,10 +981,11 @@ withClassInstanceAssociations ci a = do
         _ -> undefined
 
   oldTypeMapping <- State.gets typeMappingForInstantiations
-  let typeMapping = Map.fromList $ case ci of
+  typeMapping <- fmap Map.fromList $ traverse (bitraverse sequenceA pure) $ case ci of
         T.Env _ vars _ _ -> flip mapMaybe vars $ \case
-          (T.DefinedClassFunction _ _ _ uci, _, backupType) -> Just (Left uci, backupType)  -- before i had this: Map.findWithDefault backupType (Left uci) oldTypeMapping. but it breaks at recursion. also, we should be operating on ALREADY MAPPED ENVS.
-          (T.DefinedFunction _ _ _ _ ufi, _, backupType) -> Just (Right ufi, backupType)
+          (T.DefinedClassFunction _ _ _ uci, _, backupType) ->
+            Just ((Left uci, mType backupType), backupType)  -- before i had this: Map.findWithDefault backupType (Left uci) oldTypeMapping. but it breaks at recursion. also, we should be operating on ALREADY MAPPED ENVS.
+          (T.DefinedFunction _ _ _ _ ufi, _, backupType) -> Just ((Right ufi, mType backupType), backupType)
           _ -> Nothing
 
         _ -> undefined
@@ -1027,14 +1028,16 @@ withClassInstanceAssociations ci a = do
 tryGetTypeFor :: Type TC -> Either Def.UniqueClassInstantiation Def.UniqueFunctionInstantiation -> Context (Type TC)
 tryGetTypeFor backupType u = do
   tm <- State.gets typeMappingForInstantiations
-  pure $ Map.findWithDefault backupType u tm
+  mt <- mType backupType
+  pure $ Map.findWithDefault backupType (u, mt) tm
 
 tryGetTypeForVar :: Type TC -> T.VariableF a -> Context (Type TC)
 tryGetTypeForVar backupType v = do
   tm <- State.gets typeMappingForInstantiations
+  mt <- mType backupType
   pure $ case v of
-    T.DefinedFunction _ _ _ _ ufi -> Map.findWithDefault backupType (Right ufi) tm
-    T.DefinedClassFunction _ _ _ uci -> Map.findWithDefault backupType (Left uci) tm
+    T.DefinedFunction _ _ _ _ ufi -> Map.findWithDefault backupType (Right ufi, mt) tm
+    T.DefinedClassFunction _ _ _ uci -> Map.findWithDefault backupType (Left uci, mt) tm
     _ -> backupType
 
 
