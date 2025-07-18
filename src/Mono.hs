@@ -204,8 +204,22 @@ completeEnvironments = do
     -- isAtCurrentLevel = (\(Env {}) -> undefined) . functionEnv . functionDeclaration
 
     loop = do
+        -- NOTE: PROBABLY NOT GOOD
+        -- NOTE NOTE: COPYPASTA COPYPASTA NEEDZ A REWRITE NOW! BECAUSE ITS GOVERNED BY THE SAME PRINCIPLES AS `orderEnvironments`
+        currentLevel <- State.gets $ length . currentEnvStack
+        Def.ctxPrint' $ Def.printf "CURRENT LEVEL: %s" $ pp currentLevel
+        let isFromCurrentEnv env = IM.envLevel env == currentLevel
+        let isFromOuterEnv env = IM.envLevel env < currentLevel
+        let
+          filterOtherEnvs :: [Function IM] -> [Function IM]
+          filterOtherEnvs = filter (isFromCurrentEnv . functionEnv . functionDeclaration)
+
+          filterOuterEnvs :: [Function IM] -> [Function IM]
+          filterOuterEnvs = filter (not . isFromOuterEnv . functionEnv . functionDeclaration)
+
+        
         envsAndDependencies <- Map.toList <$> State.gets environmentsLeft
-        Def.ctxPrint' $ Def.printf "ENVS AND DEPS: %s" (pp $ fmap (bimap pp (fmap (functionId . functionDeclaration))) envsAndDependencies)
+        Def.ctxPrint' $ Def.printf "ENVS AND DEPS: %s" (pp $ fmap (bimap pp (fmap (\fn -> fromString $ Def.printf "%s %s(%s)" (pp fn.functionDeclaration.functionId) (pp $ IM.envID fn.functionDeclaration.functionEnv) (pp $ IM.envLevel fn.functionDeclaration.functionEnv) :: Def.Context))) envsAndDependencies)
         completedEnvs <- State.gets completedEnvs
         vars <- State.gets lastEnvironment
         let
@@ -214,16 +228,20 @@ completeEnvironments = do
             Just (fn, t) -> IM.VariableFromEnv fn t
             _ -> IM.NotFromEnv
         let dependencies
-              = fmap (\(e, fn) -> IM.EnvMod e fn (isFromEnv e))
-              $ concatMap (\(e, ds) -> (e,) <$> ds) $ Def.fmap2 (filter ((`Set.member` completedEnvs) . functionEnv . functionDeclaration)) envsAndDependencies
-        if null dependencies
+              -- = fmap (\(e, fn) -> IM.EnvMod e fn (isFromEnv e))
+              -- = concatMap (\(e, ds) -> (e,) <$> ds)
+              = Def.fmap2 (filter ((\e -> e `Set.member` completedEnvs) . functionEnv . functionDeclaration)) envsAndDependencies
+        if null $ concatMap (\(e, ds) -> (e,) <$> ds) $ Def.fmap2 filterOtherEnvs dependencies
           then pure []
           else do
-            let incompleteEnvsAndDeps = Def.fmap2 (filter ((`Set.notMember` completedEnvs) . functionEnv . functionDeclaration)) envsAndDependencies
+            let incompleteEnvsAndDeps = Def.fmap2 (filter ((`Set.notMember` completedEnvs) . functionEnv . functionDeclaration) . filterOuterEnvs . filterOtherEnvs) envsAndDependencies
             let newCompletedEnvs = fmap fst $ filter (null . snd) incompleteEnvsAndDeps
+            Def.ctxPrint' $ Def.printf "COMPLETE ENVS: %s\nCOMPLETE INCOMPLETE ENVS: %s" (pp newCompletedEnvs) (pp $ Def.fmap3 (functionId . functionDeclaration) incompleteEnvsAndDeps)
             completeEnvs newCompletedEnvs
             setIncomplete incompleteEnvsAndDeps
-            (dependencies <>) <$> loop
+
+            let dependencies' = fmap (\(e, fn) -> IM.EnvMod e fn (isFromEnv e)) $ concatMap (\(e, ds) -> (e,) <$> ds) dependencies
+            (dependencies' <>) <$> loop
   loop
 
 setIncomplete :: [(IM.Env, [Function IM])] -> Context ()
