@@ -131,7 +131,7 @@ I guess we should recursively check these environments.
 	3. goto 1
 
 
-Okay, it work.
+okay, it work
 
 One last test that is not compiling: 1_t15_inner-function-not-generalizing-outer-tvar.kc
 C code is generated, but it's incorrect C code.

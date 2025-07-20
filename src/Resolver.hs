@@ -121,14 +121,14 @@ rStmts = traverse -- traverse through the list with Ctx
             stmt $ Mutation vid re
 
 
-      If (IfStmt { condition, ifTrue, elifs, mElse }) -> do
+      If (IfStmt { condition, ifTrue, ifElifs, ifElse }) -> do
         rcond <- rExpr condition
         rIfTrue <- scope $ sequenceA ifTrue
         rElseIfs <- traverse (\(c, b) -> do
           rc <- rExpr c
           tb <- rBody b
-          pure (rc, tb)) elifs
-        rElseBody <- traverse rBody mElse
+          pure (rc, tb)) ifElifs
+        rElseBody <- traverse rBody ifElse
         stmt $ If $ IfStmt rcond rIfTrue rElseIfs rElseBody
       Switch switch cases -> do
         rswitch <- rExpr switch

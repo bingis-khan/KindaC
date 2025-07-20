@@ -315,4 +315,37 @@ What info do I need to properly generate these? How can I "traverse" them proper
 						assignee Function M
 
 
+------------------
+
+Implementing it now.
+
+How do we know which environments are incomplete..?
+
+Okay, so top level is all taken care of. Imagine we are entering a function.
+	Also, for this example, pretend that `environmentsLeft` (incomplete) carry over exactly how I want to (we do some funny hack now, so imagine it don't exist yo)
+	So
+		they contain their dependencies
+		including RECURSIVE deps
+		like:
+			80 <- 10, 79
+			79 <- 10
+		also assume it's all relevant to this function.
+
+
+	For each env, make a recursive tree out of environments. the roots are functions in the environment.
+		(this could be our ideal environmentsLeft)
+
+		check if env has a dependency on this. if it has, save the "path" from the root of the tree to the node as EnvAccess.
+		The modified environment as Env.
+
+	Done.
+
+How do we prepare the IDEAL `environmentsLeft`?
+	must contain environments which were already added and marked as completed, but actually reside INSIDE the other function.
+
+	in our current situation:
+		what we can do is recursively create incompletes in withEnv.
+		Then, the way we modify only the current level. We just have to refilter them when checking if an environment is complete.
+
+	This might be bad, as we use the same `environmentsLeft` for two different purposes (checking dependencies and tree traversal).
 

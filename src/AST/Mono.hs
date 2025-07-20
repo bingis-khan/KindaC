@@ -55,14 +55,18 @@ data EnvDef = EnvDef
   }
 
 data EnvMod = EnvMod
-  { assigned :: Env
-  , assignee :: Function M  -- Type M  <- not sure if I need the type. Functions have their own types. But note, that we have to instantiate each field!
-  , varFromEnv :: VariableFromEnv
+  { assigned :: EnvAssign
+  , assignee :: Function M
   }
 
-data VariableFromEnv
-  = NotFromEnv
-  | VariableFromEnv (Function M) (Type M)
+data EnvAssign
+  = LocalEnv Env
+  | EnvFromEnv (NonEmpty EnvAccess)
+
+data EnvAccess = EnvAccess
+  { access :: NonEmpty (Function M, Type M)
+  , accessedEnv :: Env
+  }
 
 data Variable
   = DefinedFunction (Function M)
@@ -135,7 +139,14 @@ instance PP EnvDef where
   pp (EnvDef { envDef, notYetInstantiated }) = Def.ppBody' pp (fromString $ Def.printf "%s \\\\ %s" (pp envDef.functionDeclaration) (Def.encloseSepBy "{" "}" ", " $ pp . functionDeclaration <$> notYetInstantiated)) envDef.functionBody -- Def.ppBody' pp (pp envDef.functionDeclaration <+>  "|" <+> Def.encloseSepBy "" "" ", " (notYetInstantiated <&> \fn -> pp fn.functionDeclaration.functionId)) envDef.functionBody
 
 instance PP EnvMod where
-  pp em = "MOD:" <+> pp (envID em.assigned) <+> "<-" <+> pp (envID $ functionEnv $ functionDeclaration em.assignee)
+  pp em =
+    let envAss = "<-" <+> pp (envID $ functionEnv $ functionDeclaration em.assignee)
+    in case em.assigned of
+      LocalEnv ea -> pp (envID ea) <+> envAss
+      EnvFromEnv eas -> Def.sepBy "\n" $ pp <$> NonEmpty.toList eas
+
+instance PP EnvAccess where
+  pp ea = Def.sepBy "." (NonEmpty.toList $ ea.access <&> \(fn, _) -> pp fn.functionDeclaration.functionId <> "(" <> pp (envID fn.functionDeclaration.functionEnv) <> ")") <> pp ea.accessedEnv
 
 instance PP OtherDD where
   pp _ = mempty

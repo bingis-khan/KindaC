@@ -160,8 +160,8 @@ type Case phase = CaseF phase (Expr phase) (AnnStmt phase)
 data IfStmt phase expr a = IfStmt  -- it's own datatype, because it's quite complicated.
   { condition :: expr
   , ifTrue    :: NonEmpty a
-  , elifs     :: [(expr, NonEmpty a)]
-  , mElse     :: Maybe (NonEmpty a)
+  , ifElifs     :: [(expr, NonEmpty a)]
+  , ifElse     :: Maybe (NonEmpty a)
   } deriving (Functor, Foldable, Traversable)
 
 
@@ -316,6 +316,8 @@ catNotDeclared = mapMaybe fromDeclaredTypeToMaybe
 defaultEmpty :: (Monoid v, Ord k) => k -> Map k v -> v
 defaultEmpty k m = fromMaybe mempty $ m !? k
 
+instanceToFunction :: InstFun a -> Function a
+instanceToFunction instdef = Function instdef.instFunDec instdef.instFunBody
 
 ---------------
 -- Instances --
@@ -385,8 +387,8 @@ instance (PP a, PP expr, PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP
     If ifs ->
       Def.ppBody' pp ("if" <+> ifs.condition) ifs.ifTrue <>
       foldMap (\(cond, elseIf) ->
-          Def.ppBody' pp ("elif" <+> cond) elseIf) ifs.elifs <>
-      maybe mempty (Def.ppBody' pp "else") ifs.mElse
+          Def.ppBody' pp ("elif" <+> cond) elseIf) ifs.ifElifs <>
+      maybe mempty (Def.ppBody' pp "else") ifs.ifElse
     Switch switch cases ->
       Def.ppBody' pp switch cases
     ExprStmt e -> e

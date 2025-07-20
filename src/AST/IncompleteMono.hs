@@ -59,14 +59,19 @@ data EnvDef = EnvDef
   }
 
 data EnvMod = EnvMod
-  { assigned :: Env
+  { assigned :: EnvAssign
   , assignee :: Function IM  -- Type IM  see AST/Mono
-  , varFromEnv :: VariableFromEnv
   }
 
-data VariableFromEnv
-  = NotFromEnv
-  | VariableFromEnv (Function IM) (Type IM)
+data EnvAssign
+  = LocalEnv Env
+  | EnvFromEnv (NonEmpty EnvAccess)
+
+data EnvAccess = EnvAccess
+  { access :: NonEmpty (Function IM, Type IM)
+  , accessedEnv :: Env
+  }
+
 
 newtype OtherT
   = TVar TVar
@@ -109,7 +114,7 @@ envLevel = \case
 
 data EnvUnion = EnvUnion
   { unionID :: Def.UnionID
-  , union :: NonEmpty (T.EnvF (Type IM))
+  , union :: NonEmpty (T.EnvF (Type IM))  -- TODO: maybe having a typechecked version here is already passe (due to RemoveUnused effectively happening in Typecheck). I don't want to touch this before finishing class functions, because there were no real problems with it yet and I don't want to introduce any subtle bugs (eg. creating too many env defs, too large unions)
   , oldUnion :: T.EnvUnion
   }
 
@@ -149,15 +154,25 @@ instance PP EnvDef where
   pp (EnvDef { envDef, notYetInstantiated }) = Def.ppBody' pp (pp envDef.functionDeclaration <+>  "|" <+> Def.encloseSepBy "" "" ", " (notYetInstantiated <&> \fn -> pp fn.functionDeclaration.functionId)) envDef.functionBody
 
 instance PP EnvMod where
-  pp em = pp (envID em.assigned) <+> "<-" <+> pp (envID $ functionEnv $ functionDeclaration em.assignee)
+  pp em =
+    let envAss = "<-" <+> pp (envID $ functionEnv $ functionDeclaration em.assignee)
+    in case em.assigned of
+      LocalEnv ea -> pp (envID ea) <+> envAss
+      EnvFromEnv eas -> Def.sepBy "\n" $ pp <$> NonEmpty.toList eas
+
+instance PP EnvAccess where
+  pp ea = Def.sepBy "." (NonEmpty.toList $ ea.access <&> \(fn, _) -> pp fn.functionDeclaration.functionId <> "(" <> pp (envID fn.functionDeclaration.functionEnv) <> ")") <> pp ea.accessedEnv
 
 instance PP EnvUnion where
   pp EnvUnion { unionID = uid, union = us } = pp uid <> Def.encloseSepBy "{" "}" ", " (pp <$> NonEmpty.toList us)
 
 instance PP Env where
   pp = \case
-    Env eid vs level -> fromString $ Def.printf "%s(%s)%s" (pp eid) (pp level) $ Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp v <+> pp t) vs)
+    Env eid vs level -> fromString $ Def.printf "%s(%s)%s" (pp eid) (pp level) $ Def.encloseSepBy "[" "]" ", " (fmap (\(v, _, t) -> pp v <+> pp t) vs)
     RecursiveEnv eid isEmpty -> fromString $ Def.printf "%s[REC%s]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+
+instance PPDef Env where
+  ppDef = pp . envID
 
 instance PP EnvTypes where
   pp (EnvTypes eid ts) = pp eid <> pp ts

@@ -34,7 +34,6 @@ import Data.Foldable1 (foldl1', Foldable1)
 import Data.Maybe (fromMaybe)
 import Data.Fix (Fix)
 import Data.Functor.Foldable (cata)
-import Data.Bifunctor (bimap)
 
 
 -- set printing config

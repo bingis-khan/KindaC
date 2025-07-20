@@ -1,0 +1,12 @@
+Refactor starting at 19.07.25 (but was mostly done at 20.07.25):
+
+ill change the helix editor theme to celebrate!
+
+---
+
+Okay, did some stuff.
+I've factored duplicate code out. Now normal functions and class functions should behave the same way, so it can get future proofed yo.
+A sorta practical way to ensure that bugs don't happen.
+
+I didn't touch the second part, the IM -> M transformation. Right now it's not a problem, but IM.EnvUnion has a field TC.EnvF (Type IM). I'm not exactly sure why now. Since we don't need RemoveUnused, Typechecking already takes care of unused stuff... right?
+This is for the final rewrite after I get the compiler down and all the typechecking.
