@@ -748,6 +748,14 @@ withClassInstanceAssociations ci a = do
           _ -> Nothing
 
         _ -> undefined
+  let what = case ci of
+        T.Env _ vars _ _ -> flip mapMaybe vars $ \case
+          (T.DefinedClassFunction (CFD cd _ _ _) snapshot _ uci, _, _) -> Just (uci, snapshot ! cd)
+          _ -> Nothing
+
+        _ -> undefined
+
+  Def.ctxPrint' $ Def.printf "WITH CLASS INSTANCE ASSOCIATIONS:\n\tOLD: %s\n\tNEW: %s\n\tWHAT: %s" (ppDef $ Map.keysSet <$> ogTM) (ppDef $ Map.keysSet <$> classFuns) (ppDef $ Def.fmap2 Map.keysSet what <&> \(uci, dds) -> fromString (Def.printf "%s: %s" (ppDef uci) (ppDef dds)) :: Def.Context)
 
   -- this should probably be a reader thing.
   -- Def.ctxPrint' $ Def.printf "WITH CLASS INSTANTIATIONS (env %s): %s" (pp (T.envID ci)) $ ppDef $ Map.keysSet <$> classFuns
@@ -1285,5 +1293,5 @@ mustSelectInstance :: Type IM -> T.PossibleInstances -> InstDef TC
 mustSelectInstance (Fix (TCon mdd _ _)) insts =
   case insts !? mdd.ddScheme.ogDataDef of
     Just instdef -> instdef
-    Nothing -> error "INSTANCE DOES NOT EXIST."
+    Nothing -> error $ Def.printf "INSTANCE FOR %s DOES NOT EXIST." (ppDef mdd)
 mustSelectInstance _ _ = error "TRYING TO SELECT AN INSTANCE FOR A FUNCTION."

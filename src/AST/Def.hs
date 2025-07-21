@@ -38,7 +38,7 @@ import Data.Functor.Foldable (cata)
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = rc
+defaultContext = dc
 
 dc = debugContext
 rc = runtimeContext
@@ -275,6 +275,9 @@ instance PP a => PP (Annotated a) where
 
 instance PP a => PP [a] where
   pp ps = encloseSepBy "[" "]" ", " $ pp <$> ps
+
+instance PPDef a => PPDef [a] where
+  ppDef ps = encloseSepBy "[" "]" ", " $ ppDef <$> ps
 
 instance PP a => PP (NonEmpty a) where
   pp ps = sepBy " " $ pp <$> NonEmpty.toList ps

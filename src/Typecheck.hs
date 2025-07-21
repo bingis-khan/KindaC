@@ -1437,8 +1437,8 @@ mapClassSnapshot tvs snapshot = mapType
 
     mapUnion :: T.EnvUnion -> T.EnvUnion
     mapUnion u =
-      let newUnion = flip Def.fmap2 u.union $ \case
-            T.Env eid vars localities level -> T.Env eid (vars <&> \(v, l, t) -> (mapVar v, l, mapType t)) localities level
+      let newUnion = flip Def.fmap2 (T.union $ mapType <$> u) $ \case
+            T.Env eid vars localities level -> T.Env eid (vars <&> \(v, l, t) -> (mapVar v, l, t)) localities level
             e -> e
       in u { T.union = newUnion }
 

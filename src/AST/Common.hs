@@ -490,6 +490,9 @@ instance
       header
       inst.instFuns
 
+instance PPDef (InstDef phase) where
+  ppDef = undefined
+
 
 instance (PP (XMem phase), PP (XDCon phase), PP (XDTCon phase), PP (Type phase), PP (XDataScheme phase)) => PP (DataDef phase) where
   pp (DD tid tvs (Right dcons) _) = Def.ppBody pp (pp tid <+> pp tvs) dcons
