@@ -28,7 +28,7 @@ type instance XNode IM = Type IM
 type instance XLamOther IM = Env
 type instance XLamVar IM = (Def.UniqueVar, Type IM)
 type instance XVarOther IM = Locality
-type instance XFunDef IM = NonEmpty (Either EnvMod EnvDef)
+type instance XFunDef IM = EnvDefs
 type instance XVar IM = Variable
 type instance XVarOther IM = Def.Locality
 type instance XCon IM = DataCon IM
@@ -49,7 +49,7 @@ type instance XTVar IM = TVar
 type instance XOther IM = ()  -- TODO: should probably be EnvMod, but I don't want to modify the mStmts code yet.
 type instance XInstDef IM = ()
 
-newtype EnvDefs = EnvDefs [Either EnvMod EnvDef]
+newtype EnvDefs = EnvDefs (NonEmpty (Either EnvMod EnvDef))
 
 data EnvDef = EnvDef
   { envDef :: Function IM
@@ -69,7 +69,7 @@ data EnvAssign
 
 data EnvAccess = EnvAccess
   { access :: NonEmpty (Function IM, Type IM)
-  , accessedEnv :: Env
+  , accessedEnv :: Env  -- TODO: NOT NEEDED. ITS THE ENVIRONMENT OF LAST FUNCTION.
   }
 
 
@@ -158,17 +158,18 @@ instance PP EnvMod where
     let envAss = "<-" <+> pp (envID $ functionEnv $ functionDeclaration em.assignee)
     in case em.assigned of
       LocalEnv ea -> pp (envID ea) <+> envAss
-      EnvFromEnv eas -> Def.sepBy "\n" $ pp <$> NonEmpty.toList eas
+      EnvFromEnv eas -> Def.ppLines ((<+> envAss) . pp) eas
 
 instance PP EnvAccess where
-  pp ea = Def.sepBy "." (NonEmpty.toList $ ea.access <&> \(fn, _) -> pp fn.functionDeclaration.functionId <> "(" <> pp (envID fn.functionDeclaration.functionEnv) <> ")") <> pp ea.accessedEnv
+  pp ea = Def.sepBy "." (NonEmpty.toList $ ea.access <&> \(fn, _) -> pp fn.functionDeclaration.functionId <> "(" <> pp (envID fn.functionDeclaration.functionEnv) <> ")") <> "." <> pp (envID ea.accessedEnv)
+
 
 instance PP EnvUnion where
   pp EnvUnion { unionID = uid, union = us } = pp uid <> Def.encloseSepBy "{" "}" ", " (pp <$> NonEmpty.toList us)
 
 instance PP Env where
   pp = \case
-    Env eid vs level -> fromString $ Def.printf "%s(%s)%s" (pp eid) (pp level) $ Def.encloseSepBy "[" "]" ", " (fmap (\(v, _, t) -> pp v <+> pp t) vs)
+    Env eid vs level -> fromString $ Def.printf "%s(%s)%s" (pp eid) (pp level) $ Def.encloseSepBy "[" "]" ", " (fmap (\(v, l, t) -> pp l <> pp v <+> pp t) vs)
     RecursiveEnv eid isEmpty -> fromString $ Def.printf "%s[REC%s]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 instance PPDef Env where

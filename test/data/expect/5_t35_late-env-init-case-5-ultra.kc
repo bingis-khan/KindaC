@@ -1,0 +1,47 @@
+#$ Case 5 of late init environments. Ultra hard version.
+# 8008
+# 69
+# 11111
+# 8008
+# 420
+# True
+# 8008
+# 8008
+# 420
+# True
+# 69
+# 420
+# 69
+# 1337
+
+class MyStr
+	print-str (x _) -> Unit
+
+MyConcatStr l r
+	MyConcatStr l r
+
+msp-const = 8008
+inst MyStr MyConcatStr l r
+	print-str (MyConcatStr(l, r)) -> Unit
+		print msp-const
+		print-str(l)
+		print-str(r)
+		return Unit
+
+f (x) -> Unit
+	int-const = 69
+	inst MyStr Int
+		print-str (x Int) -> Unit
+			print int-const
+			print x
+
+	print-str(MyConcatStr(11111, MyConcatStr(x, MyConcatStr(MyConcatStr(x, 420), 1337))))
+
+bool-const = 420
+inst MyStr Bool
+	print-str (self Bool) -> Unit
+		print bool-const
+		print self
+		return Unit
+
+f(True)

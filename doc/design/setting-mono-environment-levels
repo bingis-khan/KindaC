@@ -1,0 +1,46 @@
+I had this one problem, where we weren't mapping Locality. It was in withEnv. But... should we?
+Yes. The previous location referred to the position of the CLASS DECLARATION.
+
+class
+
+inst Int
+
+f ()
+	inst MyStrPtr  [here, the inner part has the locality of the class, because it's NOT INSTANTIATED]
+
+	do-sth(MyStrPtr(MyStrPtr(420)))  [in the environment, MyStrPtr localities are set to Local during typechecking. we correctly set the location.]
+
+
+When we monomorphize it, we overwrite the instance with the mono instance, but previously we didn't touch the locality.
+That's obviously a bug.
+So, when we fix it, this example works.
+
+But then other shit broke.
+case 3:
+
+class
+
+inst MyStrPtr
+
+f ()
+	inst Int
+	MOD env inst MyStrPtr <- env inst Int
+
+	do-sth(MyStrPtr(420))
+
+code is generated, but it's incorrect. it tries to grab inst Int FROM THE ENVIRONMENT. wat
+
+Well, look again (mono code):
+
+inst MyStrPtr [do-sthINT ^(1)env]
+
+f ()
+	inst Int []
+	MOD env inst MyStrPtr <- env inst Int
+			^-- here, during codegen, we're grabbing the locality of do-sthINT from do-sthMYSTRPTR's environment.
+			BUT WE DON'T TAKE INTO ACCOUNT THE FACT, THAT THE CODE IS GENERATED LOCALLY TO THE INSTANCE.
+			so, although we are at locality (1), and the do-thINT has the correct locality(!), but we don't know it, so it's marked as FromEnv
+
+	do-sthMYSTRPTR(MyStrPtr(420))
+
+The way we solve it is just define the env we assign as Local, because it'll always be local kek.

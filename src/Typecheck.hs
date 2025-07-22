@@ -884,10 +884,9 @@ substAssociations = do
             -- hope it's correct....
             let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
             -- TODO: FromEnvironment locality only here, because it means we won't add anything extra to the instantiations.
-            (instFunType, T.DefinedFunction fn instAssocs _ ufi, _) <- instantiateFunction (Just uci) baseFunctionScopeSnapshot $ Function instFun.instFunDec instFun.instFunBody
+            (instFunType, T.DefinedFunction fn instAssocs _ ufi, env@(T.Env _ _ _ level)) <- instantiateFunction (Just uci) baseFunctionScopeSnapshot $ Function instFun.instFunDec instFun.instFunBody
 
             to `uni` instFunType
-            let env@(T.Env _ _ _ level) = fn.functionDeclaration.functionEnv
             Def.ctxPrint' $ Def.printf "ENV ASSOC: %s" $ pp env
             addExtraToEnv envsToAddTo env
 

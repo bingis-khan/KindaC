@@ -364,8 +364,8 @@ cEnvMod M.EnvMod { M.assigned = assigned, M.assignee = fn } = do
       let currentInstVars = mapMaybe (\case { (M.DefinedFunction fn', l, t)| fn' == fn -> Just (fn', l, t); _ -> Nothing }) uniqueDefVars
       env <- cEnv env  -- Env which we assign TO.
 
-      for_ currentInstVars $ \(fn, loc, t) ->
-        env.envName & "." & envVarName fn t § "=" § cVar t loc (M.DefinedFunction fn)
+      for_ currentInstVars $ \(fn, _, t) ->
+        env.envName & "." & envVarName fn t § "=" § cVar t Def.Local (M.DefinedFunction fn)
 
     M.LocalEnv {} -> error "UNREACHABLE?"
 
@@ -378,8 +378,8 @@ cEnvMod M.EnvMod { M.assigned = assigned, M.assignee = fn } = do
 
       env <- cEnv env  -- Env which we assign TO.
       let accesses = foldMap (\(fn, t) -> cEnv fn.functionDeclaration.functionEnv >>= \e -> envVarName fn t & ".env." & e.envName & ".") ea.access
-      for_ currentInstVars $ \(fn, loc, t) ->
-        "env->" & accesses & envVarName fn t § "=" § cVar t loc (M.DefinedFunction fn)
+      for_ currentInstVars $ \(fn, _, t) ->
+        "env->" & accesses & envVarName fn t § "=" § cVar t Def.Local (M.DefinedFunction fn)  -- Might be a HACK: since (I think) we only use it when the other side is Local, we can set it as local. This happened, when 
 
 cEnvMod _ = undefined
 

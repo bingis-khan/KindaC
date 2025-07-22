@@ -1,0 +1,24 @@
+#$ Inner recursive instance and outer non-recursive instance.
+# 8008135
+# 8008135
+# 420
+
+class MyStr
+	do-sth (x _) -> Unit
+
+MyStrPtr a
+	MyStrPtr a
+
+inst MyStr Int
+	do-sth (x) -> Unit
+		print x
+
+
+f () -> Unit
+	inst MyStr MyStrPtr a
+		do-sth (MyStrPtr(x)) -> Unit
+			print 8008135
+			do-sth(x)
+	do-sth(MyStrPtr(MyStrPtr(420)))
+
+f()

@@ -48,7 +48,7 @@ type instance XInstDef M = ()
 newtype EnvDefs = EnvDefs [Either EnvMod EnvDef]
 
 data EnvDef = EnvDef
-  { envDef :: Function M 
+  { envDef :: Function M
 
   -- this tells us which functions are not yet instantiated and should be excluded.
   , notYetInstantiated :: [Function M]
@@ -65,7 +65,7 @@ data EnvAssign
 
 data EnvAccess = EnvAccess
   { access :: NonEmpty (Function M, Type M)
-  , accessedEnv :: Env
+  , accessedEnv :: Env  -- TODO: NOT NEEDED. ITS THE ENVIRONMENT OF LAST FUNCTION.
   }
 
 data Variable
@@ -143,10 +143,10 @@ instance PP EnvMod where
     let envAss = "<-" <+> pp (envID $ functionEnv $ functionDeclaration em.assignee)
     in case em.assigned of
       LocalEnv ea -> pp (envID ea) <+> envAss
-      EnvFromEnv eas -> Def.sepBy "\n" $ pp <$> NonEmpty.toList eas
+      EnvFromEnv eas -> Def.sepBy "\n" $ (<+> envAss) . pp <$> NonEmpty.toList eas
 
 instance PP EnvAccess where
-  pp ea = Def.sepBy "." (NonEmpty.toList $ ea.access <&> \(fn, _) -> pp fn.functionDeclaration.functionId <> "(" <> pp (envID fn.functionDeclaration.functionEnv) <> ")") <> pp ea.accessedEnv
+  pp ea = Def.sepBy "." (NonEmpty.toList $ ea.access <&> \(fn, _) -> pp fn.functionDeclaration.functionId <> "(" <> pp (envID fn.functionDeclaration.functionEnv) <> ")") <> "." <> pp (envID ea.accessedEnv)
 
 instance PP OtherDD where
   pp _ = mempty
@@ -156,7 +156,7 @@ instance PP EnvUnion where
 
 instance PP Env where
   pp = \case
-    Env eid vs -> pp eid <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp v <+> pp t) vs)
+    Env eid vs -> pp eid <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
     RecursiveEnv eid isEmpty -> fromString $ Def.printf "%s[REC%s]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 

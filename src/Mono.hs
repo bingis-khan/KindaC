@@ -117,7 +117,7 @@ mAnnStmt = cata (fmap embed . f) where
         envDefs <- orderEnvironments $ fst <$> envUses
         noann $ case envDefs of
           [] -> Pass
-          (x:xs) -> Fun $ x :| xs
+          (x:xs) -> Fun $ IM.EnvDefs $ x :| xs
 
       Inst inst -> do
         envInsts <- State.gets envInstantiations
@@ -135,7 +135,7 @@ mAnnStmt = cata (fmap embed . f) where
         envDefs <- orderEnvironments $ fst <$> envUses
         noann $ case envDefs of
           [] -> Pass
-          (x:xs) -> Fun $ x :| xs
+          (x:xs) -> Fun $ IM.EnvDefs $ x :| xs
 
       Other () -> error "OTHER OTHER OTHER SHOULD NOT BE CREATED EVER"
 
@@ -321,12 +321,27 @@ withEnv mfn env cx = do
   menv@(IM.Env _ envContent _) <- memo' memoEnv (\m c -> c { memoEnv = m }) itenv $ \env' _ -> case env' of
     T.Env _ envContent _ envStack -> do
       newEID <- newEnvID
+      let envLevel = Def.envStackToLevel envStack
       menvContent <- for envContent $ \(v, l, (_, mt)) -> do
         let vv = fst <$> v
-        v' <- variable vv mt
-        pure (v', l, mt)
+        mv <- variable vv mt
 
-      pure $ IM.Env newEID menvContent (Def.envStackToLevel envStack)  -- env IDs changed, so kind of hard to track env stack. that's why only level. might not even need this.
+        newLocality <- case vv of
+              T.DefinedClassFunction cfd snapshot self uci -> do
+                ivfn <- selectInstance snapshot self uci cfd
+
+                let vfn = Common.instanceToFunction ivfn
+                let (T.Env _ _ _ instEnvStack) = vfn.functionDeclaration.functionEnv
+                let newLoc = if envStack == instEnvStack then Local else FromEnvironment (Def.envStackToLevel instEnvStack)
+                Def.ctxPrint' $ Def.printf "NEW LOCALITY %s (%s =?= %s) OF VAR %s" (pp newLoc) (pp instEnvStack) (pp envStack) (pp mv)
+                pure newLoc
+
+
+              _ -> pure l
+
+        pure (mv, newLocality, mt)
+
+      pure $ IM.Env newEID menvContent envLevel  -- env IDs changed, so kind of hard to track env stack. that's why only level. might not even need this.
 
     T.RecursiveEnv {} -> error "SHOULD NOT HAPPEN."  -- pure $ M.IDRecursiveEnv eid isEmpty
 
@@ -998,7 +1013,7 @@ mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)
         (st:sts) -> st :| sts
 
   fmap (embed . O . Annotated anns) <$> case stmt' of
-    Fun envs -> do
+    Fun (IM.EnvDefs envs) -> do
       mfenvs <- traverse (bitraverse mfEnvMod mfEnvDef) envs
       s $ Fun $ M.EnvDefs $ NonEmpty.toList mfenvs
 
