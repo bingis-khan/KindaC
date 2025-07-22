@@ -20,7 +20,7 @@ add-vec (v1 Vec2, v2 Vec2)
 sub-vec (v1 Vec2, v2 Vec2)
 	return Vec2 { x: (v1.x - v2.x), y: (v1.y - v2.y) }
 
-num-int = Num { add: (l,r: l + r), sub: (l,r: l - r) }
+num-int = Num { add: (l, r): l + r, sub: (l, r): l - r }
 num-vec = Num { add: (add-vec), sub: (sub-vec) }
 
 pvec (v Vec2) -> Unit

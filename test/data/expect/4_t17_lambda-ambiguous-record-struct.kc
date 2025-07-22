@@ -1,0 +1,14 @@
+#$ Lambda-ambiguous record struct.
+# 1
+# 10
+
+Range
+	from Int
+	to Int
+
+range (f, t)
+	return Range { from: f, to: t}
+
+r = range(1, 10)
+print r.from
+print r.to

@@ -68,7 +68,7 @@ statement = choice
 
   , sClass
   , sInst
-  
+
   , sDataDefinition
 
   , sDefinition
@@ -324,8 +324,8 @@ sDataDefinition = recoverableIndentBlock $ do
     toRecordOrADT :: TCon -> [UnboundTVar] -> [Either (Annotated (XMem U, Type U)) (DataCon U)] -> Parser (Stmt U)
     -- empty datatype
     toRecordOrADT tname polys [] = pure $ Other $ DataDefinition $ DD tname polys (Right []) []
-    
-    toRecordOrADT tname polys (first : rest) = 
+
+    toRecordOrADT tname polys (first : rest) =
       let (records, cons) = partitionEithers rest
       in case first of
         Left rec ->
@@ -336,9 +336,9 @@ sDataDefinition = recoverableIndentBlock $ do
             _:_ -> do
               fail "Encountered constructors in a Record definition."
 
-        Right dc -> 
+        Right dc ->
           case records of
-            [] -> 
+            [] ->
               pure $ Other $ DataDefinition $ DD tname polys (Right $ dc : cons) []
             _:_ -> do
               fail "Encountered record fields in an ADT definition."  -- should not end parsing, but im lazy.
@@ -461,7 +461,15 @@ as = Postfix $ do
 
 lambda :: Operator Parser (Expr U)
 lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
-  params <- try $ (variable `sepBy` symbol ",") <* symbol ":"
+  -- Correct lambda:
+  -- :420
+  -- x: x + 1
+  -- (x, y): x + y
+  -- NOTE: right now we also allow '(): 420' This might later be known as Unit deconstruction, so might have to interpret it as this?
+  let multipleParams = between "(" ")" (variable `sepBy` symbol ",") <|> ((:[]) <$> variable)
+  let singleParam = variable <&> (:[])
+  let paramList = fromMaybe [] <$> optional (multipleParams <|> singleParam)
+  params <- try $ paramList <* symbol ":"
   return $ node . Lam () params
 
 node :: nodeF U (Fix (Node U nodeF)) -> Fix (Node U nodeF)

@@ -43,7 +43,7 @@ import Data.Traversable (for)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Either (rights, lefts)
 import Data.List (find)
-import AST.Def (type (:.)(O), Annotated (..), Binding (..))
+import AST.Def (type (:.)(O), Annotated (..), Binding (..), pp)
 import qualified AST.Def as Def
 import AST.Prelude (Prelude (..))
 
