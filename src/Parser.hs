@@ -65,6 +65,7 @@ statement = choice
   , sIf
   , sPrint
   , sReturn
+  , sWhile
 
   , sClass
   , sInst
@@ -175,6 +176,8 @@ sReturn = do
   expr <- optional expression
   pure $ Return expr
 
+sWhile :: Parser (Stmt U)
+sWhile = scope While $ keyword "while" >> expression
 
 sClass :: Parser (Stmt U)
 sClass = recoverableIndentBlock $ do

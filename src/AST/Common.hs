@@ -186,6 +186,7 @@ data StmtF phase expr a
   | Switch expr (NonEmpty (CaseF phase expr a))
   | ExprStmt expr  -- NOTE: in the future add typing to distinguish available expressions.
   | Return (XReturn phase)  -- NOTE: kinda bad... this is the only part which does not use "expr" tvar.
+  | While expr (NonEmpty a)
 
   | Fun (XFunDef phase)
   | Inst (XInstDef phase)
@@ -402,6 +403,8 @@ instance (PP a, PP expr, PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP
       Def.ppBody' pp switch cases
     ExprStmt e -> e
     Return e -> "return" <+> pp e
+    While e whileBody -> Def.ppBody' pp ("while" <+> e) whileBody
+
     Fun fd -> pp fd
     Inst idef -> pp idef
     Other other -> pp other

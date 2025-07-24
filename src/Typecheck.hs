@@ -260,6 +260,12 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
         Common.typeOfNode ret `uni` eret
         pure $ Return ret
 
+      While (cond, condt) body -> do
+        boolt <- findBuiltinType Prelude.boolFind
+        condt `uni` boolt
+
+        pure $ While cond body
+
 
       Print (expr, _) ->
         pure $ Print expr

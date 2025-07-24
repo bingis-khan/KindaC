@@ -154,6 +154,12 @@ rStmts = traverse -- traverse through the list with Ctx
             pure $ Fix $ N () (Con uc eid)
 
         stmt $ Return re
+
+      While cond bod -> do
+        rcond <- rExpr cond
+        rbod <- scope $ sequenceA bod
+        stmt $ While rcond rbod
+
       Other (U.DataDefinition dd) -> mdo
         tid <- generateType dd.ddName
         -- tying the knot for the datatype definition

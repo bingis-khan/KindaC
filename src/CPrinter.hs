@@ -111,6 +111,8 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
   ExprStmt e -> statement $ cExpr e
   Return e ->
     statement $ "return" § cExpr e
+  While cond bod ->
+    "while" § enclose "(" ")" (cExpr cond) <§ cBlock bod
 
   If (IfStmt cond bodyIfTrue elseIfs elseBody) -> do
     "if" § enclose "(" ")" (cExpr cond) <§ cBlock bodyIfTrue

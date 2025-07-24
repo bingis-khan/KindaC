@@ -107,6 +107,9 @@ mAnnStmt = cata (fmap embed . f) where
       Return ete -> do
         mete <- mExpr ete
         mann $ Return mete
+      While cond bod -> do
+        mann $ While cond bod
+
       Fun fn -> do
         let env = fn.functionDeclaration.functionEnv
         let envID = T.envID env
@@ -1043,6 +1046,9 @@ mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)
     Return e -> do
       me <- mfExpr e
       s $ Return me
+    While cond bod -> do
+      s $ While cond (body bod)
+
     Other _ -> undefined
     Inst _ -> undefined  -- TODO: remove from Common later.
 
