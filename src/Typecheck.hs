@@ -791,6 +791,8 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
         }
 
   fns <- for inst.instFuns $ \rfn -> do
+    cfd@(CFD _ _ deconParams ret) <- inferClassFunDec klass rfn.instClassFunDec
+
     -- TODO: add check?
     fn <- generalize $ mdo
 
@@ -813,6 +815,15 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
       ret <- case rfundec.functionReturnType of
         DeclaredType t -> inferType t
         TypeNotDeclared -> fresh
+
+      -- now unify it with the base class function type.
+      (tvs, unions) <- instantiateScheme mempty it.ddScheme
+      let self = Fix $ TCon it tvs unions  -- TODO: when we stop ignoring tvars, properly instantiate them here.
+      classFun <- instantiateClassFunction cfd self
+
+      union <- emptyUnion
+      let genFun = Fix $ TFun union (snd <$> params) ret
+      classFun `uni` genFun
 
 
       -- Set up temporary recursive env (if this function is recursive, this env will be used).
@@ -837,6 +848,7 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
       -- now, replace it with a non-recursive environment.
       let fundec' = fundec { functionEnv = env }
       let fun' = fun { functionDeclaration = fundec' }
+
       pure fun'
 
     -- First, finalize substitution by taking care of member access.
@@ -845,7 +857,6 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
     -- su <- RWS.gets typeSubstitution
     -- classInstantiationAssocs <- substAccessAndAssociations
 
-    cfd <- inferClassFunDec klass rfn.instClassFunDec
     pure InstFun
       { instFunDec = fn.functionDeclaration
       , instFunBody = fn.functionBody -- rfn.classFunctionPrototypeUniqueVar
@@ -1310,7 +1321,21 @@ instantiateVariable loc = \case
 
 
   T.DefinedClassFunction cfd@(CFD cd funid params ret) snapshot self _ -> do
+    fnType <- instantiateClassFunction cfd self
+    let insts = Def.defaultEmpty cd snapshot
+    uci <- newClassInstantiation
+    associateType self fnType cfd insts uci Nothing
+    -- addClassFunctionUse fnUnion cfd self insts
+    Def.ctxPrint' $ printf "INSTANTIATING CLASS FUN %s. INSTS: %s" (pp uci) $ pp $ fmap (\(DD { ddName }) -> ddName) $ Set.toList $ Map.keysSet insts
+
+
+    pure (fnType, T.DefinedClassFunction cfd snapshot self uci)
+
+instantiateClassFunction :: ClassFunDec TC -> Type TC -> Infer (Type TC)
+instantiateClassFunction (CFD _ funid params ret) self = do
     -- TODO: a lot of it is duplicated from DefinedFunction. sussy
+    -- TODO TODO: NOT SURE IF IT'S ALL NECESSARY!!!!!!!!!!!!!!!!!!!!!!!!
+    -- SHOULD EXPLAIN EACH LINE BECAUSE SOMETHING FEELS OFF
     let allTypes = ret : map snd params
     let thisFunctionsTVars = foldMap (findTVarsForIDInClassType funid) allTypes
 
@@ -1337,15 +1362,8 @@ instantiateVariable loc = \case
     fnUnion <- emptyUnion
 
     let fnType = Fix $ TFun fnUnion (mapTVs . snd <$> params) (mapTVs ret)
+    pure fnType
 
-    let insts = Def.defaultEmpty cd snapshot
-    uci <- newClassInstantiation
-    associateType self fnType cfd insts uci Nothing
-    -- addClassFunctionUse fnUnion cfd self insts
-    Def.ctxPrint' $ printf "INSTANTIATING CLASS FUN %s. INSTS: %s" (pp uci) $ pp $ fmap (\(DD { ddName }) -> ddName) $ Set.toList $ Map.keysSet insts
-
-
-    pure (fnType, T.DefinedClassFunction cfd snapshot self uci)
 
 -- NOTE: these last two parameters are basically a hack. I don't yet know what to do when we're dealing with an instance function, so we're only doing it here for now. (we should probably do the same thing there, but it's not local, so modifying the state then would be bad. I'll have to think about it.)
 instantiateFunction :: Maybe Def.UniqueClassInstantiation -> T.ScopeSnapshot -> Function TC -> Infer (Type TC, T.Variable, T.Env)

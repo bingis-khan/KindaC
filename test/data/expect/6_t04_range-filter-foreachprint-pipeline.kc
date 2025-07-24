@@ -1,0 +1,72 @@
+#$ Range Filter ForeachPrint pipeline.
+# 6
+# 7
+# 8
+# 9
+# 10
+
+Range
+	from Int
+	to Int
+	cur Int
+
+range (f, t)
+	return Range { from: f, to: t, cur: f }
+
+class MyIter
+	next (self Ptr _) -> Maybe Int
+
+inst MyIter Range
+	next (self Ptr Range) -> Maybe Int
+		cur = self&.cur
+		if cur > self&.to
+			return None
+
+		self <&.cur= cur + 1
+		return Just(cur)
+
+Filter it
+	og-iter it
+	filter-fn (Int -> Bool)
+
+filter (base-iter, fn)
+	return Filter { og-iter: base-iter, filter-fn: fn }
+
+inst MyIter Filter
+	next (self) -> Maybe Int
+		r = self&.og-iter
+
+		while True
+			next-item = next(&r)
+			self <&.og-iter= r  # it shit. that's because we're not tracking lvalues correctly.
+
+			case next-item
+				None
+					return None
+
+				Just(x)
+					if self&.filter-fn(x)
+						return Just(x)
+
+
+for-each-print (it) -> Unit
+	while True
+		case next(&it)
+			Just(x)
+				print x
+			None
+				return Unit
+	return Unit
+
+
+print-maybe (mx) -> Unit
+	case mx
+		Just(x)
+			print x
+		None
+			print 0
+
+r = range(1, 10)
+const = 5
+f = filter(r, x: x > const)
+for-each-print(f)

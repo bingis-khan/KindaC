@@ -1,0 +1,21 @@
+#$ Tracking and referencing the lvalue correctly.
+# 2
+
+Range
+	cur Int
+
+Filter it
+	og-iter it
+
+modify (r Ptr Range) -> Unit
+	r <&.cur= r&.cur + 1
+
+fr = Filter { og-iter: Range { cur: 1 } }
+pfr = &fr
+modify(&pfr&.og-iter)
+
+print fr.og-iter.cur  # should equal 2!  how do I detect this situation to match C with how it handles lvalues.
+
+# or maybe I should just forbid taking references which will generate temporary values inside calls?
+# I know Jai has the reference behavior I have. I wonder how it solves this problem? Are there any languages that do it like this?
+

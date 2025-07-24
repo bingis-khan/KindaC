@@ -1,0 +1,9 @@
+
+fr = &Filter { og-iter: Range { cur: 1 } }
+modify(&fr&.og-iter)
+print fr&.og-iter.cur  # should be 2!
+
+
+How do I detect this situation to match C with how it handles lvalues.
+or maybe I should just forbid taking references which will generate temporary values inside calls?
+I know Jai has the reference behavior I have. I wonder how it solves this problem? Are there any languages that do it like this?
