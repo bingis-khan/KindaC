@@ -1,0 +1,10 @@
+#$ Pointer mutation semantics case 3: ref deref interleaved.
+# 420
+# 1337
+
+x = 420
+xp = &((&((&x)&))&)
+
+print x
+xp <&= 1337
+print x

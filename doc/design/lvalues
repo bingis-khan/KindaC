@@ -7,3 +7,15 @@ print fr&.og-iter.cur  # should be 2!
 How do I detect this situation to match C with how it handles lvalues.
 or maybe I should just forbid taking references which will generate temporary values inside calls?
 I know Jai has the reference behavior I have. I wonder how it solves this problem? Are there any languages that do it like this?
+
+It's actually not that bad!! I couldn't come up with an example that wouldn't work. If we're not modifying the intermediate variables, it'll point JUST FINE.
+
+x = 420
+xp = &x
+xpp = &&x
+
+print x  # 420
+xp <&= 1337
+print x  # 1337
+xpp <&&= 8008135
+print x  # 8008135

@@ -1,0 +1,14 @@
+#$ Some more pointer stuff.
+# 420
+# 1337
+# 8008135
+
+x = 420
+xp = &x
+xpp = &&x
+
+print x
+xp <&= 1337
+print x
+xpp <&&= 8008135
+print x

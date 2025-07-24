@@ -41,13 +41,18 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 
 ## todo
 
+- external functions
+  - later try to define a type for a C Function type.
+  - and make it illegal to pass normal functions as C function types (make the user go through deconstruction to account for the possible environment)
 - make assignments deconstructable.
 - in a record deconstruction, if you don't specify the right side (after ':'), bind the member to the variable of the same name.
 - when updating records, bind the current variable to the expression. ex: `p = p { v1: v1 { z = 0 } }` <- here, `v1` is bound only on the right side of ':'. No need to write `p.v1` like in Haskell.
-- add `<.member=` assignments! (just for fun and UI experiments. maybe it'll be better!)
 - string interpolation! `'Just rammed \(num-glowies) glowies with my car.'` (support only variables inside, seems simpler)
-  - think about internationalization? apparently, that's the biggest drawback of string interpolation
+  - think about internationalization? apparently,that's the biggest drawback of string interpolation
 - kinds? fixpoint?
+- change testing so that:
+  - tests are grouped by their type
+  - with this, instead of having 4 seperate entries for a single test, make it 1.
 
 
 ### todo misc

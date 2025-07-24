@@ -262,8 +262,14 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
 
     cRecordInit dd (NonEmpty.prependList initializePersistedFields initializeUpdatedFields)
 
-  -- actually take reference here.
-  Ref (Fix (N _ (Var _ _)), e) -> cRef e
+  -- Handle references. Right now, I want to mimic C. Create a real reference, or, if it's not possible, create a temporary variable.
+  -- TODO:
+  -- [V] 1. &ptr
+  -- [V] 2. &ptr&.og-iter
+  -- [V] 2.5. &ptr.og-iter  (straight up create pointer to a field)
+  -- [V] 3. &((&(ptr&.og-iter))&)  (this is ref/deref)
+  -- [V] 4. &((&(ptr&.og-iter))&.og2-iter)  (this is ref/deref + fields)
+  Ref (oge, e) | isLValue oge -> cRef e  -- is it enough?
   Ref (oge, e) -> do
     newVar <- createIntermediateVariable (Common.typeOfNode oge) e
     cRef newVar
@@ -283,6 +289,26 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
 
     -- NOTE: interesting, we still have "As", although it's not needed after typechecking. another reason to modify the Common AST
     _ -> undefined
+
+isLValue :: Expr M -> Bool
+isLValue = maybe False (<= 0) . go where
+  -- &((&(ptr&.og-iter))&.og2-iter)
+  --       ^-0
+  --         ^- -1
+  --              ^- -1
+  --    ^-- 0
+  --                    ^-- -1
+  --                           ^-- -1
+  -- ^-- 0
+  --   (isLValue must return true at all these steps. so <= 0)
+
+  go = cata $ \(N _ e) -> case e of
+    Var {} -> Just 0 :: Maybe Int
+    Deref x -> x <&> subtract 1  -- we don't care if we're dealing with a pointer, so negative values are OKAY
+    Ref x -> x <&> (+ 1)
+    MemAccess x _ -> x
+
+    _ -> Nothing
 
 cRecordInit :: DataDef M -> NonEmpty (Def.UniqueMem, PL) -> PL
 cRecordInit (DD ut _ _ _) insts =
@@ -587,7 +613,7 @@ cType = go 0 where
 
 cDataType :: DataDef M -> [Type M] -> PL
 cDataType dd' _ | isPointer dd' = error "cDataType called with a pointer type! (wrong!!)"
-cDataType dd' ts = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledTypes = memo }) dd' $ \dd@(DD _ _ econrec anns) addMemo -> do
+cDataType dd' ddts = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledTypes = memo }) dd' $ \dd@(DD _ _ econrec anns) addMemo -> do
   -- don't forget to add a required library
   addIncludeIfPresent anns
 
@@ -621,7 +647,7 @@ cDataType dd' ts = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx 
                   addTopLevel $ "typedef" <§ cStruct dc §> dataTypeName & ";"
 
                   -- then, create a data constructor function
-                  addTopLevel $ ccFunction (cCon dc) (Fix $ TCon dd ts undefined) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
+                  addTopLevel $ ccFunction (cCon dc) (Fix $ TCon dd ddts undefined) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
                     [
                       statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", " ["." & cConMember uc i § "=" § cConMember uc i | (_, i) <- zip ts [1 :: Int ..]] § "}"
                     ]
@@ -644,7 +670,7 @@ cDataType dd' ts = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx 
                           (enclose "(" ")" dataTypeName § "{" § ".tag" § "=" § cTag dc § "}")
 
                     dc@(DC _ uc ts@(_:_) _) -> do
-                      addTopLevel $ ccFunction (cCon dc) (Fix $ TCon dd ts undefined) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
+                      addTopLevel $ ccFunction (cCon dc) (Fix $ TCon dd ddts undefined) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
                         [
                           statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", "
                             [ ".tag" § "=" § cTag dc
@@ -707,7 +733,7 @@ cEnvFunctionVarName fn t =
   in fn & "__" & pls (hashUnique uid.fromUnionID)
 
 cVarName :: Def.UniqueVar -> PL
-cVarName v = plt (sanitize v.varName.fromVN) & "__" & pls (hashUnique v.varID)
+cVarName v = plt v.varName.fromVN & "__" & pls (hashUnique v.varID)
 
 sanitize :: Text -> Text
 sanitize = Text.concatMap $ \case
@@ -720,28 +746,28 @@ sanitize = Text.concatMap $ \case
 -- supposed to be the definitie source for unique names.
 cCon :: DataCon M -> PL
 -- type constructor with arguments - treat it as a function
-cCon (DC _ c (_:_) _) = plt (sanitize c.conName.fromCN) & "__" & pls (hashUnique c.conID) & "f"
+cCon (DC _ c (_:_) _) = plt c.conName.fromCN & "__" & pls (hashUnique c.conID) & "f"
 -- enum type constructor (refer to actual datatype)
 cCon (DC _ c [] anns) =
   let representsBuiltin = find (\case { Def.ACLit con -> Just con; _ -> Nothing }) anns
   in case representsBuiltin of
-    Just t -> plt (sanitize t)
-    Nothing -> plt (sanitize c.conName.fromCN) & "__" & pls (hashUnique c.conID)
+    Just t -> plt t
+    Nothing -> plt c.conName.fromCN & "__" & pls (hashUnique c.conID)
 
 
 cTag :: DataCon M -> PL
-cTag (DC _ c _ _) = plt (sanitize c.conName.fromCN) & "__" & pls (hashUnique c.conID) <> "t"
+cTag (DC _ c _ _) = plt c.conName.fromCN & "__" & pls (hashUnique c.conID) <> "t"
 
 
 -- defines names of constructor members for functions to synchronize between each other.
 cConMember :: Def.UniqueCon -> Int -> PL
-cConMember uc i = "c" & plt (sanitize uc.conName.fromCN) & "__" & pls (hashUnique uc.conID) & "__" & pls i
+cConMember uc i = "c" & plt uc.conName.fromCN & "__" & pls (hashUnique uc.conID) & "__" & pls i
 
 cRecMember :: Def.UniqueMem -> PL
-cRecMember um = "m" & plt (sanitize um.memName.fromMN) & "__" & pls (hashUnique um.memID)
+cRecMember um = "m" & plt um.memName.fromMN & "__" & pls (hashUnique um.memID)
 
 cConStruct :: DataCon M -> PL
-cConStruct (DC _ uc _ _) = "c" & plt (sanitize uc.conName.fromCN) & "__" & pls (hashUnique uc.conID) & "s"
+cConStruct (DC _ uc _ _) = "c" & plt uc.conName.fromCN & "__" & pls (hashUnique uc.conID) & "s"
 
 
 isBuiltinType :: Type M -> Bool
@@ -924,7 +950,7 @@ pls :: Show a => a -> PL
 pls = fromString . show
 
 plt :: Text -> PL
-plt = fromString . Text.unpack
+plt = fromString . Text.unpack . sanitize
 
 
 

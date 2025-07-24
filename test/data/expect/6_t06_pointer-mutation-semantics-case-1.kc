@@ -1,0 +1,9 @@
+#$ Pointer mutation semantics case 1: basic ref
+# 1
+# 2
+
+x = 1
+xp = &x
+print x
+xp <&= 2
+print x

@@ -1,0 +1,16 @@
+#$ Pointer mutation semantics case 4: ref deref interleaved with fields.
+# 420
+# 1337
+
+MyMem
+	og Int
+
+MyMem'
+	og' MyMem
+
+x = MyMem' { og': MyMem { og: 420 } }
+xp = &((&((&x)&.og'))&.og)
+
+print x.og'.og
+xp <&= 1337
+print x.og'.og

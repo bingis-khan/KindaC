@@ -1,0 +1,14 @@
+#$ Pointer mutation semantics case 2: ref to deref with members.
+# 420
+# 1337
+
+MyMem
+	og Int
+
+m = MyMem { og: 420 }
+mp = &m
+mp' = &mp&.og
+
+print m.og
+mp' <&= 1337
+print m.og
