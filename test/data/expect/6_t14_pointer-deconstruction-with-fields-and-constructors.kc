@@ -1,0 +1,20 @@
+#$ Pointer deconstruction with fields and constructors.
+
+Rec
+	ayo Int
+	bayo Maybe Bool
+
+x =& Rec { ayo: 123, bayo: Just(True) }
+case x
+	Ptr (Rec { ayo: a, bayo: None })
+		print 1
+		print a
+
+	Ptr (Rec { ayo: a, bayo: Just(False) })
+		print 2
+		print a
+
+	Ptr (Rec { ayo: a, bayo: Just(True) })
+		print 3
+		print a
+

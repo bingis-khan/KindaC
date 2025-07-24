@@ -175,16 +175,19 @@ cMutAccesses og accs = foldr f og (reverse accs)
 
 cDeconCondition :: PL -> Decon M -> PL
 cDeconCondition basevar mdecon =
-  let conjunction = fmap (basevar &) $ flip cata mdecon $ \(N _ d) -> case d of
+  let conjunction = fmap (\fn -> fn basevar) $ flip cata mdecon $ \(N _ d) -> case d of
         CaseVariable _ -> []
-        CaseRecord _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) -> fmap (\c -> "." & cRecMember um & c) rec
+        CaseRecord _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) -> fmap (\fnc x -> fnc (x & "." & cRecMember um)) rec
+        CaseConstructor (DC dd _ _ _) [innerDecons] | isPointer dd -> innerDecons <&> \fnarg x -> fnarg $ "(*" & x & ")"
+        CaseConstructor (DC dd _ _ _) _ | isPointer dd -> error "Incorrect shape of pointer type."
+
         CaseConstructor dc@(DC (DD _ _ cons _) uc _ _) args ->
           let cons' = fromJust $ Def.eitherToMaybe cons  -- cannot be a record type! NOTE: this is ugly, should I just make two separate types?
           in case cons' of
             [] -> undefined
-            conz | all (\(DC _ _ conargs _) -> null conargs) conz -> [" ==" § cCon dc]
-            [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> conargs <&> \ca -> "." & cConMember uc x & ca
-            _:_ -> ("." & "tag" § "==" § cTag dc) : concatMap (\(x, conargs) -> conargs <&> \ca -> "." & "env" & "." & cConStruct dc & "." & cConMember uc x & ca) (zip [1::Int ..] args)
+            conz | all (\(DC _ _ conargs _) -> null conargs) conz -> [\x -> x § "==" § cCon dc]
+            [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> conargs <&> \fnca a -> fnca $ a & "." & cConMember uc x
+            _:_ -> (\x -> x & "." & "tag" § "==" § cTag dc) : concatMap (\(x, conargs) -> conargs <&> \fnca a -> fnca $ a & "." & "env" & "." & cConStruct dc & "." & cConMember uc x) (zip [1::Int ..] args)
 
   in case conjunction of
     [] -> do
@@ -194,10 +197,13 @@ cDeconCondition basevar mdecon =
     ps@(_:_) -> sepBy " && " ps
 
 cDeconAccess :: PL -> Decon M -> [(Def.UniqueVar, Type M, PL)]
-cDeconAccess basevar mdecon = fmap2 (basevar &) $ flip cata mdecon $ \(N t d) -> case d of
-  CaseVariable uv -> [(uv, t, "" :: PL)]
+cDeconAccess basevar mdecon = fmap2 (\fn -> fn basevar) $ flip cata mdecon $ \(N t d) -> case d of
+  CaseVariable uv -> [(uv, t, id)]
   CaseRecord _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) ->
-    flip fmap2 rec $ \acc -> "." & cRecMember um & acc
+    flip fmap2 rec $ \accfn x -> accfn $ x & "." & cRecMember um
+
+  CaseConstructor (DC dd _ _ _) [innerDecons] | isPointer dd -> flip fmap2 innerDecons $ \fnarg x -> fnarg $ "(*" & x & ")"
+  CaseConstructor (DC dd _ _ _) _ | isPointer dd -> error "Incorrect shape of pointer type."
 
   CaseConstructor dc@(DC (DD _ _ cons _) uc _ _) args ->
     let cons' = fromJust $ Def.eitherToMaybe cons
@@ -205,9 +211,9 @@ cDeconAccess basevar mdecon = fmap2 (basevar &) $ flip cata mdecon $ \(N t d) ->
       []  -> []
       conz | all (\(DC _ _ conargs _) -> null conargs) conz -> []
 
-      [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> fmap2 (("." & cConMember uc x) &) conargs
+      [_] -> flip concatMap (zip [1::Int ..] args) $ \(x, conargs) -> fmap2 (\fn a -> fn $ a & "." & cConMember uc x) conargs
 
-      _:_ -> concatMap (\(x, conargs) -> fmap2 (("." & "env" & "." & cConStruct dc & "." & cConMember uc x) &) conargs) (zip [1::Int ..] args)
+      _:_ -> concatMap (\(x, conargs) -> fmap2 (\fn a -> fn $ a & "." & "env" & "." & cConStruct dc & "." & cConMember uc x) conargs) (zip [1::Int ..] args)
 
 
 cExpr :: Expr M -> PL

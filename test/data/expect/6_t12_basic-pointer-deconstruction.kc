@@ -1,0 +1,11 @@
+#$ Basic pointer deconstruction.
+# 2
+# 2
+
+
+x =& 2
+case x
+	Ptr(n)
+		print n
+
+print x&

@@ -1,0 +1,24 @@
+#$ Double pointer deconstruction in a record.
+# 3
+# 123
+
+Rec
+	ayo Int
+	bayo Ptr (Maybe Bool)
+
+
+decon (x Ptr Rec) -> Unit
+	case x
+		Ptr (Rec { ayo: a, bayo: Ptr(None) })
+			print 1
+			print a
+
+		Ptr (Rec { ayo: a, bayo: Ptr(Just(False)) })
+			print 2
+			print a
+
+		Ptr (Rec { ayo: a, bayo: Ptr(Just(True)) })
+			print 3
+			print a
+
+decon(&Rec { ayo: 123, bayo: &Just(True) })

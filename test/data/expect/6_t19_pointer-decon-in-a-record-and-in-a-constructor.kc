@@ -1,0 +1,30 @@
+#$ Pointer deconstruction in a record and in a constructor.
+# 3
+# 123
+# 2
+# 420
+# 1
+# 1337
+
+Rec
+	ayo Int
+	bayo Ptr (Maybe (Ptr Bool))
+
+
+decon (x Ptr Rec) -> Unit
+	case x
+		Ptr (Rec { ayo: a, bayo: Ptr(None) })
+			print 1
+			print a
+
+		Ptr (Rec { ayo: a, bayo: Ptr(Just(Ptr(False))) })
+			print 2
+			print a
+
+		Ptr (Rec { ayo: a, bayo: Ptr(Just(Ptr(True))) })
+			print 3
+			print a
+
+decon(&Rec { ayo: 123, bayo: &Just(&True) })
+decon(&Rec { ayo: 420, bayo: &Just(&False) })
+decon(&Rec { ayo: 1337, bayo: &None })

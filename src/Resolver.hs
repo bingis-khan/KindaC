@@ -46,6 +46,7 @@ import Data.List (find)
 import AST.Def (type (:.)(O), Annotated (..), Binding (..))
 import qualified AST.Def as Def
 import AST.Prelude (Prelude (..))
+import Control.Monad (when)
 
 
 
@@ -409,6 +410,10 @@ rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but
       Nothing -> do
         err $ UndefinedConstructor conname
         placeholderCon conname
+
+    -- you may not use the constructor of a pointer!
+    --  only when deconstructing!
+    when (isPointer con) $ err UsingPointerConstructor
 
     eid <- newEnvID
     pure $ Con con eid
@@ -871,6 +876,8 @@ data ResolveError
   | ExpectedClassNotDatatype Def.ClassName Def.UniqueType
   | AttemptToDeconstructClass Def.UniqueClass  -- IDs are only, because I'm currently too lazy to make a Show instance.
   | UndefinedFunctionOfThisClass Def.UniqueClass Def.VarName
+
+  | UsingPointerConstructor
   deriving Show
 
 
@@ -928,3 +935,11 @@ scopeToExports sc = Exports
     cls = mapMaybe (\case { R.DefinedClass cd -> Just cd; _ -> Nothing }) $ lefts $ Map.elems sc.tyScope
 
     insts = concatMap (mapMaybe (\case { R.DefinedInst inst -> Just inst; _ -> Nothing })) $ Map.elems $ Map.elems <$> sc.instScope
+
+
+isPointer :: Constructor -> Bool
+isPointer con =
+  let anns = case con of
+        DefinedConstructor dc -> dc.conDataDef.ddAnns
+        ExternalConstructor dc -> dc.conDataDef.ddAnns
+  in Def.AActualPointerType `elem` anns

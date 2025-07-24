@@ -53,6 +53,11 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 - change testing so that:
   - tests are grouped by their type
   - with this, instead of having 4 seperate entries for a single test, make it 1.
+- add tests for incorrect compilations
+  - right now just check if compilation failed with errors
+  - later check error messages
+  - (or just check the datatypes!)
+  - not sure which is better
 
 
 ### todo misc

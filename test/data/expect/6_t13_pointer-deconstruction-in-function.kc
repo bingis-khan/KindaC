@@ -1,0 +1,12 @@
+#$ Pointer deconstruction in function
+# 2
+# 2
+
+
+deref (Ptr(x) Ptr a) -> a
+	return x
+
+x =& 2
+print deref(x)
+
+print x&
