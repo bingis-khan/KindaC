@@ -43,7 +43,7 @@ import Data.Traversable (for)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Either (rights, lefts)
 import Data.List (find)
-import AST.Def (type (:.)(O), Annotated (..), Binding (..), pp)
+import AST.Def (type (:.)(O), Annotated (..), Binding (..))
 import qualified AST.Def as Def
 import AST.Prelude (Prelude (..))
 
@@ -83,42 +83,49 @@ rStmts = traverse -- traverse through the list with Ctx
         vid <- newVar name
         stmt $ Assignment vid re
       Pass -> stmt Pass
-      Mutation name e -> do
+      Mutation name () accesses e -> do
         re <- rExpr e
+        let raccesses = flip map accesses $ \case  -- noop to map "phase"
+              MutRef -> MutRef
+              MutField mem -> MutField mem
         (loc, vf) <- resolveVar name
 
         case vf of
           R.DefinedVariable vid | loc == Def.Local ->
-            stmt $ Mutation vid re
+            stmt $ Mutation vid loc raccesses re
+
+          -- when we're using a ref, we're actually mutating outside shit, so it's good.
+          R.DefinedVariable vid | MutRef `elem` raccesses -> do
+            stmt $ Mutation vid loc raccesses re
 
           R.DefinedVariable vid -> do
             err $ CannotMutateNonLocalVariable name
 
-            stmt $ Mutation vid re
+            stmt $ Mutation vid loc raccesses re
 
           R.DefinedFunction fun _ -> do
             err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
 
             vid <- generateVar name
-            stmt $ Mutation vid re
+            stmt $ Mutation vid loc [] re
 
           R.ExternalFunction fun _ -> do
             err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
 
             vid <- generateVar name
-            stmt $ Mutation vid re
+            stmt $ Mutation vid loc [] re
 
           R.DefinedClassFunction (CFD _ cfdUV _ _) _ -> do
             err $ CannotMutateFunctionDeclaration cfdUV.varName
 
             vid <- generateVar name
-            stmt $ Mutation vid re
+            stmt $ Mutation vid loc [] re
 
           R.ExternalClassFunction (CFD _ cfdUV _ _) _ -> do
             err $ CannotMutateFunctionDeclaration cfdUV.varName
 
             vid <- generateVar name
-            stmt $ Mutation vid re
+            stmt $ Mutation vid loc [] re
 
 
       If (IfStmt { condition, ifTrue, ifElifs, ifElse }) -> do
@@ -453,6 +460,8 @@ rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but
     env <- mkEnv eid innerEnv
     pure $ Lam (R.LamDec lamId env) rParams rBody
 
+  Ref e -> Ref <$> e
+  Deref e -> Deref <$> e
 
 rType :: Type U -> Ctx (Type R)
 rType = transverse rType'
@@ -879,7 +888,7 @@ localityOfVariablesAtCurrentScope = do
 -- used for function definitions
 gatherVariables :: AnnStmt R -> Set R.VariableProto
 gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesFromExpr bstmt of
-  Mutation v expr -> Set.insert (R.PDefinedVariable v) expr
+  Mutation v _ _ expr -> Set.insert (R.PDefinedVariable v) expr
   Return expr -> gatherVariablesFromExpr expr
   Fun fn ->
     let dec = fn.functionDeclaration

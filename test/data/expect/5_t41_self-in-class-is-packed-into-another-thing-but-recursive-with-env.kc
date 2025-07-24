@@ -1,0 +1,23 @@
+#$ Self in class is packed into another thing but recursive with env.
+# 841
+# 1760
+
+NotPtr a
+	NotPtr a
+
+class Iter
+	next (self NotPtr _) -> Int
+
+int-const = 420
+inst Iter Int
+	next (NotPtr(x)) -> Int
+		return x + int-const
+
+add-const = 1
+inst Iter NotPtr
+	next (NotPtr(x)) -> Int
+		return next(x) + add-const
+
+x = NotPtr(NotPtr(420))
+print next(x)
+print next(NotPtr(NotPtr(NotPtr(NotPtr(1337)))))

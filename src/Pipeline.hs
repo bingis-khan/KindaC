@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedRecordDot, ApplicativeDo #-}
+{-# LANGUAGE LambdaCase #-}
 module Pipeline (loadModule, loadPrelude, finalizeModule) where
 
 import qualified Data.Text.IO as TextIO
@@ -119,12 +120,26 @@ loadPrelude = do
             let lit = Lit (LInt 0)
             in Fix $ N t lit
 
+      let
+        findPtrType :: PreludeErr (Type TC -> Type TC)
+        findPtrType =
+            let
+              fitsPtrType :: DataDef TC -> Bool
+              fitsPtrType = \case
+                DD ut (T.Scheme [_] []) _ _ -> ut.typeName == Prelude.ptrTypeName
+                _ -> False
+              mdd = find fitsPtrType pmod.exports.datatypes
+            in case mdd of
+              Just dd -> Success $ \t -> Fix $ TCon dd [t] []
+              Nothing -> Failure $ ne $ printf "[Prelude: Ptr] Could not find suitable Ptr type (Ptr type name + one tvar)" 
+
       let eprelude = do  -- should compile to applicative do! TODO: test it somehow.
             unit <- findUnit
             bool <- findBasicType Prelude.boolTypeName
             int  <- findBasicType Prelude.intTypeName
             float <- findBasicType Prelude.floatTypeName
-            pure $ Prelude { tpModule = pmod, unitValue = unit, boolType = bool, intType = int, floatType = float, toplevelReturn = mkTopLevelReturn int }
+            ptr <- findPtrType
+            pure $ Prelude { tpModule = pmod, unitValue = unit, boolType = bool, intType = int, floatType = float, toplevelReturn = mkTopLevelReturn int, mkPtr = ptr }
 
       case eprelude of
         Failure errs -> do

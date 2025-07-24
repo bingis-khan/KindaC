@@ -1,0 +1,21 @@
+#$ Self in class is packed into another thing but recursive.
+# 421
+# 1340
+
+NotPtr a
+	NotPtr a
+
+class Iter
+	next (self NotPtr _) -> Int
+
+inst Iter Int
+	next (NotPtr(x)) -> Int
+		return x
+
+inst Iter NotPtr
+	next (NotPtr(x)) -> Int
+		return next(x) + 1
+
+x = NotPtr(NotPtr(420))
+print next(x)
+print next(NotPtr(NotPtr(NotPtr(NotPtr(1337)))))

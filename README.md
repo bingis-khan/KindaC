@@ -7,11 +7,12 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 ## current
 
-currently implementing typeclasses.
+Implementing pointers now.
+  - with deconstruction and deref operator.
+  - with '<&=' "operator"
 
-> REMEMBER: DON'T DRY.  I don't know what I'm doing, so I have to implement all this stuff first, and only then look for similarities.
 
-Also I decided to use a tag "ALGO", which should mark key moments with the typechecking scheme and unions. I should probably start writing them up as a source of info for the article.
+Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs are in separate text files in doc/compiler/ and a small minority in doc/design/.
 
 
 ## directory structure
@@ -27,14 +28,10 @@ Also I decided to use a tag "ALGO", which should mark key moments with the typec
 ## regressions
 
 - in test 5.08, there are two environments in the union instead of one for a generalized function over typeclass instance. i'll have to check if it also happens for normal functions, what kind of regression it is. happened after removing RemoveUnused, so it's obvious something like this would happen. check if there are any warnings in tests when compiling C programs.
-- fuck, RemoveUnused was probably better, as Mono now does a lot of things and it kinda sucks.
-  - NEVERMIND BUOY, we just track instantiations in typecheck. now it's all much better.
 
 
 ## todo larger
 
-- typeclasses (which features?)
-  - right now, I think I'll pass up on implementing type kinds? (no Fixpoint)
 - pointers
 - error location + actual errors
 - module importing and namespaces
@@ -50,6 +47,7 @@ Also I decided to use a tag "ALGO", which should mark key moments with the typec
 - add `<.member=` assignments! (just for fun and UI experiments. maybe it'll be better!)
 - string interpolation! `'Just rammed \(num-glowies) glowies with my car.'` (support only variables inside, seems simpler)
   - think about internationalization? apparently, that's the biggest drawback of string interpolation
+- kinds? fixpoint?
 
 
 ### todo misc

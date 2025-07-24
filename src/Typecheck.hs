@@ -26,7 +26,7 @@ import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed, hoist, project, para)
 import Control.Monad (replicateM, zipWithM_, unless)
 import Data.Bitraversable (bitraverse, bisequenceA)
-import Data.Foldable (for_, fold)
+import Data.Foldable (for_, fold, foldlM)
 import Data.Set (Set, (\\))
 import qualified Data.Set as Set
 import Data.Bifunctor (bimap)
@@ -49,7 +49,7 @@ import Misc.Memo (memo, Memo(..), emptyMemo)
 import qualified AST.Common as Common
 import AST.Prelude (Prelude)
 import qualified AST.Prelude as Prelude
-import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, Node (..), DeclaredType (..), XClassFunDec)
+import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, Node (..), DeclaredType (..), XClassFunDec, MutAccess (..))
 import AST.Resolved (R)
 import AST.Typed ( TC, Scheme(..), TOTF(..) )
 import AST.Def ((:.)(..), LitType (..), PP (..), Op (..), Binding (..), sctx, ppDef)
@@ -184,12 +184,43 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
         pure $ Assignment v rexpr
 
 
-      Mutation v (expr, t) -> do
+      Mutation v loc accesses (expr, t) -> do
         vt <- var v
-        vt `uni` t
-        addEnv (T.DefinedVariable v) vt
 
-        pure $ Mutation v expr
+        case loc of
+          Def.Local -> pure ()
+          Def.FromEnvironment {} -> 
+            addEnv (T.DefinedVariable v) vt
+
+        -- prepare accesses for typechecking.
+        taccesses <- for accesses $ \case
+              MutRef -> (MutRef,) <$> fresh
+              MutField mem -> (MutField mem,) <$> fresh
+
+        let
+          foldMutAccess :: Type TC -> (MutAccess TC, Type TC) -> Infer (Type TC)
+          foldMutAccess rightType = \case
+            (MutRef, accessT) -> do
+              ptrT <- mkPtr rightType
+              ptrT `uni` accessT
+              pure ptrT
+            (MutField mem, recordType) -> do
+              fieldType <- addMember recordType mem
+              fieldType `uni` rightType
+              pure recordType
+
+        -- we must build the type access by access, from RIGHT to LEFT.
+        --  that's why it's reversed.
+        -- ex: <&.dupa= 420
+        --    the field 'dupa' has type Int, so
+        --     type 420 == addMember fresh "dupa"
+        --    then, we deref x, so the current type is the derefed value.
+        --     type x `uni` mkPtr t
+        --  get it?
+        guessedType <- foldlM foldMutAccess t (reverse taccesses)  
+
+        vt `uni` guessedType
+        pure $ Mutation v loc taccesses expr
 
 
       If (IfStmt { condition = (cond, condt), ifTrue, ifElifs, ifElse }) -> do
@@ -384,6 +415,13 @@ inferExpr = cata (fmap embed . inferExprType)
               lt `uni` rt
               findBuiltinType Prelude.boolFind
 
+            else if op == LessThan || op == GreaterThan
+            then do
+              intt <- findBuiltinType Prelude.intFind
+              lt `uni` intt
+              rt `uni` intt
+              findBuiltinType Prelude.boolFind
+
             else do
               intt <- findBuiltinType Prelude.intFind
               lt `uni` intt
@@ -405,6 +443,21 @@ inferExpr = cata (fmap embed . inferExprType)
           Common.typeOfNode callee' `uni` ft
 
           pure (Call callee' args', ret)
+
+        Ref ee -> do
+          te <- ee
+          let t = Common.typeOfNode te
+          ptrType <- mkPtr t 
+          pure (Ref te, ptrType)
+
+        Deref ee -> do
+          te <- ee
+          let t = Common.typeOfNode te
+
+          insidePtr <- fresh
+          ptrType <- mkPtr insidePtr
+          t `uni` ptrType
+          pure (Deref te, insidePtr)
 
 
 
@@ -1526,6 +1579,21 @@ findBuiltinType (Prelude.PF tc pf) = do
           pure $ Fix $ TCon dd tvs unions
         Nothing -> error $ "[COMPILER ERROR]: Could not find inbuilt type '" <> show tc <> "'."
 
+mkPtr :: Type TC -> Infer (Type TC)
+mkPtr insidePtr = do
+  Ctx { prelude = prelud } <- RWS.ask
+  case prelud of
+    Just p -> pure $ p.mkPtr insidePtr
+    Nothing -> do
+      ts <- RWS.gets $ memoToMap . memoDataDefinition
+      case findMap Prelude.ptrTypeName (\(DD ut _ _ _) -> ut.typeName) ts of
+        Just dd@(DD _ scheme _ _) -> do
+          (tvs@[innerTyVar], unions) <- instantiateScheme mempty scheme
+          innerTyVar `uni` insidePtr
+          pure $ Fix $ TCon dd tvs unions
+
+        Nothing -> error $ "[COMPILER ERROR]: Could not find inbuilt type '" <> show Prelude.ptrTypeName <> "'."
+
 
 
 -------------------------------
@@ -1727,6 +1795,7 @@ instance Substitutable (Exports TC) where
 instance Substitutable (AnnStmt TC) where
   ftv = cata $ \(O (Def.Annotated _ stmt)) -> case first ftv stmt of
     Return ret -> ftv ret
+    Mutation _ _ accesses e -> ftv accesses <> e
     s -> bifold s
 
   subst su = cata $ embed . sub
@@ -1739,7 +1808,12 @@ instance Substitutable (AnnStmt TC) where
         Fun env -> Fun $ subst su env
         Inst inst -> Inst $ subst su inst
         Return ret -> Return  $ subst su ret
+        Mutation v other accesses e -> Mutation v other (subst su accesses) (subst su e)
         s -> first (subst su) s
+
+instance Substitutable (MutAccess TC) where
+  ftv = const mempty
+  subst _ = id
 
 instance (Substitutable expr, Substitutable stmt) => Substitutable (CaseF TC expr stmt) where
   ftv kase = ftv kase.deconstruction <> ftv kase.caseCondition <> ftv kase.caseBody

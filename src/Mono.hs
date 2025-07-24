@@ -38,7 +38,7 @@ import Control.Monad (void)
 import Data.String (fromString)
 import Data.List (find, partition)
 import AST.Typed (TC)
-import AST.Common (AnnStmt, Module, StmtF (..), Expr, Node (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun)
+import AST.Common (AnnStmt, Module, StmtF (..), Expr, Node (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), XMutAccess)
 import AST.Mono (M)
 import AST.IncompleteMono (IM)
 import AST.Def ((:.) (..), Annotated (..), Locality (..), phase, PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>))
@@ -97,7 +97,9 @@ mAnnStmt = cata (fmap embed . f) where
       ExprStmt expr -> mann $ ExprStmt expr
       Assignment vid expr -> mann $ Assignment vid expr
       Print expr -> mann $ Print expr
-      Mutation vid expr -> mann $ Mutation vid expr
+      Mutation vid l accesses expr -> do
+        maccesses <- mMutAccesses accesses
+        mann $ Mutation vid l maccesses expr  -- NOTE: we don't need to adjust locality, because we may only assign to variables but only class functions might have their locality changed.
       If (IfStmt cond iftrue elseIfs else') -> mann $ If $ IfStmt cond iftrue elseIfs else'
       Switch switch cases -> do
         mcases <- traverse mCase cases
@@ -138,6 +140,18 @@ mAnnStmt = cata (fmap embed . f) where
           (x:xs) -> Fun $ IM.EnvDefs $ x :| xs
 
       Other () -> error "OTHER OTHER OTHER SHOULD NOT BE CREATED EVER"
+
+
+mMutAccesses :: [(MutAccess TC, Type TC)] -> Context [(MutAccess IM, Type IM)]
+mMutAccesses accs = for accs $ \(acc, t) -> case acc of
+  MutRef -> do
+    mt <- mType t
+    pure (MutRef, mt)
+  MutField mem -> do
+    mt <- mType t
+    let dd = expectIDataDef mt
+    um <- member (dd, mem)
+    pure (MutField um, mt)
 
 -- TODO: replace with actual types.
 -- LEFT: ENV ASSIGNMENT
@@ -261,18 +275,8 @@ mExpr = cata $ fmap embed . \(N t expr) -> do
         Var v locality -> do
           mv <- variable v mt
 
-          newLocality <- case v of
-                T.DefinedClassFunction cfd snapshot self uci -> do
-                  ivfn <- selectInstance snapshot self uci cfd
-
-                  let vfn = Common.instanceToFunction ivfn
-                  let (T.Env _ _ _ instEnvStack) = vfn.functionDeclaration.functionEnv
-                  envStack <- State.gets currentEnvStack
-                  let newLoc = if envStack == instEnvStack then Local else FromEnvironment (Def.envStackToLevel instEnvStack)
-                  Def.ctxPrint' $ Def.printf "NEW LOCALITY %s (%s =?= %s) OF VAR %s" (pp newLoc) (pp instEnvStack) (pp envStack) (pp mv)
-                  pure newLoc
-
-                _ -> pure locality
+          envStack <- State.gets currentEnvStack
+          newLocality <- reLocality envStack locality v
 
           pure $ Var mv newLocality
 
@@ -313,6 +317,9 @@ mExpr = cata $ fmap embed . \(N t expr) -> do
           -- Ignore 'as' by unpacking the variable and passing in the previous expression.
           pure e
 
+        Ref e -> pure $ Ref e
+        Deref e -> pure $ Deref e
+
   pure $ N mt mexpr
 
 withEnv :: Maybe (Function IM) -> T.Env -> Context a -> Context (a, IM.Env)
@@ -326,18 +333,7 @@ withEnv mfn env cx = do
         let vv = fst <$> v
         mv <- variable vv mt
 
-        newLocality <- case vv of
-              T.DefinedClassFunction cfd snapshot self uci -> do
-                ivfn <- selectInstance snapshot self uci cfd
-
-                let vfn = Common.instanceToFunction ivfn
-                let (T.Env _ _ _ instEnvStack) = vfn.functionDeclaration.functionEnv
-                let newLoc = if envStack == instEnvStack then Local else FromEnvironment (Def.envStackToLevel instEnvStack)
-                Def.ctxPrint' $ Def.printf "NEW LOCALITY %s (%s =?= %s) OF VAR %s" (pp newLoc) (pp instEnvStack) (pp envStack) (pp mv)
-                pure newLoc
-
-
-              _ -> pure l
+        newLocality <- reLocality envStack l vv
 
         pure (mv, newLocality, mt)
 
@@ -389,6 +385,22 @@ withEnv mfn env cx = do
   Def.ctxPrint' $ Def.printf "%sM: %s =WITH ENV%s=> %s" (pp $ T.envID env) (pp env) (case mfn of { Nothing -> "" :: Def.Context; Just fn -> fromString $ Def.printf " (%s)" $ pp fn.functionDeclaration.functionId }) (pp menv)
 
   pure (x, menv)
+
+
+-- Evaluate the locality of a class function after we have access to the instance.
+reLocality :: Def.EnvStack -> Def.Locality -> T.Variable -> Context Def.Locality
+reLocality envStack ogLocality = \case
+  v@(T.DefinedClassFunction cfd snapshot self uci) -> do
+    ivfn <- selectInstance snapshot self uci cfd
+
+    let vfn = Common.instanceToFunction ivfn
+    let (T.Env _ _ _ instEnvStack) = vfn.functionDeclaration.functionEnv
+    let newLoc = if envStack == instEnvStack then Local else FromEnvironment (Def.envStackToLevel instEnvStack)
+    Def.ctxPrint' $ Def.printf "NEW LOCALITY %s (%s =?= %s) OF VAR %s" (pp newLoc) (pp instEnvStack) (pp envStack) (pp v)
+    pure newLoc
+
+
+  _ -> pure ogLocality
 
 
 findUsedVarsInExpr :: Expr TC -> Set (T.Variable, Type TC)
@@ -1021,7 +1033,9 @@ mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)
     ExprStmt e -> s $ ExprStmt e
     Assignment vid expr -> s $ Assignment vid expr
     Print e -> s $ Print e
-    Mutation vid e -> s $ Mutation vid e
+    Mutation vid loc accesses e -> do
+      mfaccesses <- traverse (bitraverse (pure . \case { MutRef -> MutRef; MutField um -> MutField um }) mfType) accesses  -- noop access reconstruction...
+      s $ Mutation vid loc mfaccesses e
     If (IfStmt { condition,  ifTrue,  ifElifs,  ifElse }) -> s $ If $ IfStmt condition (body ifTrue) (fmap2 body ifElifs) (body <$> ifElse)
     Switch e cases -> fmap (Just . Switch e) $ for cases $ \kase -> do
       mdecon <- mfDecon kase.deconstruction
@@ -1091,6 +1105,9 @@ mfExpr = cata $ \(N imt imexpr) -> do
     Op l op r -> Op <$> l <*> pure op <*> r
     Call c args -> Call <$> c <*> sequenceA args
     As e t -> As <$> e <*> mfType t
+
+    Ref e -> Ref <$> e
+    Deref e -> Deref <$> e
 
 mfVariable :: IM.Variable -> EnvContext M.Variable
 mfVariable = \case

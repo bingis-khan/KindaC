@@ -21,7 +21,7 @@ import qualified Control.Monad.Trans.RWS as RWS
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Fix (Fix (..))
-import Data.Foldable (for_, sequenceA_, foldl')
+import Data.Foldable (for_, sequenceA_, foldl', fold)
 import Data.Functor.Foldable (cata, project, para, embed)
 import Data.Functor.Identity (Identity(..))
 import Data.Functor ((<&>))
@@ -39,7 +39,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Traversable (for)
 import Data.Either (lefts)
 import qualified Data.Map as Map
-import AST.Common (Module, AnnStmt, StmtF (..), Decon, DeconF (..), DataCon (..), DataDef (..), Type, Expr, Node (..), ExprF (..), TypeF (..), Function, IfStmt (..))
+import AST.Common (Module, AnnStmt, StmtF (..), Decon, DeconF (..), DataCon (..), DataDef (..), Type, Expr, Node (..), ExprF (..), TypeF (..), Function, IfStmt (..), MutAccess (..))
 import AST.Mono (M, EnvMod (assignee, assigned))
 import AST.Def ((:.)(..), Annotated (..), CtxData (..), Op (..), Locality, pp, fmap2)
 import qualified AST.Def as Def
@@ -100,7 +100,11 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
     where
       bareExpression = statement . (enclose "(" ")" "void" §)
   Assignment uv e -> statement $ cDefinition (Common.typeOfNode e) (cVarName uv) § "=" § cExpr e
-  Mutation uv e -> statement $ cVarName uv § "=" § cExpr e
+  Mutation uv loc accesses e ->
+    let var = case loc of
+          Def.Local -> cVarName uv
+          Def.FromEnvironment {} -> "env->" & cVarName uv
+    in statement $ cMutAccesses var accesses § "=" § cExpr e
   -- Mutation uv Def.FromEnvironment e -> do
   --   pl "// ERROR: we don't handle references yet!"
   --   statement $ cVarName uv § "=" § cExpr e
@@ -159,6 +163,13 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
   Inst () -> undefined
   Other () -> undefined
 
+cMutAccesses :: PL -> [(MutAccess M, Type M)] -> PL
+cMutAccesses og accs = foldr f og (reverse accs)
+  where
+    f :: (MutAccess M, Type M) -> PL -> PL
+    f (MutRef, _) = cDeref
+    f (MutField mem, _) = (& "." & cRecMember mem)
+
 
 cDeconCondition :: PL -> Decon M -> PL
 cDeconCondition basevar mdecon =
@@ -198,9 +209,10 @@ cDeconAccess basevar mdecon = fmap2 (basevar &) $ flip cata mdecon $ \(N t d) ->
 
 
 cExpr :: Expr M -> PL
-cExpr expr = flip para expr $ \(N t e) -> case fmap (first Common.typeOfNode) e of
-  Call (ft, fn) args ->
-      let union = case ft of
+cExpr expr = flip para expr $ \(N t e) -> case e of
+  Call (ogfn, fn) args ->
+      let ft = Common.typeOfNode ogfn
+          union = case ft of
             Fix (TFun munion _ _) -> munion
             _ -> undefined  -- should not happen.
 
@@ -211,21 +223,22 @@ cExpr expr = flip para expr $ \(N t e) -> case fmap (first Common.typeOfNode) e 
               v <- createIntermediateVariable ft fn
               cCall (v & ".fun") $ ("&" & v & ".env") : fmap snd args
 
-  Op (lt, le) Equals (rt, re) | not (isBuiltinType lt)-> do
-    le' <- createIntermediateVariable lt le
-    re' <- createIntermediateVariable rt re
+  Op (l, le) Equals (r, re) | not (isBuiltinType (Common.typeOfNode l))-> do
+    le' <- createIntermediateVariable (Common.typeOfNode l) le
+    re' <- createIntermediateVariable (Common.typeOfNode r) re
 
     include "string.h"
-    enclose "(" ")" $ "0" § "==" § cCall "memcmp" [cRef le', cRef re', cSizeOf lt]
+    enclose "(" ")" $ "0" § "==" § cCall "memcmp" [cRef le', cRef re', cSizeOf (Common.typeOfNode l)]
 
-  Op (lt, le) NotEquals (rt, re) | not (isBuiltinType lt)-> do
-    le' <- createIntermediateVariable lt le
-    re' <- createIntermediateVariable rt re
+  Op (l, le) NotEquals (r, re) | not (isBuiltinType (Common.typeOfNode l))-> do
+    le' <- createIntermediateVariable (Common.typeOfNode l) le
+    re' <- createIntermediateVariable (Common.typeOfNode r) re
 
     include "string.h"
-    enclose "(" ")" $ "0" § "!=" § cCall "memcmp" [cRef le', cRef re', cSizeOf lt]
+    enclose "(" ")" $ "0" § "!=" § cCall "memcmp" [cRef le', cRef re', cSizeOf (Common.typeOfNode l)]
 
-  RecUpdate (et, ee) upd -> do
+  RecUpdate (e, ee) upd -> do
+    let et = Common.typeOfNode e
     let dd@DD { ddCons = erecs } = case project et of
           TCon dd _ _ -> dd
           _ -> undefined
@@ -247,6 +260,12 @@ cExpr expr = flip para expr $ \(N t e) -> case fmap (first Common.typeOfNode) e 
 
     cRecordInit dd (NonEmpty.prependList initializePersistedFields initializeUpdatedFields)
 
+  -- actually take reference here.
+  Ref (Fix (N _ (Var _ _)), e) -> cRef e
+  Ref (oge, e) -> do
+    newVar <- createIntermediateVariable (Common.typeOfNode oge) e
+    cRef newVar
+
   -- branch without the need for added types.
   pe -> case fmap snd pe of
     Lit (Def.LInt x) -> pls x
@@ -258,6 +277,9 @@ cExpr expr = flip para expr $ \(N t e) -> case fmap (first Common.typeOfNode) e 
     Lam env params body -> cLambda env params t body
     MemAccess ee mem -> ee & "." & cRecMember mem
     RecCon dd insts -> cRecordInit dd insts
+    Deref ee -> cDeref ee
+
+    -- NOTE: interesting, we still have "As", although it's not needed after typechecking. another reason to modify the Common AST
     _ -> undefined
 
 cRecordInit :: DataDef M -> NonEmpty (Def.UniqueMem, PL) -> PL
@@ -521,28 +543,49 @@ addHeading heading = PL $ RWS.modify $ mapPLCtx $ \ctx -> ctx { headings = Set.i
 ---------
 
 cDefinition :: Type M -> PL -> PL
-cDefinition (Fix t) v = case t of
-  TCon dd _ _ -> cDataType dd § v
-  TFun union args ret | not (M.areAllEnvsEmpty union) -> cUnion args ret union § v
+cDefinition mt v = go 0 mt where
+  go pointingNum (Fix t) = case t of
+    TCon dd [pointedToType] _ | isPointer dd -> go (pointingNum + 1) pointedToType
+    TCon dd ts _ | isPointer dd -> error $ Def.printf "POINTER TYPE WITH INCORRECT AMOUNT OF ARGUMENTS (%s)." (length ts)
 
-  TFun _ args ret -> cTypeFun ret (cType <$> args) v
+    TCon dd ts _ ->
+      let ptrs = fold $ replicate pointingNum "*"
+      in cDataType dd ts & ptrs § v
+    TFun union args ret | not (M.areAllEnvsEmpty union) -> cUnion args ret union § v
 
--- Function printing logic (i had to use it in two places and I *really* don't want to duplicate this behavior.)
+    TFun _ args ret ->
+      let ptrs = fold $ replicate pointingNum "*"
+      in cTypeFun ret (cType <$> args) (ptrs & v)
+    TO {} -> error "should not happen"
+
+-- Function printing logic (I *really* don't want to duplicate this behavior.)
+-- Supposed to be used when NOT dealing with user types, as we don't take into account pointers.
 cTypeFun :: Type M -> [PL] -> PL -> PL
 cTypeFun ret cargs v = cDefinition ret (cCall (enclose "(*" ")" v) cargs)
 
 cType :: Type M -> PL
-cType (Fix t) = case t of
-  TCon dd _ _ -> cDataType dd
-  TFun union args ret | M.areAllEnvsEmpty union ->
-    let cargs = cType <$> args
-    in cDefinition ret (cCall "(*)" cargs)
+cType = go 0 where
+  go pointingNum (Fix t) = case t of
+    TCon dd [pointedToType] _ | isPointer dd -> go (pointingNum + 1) pointedToType
+    TCon dd ts _ | isPointer dd -> error $ Def.printf "POINTER TYPE WITH INCORRECT AMOUNT OF ARGUMENTS (%s)." (length ts)
 
-  TFun union args ret -> cUnion args ret union
+    TCon dd ts _ ->
+      let ptrs = fold $ replicate pointingNum "*"
+      in cDataType dd ts & ptrs
+
+    TFun union args ret | M.areAllEnvsEmpty union ->
+      let cargs = cType <$> args
+          ptrs = fold $ replicate pointingNum "*"
+      in cDefinition ret (cCall ("(*" & ptrs & ")") cargs)
+
+    TFun union args ret -> cUnion args ret union
+
+    TO {} -> error "should not happen"
 
 
-cDataType :: DataDef M -> PL
-cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledTypes = memo }) dd' $ \dd@(DD _ _ econrec anns) addMemo -> do
+cDataType :: DataDef M -> [Type M] -> PL
+cDataType dd' _ | isPointer dd' = error "cDataType called with a pointer type! (wrong!!)"
+cDataType dd' ts = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledTypes = memo }) dd' $ \dd@(DD _ _ econrec anns) addMemo -> do
   -- don't forget to add a required library
   addIncludeIfPresent anns
 
@@ -551,64 +594,64 @@ cDataType dd' = unpack $ Memo.memo' (compiledTypes . fst) (\memo -> mapPLCtx $ \
   case representsBuiltin of
     Just t -> pure $ plt t
     Nothing -> do
-      let dataTypeName = plt ut.typeName.fromTC & "__" & pls (hashUnique ut.typeID)
-      addMemo dataTypeName
+          let dataTypeName = plt ut.typeName.fromTC & "__" & pls (hashUnique ut.typeID)
+          addMemo dataTypeName
 
-      -- Check if it's a record or an ADT
-      case econrec of
-        -- it's a record!
-        Left recs -> do
-          addTopLevel $ "typedef" <§ cRecordStruct recs §> dataTypeName & ";"
+          -- Check if it's a record or an ADT
+          case econrec of
+            -- it's a record!
+            Left recs -> do
+              addTopLevel $ "typedef" <§ cRecordStruct recs §> dataTypeName & ";"
 
-        -- it's am ADT
-        Right cons ->
-          case cons of
-            -- 0. No constructors (empty, TODO probably impossible? (because after monomorphization, this type will disappear, as it won't be able to be instantiated))
-            [] ->
-              pure mempty
+            -- it's am ADT
+            Right cons ->
+              case cons of
+                -- 0. No constructors (empty, TODO probably impossible? (because after monomorphization, this type will disappear, as it won't be able to be instantiated))
+                [] ->
+                  pure mempty
 
-            -- 1. enum
-            dc
-              | all (\(DC _ _ args _) -> null args) dc -> addTopLevel $ "typedef" § "enum" <§ cBlock [pl $ sepBy ", " $ cCon <$> dc] §> dataTypeName & ";"
+                -- 1. enum
+                dc
+                  | all (\(DC _ _ args _) -> null args) dc -> addTopLevel $ "typedef" § "enum" <§ cBlock [pl $ sepBy ", " $ cCon <$> dc] §> dataTypeName & ";"
 
-            -- 2. struct
-            [dc@(DC _ uc ts _)] -> do
-              addTopLevel $ "typedef" <§ cStruct dc §> dataTypeName & ";"
+                -- 2. struct
+                [dc@(DC _ uc ts _)] -> do
+                  addTopLevel $ "typedef" <§ cStruct dc §> dataTypeName & ";"
 
-              -- then, create a data constructor function
-              addTopLevel $ ccFunction (cCon dc) (Fix $ TCon dd undefined undefined) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
-                [
-                  statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", " ["." & cConMember uc i § "=" § cConMember uc i | (_, i) <- zip ts [1 :: Int ..]] § "}"
-                ]
-
-
-            -- 3. ADT
-            dcs -> do
-              let tags = cTag <$> dcs
-              addTopLevel $ "typedef" § "struct" <§ cBlock
-                [ "enum" <§ cBlock [pl $ sepBy ", " tags] §> "tag;"
-                , "union" <§ cBlock [cStruct dc §> cConStruct dc & ";" | dc@(DC _ _ (_:_) _) <- dcs ] §> "env;"
-                ] §> dataTypeName & ";"
-
-              -- also, generate accessors
-              for_ dcs $ \case
-                -- for a constructor with no arguments....... generate preprocessor directives (TODO: bad.) try to make a better hierarchy of unique names. less functions, etc.
-                dc@(DC _ _ [] _) -> do
-                  addTopLevel $ pl $
-                    "#define" § cCon dc § enclose "(" ")"
-                      (enclose "(" ")" dataTypeName § "{" § ".tag" § "=" § cTag dc § "}")
-
-                dc@(DC _ uc ts@(_:_) _) -> do
-                  addTopLevel $ ccFunction (cCon dc) (Fix $ TCon dd undefined undefined) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
+                  -- then, create a data constructor function
+                  addTopLevel $ ccFunction (cCon dc) (Fix $ TCon dd ts undefined) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
                     [
-                      statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", "
-                        [ ".tag" § "=" § cTag dc
-                        , ".env." & cConStruct dc § "=" § "{" § sepBy ", " ["." & cConMember uc i § "=" § cConMember uc i | (_, i) <- zip ts [1 :: Int ..]] § "}"
-                        ]
-                        § "}"
+                      statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", " ["." & cConMember uc i § "=" § cConMember uc i | (_, i) <- zip ts [1 :: Int ..]] § "}"
                     ]
 
-      pure dataTypeName
+
+                -- 3. ADT
+                dcs -> do
+                  let tags = cTag <$> dcs
+                  addTopLevel $ "typedef" § "struct" <§ cBlock
+                    [ "enum" <§ cBlock [pl $ sepBy ", " tags] §> "tag;"
+                    , "union" <§ cBlock [cStruct dc §> cConStruct dc & ";" | dc@(DC _ _ (_:_) _) <- dcs ] §> "env;"
+                    ] §> dataTypeName & ";"
+
+                  -- also, generate accessors
+                  for_ dcs $ \case
+                    -- for a constructor with no arguments....... generate preprocessor directives (TODO: bad.) try to make a better hierarchy of unique names. less functions, etc.
+                    dc@(DC _ _ [] _) -> do
+                      addTopLevel $ pl $
+                        "#define" § cCon dc § enclose "(" ")"
+                          (enclose "(" ")" dataTypeName § "{" § ".tag" § "=" § cTag dc § "}")
+
+                    dc@(DC _ uc ts@(_:_) _) -> do
+                      addTopLevel $ ccFunction (cCon dc) (Fix $ TCon dd ts undefined) [cDefinition t (cConMember uc i) | (t, i) <- zip ts [1 :: Int ..]]
+                        [
+                          statement $ "return" § enclose "(" ")" dataTypeName § "{" § sepBy ", "
+                            [ ".tag" § "=" § cTag dc
+                            , ".env." & cConStruct dc § "=" § "{" § sepBy ", " ["." & cConMember uc i § "=" § cConMember uc i | (_, i) <- zip ts [1 :: Int ..]] § "}"
+                            ]
+                            § "}"
+                        ]
+
+          pure dataTypeName
 
 
 cStruct :: DataCon M -> PP
@@ -732,16 +775,21 @@ cTernary cond ifTrue ifFalse = cond § "?" § ifTrue § ":" § ifFalse
 
 cOp :: Op -> PL
 cOp = \case
-  Plus -> "+"
-  Minus -> "-"
-  Times -> "*"
-  Divide -> "/"
-  Equals -> "=="
-  NotEquals -> "!="
+  Plus        -> "+"
+  Minus       -> "-"
+  Times       -> "*"
+  Divide      -> "/"
+  Equals      -> "=="
+  NotEquals   -> "!="
+  LessThan    -> "<"
+  GreaterThan -> ">"
 
 
 cRef :: PL -> PL
 cRef = ("&" <>)
+
+cDeref :: PL -> PL
+cDeref = enclose "(" ")" . ("*" <>)
 
 cPtr :: PL -> PL
 cPtr = (<> "*")
@@ -998,7 +1046,10 @@ visibleType :: Type M -> String
 visibleType = cata $ \case
   TFun _ [arg] ret -> printf "%s -> %s" arg ret
   TFun _ ts ret -> printf "(%s) -> %s" (intercalate ", " ts) ret
+  TCon dd [pointedTo] _ | isPointer dd -> printf "Ptr (%s)" pointedTo
   TCon dd _ _ -> Text.unpack dd.ddName.typeName.fromTC
+
+  TO {} -> error "should not happen."
 
 
 doesFunctionNeedExplicitEnvironment :: Type M -> NeedsImplicitEnvironment
@@ -1006,6 +1057,10 @@ doesFunctionNeedExplicitEnvironment t = case project t of
     TFun union _ _ -> not $ M.areAllEnvsEmpty union
     _ -> undefined
 
+
+-- NOTE: it's a different way to find a pointer than what Prelude does!! (I wonder what's better: distinguish a pointer based on name or based on the annotation? here, it's easier with the annotation kek. so maybe the annotation would be correct :O)
+isPointer :: DataDef M -> Bool
+isPointer dd = Def.AActualPointerType `elem` dd.ddAnns
 
 
 -- (((polyfill)))

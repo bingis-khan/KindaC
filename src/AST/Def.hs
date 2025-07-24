@@ -38,7 +38,7 @@ import Data.Functor.Foldable (cata)
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = rc
+defaultContext = dc
 
 dc = debugContext
 rc = runtimeContext
@@ -91,6 +91,9 @@ data Op
 
   | Equals
   | NotEquals
+
+  | LessThan
+  | GreaterThan
   deriving (Eq, Ord, Show)
 
 data LitType
@@ -107,6 +110,8 @@ data Ann
   = ACType Text
   | ACLit Text
   | ACStdInclude Text
+
+  | AActualPointerType
   deriving (Show, Eq, Ord)
 
 -- Annotation decorator thing.
@@ -395,7 +400,7 @@ instance PP UniqueClassInstantiation where
   pp uci = "U" <> (fromString . show . hashUnique) uci.fromUCI
 
 instance PPDef UniqueClassInstantiation where
-  ppDef uci = pp uci
+  ppDef = pp
 
 instance PP UniqueFunctionInstantiation where
   pp uci = "F" <> (fromString . show . hashUnique) uci.fromUFI
@@ -583,6 +588,7 @@ ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
       ACType s -> "ctype" <+> quote s
       ACStdInclude s -> "cstdinclude" <+> quote s
       ACLit s -> "clit" <+> quote s
+      AActualPointerType -> "actual-pointer-type"
 
     quote = pure . PP.squotes . PP.pretty
 

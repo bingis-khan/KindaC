@@ -1,0 +1,18 @@
+#$ Self in class is packed into another thing with env.
+# 543
+# 1460
+
+NotPtr a
+	NotPtr a
+
+class Iter
+	next (self NotPtr _) -> Int
+
+int-const = 123
+inst Iter Int
+	next (NotPtr(x)) -> Int
+		return x + int-const
+
+x = NotPtr(420)
+print next(x)
+print next(NotPtr(1337))

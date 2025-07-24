@@ -1,0 +1,30 @@
+
+Basically, maybe, for lambdas, should we enable something like this?:
+
+get-ref = x: &x
+
+get-ref(420)
+y = 111
+get-ref(y)
+
+currently, it doesn't make sense, because get-ref is a lambda function and the reference will only be valid in the lambda.
+maybe ONLY FOR LAMBDAS, we should make something like this: (although, for the future, I'll need relevant useful examples, like code or people making this mistake).
+we can compile this example like this:
+
+x-ptr = &420
+get-ref(x-ptr)
+
+y = 111
+y-ptr = &y
+get-ref(y-ptr)
+
+
+Like, maybe it's not bad! When refactoring code, we might put stuff into lambdas and this will break it if we're using references!
+Same with environments!
+
+x = 123
+fn = :assign-num(&x, 420)
+
+
+I think I've mentioned it somewhere??? I should find it.
+Maybe the env one should happen for all functions!

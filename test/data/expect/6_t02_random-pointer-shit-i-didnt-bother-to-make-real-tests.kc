@@ -1,0 +1,38 @@
+#$ Random shit for pointers.
+# 123
+# 1460
+# 123
+# 8008
+
+x = :&123
+y = &:123
+z = &&&&&&&&&420
+e = &&&&&&&&:&:&::::&123
+
+
+# testing assignments
+
+Rec
+	dupa Int
+
+Nested
+	nest Rec
+
+NestedPtr
+	nest Ptr Rec
+
+x =& 420
+x <&= 1337
+
+rec =& Rec { dupa: 123 }
+print rec&.dupa
+rec <&.dupa= rec&.dupa + 1337
+print rec&.dupa
+
+n =& Nested { nest: Rec { dupa: 420 } }
+n <&.nest.dupa= 123
+print n&.nest.dupa
+
+m =& NestedPtr { nest: &Rec { dupa: 465 } }
+m <&.nest&.dupa= 8008
+print m&.nest&.dupa

@@ -27,6 +27,13 @@ Float
 # #[ctype 'int8_t', cstdinclude 'stdint.h']
 # I8
 
+
+# should ideally be shorthanded to: Ptr a: Ptr a
+#[actual-pointer-type]
+Ptr a
+	Ptr a
+
+
 # some test function
 fib (x)
 	if x == 0

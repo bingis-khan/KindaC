@@ -5,7 +5,7 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE NamedFieldPuns #-}
 module AST.IncompleteMono (module AST.IncompleteMono, Def.EnvID) where
-import AST.Common (Function, Type, XLVar, XReturn, XNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody)
+import AST.Common (Function, Type, XLVar, XReturn, XNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess)
 import qualified AST.Def as Def
 import AST.Def (Locality, PP (..), (<+>), PPDef)
 import Data.List.NonEmpty (NonEmpty)
@@ -48,6 +48,7 @@ type instance XDCon IM = Def.UniqueCon
 type instance XTVar IM = TVar
 type instance XOther IM = ()  -- TODO: should probably be EnvMod, but I don't want to modify the mStmts code yet.
 type instance XInstDef IM = ()
+type instance XMutAccess IM = (MutAccess IM, Type IM)
 
 newtype EnvDefs = EnvDefs (NonEmpty (Either EnvMod EnvDef))
 

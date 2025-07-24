@@ -1,0 +1,17 @@
+#$ Self in class is packed into another thing.
+# 420
+# 1337
+
+NotPtr a
+	NotPtr a
+
+class Iter
+	next (self NotPtr _) -> Int
+
+inst Iter Int
+	next (NotPtr(x)) -> Int
+		return x
+
+x = NotPtr(420)
+print next(x)
+print next(NotPtr(1337))

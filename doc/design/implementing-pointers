@@ -1,0 +1,51 @@
+
+Q: For statements like these:
+
+x =& 1 + 2
+y = &x
+
+We have to create an intermediate variable in the first one.
+Should we do it in codegen (CPrinter)? Or should we specifically modify the AST in mono or something to create a temporary variable?
+
+The second one seems easier, so we should go for it.
+	However, the problem is you have to check IN CODEGEN if you're getting the address of a variable  or something else and generate different code based on that.
+		Maybe that's too much logic for codegen. Should be re-evaluated in the future, especially when generating some other IRs. (maybe I should create some actual IR like Core for my lang later, but it's not needed now geg, maybe it'll never be needed, because of its simple semantics)
+
+	So, adding ref and deref operators to Common (and not an extra node!).
+
+
+Also, see:
+
+x = &&&&&&&&&420
+
+or
+
+y = 123
+z = &&&&&&&&y
+
+Actualy, C and C++ forbid you from making double references. But I don't mind. The way it'll get compiled is:
+x = &&&123
+to:
+t = 123
+t' = &t
+t'' = &t'
+x = &t''
+
+
+
+-----
+
+
+x <= 420
+
+x <&.dupa= x& + 1337
+x&.dupa = x& + 1337
+x <.dupa= x& + 1337  # auto deref?
+x.dupa <= x& + 1337  # auto deref?
+   ^---- maybe also offer the "normal"? check which one is nicer to write and remove the other one.
+
+
+
+x <&= x& + 1
+x& <= x& + 1 as Int
+x :: Ptr Int

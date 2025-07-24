@@ -41,6 +41,7 @@ type instance XTFun Untyped = ()
 type instance XTConOther Untyped = ()
 type instance XNode Untyped = ()
 type instance XFunType Untyped = DeclaredType U
+type instance XMutAccess Untyped = MutAccess U
 
 data ClassConstraint = CC Def.ClassName Def.UnboundTVar deriving Eq
 type instance ClassConstraints Untyped = [ClassConstraint]

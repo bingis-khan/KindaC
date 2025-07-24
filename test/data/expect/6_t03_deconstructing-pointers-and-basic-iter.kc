@@ -1,0 +1,52 @@
+#$ Deconstructing pointers and basic iter.
+# 1
+# 2
+# 3
+# 4
+# 5
+# 6
+# 7
+# 8
+# 9
+# 10
+# 0
+
+Range
+	from Int
+	to Int
+	cur Int
+
+range (f, t)
+	return Range { from: f, to: t, cur: f }
+
+class MyIter
+	next (self Ptr _) -> Maybe Int
+
+inst MyIter Range
+	next (self Ptr Range) -> Maybe Int
+		cur = self&.cur
+		if cur > self&.to
+			return None
+
+		self <&.cur= cur + 1
+		return Just(cur)
+
+print-maybe (mx) -> Unit
+	case mx
+		Just(x)
+			print x
+		None
+			print 0
+
+r = range(1, 10)
+print-maybe(next(&r))
+print-maybe(next(&r))
+print-maybe(next(&r))
+print-maybe(next(&r))
+print-maybe(next(&r))
+print-maybe(next(&r))
+print-maybe(next(&r))
+print-maybe(next(&r))
+print-maybe(next(&r))
+print-maybe(next(&r))
+print-maybe(next(&r))

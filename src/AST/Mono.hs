@@ -4,7 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 module AST.Mono (module AST.Mono) where
-import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef, functionEnv, functionBody)
+import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess)
 import qualified AST.Def as Def
 import AST.Def (Locality, PP (..), (<+>))
 import Data.List.NonEmpty (NonEmpty)
@@ -44,6 +44,7 @@ type instance XTOther M = ()
 type instance XTVar M = ()
 type instance XOther M = ()
 type instance XInstDef M = ()
+type instance XMutAccess M = (MutAccess M, Type M)
 
 newtype EnvDefs = EnvDefs [Either EnvMod EnvDef]
 

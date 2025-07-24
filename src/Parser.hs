@@ -29,7 +29,7 @@ import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
 import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), PP (pp))
-import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), ClassConstraints, Node (..), DeclaredType (..))
+import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), ClassConstraints, Node (..), DeclaredType (..), MutAccess (..))
 import Data.Functor.Foldable (cata)
 import Control.Monad ((<=<))
 import Data.Either (partitionEithers)
@@ -142,9 +142,32 @@ sDefinition = do
 
 sMutAssignment :: Parser (Stmt U)
 sMutAssignment = do
-  name <- try $ variable <* symbol "<="
+  (name, accesses) <- try $ do
+    v <- variable
+    accesses <- thatFunnyMutationOperator
+    pure (v, accesses)
   rhs <- expression
-  pure $ Mutation name rhs
+  pure $ Mutation name () accesses rhs
+
+-- maybe it's overly permissive?
+--  I don't think I want to accept < .dupa=
+--  or < & .dupa =
+thatFunnyMutationOperator :: Parser [MutAccess U]
+thatFunnyMutationOperator = lexeme $ do
+  -- very strict parser
+  -- _ <- char '<'
+  -- accesses <- many $ choice
+  --   [ char '&' $> MutRef
+  --   , char '.' >> MutField <$> member
+  --   ]
+  -- _ <- char '='
+  symbol "<"
+  accesses <- many $ choice
+    [ symbol "&" $> MutRef
+    , symbol "." >> MutField <$> member
+    ]
+  symbol "="
+  pure accesses
 
 sReturn :: Parser (Stmt U)
 sReturn = do
@@ -372,11 +395,17 @@ annotation = do
     annotation = do
       keyOffset <- getOffset
       key <- identifier  -- just parse the "key" part
-      value <- stringLiteral
       case key of
-        "ctype" -> ann $ ACType value
-        "cstdinclude" -> ann $ ACStdInclude value
-        "clit" -> ann $ ACLit value
+        "ctype" -> do
+          value <- stringLiteral
+          ann $ ACType value
+        "cstdinclude" -> do
+          value <- stringLiteral
+          ann $ ACStdInclude value
+        "clit" -> do
+          value <- stringLiteral
+          ann $ ACLit value
+        "actual-pointer-type" -> ann AActualPointerType
         unknownKey -> do
           registerExpect keyOffset unknownKey ["ctype", "cstdinclude", "clit"]
           pure Nothing
@@ -411,7 +440,7 @@ expression = makeExprParser term operatorTable
 
 operatorTable :: [[Operator Parser (Expr U)]]
 operatorTable =
-  [ [ subscriptOrCall
+  [ [ interleavable
     , recordUpdate
     ]
   -- , [ prefix "-" Negation
@@ -425,10 +454,16 @@ operatorTable =
     ]
   , [ binary' "==" Equals
     , binary' "/=" NotEquals
+    , binary' "<"  LessThan
+    , binary' ">"  GreaterThan
     ]
   , [ as
     ]
-  , [ lambda
+
+  -- examples to figure out precedence for ref:
+  -- fn =& :420
+  -- cmp-ref = x: &x
+  , [ lowPrecedencePrefixOps
     ]
   ] where
     binary' name op = binary name $ \x y -> Fix $ N () $ Op x op y
@@ -437,8 +472,17 @@ operatorTable =
 binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
 binary s f = InfixL $ f <$ symbol s
 
-subscriptOrCall :: Operator Parser (Expr U)
-subscriptOrCall = Postfix $ fmap (foldl1 (.) . reverse) $ some (subscript <|> call)
+-- For some reason (i dunno, maybe that's how the OperatorTable works.), we can't properly chain postfix operators.
+-- Making a general function like this is a fix for that.
+interleavable :: Operator Parser (Expr U)
+interleavable = Postfix $ fmap (foldl1 (.) . reverse) $ some $ choice
+  [ subscript
+  , call
+  , deref
+  ]
+
+deref :: Parser (Expr U -> Expr U)
+deref = symbol "&" $> node . Deref
 
 subscript :: Parser (Expr U -> Expr U)
 subscript = (symbol "." >> member) <&> \memname e -> node $ MemAccess e memname
@@ -459,8 +503,18 @@ as = Postfix $ do
     t <- pType
     return $ node . flip As t
 
-lambda :: Operator Parser (Expr U)
-lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
+
+lowPrecedencePrefixOps :: Operator Parser (Expr U)
+lowPrecedencePrefixOps = Prefix $ fmap (foldr1 (.)) $ some $ choice
+  [ ref
+  , lambda
+  ]
+
+ref :: Parser (Expr U -> Expr U)
+ref = symbol "&" $> node . Ref
+
+lambda :: Parser (Expr U -> Expr U)
+lambda = do
   -- Correct lambda:
   -- :420
   -- x: x + 1
@@ -474,6 +528,7 @@ lambda = Prefix $ fmap (foldr1 (.)) $ some $ do
 
 node :: nodeF U (Fix (Node U nodeF)) -> Fix (Node U nodeF)
 node = Fix . N ()
+
 
 -----------
 -- Terms --
@@ -590,7 +645,8 @@ pClassType
 
 classTypeTerm :: Parser (ClassType U)
 classTypeTerm = choice
-  [ grouping
+  [ Fix Self <$ symbol "_"
+  , grouping
   , Fix . NormalType . TO <$> generic
   , concreteType
   ]

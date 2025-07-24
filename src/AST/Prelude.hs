@@ -24,18 +24,20 @@ data Prelude = Prelude
   , boolType       :: Type TC
   , intType        :: Type TC
   , floatType      :: Type TC
+  , mkPtr          :: Type TC -> Type TC
   }
 
 
 unitName :: Def.ConName
 unitName = Def.CN "Unit"
 
-tlReturnTypeName, boolTypeName, intTypeName, floatTypeName, unitTypeName :: Def.TCon
+tlReturnTypeName, boolTypeName, intTypeName, floatTypeName, unitTypeName, ptrTypeName :: Def.TCon
 tlReturnTypeName = Def.TC "Int"  -- later U8
 intTypeName      = Def.TC "Int"  -- later a typeclass?
 floatTypeName    = Def.TC "Float"
 boolTypeName     = Def.TC "Bool"
 unitTypeName     = Def.TC "Unit"
+ptrTypeName      = Def.TC "Ptr"
 
 
 -- Kinda of a weird solution. This "pack" describes the way a type could be found without Prelude.
@@ -47,4 +49,7 @@ tlReturnFind = PF tlReturnTypeName ((\(Fix (N t _)) -> t) . toplevelReturn)
 boolFind = PF boolTypeName boolType
 intFind = PF intTypeName intType
 floatFind = PF floatTypeName floatType
+
+ptrFind :: Type TC -> PreludeFind
+ptrFind t = PF ptrTypeName (`mkPtr` t)
 
