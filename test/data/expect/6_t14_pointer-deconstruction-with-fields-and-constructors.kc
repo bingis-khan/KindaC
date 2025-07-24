@@ -1,4 +1,6 @@
 #$ Pointer deconstruction with fields and constructors.
+# 3
+# 123
 
 Rec
 	ayo Int
