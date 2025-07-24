@@ -7,10 +7,8 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 ## current
 
-Implementing pointers now.
-  - with deconstruction and deref operator.
-  - with '<&=' "operator"
-
+- typeclass constraints
+- associated types
 
 Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs are in separate text files in doc/compiler/ and a small minority in doc/design/.
 
@@ -32,7 +30,7 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 
 ## todo larger
 
-- pointers
+- declaring typeclass constraints, associated types
 - error location + actual errors
 - module importing and namespaces
 - integers in types (typed C arrays)  (maybe put this earlier to support C-style arrays)
