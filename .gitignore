@@ -3,3 +3,4 @@ stack.yaml.lock
 *.exe
 a.out
 test.c
+**/.DS_STORE
