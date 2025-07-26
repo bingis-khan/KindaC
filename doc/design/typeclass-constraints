@@ -1,0 +1,5 @@
+
+# 1. Basic, exact syntax.
+
+f (s a) -> Unit <= Str a
+	print s

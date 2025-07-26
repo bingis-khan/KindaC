@@ -1,0 +1,42 @@
+#$ Double class constraints on same variable on function.
+# 69
+# 123
+# 111
+# 123
+# 420
+# True
+# 1337
+# True
+
+class Str1
+	print-str (self _) -> Unit
+
+class Str2
+	print-str' (self _) -> Unit
+
+inst Str1 Int
+	print-str (self Int) -> Unit
+		print 69
+		print self
+
+inst Str2 Int
+	print-str' (self Int) -> Unit
+		print 111
+		print self
+
+inst Str1 Bool
+	print-str (self Bool) -> Unit
+		print 420
+		print self
+
+inst Str2 Bool
+	print-str' (self Bool) -> Unit
+		print 1337
+		print self
+
+f (x a) -> Unit <= Str1 a, Str2 a
+	print-str(x)
+	print-str'(x)
+
+f(123)
+f(True)

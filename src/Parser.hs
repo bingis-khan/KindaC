@@ -28,8 +28,8 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), PP (pp))
-import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), ClassConstraints, Node (..), DeclaredType (..), MutAccess (..))
+import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..))
+import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), XClassConstraints, Node (..), DeclaredType (..), MutAccess (..))
 import Data.Functor.Foldable (cata)
 import Control.Monad ((<=<))
 import Data.Either (partitionEithers)
@@ -207,7 +207,9 @@ sDefinedFunctionHeader = do
   symbol "->"  -- or just assume that no return = Unit
   ret <- pClassType
 
-  pure $ CFD () name params ret
+  constraints <- sClassConstraints
+
+  pure $ CFD () name params ret constraints
 
 
 sInst :: Parser (Stmt Untyped)
@@ -233,11 +235,11 @@ sInst = recoverableIndentBlock $ do
       }
 
 
-sClassConstraints :: Parser (ClassConstraints U)
+sClassConstraints :: Parser (XClassConstraints U)
 sClassConstraints = do
   mConstraints <- optional $ do
     symbol "<="  -- I might change it to "|"? may look prettier?
-    sepBy sClassConstraint (symbol ",")
+    sepBy1 sClassConstraint (symbol ",")
 
   pure $ fromMaybe [] mConstraints
 
@@ -304,7 +306,7 @@ sFunctionOrCall = recoverableIndentBlock $ do
     Nothing ->
       -- If that's a normal function, we check if any types were defined
       let types = header.functionReturnType : map snd header.functionParameters
-      in if any Common.isTypeDeclared types
+      in if any Common.isTypeDeclared types || not (null header.functionOther)
         then L.IndentSome Nothing (fmap (Fun . U.FunDef header . NonEmpty.fromList) . annotateStatements) $ recoverStmt (annotationOr statement)
         else flip (L.IndentMany Nothing) (recoverStmt (annotationOr statement)) $ \case
           stmts@(_:_) -> Fun . U.FunDef header . NonEmpty.fromList <$> annotateStatements stmts
@@ -331,9 +333,11 @@ functionHeader = do
     , Right <$> optional (symbol "->" >> pType)
     ]
 
+  constraints <- sClassConstraints
+
   return $ case ret of
-    Left expr -> (FD () name params TypeNotDeclared (), Just expr)
-    Right mType -> (FD () name params (Common.fromMaybeToDeclaredType mType) (), Nothing)
+    Left expr -> (FD () name params TypeNotDeclared constraints, Just expr)
+    Right mType -> (FD () name params (Common.fromMaybeToDeclaredType mType) constraints, Nothing)
 
 
 -- Data definitions.
@@ -450,7 +454,7 @@ operatorTable =
   --   , prefix "not" Not
   --   ]
   , [ binary' "*" Times
-    , binary' "/" Divide
+    , binaryS' (try $ symbol "/" <* notFollowedBy "=") Divide
     ]
   , [ binary' "+" Plus
     , binary' "-" Minus
@@ -470,7 +474,10 @@ operatorTable =
     ]
   ] where
     binary' name op = binary name $ \x y -> Fix $ N () $ Op x op y
+    binaryS' name op = binaryS name $ \x y -> Fix $ N () $ Op x op y
 
+binaryS :: Parser () -> (expr -> expr -> expr) -> Operator Parser expr
+binaryS s f = InfixL $ f <$ s
 
 binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
 binary s f = InfixL $ f <$ symbol s

@@ -46,7 +46,7 @@ import Data.List (find)
 import AST.Def (type (:.)(O), Annotated (..), Binding (..))
 import qualified AST.Def as Def
 import AST.Prelude (Prelude (..))
-import Control.Monad (when)
+import Control.Monad (when, foldM)
 
 
 
@@ -116,13 +116,13 @@ rStmts = traverse -- traverse through the list with Ctx
             vid <- generateVar name
             stmt $ Mutation vid loc [] re
 
-          R.DefinedClassFunction (CFD _ cfdUV _ _) _ -> do
+          R.DefinedClassFunction (CFD _ cfdUV _ _ _) _ -> do
             err $ CannotMutateFunctionDeclaration cfdUV.varName
 
             vid <- generateVar name
             stmt $ Mutation vid loc [] re
 
-          R.ExternalClassFunction (CFD _ cfdUV _ _) _ -> do
+          R.ExternalClassFunction (CFD _ cfdUV _ _ _) _ -> do
             err $ CannotMutateFunctionDeclaration cfdUV.varName
 
             vid <- generateVar name
@@ -190,15 +190,17 @@ rStmts = traverse -- traverse through the list with Ctx
 
         pass
 
-      Fun (U.FunDef (FD () name params ret ()) body) -> do
+      Fun (U.FunDef (FD () name params ret uconstraints) body) -> do
         vid <- generateVar name  -- NOTE: this is added to scope in `newFunction` (for some reason.) TODO: change it later (after I finish implementing records.) TODO: to what?????
+
+        constraints <- rConstraints uconstraints
 
         -- get all unbound tvars
         let allTypes = catNotDeclared $ ret : (snd <$> params)
         tvars <- fmap mconcat $ for allTypes $ cata $ \case
               TO utv -> tryResolveTVar utv <&> \case
-                Just _ ->  Set.empty  -- don't rebind existing tvars.
-                Nothing -> Set.singleton $ bindTVar (BindByVar vid) utv
+                Just _ ->  Set.empty  -- don't rebind existing tvars. (scoped tvars. but maybe a function declaration should rebind them.)
+                Nothing -> Set.singleton $ bindTVar (defaultEmpty utv constraints) (BindByVar vid) utv
               t -> fold <$> sequenceA t
 
         rec
@@ -241,15 +243,17 @@ rStmts = traverse -- traverse through the list with Ctx
           -- let _ = cd.classDependentTypes
           -- let deps = []
 
-          fundecs <- for cd.classFunctions $ \(CFD () name params ret) -> do
+          fundecs <- for cd.classFunctions $ \(CFD () name params ret uconstraints) -> do
             funid <- generateVar name
+
+            constraints <- rConstraints uconstraints
 
             -- get all unbound tvars (HACK: copied from DefinedFunction)
             let allTypes = ret : (snd <$> params)
             tvars <- fmap mconcat $ for allTypes $ cata $ \case
                   NormalType (TO utv) -> tryResolveTVar utv <&> \case
                     Just _ ->  Set.empty  -- don't rebind existing tvars.
-                    Nothing -> Set.singleton $ R.bindTVar (BindByVar funid) utv
+                    Nothing -> Set.singleton $ R.bindTVar (defaultEmpty utv constraints) (BindByVar funid) utv
                   t -> fold <$> sequenceA t
 
             -- HACK: ALSO COPIED FROM DefinedFunction!!
@@ -261,7 +265,7 @@ rStmts = traverse -- traverse through the list with Ctx
               rret' <- rClassType ret
               pure (rparams', rret')
 
-            pure $ CFD rcd funid rparams rret
+            pure $ CFD rcd funid rparams rret ()
 
           registerClass rcd
         pass
@@ -271,14 +275,16 @@ rStmts = traverse -- traverse through the list with Ctx
         klass <- resolveClass rinst.instClass
 
         klassType <- resolveType $ fst rinst.instType
-        let instTVars = map (R.bindTVar (BindByInst (R.asUniqueClass klass))) $ snd rinst.instType
+        constraints <- rConstraints rinst.instConstraints
 
-        constraints <- rConstraints klass (zip (snd rinst.instType) instTVars) rinst.instConstraints
+        let instTVars = map (\utv -> R.bindTVar (Def.defaultEmpty utv constraints) (BindByInst (R.asUniqueClass klass)) utv) $ snd rinst.instType
+
+        -- constraints <- rConstraints klass (zip (snd rinst.instType) instTVars) rinst.instConstraints
 
         let inst = InstDef
               { instClass = klass
               , instType = (klassType, instTVars)
-              , instConstraints = constraints
+              , instConstraints = ()
               -- , R.instDependentTypes = []  -- TODO: temporary!
               , instFuns = fns
               }
@@ -291,12 +297,14 @@ rStmts = traverse -- traverse through the list with Ctx
           cfd <- findFunctionInClass ifn.instFunDec.functionId klass
           vid <- generateVar ifn.instFunDec.functionId
 
+          constraints <- rConstraints ifn.instFunDec.functionOther
+
           -- get all unbound tvars
           let allTypes = catNotDeclared $ ifn.instFunDec.functionReturnType : (snd <$> ifn.instFunDec.functionParameters)
           tvars <- fmap mconcat $ for allTypes $ cata $ \case
                 TO utv -> tryResolveTVar utv <&> \case
                   Just _ ->  Set.empty  -- don't rebind existing tvars.
-                  Nothing -> Set.singleton $ R.bindTVar (BindByVar vid) utv
+                  Nothing -> Set.singleton $ R.bindTVar (Def.defaultEmpty utv constraints) (BindByVar vid) utv
                 t -> fold <$> sequenceA t
 
           eid <- newEnvID
@@ -343,22 +351,19 @@ currentLevel :: Ctx Int
 currentLevel = subtract 1 . length <$> RWS.gets scopes
 
 
-rConstraints :: Class -> [(Def.UnboundTVar, TVar R)] -> ClassConstraints U -> Ctx (ClassConstraints R)
-rConstraints boundKlass tvars constraints = do
-  let tvm = Map.fromList tvars
-  tvclasses <- for constraints $ \(U.CC rklass utv) -> do
-    klass <- resolveClass rklass
-    tv <- case tvm !? utv of
-      Just tv ->
-        pure tv
-      Nothing -> do
-        err $ UnboundTypeVariable utv
-        let tv = R.bindTVar (BindByInst (R.asUniqueClass boundKlass)) utv
-        pure tv
+-- must be called BEFORE binding tvars. It checks and errors out if there is a bound tvar that's being constrained.
+rConstraints :: XClassConstraints U -> Ctx (Map Def.UnboundTVar (Set Class))
+rConstraints constraints = do
+  let f m (U.CC klass utv) = do
+        rklass <- resolveClass klass
+        tryResolveTVar utv >>= \case
+          Just tv -> do
+            err $ FurtherConstrainingExistingTVar tv (R.asUniqueClass rklass)
+            pure m
+          Nothing -> do
+            pure $ Map.insertWith (<>) utv (Set.singleton rklass) m
 
-    pure (tv, klass)
-
-  pure $ Map.fromListWith (<>) $ fmap Set.singleton <$> tvclasses
+  foldM f Map.empty constraints
 
 rDecon :: Decon U -> Ctx (Decon R)
 rDecon = transverse $ \(N () d) -> fmap (N ()) $ case d of
@@ -490,12 +495,23 @@ rClassType = transverse $ \case
 rType' :: TypeF U (Ctx a) -> Ctx (TypeF R a)
 rType' = \case
   TCon t tapps () -> do
-    rt <- resolveType t
+    rt <- resolveTypeOrClass t
     rtApps <- sequenceA tapps
-    pure $ TCon rt rtApps ()
+    case (rt, rtApps) of
+      (Left klass, []) ->
+        pure $ TO $ TClass klass
+      (Right dt, _) -> do
+        pure $ TCon dt rtApps ()
+
+      (Left klass, _:_) -> do
+        err $ AppliedTypesToClassInType (R.asUniqueClass klass)
+
+        -- what's better for error reporting here? returning a type or a class? what would produce better error messages?
+        pure $ TO $ TClass klass
+
   TO v -> do
     tv <- resolveTVar v
-    pure $ TO tv
+    pure $ TO $ TVar tv
   TFun () args ret -> do
     rArgs <- sequence args
     rret <- ret
@@ -692,7 +708,7 @@ registerClass cd = do
     { tyScope = Map.insert (Def.uniqueClassAsTypeName cd.classID) (Left (R.DefinedClass cd)) sc.tyScope
 
     -- inner functions
-    , varScope = foldr (\cfd@(CFD _ uv _ _) -> Map.insert uv.varName (R.PDefinedClassFunction cfd)) sc.varScope cd.classFunctions
+    , varScope = foldr (\cfd@(CFD _ uv _ _ _) -> Map.insert uv.varName (R.PDefinedClassFunction cfd)) sc.varScope cd.classFunctions
     }
 
   RWST.modify $ \ctx -> ctx { classes = cd : ctx.classes }
@@ -718,8 +734,8 @@ findFunctionInClass :: Def.VarName -> R.Class -> Ctx (XClassFunDec R)
 findFunctionInClass vn ecd =
   let
     mcfd = case ecd of
-      R.DefinedClass cd -> R.DefinedClassFunDec <$> find (\(CFD _ uv _ _) -> uv.varName == vn) cd.classFunctions
-      R.ExternalClass cd -> R.ExternalClassFunDec <$> find (\(CFD _ uv _ _) -> uv.varName == vn) cd.classFunctions
+      R.DefinedClass cd -> R.DefinedClassFunDec <$> find (\(CFD _ uv _ _ _) -> uv.varName == vn) cd.classFunctions
+      R.ExternalClass cd -> R.ExternalClassFunDec <$> find (\(CFD _ uv _ _ _) -> uv.varName == vn) cd.classFunctions
     cid = R.asUniqueClass ecd
   in case mcfd of
     Just cfd -> pure cfd
@@ -727,8 +743,8 @@ findFunctionInClass vn ecd =
       err $ UndefinedFunctionOfThisClass cid vn
       uv <- generateVar vn
       pure $ case ecd of
-        R.DefinedClass cd -> R.DefinedClassFunDec $ CFD cd uv [] (Fix Self)
-        R.ExternalClass cd -> R.ExternalClassFunDec $ CFD cd uv [] (Fix Self)
+        R.DefinedClass cd -> R.DefinedClassFunDec $ CFD cd uv [] (Fix Self) ()
+        R.ExternalClass cd -> R.ExternalClassFunDec $ CFD cd uv [] (Fix Self) ()
 
 
 getScopeSnapshot :: Ctx R.ScopeSnapshot
@@ -773,8 +789,9 @@ registerDatatype dd = do
   RWST.modify $ \s -> s { datatypes = dd : s.datatypes }
   pure ()
 
+-- NOTE: used only in DataDefs... remove?
 mkTVars :: Def.Binding -> [Def.UnboundTVar] -> [TVar R]
-mkTVars b = fmap $ R.bindTVar b
+mkTVars b = fmap $ R.bindTVar mempty b
 
 bindTVars :: [TVar R] -> Ctx a -> Ctx a
 bindTVars tvs cx = do
@@ -807,22 +824,28 @@ resolveTVar utv = do
 placeholderTVar :: Def.UnboundTVar -> Ctx (TVar R)
 placeholderTVar utv = do
   var <- generateVar $ Def.VN $ "placeholderVarForTVar" <> utv.fromUTV
-  pure (R.bindTVar (BindByVar var) utv)
+  pure (R.bindTVar mempty (BindByVar var) utv)
 
 resolveType :: Def.TCon -> Ctx R.DataType
 resolveType name = do
+  tOrC <- resolveTypeOrClass name
+  case tOrC of
+    Right t -> pure t
+    Left c -> do
+      let cid = R.asUniqueClass c
+      err $ UsingClassNameInPlaceOfType cid
+      placeholderType name
+
+resolveTypeOrClass :: Def.TCon -> Ctx (Either R.Class R.DataType)
+resolveTypeOrClass name = do
   allScopes <- getScopes
   curlev <- currentLevel
   case lookupScope curlev name (fmap tyScope allScopes) of
-    Just (_, Right c) -> pure c  -- rn we will ignore the scope
-    Just (_, Left c) -> do
-      let cid = R.asUniqueClass c
-      err $ AttemptToDeconstructClass cid  -- TODO: i can do normal class instead of ID, but right now I don't feel like implementing a custom show instance.
-      placeholderType name
+    Just (_, typeOrClass) -> pure typeOrClass
 
     Nothing -> do
       err $ UndefinedType name
-      placeholderType name
+      Right <$> placeholderType name
 
 placeholderType :: Def.TCon -> Ctx R.DataType
 placeholderType name = do
@@ -862,6 +885,7 @@ data ResolveError
   | UndefinedConstructor Def.ConName
   | UndefinedType Def.TCon
   | UnboundTypeVariable Def.UnboundTVar
+  | FurtherConstrainingExistingTVar (TVar R) Def.UniqueClass
   | TypeRedeclaration Def.TCon
   | CannotMutateFunctionDeclaration Def.VarName
   | CannotMutateNonLocalVariable Def.VarName
@@ -874,8 +898,10 @@ data ResolveError
 
   | UndefinedClass Def.ClassName
   | ExpectedClassNotDatatype Def.ClassName Def.UniqueType
-  | AttemptToDeconstructClass Def.UniqueClass  -- IDs are only, because I'm currently too lazy to make a Show instance.
+  | UsingClassNameInPlaceOfType Def.UniqueClass  -- IDs are only, because I'm currently too lazy to make a Show instance.
   | UndefinedFunctionOfThisClass Def.UniqueClass Def.VarName
+
+  | AppliedTypesToClassInType Def.UniqueClass
 
   | UsingPointerConstructor
   deriving Show

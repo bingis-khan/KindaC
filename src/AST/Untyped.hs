@@ -22,7 +22,7 @@ type instance XDTCon Untyped = Def.TCon
 type instance XMem Untyped = Def.MemName
 type instance XTVar Untyped = Def.UnboundTVar
 type instance XLamOther Untyped = ()
-type instance XFunOther Untyped = ()
+type instance XFunOther Untyped = [ClassConstraint]
 type instance XDataScheme Untyped = [Def.UnboundTVar]
 
 type instance XVar Untyped = Def.VarName
@@ -44,7 +44,7 @@ type instance XFunType Untyped = DeclaredType U
 type instance XMutAccess Untyped = MutAccess U
 
 data ClassConstraint = CC Def.ClassName Def.UnboundTVar deriving Eq
-type instance ClassConstraints Untyped = [ClassConstraint]
+type instance XClassConstraints Untyped = [ClassConstraint]
 
 type instance XEnv Untyped = ()
 
@@ -73,6 +73,9 @@ instance PP Mod where
 
 instance PP FunDef where
   pp (FunDef fd body) = Def.ppBody' pp (pp fd) body
+
+instance PP ClassConstraint where
+  pp (CC cn tv) = pp cn <+> pp tv
 
 -- instance PP (Maybe (Expr U)) where
 --   pp = maybe mempty pp

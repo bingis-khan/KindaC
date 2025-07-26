@@ -1,0 +1,138 @@
+#$ Big iterator test. Also tests dependent assocs.
+# 420
+# 2
+# 3
+# 4
+# 5
+# 6
+# 7
+# 8
+# 9
+# 10
+# 11
+# 436
+# 437
+# 438
+# 440
+# 441
+# 442
+# 443
+# 444
+# 3521
+# 55
+# 988588544
+
+class IntoIter
+	into-iter (self _) -> itershit
+
+class Iter
+	next (self Ptr _) -> Maybe item
+
+Range
+	from Int
+	to Int
+
+RangeIter
+	og Range
+	cur Int
+
+inst IntoIter Range
+	into-iter (self Range) -> RangeIter
+		return RangeIter { og: self, cur: self.from }
+
+inst IntoIter RangeIter
+	into-iter (self RangeIter) -> RangeIter
+		return self
+
+inst Iter RangeIter
+	next (self Ptr RangeIter) -> Maybe Int
+		r = self&.og
+		if self&.cur > r.to
+			return None
+
+		x = Just(self&.cur)
+		self <&.cur= self&.cur + 1
+		return x
+
+Map it from to
+	og it
+	fn from -> to
+
+inst IntoIter Map
+	into-iter (self Map it from to) -> Map it from to
+		return self
+
+inst Iter Map
+	next (self Ptr (Map og from to)) -> Maybe to <= Iter og
+		case next(&self&.og)
+			None
+				return None
+			Just(x)
+				return Just(self&.fn(x))
+
+map (iterable it, fn from -> to) -> Map it' from to <= IntoIter it
+	it = into-iter(iterable)
+	return Map { og: it, fn: fn }
+
+
+Filter it item
+	og it
+	fn item -> Bool
+
+filter (iterable it, fn from -> Bool) -> Filter it' from <= IntoIter it
+	it = into-iter(iterable)
+	return Filter { og: it, fn: fn }
+
+inst IntoIter Filter
+	into-iter (self Filter it from) -> Filter it from
+		return self
+
+inst Iter Filter
+	next (self Ptr (Filter it item)) -> Maybe item <= Iter it
+		while True
+			case next(&self&.og)
+				None
+					return None
+				Just(x)
+					if self&.fn(x)
+						return Just(x)
+
+reduce (iterable it, base a, fn (item, a) -> a) -> a <= IntoIter it
+	x = base
+	it = into-iter(iterable)
+	while True
+		case next(&it)
+			None
+				return x
+			Just(res)
+				x <= fn(res, x)
+
+
+sum (iterable it) <= IntoIter it
+	return reduce(iterable, 0, (x, y): x + y)
+
+multiply (iterable it) <= IntoIter it
+	return reduce(iterable, 1, (x, y): x * y)
+
+for-each-print (iterable it) <= IntoIter it
+	it = into-iter(iterable)
+	while True
+		case next(&it)
+			None
+				return
+
+			Just(x)
+				print x
+
+
+range (from, to)
+	return Range { from: from, to: to }
+
+const = 420
+print const
+for-each-print(map(range(1, 10), x: x + 1))
+r = map(filter(map(range(12, 20), x: x + const), x: x /= 435), x: x + 4)
+for-each-print(r)
+print sum(r)
+print sum(range(1, 10))
+print multiply(r)

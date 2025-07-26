@@ -38,7 +38,7 @@ import Data.Functor.Foldable (cata)
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = dc
+defaultContext = rc
 
 dc = debugContext
 rc = runtimeContext
@@ -660,3 +660,16 @@ traverseSet f = fmap Set.fromList . traverse f . Set.toList
 bitraverseMap :: (Applicative t, Ord k') => (k -> t k') -> (a -> t b) -> Map k a -> t (Map k' b)
 bitraverseMap f g = fmap Map.fromList . traverse (bitraverse f g) . Map.toList
 
+
+
+-- zipWith which ensures lists are equal.
+--   I want to encode this at the function/assertion level.
+{-# NOINLINE [1] exactZipWith #-}  -- See Note [Fusion for zipN/zipWithN]
+exactZipWith :: (a->b->c) -> [a]->[b]->[c]
+exactZipWith f = go
+  where
+    go (x:xs) (y:ys) = f x y : go xs ys
+    go [] [] = []
+
+    go [] _ = error "right list is longer"
+    go _ [] = error "left list is longer"

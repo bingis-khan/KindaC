@@ -1,0 +1,144 @@
+#$ We shouldnt be getting tvars from instances in digThroughVar.
+# 988588544
+# 1
+
+class IntoIter
+	into-iter (self _) -> itershit
+
+class Iter
+	next (self Ptr _) -> Maybe item
+
+Range
+	from Int
+	to Int
+
+RangeIter
+	og Range
+	cur Int
+
+inst IntoIter Range
+	into-iter (self Range) -> RangeIter
+		return RangeIter { og: self, cur: self.from }
+
+inst IntoIter RangeIter
+	into-iter (self RangeIter) -> RangeIter
+		return self
+
+inst Iter RangeIter
+	next (self Ptr RangeIter) -> Maybe Int
+		r = self&.og
+		if self&.cur > r.to
+			return None
+
+		x = Just(self&.cur)
+		self <&.cur= self&.cur + 1
+		return x
+
+Map it from to
+	og it
+	fn from -> to
+
+inst IntoIter Map
+	into-iter (self Map it from to) -> Map it from to
+		return self
+
+inst Iter Map
+	next (self Ptr (Map og from to)) -> Maybe to <= Iter og
+		case next(&self&.og)
+			None
+				return None
+			Just(x)
+				return Just(self&.fn(x))
+
+map (iterable it, fn from -> to) -> Map it' from to <= IntoIter it
+	it = into-iter(iterable)
+	return Map { og: it, fn: fn }
+
+
+Filter it item
+	og it
+	fn item -> Bool
+
+filter (iterable it, fn from -> Bool) -> Filter it' from <= IntoIter it
+	it = into-iter(iterable)
+	return Filter { og: it, fn: fn }
+
+inst IntoIter Filter
+	into-iter (self Filter it from) -> Filter it from
+		return self
+
+inst Iter Filter
+	next (self Ptr (Filter it item)) -> Maybe item <= Iter it
+		while True
+			case next(&self&.og)
+				None
+					return None
+				Just(x)
+					if self&.fn(x)
+						return Just(x)
+
+reduce (iterable it, base a, fn (item, a) -> a) -> a <= IntoIter it
+	x = base
+	it = into-iter(iterable)
+	while True
+		case next(&it)
+			None
+				return x
+			Just(res)
+				x <= fn(res, x)
+
+
+sum (iterable it) <= IntoIter it
+	return reduce(iterable, 0, (x, y): x + y)
+
+multiply (iterable it) <= IntoIter it
+	return reduce(iterable, 1, (x, y): x * y)
+
+for-each-print (iterable it) <= IntoIter it
+	it = into-iter(iterable)
+	while True
+		case next(&it)
+			None
+				return
+
+			Just(x)
+				print x
+
+
+range (from, to)
+	return Range { from: from, to: to }
+
+bool-to-int (x Bool) -> Int
+	if x
+		return 1
+	else
+		return 0
+
+BoolRange
+	cur Int
+
+inst IntoIter BoolRange
+	into-iter (self BoolRange) -> BoolRange
+		return self
+
+inst Iter BoolRange
+	next (self Ptr BoolRange) -> Maybe Bool
+		if self&.cur == 0
+			self <&.cur= 1
+			return Just(False)
+
+		if self&.cur == 1
+			self <&.cur= 2
+			return Just(True)
+
+		return None
+
+bool-range () -> BoolRange
+	return BoolRange { cur: 0 }
+
+
+const = 420
+r = map(filter(map(range(12, 20), x: x + const), x: x /= 435), x: x + 4)
+print multiply(r)
+
+print sum(map(bool-range(), bool-to-int))

@@ -541,7 +541,7 @@ forceFunctionType uciOrUfi et = case project et of
 
 
 selectInstance :: T.ScopeSnapshot -> Type TC -> Def.UniqueClassInstantiation -> ClassFunDec TC -> Context (InstFun TC)
-selectInstance snapshot self uci cfd@(CFD cd cfdId _ _) = do
+selectInstance snapshot self uci cfd@(CFD cd cfdId _ _ _) = do
   mself <- mType self
   ucis <- State.gets classInstantiationAssociations
   Def.ctxPrint' $ Def.printf "SNAPSHOT UCIS: %s" (ppDef $ Map.keysSet <$> ucis)
@@ -774,13 +774,13 @@ withClassInstanceAssociations ci a = do
   --    Maybe. but what will happen if we use two different functions. will they be distinct?
   let classFuns = Map.fromList $ case ci of
         T.Env _ vars _ _ -> flip mapMaybe vars $ \case
-          (T.DefinedClassFunction (CFD cd _ _ _) snapshot _ uci, _, _) -> Just (uci, snapshot ! cd)
+          (T.DefinedClassFunction (CFD cd _ _ _ _) snapshot _ uci, _, _) -> Just (uci, snapshot ! cd)
           _ -> Nothing
 
         _ -> undefined
   let what = case ci of
         T.Env _ vars _ _ -> flip mapMaybe vars $ \case
-          (T.DefinedClassFunction (CFD cd _ _ _) snapshot _ uci, _, _) -> Just (uci, snapshot ! cd)
+          (T.DefinedClassFunction (CFD cd _ _ _ _) snapshot _ uci, _, _) -> Just (uci, snapshot ! cd)
           _ -> Nothing
 
         _ -> undefined

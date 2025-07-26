@@ -752,11 +752,14 @@ sanitize = Text.concatMap $ \case
 -- supposed to be the definitie source for unique names.
 cCon :: DataCon M -> PL
 -- type constructor with arguments - treat it as a function
-cCon (DC _ c (_:_) _) = plt c.conName.fromCN & "__" & pls (hashUnique c.conID) & "f"
+cCon (DC dd c ts@(_:_) _) = do
+  () <- cDataType dd ts
+  plt c.conName.fromCN & "__" & pls (hashUnique c.conID) & "f"
 -- enum type constructor (refer to actual datatype)
-cCon (DC _ c [] anns) =
+cCon (DC dd c [] anns) = do
+  ignore $ cDataType dd []
   let representsBuiltin = find (\case { Def.ACLit con -> Just con; _ -> Nothing }) anns
-  in case representsBuiltin of
+  case representsBuiltin of
     Just t -> plt t
     Nothing -> plt c.conName.fromCN & "__" & pls (hashUnique c.conID)
 
@@ -873,6 +876,9 @@ optional (Just x) f = f x
 
 indent :: PP -> PP
 indent (PP x) = PP $ RWS.censor (fmap ("  " <>)) x
+
+ignore :: PL -> PL
+ignore (PL x) = PL $ RWS.censor (const []) x
 
 
 

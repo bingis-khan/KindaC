@@ -1,0 +1,24 @@
+#$ Basic class constraint on function
+# 69
+# 123
+# 420
+# True
+
+class Str
+	print-str (self _) -> Unit
+
+inst Str Int
+	print-str (self Int) -> Unit
+		print 69
+		print self
+
+inst Str Bool
+	print-str (self Bool) -> Unit
+		print 420
+		print self
+
+f (x a) -> Unit <= Str a
+	print-str(x)
+
+f(123)
+f(True)

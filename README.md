@@ -8,6 +8,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 ## current
 
 - typeclass constraints
+  - including the funny declaration, where it looks like a type, but it's actually a typeclass.
 - associated types
 
 Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs are in separate text files in doc/compiler/ and a small minority in doc/design/.
@@ -31,14 +32,18 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 ## todo larger
 
 - declaring typeclass constraints, associated types
-- error location + actual errors
 - module importing and namespaces
+- line folding
+- error location + actual errors
 - integers in types (typed C arrays)  (maybe put this earlier to support C-style arrays)
 - finish (actually fix) recursion
 
 
 ## todo
 
+- this is kinda important: for semantics, we need to ensure, that the type of the instance function matches the class function. is there a SMART way to do it (by unification instead of validation?)
+  - this is funny. i'm restricting the language. it's already more powerful, but i'm trying to make it less powerful... why would i do that?
+    - i think in this case, errors would be pretty bad. like, you will get errors at instantiation when the type becomes known and the class fun types change. very unreadable.
 - external functions
   - later try to define a type for a C Function type.
   - and make it illegal to pass normal functions as C function types (make the user go through deconstruction to account for the possible environment)

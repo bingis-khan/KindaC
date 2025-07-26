@@ -24,7 +24,7 @@ import Control.Monad.Trans.RWS (RWST (RWST), runRWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed, hoist, project, para)
-import Control.Monad (replicateM, zipWithM_, unless)
+import Control.Monad (replicateM, zipWithM_, unless, when)
 import Data.Bitraversable (bitraverse, bisequenceA)
 import Data.Foldable (for_, fold, foldlM)
 import Data.Set (Set, (\\))
@@ -133,6 +133,8 @@ generateSubstitution env senv rModule = do
       cia <- substAccessAndAssociations
       Def.ctxPrint cia
 
+      assocs <- RWS.gets associations
+      Def.ctxPrint' $ Def.printf "LAST ASSOCS: %s" (pp $ fst <$> assocs)
       reportAssociationErrors
       su <- RWS.gets typeSubstitution
       -- addSelectedEnvironmentsFromInst
@@ -189,7 +191,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
         case loc of
           Def.Local -> pure ()
-          Def.FromEnvironment {} -> 
+          Def.FromEnvironment {} ->
             addEnv (T.DefinedVariable v) vt
 
         -- prepare accesses for typechecking.
@@ -217,7 +219,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
         --    then, we deref x, so the current type is the derefed value.
         --     type x `uni` mkPtr t
         --  get it?
-        guessedType <- foldlM foldMutAccess t (reverse taccesses)  
+        guessedType <- foldlM foldMutAccess t (reverse taccesses)
 
         vt `uni` guessedType
         pure $ Mutation v loc taccesses expr
@@ -453,7 +455,7 @@ inferExpr = cata (fmap embed . inferExprType)
         Ref ee -> do
           te <- ee
           let t = Common.typeOfNode te
-          ptrType <- mkPtr t 
+          ptrType <- mkPtr t
           pure (Ref te, ptrType)
 
         Deref ee -> do
@@ -480,7 +482,7 @@ inferVariable = \case
     snapshot <- inferSnapshot rsnapshot
     pure $ T.DefinedFunction tfn mempty snapshot tempFunctionInstantiation
 
-  R.ExternalClassFunction cfd@(CFD cd _ _ _) rsnapshot -> do
+  R.ExternalClassFunction cfd@(CFD cd _ _ _ ()) rsnapshot -> do
     -- insts <- fmap Map.fromList $ for (Map.toList (rinsts ! )) $ \(rdd, rinst) -> do
     --   dd <- inferDatatype rdd
     --   inst <- case rinst of
@@ -496,7 +498,7 @@ inferVariable = \case
     pure $ T.DefinedClassFunction cfd snapshot self tempClassInstantiation
 
   R.DefinedClassFunction rcfd rsnapshot -> do
-    cfd@(CFD cd _ _ _) <- inferClassDeclaration rcfd
+    cfd@(CFD cd _ _ _ ()) <- inferClassDeclaration rcfd
     -- insts <- fmap Map.fromList $ traverse (bitraverse inferDatatype inferInstance) $ Map.toList rinsts
     snapshot <- inferSnapshot rsnapshot
     let insts = Def.defaultEmpty cd snapshot
@@ -554,7 +556,13 @@ inferClassType = cata $ (.) (fmap embed) $ \case
     TCon (R.ExternalDatatype dd) rparams () -> do
       params <- sequenceA rparams
       pure $ TCon dd params undefined
-    TO rtv -> do
+    TO (R.TClass rcd) -> do
+      cd <- inferClass rcd
+      t <- fresh
+      t `constrain` (cd, mempty)  -- NOTE: we MUST ensure that this turns into a TVar. If not, it should be an error...? 
+      pure $ error "should not evaluate." <$ project t
+
+    TO (R.TVar rtv) -> do
       tv <- inferTVar rtv
       pure $ TO $ TVar tv
     TFun () params ret -> do
@@ -574,7 +582,13 @@ inferType = cata $ (.) (fmap embed) $ \case
     let unions = T.extractUnionsFromDataType dd  -- TODO: same here...
     pure $ TCon dd params unions
 
-  TO tv -> TO . TVar <$> inferTVar tv
+  TO (R.TClass rcd) -> do
+    cd <- inferClass rcd
+    t <- fresh
+    t `constrain` (cd, mempty)  -- NOTE: we MUST ensure that this turns into a TVar. If not, it should be an error...? 
+    pure $ project t
+
+  TO (R.TVar tv) -> TO . TVar <$> inferTVar tv
 
   TFun () rargs rret -> liftA3 TFun emptyUnion (sequenceA rargs) rret
 
@@ -752,7 +766,7 @@ inferClassDef = memo memoClass (\mem s -> s { memoClass = mem }) $ \cd _ -> mdo
 inferClassFunDec :: ClassDef TC -> XClassFunDec R -> Infer (ClassFunDec TC)
 inferClassFunDec cd = \case
   (R.ExternalClassFunDec cfd) -> pure cfd
-  (R.DefinedClassFunDec (CFD _ uv params ret)) -> do
+  (R.DefinedClassFunDec (CFD _ uv params ret ())) -> do
     params' <- for params $ \(decon, rt) -> do
       d <- inferDecon decon
       t <- inferClassType rt
@@ -764,12 +778,12 @@ inferClassFunDec cd = \case
       pure (d, t)
 
     ret' <- inferClassType ret
-    pure $ CFD cd uv params' ret'
+    pure $ CFD cd uv params' ret' ()
 
 inferClassDeclaration :: ClassFunDec R -> Infer (ClassFunDec TC)
-inferClassDeclaration (CFD rcd uv _ _) = do
+inferClassDeclaration (CFD rcd uv _ _ ()) = do
   tcd <- inferClassDef rcd
-  let mcfd = find (\(CFD _ cuv _ _) -> cuv == uv) tcd.classFunctions
+  let mcfd = find (\(CFD _ cuv _ _ ()) -> cuv == uv) tcd.classFunctions
   pure $ Def.mustOr (printf "[COMPILER ERROR]: Could not find function %s in class %s." (pp uv) (pp tcd.classID)) mcfd
 
 inferInst :: R.Inst -> Infer (InstDef TC)
@@ -791,17 +805,22 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
         }
 
   fns <- for inst.instFuns $ \rfn -> do
-    cfd@(CFD _ _ deconParams ret) <- inferClassFunDec klass rfn.instClassFunDec
+    cfd@(CFD _ _ cparams cret _) <- inferClassFunDec klass rfn.instClassFunDec
 
     -- TODO: add check?
     fn <- generalize $ mdo
+      let self = Fix $ TCon it tvs unions  -- TODO: when we stop ignoring tvars, properly instantiate them here.
 
       -- Infer function declaration.
       let rfundec = rfn.instFunDec
 
-      params <- for rfundec.functionParameters $ \(v, definedType) -> do
+      params <- for (Def.exactZipWith (\(d, p) cp -> (d, p, cp)) rfundec.functionParameters (snd <$> cparams)) $ \(v, definedType, ct) -> do
         tv <- inferDecon v
         let vt = Common.typeOfNode tv
+
+        -- map with CLASS TYPE FIRST!
+        -- let tct = mkTypeFromClassType self ct
+        -- vt `uni` tct
 
         case definedType of
           DeclaredType rt -> do
@@ -818,7 +837,6 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
 
       -- now unify it with the base class function type.
       (tvs, unions) <- instantiateScheme mempty it.ddScheme
-      let self = Fix $ TCon it tvs unions  -- TODO: when we stop ignoring tvars, properly instantiate them here.
       classFun <- instantiateClassFunction cfd self
 
       union <- emptyUnion
@@ -867,6 +885,26 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
   pure instDef
 
 
+-- -- error if inst function's type is different.
+-- --  in its own function, because in the future the error will be more detailed.
+-- ensureClassFunctionHasSameShapeAsInstance :: ClassFunDec TC -> Function TC -> Infer ()
+-- ensureClassFunctionHasSameShapeAsInstance cfd@(CFD _ _ cparams cret _) fn = do
+--   let
+--     checkDifference :: ClassType TC -> Type TC -> [(ClassType TC, Type TC)]
+--     checkDifference (Fix Self) _ = mempty  -- Assumption: self is correct (due to previous typechecking stuff). I don't bother checking it to write less code now :]
+--     checkDifference (Fix (NormalType lct)) rt = case (lct, project rt) of
+--       (TO _, TO _) -> undefined
+
+--     FD _ _ params ret _ = fn.functionDeclaration
+--     cts = cret : fmap snd cparams
+--     ts  = ret : fmap snd params
+--     -- I assume parameter list length was checked before.
+--     diffs = fold $ zipWith checkDifference cts ts
+
+--   unless (null diffs) $
+--     err $ InstanceFunctionTypeNotMatchingClass cfd fn diffs
+
+
 -- Generalizes the function inside.
 generalize :: Infer (Function TC) -> Infer (Function TC)
 generalize ifn = do
@@ -883,6 +921,7 @@ generalize ifn = do
   (su, scheme, assocs) <- constructSchemeForFunctionDeclaration fn.functionDeclaration
 
   Def.ctxPrint' $ printf "Scheme for %s: %s" (pp fn.functionDeclaration.functionId) (pp scheme)
+  Def.ctxPrint' $ printf "Assocs for %s: %s" (pp fn.functionDeclaration.functionId) (pp assocs)
   let generalizedFn = subst su fn
 
 
@@ -944,12 +983,12 @@ substAssociations = do
   let subAssociations = first (subst csu) <$> assocs
   dbgAssociations "before" subAssociations
 
-  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval (foldr (<>) Map.empty) . unzip) $ for subAssociations $ \t@(T.TypeAssociation from to (CFD _ uv _ _) uci baseUFI envsToAddTo, insts) -> do
+  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval (foldr (<>) Map.empty) . unzip) $ for subAssociations $ \t@(T.TypeAssociation from to (CFD _ uv _ _ ()) uci baseUFI envsToAddTo, insts) -> do
     case project from of
         TCon dd _ _ -> case insts !? dd of
           Just inst -> do
             -- select instance function to instantiate.
-            let instFun = Def.mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (pp uv)) $ find (\InstFun { instClassFunDec = CFD _ cuv _ _ } -> cuv == uv) inst.instFuns
+            let instFun = Def.mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (pp uv)) $ find (\InstFun { instClassFunDec = CFD _ cuv _ _ () } -> cuv == uv) inst.instFuns
 
             -- hope it's correct....
             let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
@@ -1036,7 +1075,7 @@ reportAssociationErrors = do
   let subAssociations = first (subst su) <$> assocs
 
   -- first, report errors.
-  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation from _ (CFD cd _ _ _) _ _ _, insts) -> do
+  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation from _ (CFD cd _ _ _ ()) _ _ _, insts) -> do
     case project from of
         TCon dd _ _ -> case insts !? dd of
           Just _ -> error "[COMPILER ERROR]: resolvable associated type found. should already be taken care of."
@@ -1062,13 +1101,17 @@ reportAssociationErrors = do
 
 -- used after generalization to
 --  1. extract associations for the function.
-rummageThroughAssociations :: Def.UniqueVar -> Subst -> Infer [T.FunctionTypeAssociation]
-rummageThroughAssociations funUV su = do
+rummageThroughAssociations :: Def.UniqueVar -> Set T.TyVar -> Infer ([T.FunctionTypeAssociation], Map T.TyVar (TVar TC))
+rummageThroughAssociations funUV tyvars = do
   assocs <- RWS.gets associations
+  let
+    -- Then substitute it.
+    asTVar (T.TyV tyname classInstances) = TV tyname (BindByVar funUV) (Set.fromList $ fst <$> classInstances)
+    su = Subst mempty $ Map.fromSet (Fix . TO . TVar . asTVar) tyvars
   let subAssociations = first (subst su) <$> assocs
 
   -- first, report errors.
-  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation from _ (CFD cd _ _ _) _ _ _, insts) -> do
+  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation from _ (CFD cd _ _ _ ()) _ _ _, insts) -> do
     case project from of
         TO (TVar tv) | tv.binding == BindByVar funUV -> do
           -- will be added later to the association list!
@@ -1081,12 +1124,19 @@ rummageThroughAssociations funUV su = do
   RWS.modify $ \s -> s { associations = substitutedAssociations }  -- TODO: what? what am i doing
 
   -- second: extract associations for the function.
-  let functionAssociations = flip mapMaybe subAssociations $ \(T.TypeAssociation from to cfd uci _ _, _) -> case project from of
+  let functionAssociationsAndFutureTVars = flip mapMaybe subAssociations $ \(T.TypeAssociation from to cfd uci _ _, _) -> case project from of
         TO (TVar tv) | tv.binding == BindByVar funUV ->
-          Just $ T.FunctionTypeAssociation tv to cfd uci
+          Just (T.FunctionTypeAssociation tv to cfd uci, ftv to)
         _ -> Nothing
 
-  pure functionAssociations
+  let functionAssociations = fst <$> functionAssociationsAndFutureTVars
+  let newTyVars = foldMap snd functionAssociationsAndFutureTVars
+
+  if null functionAssociations
+    then pure ([], Map.fromSet asTVar tyvars)
+    else do
+      (newAssocs, tvs) <- rummageThroughAssociations funUV newTyVars
+      pure (functionAssociations <> newAssocs, Map.fromSet asTVar tyvars <> tvs)
 
 
   -- -- when some changes accured, do it again. this is because some expressions, like: a.b.c.d would require 3 iterations... is this okay??
@@ -1144,18 +1194,8 @@ constructSchemeForFunctionDeclaration dec = do
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
             T.DefinedFunction f _ _ _ -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
-            T.DefinedClassFunction (CFD cd _ _ _) snapshot _ _   -- TODO: I think we don't need to dig through instances?
-              -> foldMap digOutFromInst insts
-              where
-                insts = Def.defaultEmpty cd snapshot
-
-                digOutFromInst :: InstDef TC -> (Set T.TyVar, Set T.EnvUnion)
-                digOutFromInst inst = foldMap digOutFromInstFunction inst.instFuns
-
-                digOutFromInstFunction :: InstFun TC -> (Set T.TyVar, Set T.EnvUnion)
-                digOutFromInstFunction fn =
-                  let fndec = fn.instFunDec
-                  in foldMap (digOutTyVarsAndUnionsFromType . snd) fndec.functionParameters <> digOutTyVarsAndUnionsFromType fndec.functionReturnType
+            T.DefinedClassFunction (CFD cd _ _ _ ()) snapshot _ _   -- TODO: I think we don't need to dig through instances?
+              -> mempty
 
       (tyVarsOutside, unionsOutside) = digOutTyVarsAndUnionsFromEnv dec.functionEnv
       (tyVarsDeclaration, unionsDeclaration) = foldMap (digOutTyVarsAndUnionsFromType . snd) dec.functionParameters <> digOutTyVarsAndUnionsFromType dec.functionReturnType
@@ -1171,23 +1211,24 @@ constructSchemeForFunctionDeclaration dec = do
 
       tvarsDefinedForThisFunction = foldMap (definedTVars . snd) dec.functionParameters <> definedTVars dec.functionReturnType
 
-      -- Then substitute it.
-      asTVar (T.TyV tyname classInstances) = TV tyname (BindByVar dec.functionId) (Set.fromList $ fst <$> classInstances)
-
-      su = Subst mempty $ Map.fromSet (Fix . TO . TVar . asTVar) tyVarsOnlyFromHere
-      unionsOnlyFromHereWithTVars = Set.map (subst su) unionsOnlyFromHere  -- NOTE: Unions might also contain our TyVars, so we must substitute it also.
-
-      tvarsFromTyVars = Set.map asTVar tyVarsOnlyFromHere
-      Scheme tvars _ = Scheme (Set.toList $ tvarsFromTyVars <> tvarsDefinedForThisFunction) (Set.toList unionsOnlyFromHereWithTVars)
+  Def.ctxPrint' $ Def.printf "FunDec for %s: %s" (pp dec.functionId) (pp dec)
+  Def.ctxPrint' $ Def.printf "UNIONS for %s: %s = %s \\\\ %s" (pp dec.functionId) (pp unionsOnlyFromHere) (pp unionsDeclaration) (pp unionsOutside)
 
   -- add associations.
-  assocs <- rummageThroughAssociations dec.functionId su -- remember to use the new Subst, which generalizes the associations.
+  (assocs, tvmap) <- rummageThroughAssociations dec.functionId tyVarsOnlyFromHere -- remember to use the new Subst, which generalizes the associations.
   reportAssociationErrors
 
-  let (_, assocUnions) = foldMap (\(T.FunctionTypeAssociation _ t _ _) -> digOutTyVarsAndUnionsFromType t) assocs
+  let
+      su = Subst mempty $ Fix . TO . TVar <$> tvmap
+      substAssocs = subst su assocs  -- TODO: should be done in rummageThroughAssociations, but whatever.
+      unionsOnlyFromHereWithTVars = Set.map (subst su) unionsOnlyFromHere  -- NOTE: Unions might also contain our TyVars, so we must substitute it also.
+
+      Scheme tvars _ = Scheme (Set.toList $ Set.fromList (Map.elems tvmap) <> tvarsDefinedForThisFunction) (Set.toList unionsOnlyFromHereWithTVars)
+
+  let (_, assocUnions) = foldMap (\(T.FunctionTypeAssociation _ t _ _) -> digOutTyVarsAndUnionsFromType t) substAssocs
   let assocScheme = Scheme tvars (Set.toList $ unionsOnlyFromHereWithTVars <> assocUnions)
 
-  pure (su, assocScheme, assocs)
+  pure (su, assocScheme, substAssocs)
 
 digOutTyVarsAndUnionsFromType :: Type TC -> (Set T.TyVar, Set T.EnvUnion)
 digOutTyVarsAndUnionsFromType = para $ \case
@@ -1320,7 +1361,7 @@ instantiateVariable loc = \case
     pure (t, v)
 
 
-  T.DefinedClassFunction cfd@(CFD cd funid params ret) snapshot self _ -> do
+  T.DefinedClassFunction cfd@(CFD cd funid params ret ()) snapshot self _ -> do
     fnType <- instantiateClassFunction cfd self
     let insts = Def.defaultEmpty cd snapshot
     uci <- newClassInstantiation
@@ -1332,7 +1373,7 @@ instantiateVariable loc = \case
     pure (fnType, T.DefinedClassFunction cfd snapshot self uci)
 
 instantiateClassFunction :: ClassFunDec TC -> Type TC -> Infer (Type TC)
-instantiateClassFunction (CFD _ funid params ret) self = do
+instantiateClassFunction (CFD _ funid params ret ()) self = do
     -- TODO: a lot of it is duplicated from DefinedFunction. sussy
     -- TODO TODO: NOT SURE IF IT'S ALL NECESSARY!!!!!!!!!!!!!!!!!!!!!!!!
     -- SHOULD EXPLAIN EACH LINE BECAUSE SOMETHING FEELS OFF
@@ -1390,7 +1431,7 @@ instantiateFunction muci snapshot fn = do
     ufi <- newFunctionInstantiation
 
     -- add new associations
-    assocs <- for fundec.functionOther.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(CFD cd _ _ _) uci) -> do
+    assocs <- for fundec.functionOther.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(CFD cd _ _ _ ()) uci) -> do
       let from = mapTVs $ Fix $ TO $ TVar tv
       let mto = mapTVs to
       associateType from mto cfd (fromMaybe mempty $ snapshot !? cd) uci (Just ufi) -- TEMP
@@ -1963,7 +2004,7 @@ instance Substitutable (T.EnvF (Type TC)) where
   -- redundant work. memoize this shit also.
   subst su (T.Env eid env locs currentEnvStack) = T.Env eid (newEnvVars <> optionalAddition) locs currentEnvStack
     where
-      newEnvVars = foldMap (tryExpandEnvironmentOfClass . (\(v, l, t) -> (subst su v, l, subst su t))) env 
+      newEnvVars = foldMap (tryExpandEnvironmentOfClass . (\(v, l, t) -> (subst su v, l, subst su t))) env
 
       currentLevel = Def.envStackToLevel currentEnvStack
 
@@ -1976,7 +2017,7 @@ instance Substitutable (T.EnvF (Type TC)) where
 
       tryExpandEnvironmentOfClass :: (T.Variable, Def.Locality, Type TC) -> [(T.Variable, Def.Locality, Type TC)]
       tryExpandEnvironmentOfClass = \case
-        vlt@(T.DefinedClassFunction cfd@(CFD cd _ _ _) snap self@(Fix (TCon dd _ _)) uci, _, t) ->
+        vlt@(T.DefinedClassFunction cfd@(CFD cd _ _ _ ()) snap self@(Fix (TCon dd _ _)) uci, _, t) ->
           -- failable: select instantiated function env. this might have been after errors, so we're not assuming anything.
           let mvars = do
                 insts <- snap !? cd
@@ -2116,6 +2157,10 @@ emptyUnion = do
 findMap :: Eq a => a -> (b -> a) -> Map b c -> Maybe c
 findMap kk f = fmap snd . find (\(k, _) -> f k == kk). Map.toList
 
+classFunDecToClassType :: ClassFunDec R -> ClassType R
+classFunDecToClassType (CFD _ _ params ret _) =
+  Fix $ NormalType $ TFun undefined undefined undefined
+
 
 ------------------------------------------
 --          DATATYPES n shiiii
@@ -2219,6 +2264,7 @@ data TypeError
   | DataDefDoesNotImplementClass (DataDef TC) (ClassDef TC)
   | TVarDoesNotConstrainThisClass (TVar TC) (ClassDef TC)
   | FunctionTypeConstrainedByClass (Type TC) (ClassDef TC)
+  | InstanceFunctionTypeNotMatchingClass (ClassFunDec TC) (Function TC) [(ClassType TC, Type TC)]
 
 -- not sure if we have to have a show instance
 instance Show TypeError where

@@ -14,7 +14,7 @@ import Data.Map (Map)
 import Data.Set (Set)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Functor ((<&>))
-import AST.Def (PP (..), (<+>), PPDef)
+import AST.Def (PP (..), (<+>), PPDef, ppDef)
 import Data.Fix (Fix)
 import Data.Functor.Foldable (cata)
 import Data.Foldable (Foldable(..))
@@ -44,10 +44,10 @@ type instance XClass Resolved = Class
 type instance XClassFunDec Resolved = ClassFun
 type instance XDClass Resolved = Def.UniqueClass
 type instance XInstDef Resolved = InstDef R
-type instance ClassConstraints Resolved = Map (TVar R) (Set Class)
+type instance XClassConstraints Resolved = () -- Map (TVar R) (Set Class)
 type instance XOther Resolved = ()
 type instance XFunOther Resolved = ()
-type instance XTOther Resolved = TVar R
+type instance XTOther Resolved = RTO
 type instance XTFun Resolved = ()
 type instance XTConOther Resolved = ()
 type instance XNode Resolved = ()
@@ -64,6 +64,10 @@ type instance XLamOther Resolved = LamDec
 
 
 type ScopeSnapshot = Map Class PossibleInstances
+
+data RTO
+  = TVar (TVar R)
+  | TClass Class
 
 
 -- A variable prototype.
@@ -92,8 +96,8 @@ asPUniqueVar = \case
   PDefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
   PExternalFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
 
-  PDefinedClassFunction (CFD _ uv _ _) -> uv
-  PExternalClassFunction (CFD _ uv _ _) -> uv
+  PDefinedClassFunction (CFD _ uv _ _ _) -> uv
+  PExternalClassFunction (CFD _ uv _ _ _) -> uv
 
 asProto :: Variable -> VariableProto
 asProto = \case
@@ -147,8 +151,8 @@ data Inst
 
 type PossibleInstances = Map DataType Inst
 
-bindTVar :: Def.Binding -> Def.UnboundTVar -> TVar R
-bindTVar b (Def.UTV tvname) = TV tvname b mempty
+bindTVar :: Set Class -> Def.Binding -> Def.UnboundTVar -> TVar R
+bindTVar scs b (Def.UTV tvname) = TV tvname b scs
 
 data Mod = Mod
   { toplevel :: [AnnStmt R]
@@ -170,6 +174,11 @@ instance PP Mod where
 
 instance PP Variable where
   pp = pp . asPUniqueVar . asProto
+
+instance PP RTO where
+  pp = \case
+    TVar tv -> pp tv
+    TClass klass-> ppDef klass
 
 instance PP Constructor where
   pp = \case
