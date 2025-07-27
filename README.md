@@ -7,9 +7,9 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 ## current
 
-- typeclass constraints
-  - including the funny declaration, where it looks like a type, but it's actually a typeclass.
-- associated types
+Modules, namespaces and importing.
+
+(note: currently, instance generalization and instantiation is scuffed, but in a weird way: it's actually more powerful, so I'm able to write all the classes and instances I want. but it's also super weird. after I implement modules and errors, I want to redo it, so that it matches Rust or similar.... or maybe I'll use this somehow?)
 
 Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs are in separate text files in doc/compiler/ and a small minority in doc/design/.
 
@@ -24,6 +24,7 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 - `ctest/` - testing stuff in C
 - `incorrect/` - files which do not compile / produce incorrect results
 
+
 ## regressions
 
 - in test 5.08, there are two environments in the union instead of one for a generalized function over typeclass instance. i'll have to check if it also happens for normal functions, what kind of regression it is. happened after removing RemoveUnused, so it's obvious something like this would happen. check if there are any warnings in tests when compiling C programs.
@@ -31,12 +32,16 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 
 ## todo larger
 
-- declaring typeclass constraints, associated types
 - module importing and namespaces
 - line folding
 - error location + actual errors
 - integers in types (typed C arrays)  (maybe put this earlier to support C-style arrays)
 - finish (actually fix) recursion
+- typeclass constraints
+  - including the funny declaration, where it looks like a type, but it's actually a typeclass.
+    - i have a basic version of this, but the rules are not very finalized... like, force tvars for parameters, but allow nested types for the return type?
+  - moved this down, because... it's stupid, but currently we 
+- associated types
 
 
 ## todo
