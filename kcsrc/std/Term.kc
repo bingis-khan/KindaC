@@ -2,3 +2,9 @@
 println (x a) -> Unit
 	print x
 	return
+
+println2 (x a) -> Unit
+	print 2
+	print x
+	print x
+	return

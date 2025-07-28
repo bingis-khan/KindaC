@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedRecordDot, ApplicativeDo #-}
+{-# LANGUAGE OverloadedRecordDot, ApplicativeDo, OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
 module Pipeline (loadModule, loadPrelude, finalizeModule) where
 
@@ -30,7 +30,13 @@ import qualified CompilerContext as Compiler
 import Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.Trans.RWS as RWST
 import Data.Map ((!?))
+import qualified System.Directory as Directory
 
+
+
+preludePath, stdPath :: FilePath
+preludePath = "kcsrc/prelude.kc"
+stdPath = "kcsrc/std/"
 
 
 -- Loads and typechecks a module.
@@ -68,9 +74,26 @@ moduleLoader mq = do
   case mtmod !? mq of
     Nothing -> do
       filepath <- Compiler.mkModulePath mq
-      lmtmod <- loadModule filepath
-      Compiler.storeModule mq lmtmod
-      pure lmtmod
+
+      -- first, check if a file with that name exists in current project
+      projectModuleExists <- liftIO $ Directory.doesFileExist filepath
+      if projectModuleExists
+        then do
+          lmtmod <- Compiler.relativeTo filepath $ loadModule filepath
+          Compiler.storeModule mq lmtmod
+          pure lmtmod
+
+        else do
+          stdpath <- Compiler.relativeTo stdPath $ Compiler.mkModulePath mq  -- TODO: xddddddd very roundabout way to do it
+          stdModuleExists <- liftIO $ Directory.doesFileExist stdpath
+          if stdModuleExists
+            then do
+              lmtmod <- Compiler.relativeTo stdpath $ loadModule stdpath
+              Compiler.storeModule mq lmtmod
+              pure lmtmod
+            else do
+              Compiler.addErrors $ Text.pack <$> [Def.printf "Could not find module %s. (Searched both for '%s' and std '%s')" (show mq) filepath stdpath]
+              pure Nothing
 
     Just lmtmod -> pure lmtmod
 
@@ -95,11 +118,10 @@ finalizeModule modules = do
 loadPrelude :: IO Prelude
 loadPrelude = do
   epmod <- do
-    let filename = "kcsrc/prelude.kc"
-    source <- liftIO $ TextIO.readFile filename
+    source <- liftIO $ TextIO.readFile preludePath
 
     phase "Parsing"
-    case parse filename source of
+    case parse preludePath source of
       Left err -> do
         pure $ Left err
 

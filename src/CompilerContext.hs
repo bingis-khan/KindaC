@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedRecordDot #-}
-module CompilerContext (CompilerContext, CompilerState(..), BasePath, storeModule, ModuleLoader, compilerContext, addErrors, preludeHackContext, mkModulePath) where
+module CompilerContext (CompilerContext, CompilerState(..), BasePath, storeModule, ModuleLoader, compilerContext, addErrors, preludeHackContext, mkModulePath, relativeTo) where
 
 import Data.Text (Text)
 import Data.Map (Map)
@@ -16,6 +16,7 @@ import System.FilePath ((<.>), (</>))
 import qualified System.FilePath as FilePath
 import qualified AST.Def as Def
 import qualified Data.Text as Text
+import Data.Biapplicative (first)
 
 
 
@@ -41,6 +42,9 @@ compilerContext basepath prelude fn = fmap fst $ RWST.evalRWST go (basepath, pre
             e:es -> e :| es
             _ -> error "[COMPILER ERROR]: no errors while module could not be compiled."
 
+
+relativeTo :: BasePath -> CompilerContext a -> CompilerContext a
+relativeTo newBasePath = RWST.local $ first $ const newBasePath
 
 preludeHackContext :: CompilerContext a -> IO a
 preludeHackContext fn = fmap fst $ RWST.evalRWST fn ("kcsrc/prelude.kc", error "no prelude") $ CompilerState
