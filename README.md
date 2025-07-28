@@ -7,9 +7,15 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 ## current
 
-Modules, namespaces and importing.
+- Making a quick iterator library.
+- Making a quick string library.
+
+
+--
 
 (note: currently, instance generalization and instantiation is scuffed, but in a weird way: it's actually more powerful, so I'm able to write all the classes and instances I want. but it's also super weird. after I implement modules and errors, I want to redo it, so that it matches Rust or similar.... or maybe I'll use this somehow?)
+
+No dependency checking
 
 Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs are in separate text files in doc/compiler/ and a small minority in doc/design/.
 
@@ -32,7 +38,6 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 
 ## todo larger
 
-- module importing and namespaces
 - line folding
 - error location + actual errors
 - integers in types (typed C arrays)  (maybe put this earlier to support C-style arrays)
@@ -46,6 +51,9 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 
 ## todo
 
+- instance propagation rules for modules (eg. I don't want to import Str module to use the Term module)
+- add circular dependency checking for modules
+- lots tests for modules, namespaces and importing.
 - this is kinda important: for semantics, we need to ensure, that the type of the instance function matches the class function. is there a SMART way to do it (by unification instead of validation?)
   - this is funny. i'm restricting the language. it's already more powerful, but i'm trying to make it less powerful... why would i do that?
     - i think in this case, errors would be pretty bad. like, you will get errors at instantiation when the type becomes known and the class fun types change. very unreadable.

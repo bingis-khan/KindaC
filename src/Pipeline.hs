@@ -202,7 +202,8 @@ loadPrelude = do
             int  <- findBasicType Prelude.intTypeName
             float <- findBasicType Prelude.floatTypeName
             ptr <- findPtrType
-            pure $ Prelude { tpModule = pmod, unitValue = unit, boolType = bool, intType = int, floatType = float, toplevelReturn = mkTopLevelReturn int, mkPtr = ptr }
+            constStr <- findBasicType Prelude.constStrTypeName
+            pure $ Prelude { tpModule = pmod, unitValue = unit, boolType = bool, intType = int, floatType = float, toplevelReturn = mkTopLevelReturn int, mkPtr = ptr, constStrType = constStr }
 
       case eprelude of
         Failure errs -> liftIO $ do

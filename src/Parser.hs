@@ -67,6 +67,7 @@ statement = choice
   , sReturn
   , sWhile
   , sUse
+  , sExternal
 
   , sClass
   , sInst
@@ -191,7 +192,7 @@ sUseItem = choice
   [ UseVarOrFun <$> variable        -- variableOrFunction
   , do                              -- Type + constructors
     tc <- typeName
-    _ <- choice
+    choice
       [ between (symbol "(") (symbol ")") $ choice
         [ do                        -- (Constructor, Constructor2, ...)
           con <- dataConstructor
@@ -206,8 +207,15 @@ sUseItem = choice
         ]
       , pure $ UseTypeOrClass tc    -- TypeOrClass
       ]
-    undefined
   ]
+
+sExternal :: Parser (Stmt U)
+sExternal = do
+  keyword "external"
+  (header, mExpr) <- functionHeader
+  case mExpr of
+    Nothing -> pure $ Other $ ExternalFunctionDeclaration header
+    Just _ -> undefined  -- parsing error!
 
 sClass :: Parser (Stmt U)
 sClass = recoverableIndentBlock $ do
@@ -442,6 +450,10 @@ annotation = do
         "clit" -> do
           value <- stringLiteral
           ann $ ACLit value
+        "cfunname" -> do
+          value <- stringLiteral
+          ann $ ACFunName value
+
         "actual-pointer-type" -> ann AActualPointerType
         unknownKey -> do
           registerExpect keyOffset unknownKey ["ctype", "cstdinclude", "clit"]
@@ -578,6 +590,7 @@ term :: Parser (Expr U)
 term = choice
   [ eDecimal
   , eGrouping
+  , eString
   , eRecordConstruction
   , eIdentifier
   ]
@@ -589,6 +602,11 @@ eDecimal = do
 
 eGrouping :: Parser (Expr U)
 eGrouping = between (symbol "(") (symbol ")") expression
+
+eString :: Parser (Expr U)
+eString = do
+  stringLiteral <- char '\'' *> manyTill L.charLiteral (char '\'')
+  retfe $ Lit $ LString stringLiteral
 
 eIdentifier :: Parser (Expr U)
 eIdentifier = do

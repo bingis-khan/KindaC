@@ -101,6 +101,7 @@ data LitType
   -- Number types. They have infinite precision, because I don't want to lose the information and give the appropriate message.
   = LInt Integer
   | LFloat Rational
+  | LString String
 
   -- | LString Text
   deriving (Eq, Ord, Show)
@@ -111,8 +112,10 @@ data Ann
   = ACType Text
   | ACLit Text
   | ACStdInclude Text
+  | ACFunName Text
 
   | AActualPointerType
+  | AExternal  -- added by the compiler to external functions!
   deriving (Show, Eq, Ord)
 
 -- Annotation decorator thing.
@@ -411,6 +414,9 @@ instance PPDef UniqueClassInstantiation where
 
 instance PP UniqueFunctionInstantiation where
   pp uci = "F" <> (fromString . show . hashUnique) uci.fromUFI
+
+instance PP Ann where
+  pp = fromString . show
 
 
 ----------------

@@ -494,7 +494,7 @@ mFunction uciOrUfi et vfn = do
       Def.ctxPrint' $ Def.printf "VARIABLE OF MEMO: %s" (pp uv)
 
       params <- flip zip ts <$> traverse (mDecon . fst) tfn.functionDeclaration.functionParameters
-      let fundec = FD env uv params ret envInsts :: FunDec IM
+      let fundec = FD env uv params ret (IM.FunOther { IM.envInstantiations = envInsts, IM.functionAnnotations = vfn.functionDeclaration.functionOther.functionAnnotations }) :: FunDec IM
 
 
       -- DEBUG: when in the process of memoization, show dis.
@@ -514,7 +514,7 @@ mFunction uciOrUfi et vfn = do
       pure fn
 
     -- complete the environment with instantiations from this variable.
-    let thisFunsEnvInsts = fn.functionDeclaration.functionOther
+    let thisFunsEnvInsts = fn.functionDeclaration.functionOther.envInstantiations
     State.modify $ \c -> c
       { envInstantiations = Map.unionWith (<>) thisFunsEnvInsts c.envInstantiations
       }
@@ -1237,7 +1237,7 @@ mfFunction fun = do
   params <- traverse (bitraverse mfDecon mfType) fundec.functionParameters
   ret <- mfType fundec.functionReturnType
 
-  let mfundec = FD { functionEnv = env, functionId = fundec.functionId, functionParameters = params, functionReturnType = ret, functionOther = () }
+  let mfundec = FD { functionEnv = env, functionId = fundec.functionId, functionParameters = params, functionReturnType = ret, functionOther = fundec.functionOther.functionAnnotations }
 
   body <- mfAnnStmts $ NonEmpty.toList fun.functionBody
   let completedBody = case body of

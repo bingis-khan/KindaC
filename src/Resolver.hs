@@ -179,6 +179,7 @@ rStmts = traverse -- traverse through the list with Ctx
         case mtmod of
           Just tmod -> do
             useModule use.moduleQualifier tmod  -- import module itself.
+            quietlyAddInstancesFromImportedModule tmod
 
             let
               findExport :: (Exports TC -> [a]) -> (a -> Bool) -> Maybe a
@@ -324,6 +325,36 @@ rStmts = traverse -- traverse through the list with Ctx
 
         pass
 
+      -- TODO: THIS IS ALL TEMPORARY - I SHOULD PROBABLY MAKE DIFFERENT DATA STRUCTURES FOR THIS!
+      --  CURRENTLY, YOU MAY NOT USE EXTERNAL FUNCTIONS ALONGSIDE OTHER FUNCTIONS. SHIT WILL BREAK. THIS IS A QUICK HACK.
+      Other (U.ExternalFunctionDeclaration (FD () name params ret uconstraints)) -> do
+        vid <- generateVar name
+        constraints <- rConstraints uconstraints
+        -- get all unbound tvars
+        let allTypes = catNotDeclared $ ret : (snd <$> params)
+        tvars <- fmap mconcat $ for allTypes $ cata $ \case
+              TO utv -> tryResolveTVar utv <&> \case
+                Just _ ->  Set.empty  -- don't rebind existing tvars. (scoped tvars. but maybe a function declaration should rebind them.)
+                Nothing -> Set.singleton $ bindTVar (defaultEmpty utv constraints) (BindByVar vid) utv
+              t -> fold <$> sequenceA t
+
+        eid <- newEnvID
+        (rparams, rret) <- bindTVars (Set.toList tvars) $ closure eid $ do
+          rparams' <- traverse (\(n, t) -> do
+            rn <- rDecon n
+            rt <- rDeclaredType t
+            return (rn, rt)) params
+          rret' <- rDeclaredType ret
+          pure (rparams', rret')
+
+        -- set the environment
+        --   NOTE: don't forget to remove self reference - it does not need to be in the environment.
+        -- TODO: maybe just make it a part of 'closure'?
+        env <- mkEnv eid mempty
+
+        newFunction $ Function (FD env vid rparams rret (Def.AExternal : anns)) $ NonEmpty.singleton $ Fix $ O $ Annotated [] Pass
+        stmt Pass
+
       Fun (U.FunDef (FD () name params ret uconstraints) body) -> do
         vid <- generateVar name  -- NOTE: this is added to scope in `newFunction` (for some reason.) TODO: change it later (after I finish implementing records.) TODO: to what?????
 
@@ -338,7 +369,7 @@ rStmts = traverse -- traverse through the list with Ctx
               t -> fold <$> sequenceA t
 
         rec
-          let function = Function (FD env vid rparams rret (error "what should the scheme be here?")) rbody
+          let function = Function (FD env vid rparams rret anns) rbody
           newFunction function
 
           eid <- newEnvID
@@ -456,7 +487,7 @@ rStmts = traverse -- traverse through the list with Ctx
           -- TODO: maybe just make it a part of 'closure'?
           let innerEnv = Set.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
           env <- mkEnv eid innerEnv
-          let fundec = FD env vid rparams rret ()
+          let fundec = FD env vid rparams rret anns
 
           pure InstFun
             { instFunDec = fundec
@@ -985,6 +1016,14 @@ useModule :: U.ModuleQualifier -> Module TC -> Ctx ()
 useModule mq tmod = do
   -- NOTE: if I decide to make it illegal to reimport modules, put error here.
   RWST.modify $ \s -> s { modules = Map.insert mq tmod s.modules }
+
+quietlyAddInstancesFromImportedModule :: Module TC -> Ctx ()
+quietlyAddInstancesFromImportedModule tmod = do
+  let insts = tmod.exports.instances
+  let instMap = Map.fromListWith (<>) $ insts <&> \inst -> (R.ExternalClass inst.instClass, Map.singleton (R.ExternalDatatype (fst inst.instType)) (R.ExternalInst  inst))
+  modifyThisScope $ \sc -> sc
+    { instScope = Map.unionWith (<>) instMap sc.instScope
+    }
 
 tryFindExternalModule :: U.ModuleQualifier -> Ctx (Maybe (Module TC))
 tryFindExternalModule mq = do

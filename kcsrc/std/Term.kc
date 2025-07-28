@@ -1,10 +1,8 @@
+use Cnile
+use Str
+	Str(print-str)
 
-println (x a) -> Unit
-	print x
-	return
-
-println2 (x a) -> Unit
-	print 2
-	print x
-	print x
+println (s a) -> Unit <= Str a
+	print-str(s)
+	print-str('\n')
 	return

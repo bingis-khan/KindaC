@@ -147,6 +147,7 @@ data FunOther = FunOther
   { functionScheme :: Scheme
   , functionAssociations :: [FunctionTypeAssociation]
   -- , functionClassInstantiationAssocs :: ClassInstantiationAssocs  -- TODO: might not be necessary we can just map them.
+  , functionAnnotations :: [Def.Ann]
   }
 
 data Scheme = Scheme [TVar TC] [EnvUnion]

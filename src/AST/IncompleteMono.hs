@@ -35,7 +35,7 @@ type instance XCon IM = DataCon IM
 type instance XConOther IM = ()
 type instance XTCon IM = DataDef IM
 type instance XMem IM = Def.UniqueMem
-type instance XFunOther IM = EnvInstantiations
+type instance XFunOther IM = FunOther
 type instance XFunVar IM = Def.UniqueVar
 type instance XFunType IM = Type IM
 type instance XEnv IM = Env
@@ -154,6 +154,9 @@ instance PP EnvDef where
   pp (EnvDef { envDef, notYetInstantiated = [] }) = pp envDef
   pp (EnvDef { envDef, notYetInstantiated }) = Def.ppBody' pp (pp envDef.functionDeclaration <+>  "|" <+> Def.encloseSepBy "" "" ", " (notYetInstantiated <&> \fn -> pp fn.functionDeclaration.functionId)) envDef.functionBody
 
+instance PP FunOther where
+  pp fo = pp fo.envInstantiations <+> pp fo.functionAnnotations
+
 instance PP EnvMod where
   pp em =
     let envAss = "<-" <+> pp (envID $ functionEnv $ functionDeclaration em.assignee)
@@ -204,6 +207,10 @@ instance PPDef Variable where
     DefinedFunction fn -> pp fn.functionDeclaration.functionId
 
 
+data FunOther = FunOther
+  { envInstantiations :: EnvInstantiations
+  , functionAnnotations :: [Def.Ann]
+  }
 type EnvInstantiations = Map Def.EnvID (Set EnvUse)
 data EnvUse = EnvUse (Maybe (Function IM)) Env
 

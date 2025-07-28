@@ -1,0 +1,8 @@
+
+# very brittle!
+#[ctype 'void']
+Void
+
+#[cfunname 'printf', cstdinclude 'stdio.h']
+external printf (format ConstStr, x a) -> Void
+

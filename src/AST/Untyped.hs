@@ -10,9 +10,6 @@ import AST.Common
 import qualified AST.Def as Def
 import Data.List.NonEmpty (NonEmpty)
 import AST.Def (PP (..), (<+>), PPDef (..))
-import Data.Fix (Fix)
-import Data.Functor.Foldable (cata)
-import Data.Foldable (foldl')
 import qualified Data.List.NonEmpty as NonEmpty
 
 
@@ -60,6 +57,7 @@ data UntypedStmt
   = ClassDefinition (ClassDef U)
   | DataDefinition (DataDef U)
   | UseStmt Use
+  | ExternalFunctionDeclaration (FunDec U)
 type instance XOther Untyped = UntypedStmt
 
 data Use = Use
@@ -120,6 +118,7 @@ instance PP UntypedStmt where
     ClassDefinition cd -> pp cd
     DataDefinition d -> pp d
     UseStmt us -> pp us
+    ExternalFunctionDeclaration fn -> "external" <+> pp fn
 
 instance PP Use where
   pp use = Def.ppBody pp (pp use.moduleQualifier) use.items

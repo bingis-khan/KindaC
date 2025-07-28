@@ -14,10 +14,7 @@ import Data.Map (Map)
 import Data.Set (Set)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Functor ((<&>))
-import AST.Def (PP (..), (<+>), PPDef, ppDef)
-import Data.Fix (Fix)
-import Data.Functor.Foldable (cata)
-import Data.Foldable (Foldable(..))
+import AST.Def (PP (..), PPDef, ppDef)
 import AST.Typed (TC)
 import Data.String (fromString)
 
@@ -46,7 +43,7 @@ type instance XDClass Resolved = Def.UniqueClass
 type instance XInstDef Resolved = InstDef R
 type instance XClassConstraints Resolved = () -- Map (TVar R) (Set Class)
 type instance XOther Resolved = ()
-type instance XFunOther Resolved = ()
+type instance XFunOther Resolved = [Def.Ann]
 type instance XTOther Resolved = RTO
 type instance XTFun Resolved = ()
 type instance XTConOther Resolved = ()
@@ -74,7 +71,7 @@ data RTO
 -- the only difference is that classes don't have assigned instances.
 data VariableProto
   = PDefinedVariable Def.UniqueVar
-  | PExternalVariable Def.UniqueVar (Type TC)
+  | PExternalVariable Def.UniqueVar (Type TC)  -- we seem to actually need the type here.....
 
   | PDefinedFunction (Function R)
   | PExternalFunction (Function TC)  -- it's only defined as external, because it's already typed. nothing else should change.
@@ -105,6 +102,7 @@ asPUniqueVar = \case
 asProto :: Variable -> VariableProto
 asProto = \case
   DefinedVariable v -> PDefinedVariable v
+  ExternalVariable v t -> PExternalVariable v t
   DefinedFunction fn _ -> PDefinedFunction fn
   ExternalFunction fn _ -> PExternalFunction fn
   DefinedClassFunction cd _ -> PDefinedClassFunction cd

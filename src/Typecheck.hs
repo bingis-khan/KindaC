@@ -357,6 +357,7 @@ inferExpr = cata (fmap embed . inferExprType)
           t <- case lt of
             LInt _  -> findBuiltinType Prelude.intFind
             LFloat _ -> findBuiltinType Prelude.floatFind
+            LString _ -> findBuiltinType Prelude.constStrFind
           pure (Lit lt, t)
 
 
@@ -472,6 +473,7 @@ inferExpr = cata (fmap embed . inferExprType)
 inferVariable :: R.Variable -> Infer T.Variable
 inferVariable = \case
   R.DefinedVariable v -> pure $ T.DefinedVariable v
+  R.ExternalVariable v _ -> pure $ T.DefinedVariable v  -- TODO: CURRENTLY BROKEN. THE TYPE SHOULD BE PASSED.
 
   R.ExternalFunction fn rsnapshot -> do
     snapshot <- inferSnapshot rsnapshot
@@ -523,6 +525,7 @@ inferSnapshot = Def.bitraverseMap inferClass inferPossibleInstances
 inferVariableProto :: R.VariableProto -> Infer T.VariableProto
 inferVariableProto = \case
   R.PDefinedVariable v -> pure $ T.PDefinedVariable v
+  R.PExternalVariable v _ -> pure $ T.PDefinedVariable v
 
   R.PExternalFunction fn -> pure $ T.PDefinedFunction fn
   R.PDefinedFunction fn -> T.PDefinedFunction <$> inferFunction fn
@@ -648,6 +651,7 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
 
     -- Infer function declaration.
     let rfundec = rfn.functionDeclaration
+    let anns = rfundec.functionOther
 
     params <- for rfundec.functionParameters $ \(v, definedType) -> do
       tv <- inferDecon v
@@ -670,7 +674,7 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
     -- Set up temporary recursive env (if this function is recursive, this env will be used).
     let recenv = T.RecursiveEnv rfundec.functionEnv.envID (null $ R.fromEnv rfundec.functionEnv)
     let noGeneralizationScheme = Scheme mempty mempty
-    let fundec = FD recenv rfundec.functionId params ret $ T.FunOther noGeneralizationScheme []
+    let fundec = FD recenv rfundec.functionId params ret $ T.FunOther noGeneralizationScheme [] anns
     let fun = Function { functionDeclaration = fundec, functionBody = body }
 
     -- Add *ungeneralized* type.
@@ -814,6 +818,7 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
 
       -- Infer function declaration.
       let rfundec = rfn.instFunDec
+      let anns = rfundec.functionOther
 
       params <- for (Def.exactZipWith (\(d, p) cp -> (d, p, cp)) rfundec.functionParameters (snd <$> cparams)) $ \(v, definedType, ct) -> do
         tv <- inferDecon v
@@ -848,7 +853,7 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
       -- Set up temporary recursive env (if this function is recursive, this env will be used).
       let recenv = T.RecursiveEnv rfundec.functionEnv.envID (null $ R.fromEnv rfundec.functionEnv)
       let noGeneralizationScheme = Scheme mempty mempty
-      let fundec = FD recenv rfundec.functionId params ret $ T.FunOther noGeneralizationScheme []
+      let fundec = FD recenv rfundec.functionId params ret $ T.FunOther noGeneralizationScheme [] anns
       let fun = Function { functionDeclaration = fundec, functionBody = body }
 
       -- Infer body.
@@ -926,7 +931,7 @@ generalize ifn = do
   let generalizedFn = subst su fn
 
 
-  let generalizedFnWithScheme = generalizedFn { functionDeclaration = generalizedFn.functionDeclaration { functionOther = T.FunOther { T.functionScheme = scheme, T.functionAssociations = assocs } } }
+  let generalizedFnWithScheme = generalizedFn { functionDeclaration = generalizedFn.functionDeclaration { functionOther = T.FunOther { T.functionScheme = scheme, T.functionAssociations = assocs, T.functionAnnotations = unsuFn.functionDeclaration.functionOther.functionAnnotations } } }
 
   -- Also, remember the substitution! (tvars might escape the environment)
   --  TODO: not sure if that's the best way. maybe instead of doing this, just add it in the beginning and resubstitute the function.
@@ -1946,7 +1951,7 @@ instance Substitutable (FunDec TC) where
 
 instance Substitutable T.FunOther where
   ftv other = ftv other.functionAssociations
-  subst su other = T.FunOther other.functionScheme (subst su other.functionAssociations)
+  subst su other = T.FunOther other.functionScheme (subst su other.functionAssociations) other.functionAnnotations
 
 instance Substitutable T.TypeAssociation where
   ftv (T.TypeAssociation from to _ _ _ _) = ftv from <> ftv to

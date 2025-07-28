@@ -1,0 +1,25 @@
+use Cnile
+
+class Str
+	# later should write to some buffer instead of printing directly.
+	print-str (self _) -> Unit
+
+# ConstStr is defined in Prelude
+inst Str ConstStr
+	print-str (self ConstStr) -> Unit
+		Cnile.printf('%s', self)
+		return
+
+
+StrConcat l r
+	StrConcat l r
+
+inst Str StrConcat l r
+	print-str (StrConcat(l, r)) -> Unit
+		print-str(l)
+		print-str(r)
+		return
+
+
+concat (l a, r b) -> StrConcat a b <= Str a, Str b
+	return StrConcat(l, r)

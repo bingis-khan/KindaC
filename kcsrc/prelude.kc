@@ -20,6 +20,9 @@ Int  # Make sure this is parsed as DataDefinition with zero constructors instead
 #[ctype 'float']
 Float
 
+#[ctype 'const char*']
+ConstStr  # TODO: later, make a ptr + length struct string.
+
 
 # #[ctype 'uint8_t', cstdinclude 'stdint.h']
 # U8

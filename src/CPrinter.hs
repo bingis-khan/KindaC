@@ -88,6 +88,8 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
           Unit -> do
             bareExpression e
             statement $ cPrintf "()\\n" []
+          String ->
+            statement $ cPrintf "%s\\n" [e]
           CustomType dd ts unions -> do
             bareExpression e
             statement $ cPrintf (Def.ctx' (Def.defaultContext { silent = False, printIdentifiers = False, displayTypeParameters = True }) pp (Fix (TCon dd ts []) :: Type M) <> "\\n") []
@@ -283,6 +285,7 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
   -- branch without the need for added types.
   pe -> case fmap snd pe of
     Lit (Def.LInt x) -> pls x
+    Lit (Def.LString x) -> escapeStringLiteral x
 
     -- here, referencing a normal variable. no need to do anything special.
     Var v loc -> cVar t loc v
@@ -295,6 +298,9 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
 
     -- NOTE: interesting, we still have "As", although it's not needed after typechecking. another reason to modify the Common AST
     _ -> undefined
+
+escapeStringLiteral :: String -> PL
+escapeStringLiteral s = fromString $ show s
 
 isLValue :: Expr M -> Bool
 isLValue = maybe False (<= 0) . go where
@@ -436,8 +442,6 @@ cEnvMod M.EnvMod { M.assigned = assigned, M.assignee = fn } = do
       let accesses = foldMap (\(fn, t) -> cEnv fn.functionDeclaration.functionEnv >>= \e -> envVarName fn t & ".env." & e.envName & ".") ea.access
       for_ currentInstVars $ \(fn, _, t) ->
         "env->" & accesses & envVarName fn t § "=" § cVar t Def.Local (M.DefinedFunction fn)  -- Might be a HACK: since (I think) we only use it when the other side is Local, we can set it as local. This happened, when 
-
-cEnvMod _ = undefined
 
 
 cLambda :: M.Env -> [(Def.UniqueVar, Type M)] -> Type M -> PL -> PL
@@ -702,6 +706,16 @@ cRecordStruct recs = "struct" <§ cBlock
 
 
 cVar :: Type M -> Locality -> M.Variable -> PL
+-- bodged external function thing.
+--  NOTE: (for some reason its not being added to the environment. THAT'S GOOD! but i don't know why....... TODO i guess)
+cVar _ _ (M.DefinedFunction fn) | Def.AExternal `elem` fn.functionDeclaration.functionOther = do
+  let mfunname = listToMaybe $ mapMaybe (\case { Def.ACFunName name -> Just name; _ -> Nothing }) fn.functionDeclaration.functionOther
+  let includes  = mapMaybe (\case { Def.ACStdInclude name -> Just name; _ -> Nothing }) fn.functionDeclaration.functionOther
+  for_ includes include
+  case mfunname of
+    Just name -> plt name
+    Nothing -> plt fn.functionDeclaration.functionId.varName.fromVN
+
 cVar _ Def.Local (M.DefinedVariable uv) = cVarName uv
 cVar _ Def.FromEnvironment{} (M.DefinedVariable uv) = "env->" <> cVarName uv
 cVar t Def.FromEnvironment{} (M.DefinedFunction fun) | doesFunctionNeedExplicitEnvironment t  =
@@ -1062,6 +1076,7 @@ data SpecialTypeForPrinting
   = Integer
   | Bool
   | Unit
+  | String
   | Function M.EnvUnion [Type M] (Type M)
   | CustomType (DataDef M) [Type M] [M.EnvUnion]
 
@@ -1069,10 +1084,12 @@ typeFromExpr :: Expr M -> SpecialTypeForPrinting
 typeFromExpr (Fix (N t _)) = case project t of
   TFun union ts ret -> Function union ts ret
   -- Brittle, but it's temporary anyway.
+  TO {} -> error "should not happen"
   TCon dd ts unions
     | dd.ddName.typeName == Def.TC "Bool" -> Bool
     | dd.ddName.typeName == Def.TC "Int" -> Integer
     | dd.ddName.typeName == Def.TC "Unit" -> Unit
+    | dd.ddName.typeName == Def.TC "ConstStr" -> String
     | otherwise -> CustomType dd ts unions
 
 find :: (a -> Maybe b) -> [a] -> Maybe b
