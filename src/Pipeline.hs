@@ -21,46 +21,64 @@ import AST.Prelude (Prelude (..))
 import qualified AST.Prelude as Prelude
 import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), Node (..), datatypes)
 import qualified AST.Def as Def
-import AST.Typed (TC)
+import AST.Typed (TC, Mod (topLevelStatements))
 import AST.Def (Result(..), phase, PP (..), LitType (..))
 import Mono (mono)
 import CPrinter (cModule)
+import CompilerContext (CompilerContext)
+import qualified CompilerContext as Compiler
+import Control.Monad.IO.Class (liftIO)
+import qualified Control.Monad.Trans.RWS as RWST
+import Data.Map ((!?))
 
 
 
 -- Loads and typechecks a module.
 --   TODO: WRT errors: I should probably make a type aggregating all the different types of errors and put it in AST.hs.
 --   However, right now, I can just turn them into strings. THIS IS TEMPORARY.
-loadModule :: Maybe Prelude -> FilePath -> IO (Either Text (Module TC))
-loadModule mPrelude filename = do
-  source <- TextIO.readFile filename
+loadModule :: FilePath -> CompilerContext (Maybe (Module TC))
+loadModule filename = do
+  source <- liftIO $ TextIO.readFile filename
+  prelude <- RWST.asks snd
 
   phase "Parsing"
   case parse filename source of
-    Left err -> pure $ Left err
+    Left err -> do
+      Compiler.addErrors [err]
+      pure Nothing
+
     Right ast -> do
       Def.ctxPrint ast
 
       phase "Resolving"
-      (rerrs, rmod) <- resolve mPrelude ast
+      (rerrs, rmod) <- resolve (Just prelude) moduleLoader ast
       Def.ctxPrint rmod
 
       
       phase "Typechecking"
-      (terrs, tmod) <- typecheck mPrelude rmod
+      (terrs, tmod) <- liftIO $ typecheck (Just prelude) rmod
 
-      let errors = s2t rerrs ++ s2t terrs
-      pure $ case errors of
-        [] -> Right tmod
-
-        (_:_) ->
-          Left $ Text.unlines errors
+      Compiler.addErrors $ s2t rerrs ++ s2t terrs
+      pure $ Just tmod
 
 
-finalizeModule :: Prelude -> Module TC -> IO Text
-finalizeModule prel modul = do
+moduleLoader :: Compiler.ModuleLoader
+moduleLoader mq = do
+  mtmod <- RWST.gets Compiler.loadedModules
+  case mtmod !? mq of
+    Nothing -> do
+      filepath <- Compiler.mkModulePath mq
+      lmtmod <- loadModule filepath
+      Compiler.storeModule mq lmtmod
+      pure lmtmod
+
+    Just lmtmod -> pure lmtmod
+
+
+finalizeModule :: NonEmpty (Module TC) -> IO Text
+finalizeModule modules = do
   -- join both modules
-  let joinedStatements = prel.tpModule.topLevelStatements ++ modul.topLevelStatements
+  let joinedStatements = concatMap topLevelStatements modules
 
   phase "Monomorphizing"
   mmod <- mono joinedStatements
@@ -76,9 +94,32 @@ finalizeModule prel modul = do
 
 loadPrelude :: IO Prelude
 loadPrelude = do
-  epmod <- loadModule Nothing "kcsrc/prelude.kc"
+  epmod <- do
+    let filename = "kcsrc/prelude.kc"
+    source <- liftIO $ TextIO.readFile filename
+
+    phase "Parsing"
+    case parse filename source of
+      Left err -> do
+        pure $ Left err
+
+      Right ast -> do
+        Def.ctxPrint ast
+
+        phase "Resolving"
+        (rerrs, rmod) <- Compiler.preludeHackContext $ resolve Nothing (error "no module loader for prelude") ast
+        Def.ctxPrint rmod
+
+      
+        phase "Typechecking"
+        (terrs, tmod) <- liftIO $ typecheck Nothing rmod
+
+        pure $ case s2t rerrs ++ s2t terrs of
+          [] -> Right tmod
+          errs@(_:_) -> Left $ Text.unlines errs
+
   case epmod of
-    Left errs -> do
+    Left errs -> liftIO $ do
       putStrLn "[PRELUDE ERROR]: There were errors while compiling prelude."
       TextIO.putStrLn errs
 
@@ -142,7 +183,7 @@ loadPrelude = do
             pure $ Prelude { tpModule = pmod, unitValue = unit, boolType = bool, intType = int, floatType = float, toplevelReturn = mkTopLevelReturn int, mkPtr = ptr }
 
       case eprelude of
-        Failure errs -> do
+        Failure errs -> liftIO $ do
           putStrLn "[PRELUDE ERROR]: There were errors while compiling prelude."
           TextIO.putStrLn $ Text.unlines $ NonEmpty.toList errs
 

@@ -4,3 +4,4 @@ stack.yaml.lock
 a.out
 test.c
 **/.DS_STORE
+**.pyc

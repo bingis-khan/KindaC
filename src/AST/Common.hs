@@ -179,7 +179,7 @@ data StmtF phase expr a
 
   | Print expr
   | Assignment (XLVar phase) expr
-  | Mutation (XLVar phase) (XVarOther phase) [XMutAccess phase] expr  -- TEMP: RIGHT NOW WE CAN ONLY ASSIGN TO LOCAL VARIABLES. ALSO, the XNode phase is sussy - it's just the type.
+  | Mutation (XLVar phase) (XVarOther phase) [XMutAccess phase] expr  -- TEMP: RIGHT NOW WE CAN ONLY ASSIGN TO LOCAL VARIABLES. ALSO, the XNode phase is sussy - it's just the type. (the node is a hack!!)
 
   | If (IfStmt phase expr a)
   | Switch expr (NonEmpty (CaseF phase expr a))
@@ -282,7 +282,7 @@ data InstFun phase = InstFun
 
 
 data Exports phase = Exports
-  { variables :: [UniqueVar]
+  { variables :: [(UniqueVar, XNode phase)]
   , functions :: [Function phase]
   , datatypes :: [DataDef phase]
   , classes :: [ClassDef phase]
@@ -391,7 +391,7 @@ instance Ord (XDTCon phase) => Ord (DataDef phase) where
 -- instance (PP (XLVar phase), PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (Type phase), PP expr, PP (CaseF phase Def.Context (Fix (Annotated :. StmtF phase expr)))) => PP (Fix (Annotated :. StmtF phase expr)) where
 --   pp (Fix (O (Def.Annotated ann stmt))) = Def.annotate ann $ pp stmt
 
-instance (PP a, PP expr, PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XNode phase), PP (XVarOther phase), PP (XMutAccess phase)) => PP (StmtF phase expr a) where
+instance (PP a, PP expr, PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XNode phase), PP (XVarOther phase), PP (XMutAccess phase), PP (XVar phase)) => PP (StmtF phase expr a) where
   pp stmt = case first pp stmt of
     Print e -> "print" <+> e
     Assignment v e -> pp v <+> "=" <+> e

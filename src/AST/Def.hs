@@ -31,7 +31,7 @@ import qualified Data.Map as Map
 import Data.Bitraversable (bitraverse)
 import qualified Data.Set as Set
 import Data.Foldable1 (foldl1', Foldable1)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Fix (Fix)
 import Data.Functor.Foldable (cata)
 
@@ -82,6 +82,7 @@ newtype ConName = CN { fromCN :: Text } deriving (Show, Eq, Ord)
 newtype VarName = VN { fromVN :: Text } deriving (Show, Eq, Ord)
 newtype MemName = MN { fromMN :: Text } deriving (Show, Eq, Ord)
 newtype ClassName = TCN { fromTN :: Text } deriving (Show, Eq, Ord)
+newtype ModuleName = ModName { fromModName :: Text } deriving (Show, Eq, Ord)
 
 data Op
   = Plus
@@ -367,6 +368,12 @@ instance PP ClassName where
 instance PPDef ClassName where
   ppDef cn = pretty cn.fromTN
 
+instance PP ModuleName where
+  pp mn = pretty mn.fromModName
+
+instance PPDef ModuleName where
+  ppDef mn = pretty mn.fromModName
+
 instance PP UniqueVar where
   pp uv = pp uv.varName <> "@" <> pp uv.varID
 
@@ -467,7 +474,7 @@ ctxPrint' = unless defaultContext.silent . liftIO . putStrLn
 ctxPrint'' :: MonadIO io => Context -> io ()
 ctxPrint'' = unless defaultContext.silent . liftIO . putStrLn . ctx
 
-phase :: String -> IO ()
+phase :: MonadIO io => String -> io ()
 phase text =
   let n = 10
   in ctxPrint' $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
@@ -641,6 +648,9 @@ eitherToMaybe :: Either e a -> Maybe a
 eitherToMaybe (Left _) = Nothing
 eitherToMaybe (Right x) = Just x
 
+-- stolen from package 'extra'
+firstJust :: (a -> Maybe b) -> [a] -> Maybe b
+firstJust f = listToMaybe . mapMaybe f
 
 fmap2 :: (Functor f1, Functor f2) => (a -> b) -> f1 (f2 a) -> f1 (f2 b)
 fmap2 = fmap . fmap

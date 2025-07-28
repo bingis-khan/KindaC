@@ -74,6 +74,7 @@ data RTO
 -- the only difference is that classes don't have assigned instances.
 data VariableProto
   = PDefinedVariable Def.UniqueVar
+  | PExternalVariable Def.UniqueVar (Type TC)
 
   | PDefinedFunction (Function R)
   | PExternalFunction (Function TC)  -- it's only defined as external, because it's already typed. nothing else should change.
@@ -84,6 +85,7 @@ data VariableProto
 
 data Variable
   = DefinedVariable Def.UniqueVar
+  | ExternalVariable Def.UniqueVar (Type TC)
   | DefinedFunction (Function R) ScopeSnapshot
   | ExternalFunction (Function TC) ScopeSnapshot
   | DefinedClassFunction (ClassFunDec R) ScopeSnapshot
@@ -92,6 +94,7 @@ data Variable
 asPUniqueVar :: VariableProto -> Def.UniqueVar
 asPUniqueVar = \case
   PDefinedVariable var -> var
+  PExternalVariable var _ -> var
 
   PDefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
   PExternalFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid

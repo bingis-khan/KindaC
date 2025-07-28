@@ -28,7 +28,7 @@ import qualified Data.Set as Set
 import AST.Common
 -- import AST.Converged (Prelude(..))
 import qualified AST.Prelude as Prelude
-import AST.Untyped (U)
+import AST.Untyped (U, Qualified (..))
 import qualified AST.Untyped as U
 import AST.Resolved
 import qualified AST.Resolved as R
@@ -45,16 +45,21 @@ import Data.Either (rights, lefts)
 import Data.List (find)
 import AST.Def (type (:.)(O), Annotated (..), Binding (..))
 import qualified AST.Def as Def
+import qualified AST.Common as Common
 import AST.Prelude (Prelude (..))
 import Control.Monad (when, foldM)
-
+import AST.Typed (TC)
+import Control.Monad (void)
+import CompilerContext (CompilerContext)
+import qualified CompilerContext as Compiler
+import Control.Monad.Trans.Class (lift)
 
 
 
 -- Resolves variables, constructors and types and replaces them with unique IDs.
-resolve :: Maybe Prelude -> Module U -> IO ([ResolveError], Module R)
-resolve mPrelude (U.Mod ustmts) = do
-  let newState = maybe emptyState mkState mPrelude
+resolve :: Maybe Prelude -> Compiler.ModuleLoader -> Module U -> CompilerContext ([ResolveError], Module R)
+resolve mPrelude moduleLoader (U.Mod ustmts) = do
+  let newState = maybe emptyState (mkState moduleLoader) mPrelude
   (rstmts, state, errs) <- RWST.runRWST (rStmts ustmts) () newState
 
   let topLevelScope = NonEmpty.head state.scopes
@@ -89,9 +94,10 @@ rStmts = traverse -- traverse through the list with Ctx
         let raccesses = flip map accesses $ \case  -- noop to map "phase"
               MutRef -> MutRef
               MutField mem -> MutField mem
-        (loc, vf) <- resolveVar name
+        (loc, vf) <- resolveVar (U.unqualified name)
 
         case vf of
+          -- LOCAL VAR
           R.DefinedVariable vid | loc == Def.Local ->
             stmt $ Mutation vid loc raccesses re
 
@@ -101,8 +107,15 @@ rStmts = traverse -- traverse through the list with Ctx
 
           R.DefinedVariable vid -> do
             err $ CannotMutateNonLocalVariable name
-
             stmt $ Mutation vid loc raccesses re
+
+
+          -- IMPORTED VAR (basically a copy!)
+          -- NOTE TODO: RIGHT NOW I WON'T ALLOW MUTATING EXTERNAL VARIABLES DUE TO THE ARCHITECTURE AND MY OWN OPINION. THIS MIGHT (WILL PROBABLY) CHANGE IN THE FUTURE.
+          R.ExternalVariable vid _ -> do
+            err $ CannotMutateImportedVariable vid
+            stmt Pass
+
 
           R.DefinedFunction fun _ -> do
             err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
@@ -160,6 +173,127 @@ rStmts = traverse -- traverse through the list with Ctx
         rcond <- rExpr cond
         rbod <- scope $ sequenceA bod
         stmt $ While rcond rbod
+
+      Other (U.UseStmt use) -> do
+        mtmod <- tryLoadModule use.moduleQualifier
+        case mtmod of
+          Just tmod -> do
+            useModule use.moduleQualifier tmod  -- import module itself.
+
+            let
+              findExport :: (Exports TC -> [a]) -> (a -> Bool) -> Maybe a
+              findExport selectorFn filterFn = find filterFn $ selectorFn tmod.exports
+
+            for_ use.items $ \case
+              U.UseVarOrFun vn -> do
+                let mv = findExport variables ((==vn) . Def.varName . fst)
+                v <- case mv of
+                      Just (uv, t) -> pure $ PExternalVariable uv t
+                      Nothing -> do
+                        let mfn = findExport Common.functions ((==vn) . Def.varName . functionId . functionDeclaration)
+                        case mfn of
+                          Just fn -> pure $ PExternalFunction fn
+                          Nothing -> do
+                            err $ ModuleDoesNotExportVariable vn use.moduleQualifier
+                            PDefinedVariable <$> generateVar vn
+
+                modifyThisScope $ \sc -> sc { varScope = Map.insert vn v sc.varScope }
+
+              U.UseType tc usedCons -> do
+                (dd, cons) <- case findExport Common.datatypes ((==tc) . Def.typeName . ddName) of
+                  Just dd@(DD ut _ (Right tcons) _) -> do
+                    let
+                      importedCons = Set.fromList $ NonEmpty.toList usedCons  -- set of used cons
+                      cons = Map.fromList $ (\dc -> (dc.conID.conName, R.ExternalConstructor dc)) <$> filter ((`Set.member` importedCons) . Def.conName . conID) tcons  -- filter used cons and construct a con Map.
+
+                    -- check if any of the cons were not imported (and error 'em)
+                    for_ (importedCons \\ Map.keysSet cons) $ \importedButNonExistingCon ->
+                      err $ TryingToImportNonExistingConstructorOfType importedButNonExistingCon ut use.moduleQualifier
+
+                    pure (ExternalDatatype dd, cons)
+
+                  -- error paths
+                  Just dd@(DD ut _ (Left _) _) -> do
+                    err $ TryingToImportConstructorsFromARecordType tc ut use.moduleQualifier
+
+                    -- placeholders
+                    cons <- fmap (Map.fromList . NonEmpty.toList) $ for usedCons $ \cn -> (cn,) <$> placeholderCon cn
+                    pure (ExternalDatatype dd, cons)
+
+                  Nothing -> do
+                    err $ ModuleDoesNotExportType tc use.moduleQualifier
+
+                    -- placeholders
+                    dd <- placeholderType tc
+                    cons <- fmap (Map.fromList . NonEmpty.toList) $ for usedCons $ \cn -> (cn,) <$> placeholderCon cn
+                    pure (dd, cons)
+
+                modifyThisScope $ \sc -> sc
+                  { tyScope = Map.insert tc (Right dd) sc.tyScope
+                  , conScope = cons <> sc.conScope
+                  }
+
+              U.UseClass cn usedClassFuns -> do
+                let mclass = findExport Common.classes ((==cn) . Def.className . classID)
+                (klass, cfns) <- case mclass of
+                  Just klass -> do
+                    let
+                      importedClassFuns = Set.fromList $ NonEmpty.toList usedClassFuns
+                      cfns = Map.fromList $ (\cfn@(CFD _ cfnId _ _ _) -> (cfnId.varName, R.PExternalClassFunction cfn)) <$> filter (\(CFD _ funId _ _ _) -> funId.varName `Set.member` importedClassFuns) klass.classFunctions  -- filter used cons and construct a con Map.
+
+                    -- check if any of the cons were not imported (and error 'em)
+                    for_ (importedClassFuns \\ Map.keysSet cfns) $ \importedButNonExistingCFN ->
+                      err $ TryingToImportNonExistingFunctionOfClass importedButNonExistingCFN klass.classID use.moduleQualifier
+
+                    pure (ExternalClass klass, cfns)
+
+                  Nothing -> do
+                    klass <- placeholderClass cn
+                    err $ ModuleDoesNotExportClass ((Def.className . R.asUniqueClass) klass) use.moduleQualifier
+
+                    cfns <- fmap (Map.fromList . NonEmpty.toList) $ for usedClassFuns $ \cvn -> do
+                      uv <- placeholderVar cvn
+                      pure (cvn, PDefinedVariable uv)
+                    pure (klass, cfns)
+
+                modifyThisScope $ \sc -> sc
+                  { tyScope = Map.insert ((Def.uniqueClassAsTypeName . R.asUniqueClass) klass) (Left klass) sc.tyScope
+                  , varScope = cfns <> sc.varScope
+                  }
+
+              U.UseTypeOrClass tncn -> do
+                -- try find datatype
+                typeOrClass <- case findExport Common.datatypes ((==tncn) . Def.typeName . ddName) of
+                  Just dd ->
+                    pure $ Right $ ExternalDatatype dd
+
+                  -- if not, try find class
+                  Nothing -> case findExport Common.classes ((==tncn) . Def.uniqueClassAsTypeName . classID) of
+                    Just klass ->
+                      pure $ Left $ ExternalClass klass
+
+                    Nothing -> do
+                      err $ ModuleDoesNotExportTypeOrClass tncn use.moduleQualifier
+                      Right <$> placeholderType tncn
+
+                modifyThisScope $ \sc -> sc
+                  { tyScope = Map.insert tncn typeOrClass sc.tyScope
+                  }
+
+
+          Nothing ->
+            for_ use.items $ \case
+              -- This is probably bad... (the errors will be funny)
+              U.UseVarOrFun varName ->
+                void $ newVar varName
+              U.UseType tc cons -> do  -- TODO: complete later
+                undefined
+              U.UseClass cn cfns -> undefined
+              U.UseTypeOrClass cn -> do
+                DefinedDatatype dd <- placeholderType cn
+                registerDatatype dd
+
+        stmt Pass
 
       Other (U.DataDefinition dd) -> mdo
         tid <- generateType dd.ddName
@@ -375,7 +509,7 @@ rDecon = transverse $ \(N () d) -> fmap (N ()) $ case d of
       Just con -> pure con
       Nothing -> do
         err $ UndefinedConstructor conname
-        placeholderCon conname
+        placeholderCon conname.qualify
 
     CaseConstructor con <$> sequenceA decons
   CaseRecord tyName members -> do
@@ -414,7 +548,7 @@ rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but
       Just con -> pure con
       Nothing -> do
         err $ UndefinedConstructor conname
-        placeholderCon conname
+        placeholderCon conname.qualify
 
     -- you may not use the constructor of a pointer!
     --  only when deconstructing!
@@ -542,17 +676,22 @@ closure eid x = do
   return x'
 
 
-type Ctx = RWST () [ResolveError] CtxState IO  -- I might add additional context later.
+
+type Ctx = RWST () [ResolveError] CtxState CompilerContext  -- I might add additional context later.
 
 data CtxState = CtxState
   { scopes :: NonEmpty Scope
   , envStack :: [Def.EnvID]
-  , inLambda :: Bool  -- hack to check if we're in a lambda currently. the when the lambda is not in another lambda, we put "Local" locality.
+  , inLambda :: Bool  -- hack to check if we're in a lambda currently. when the lambda is not in another lambda, we put "Local" locality.
   , tvarBindings :: Map Def.UnboundTVar (TVar R)
 
   , prelude :: Maybe Prelude  -- Only empty when actually parsing prelude.
 
+  , loaderFn :: Compiler.ModuleLoader
+  , modules :: Map U.ModuleQualifier (Module TC)  -- list imported modules. automatically gets scoped, so dunt wurry.
+
   -- we need to keep track of each defined function to actually typecheck it.
+  -- NOTE: we don't need it anymore, since we infer the functions in Typecheck at definition site anyway.
   , functions :: [Function R]
   , datatypes :: [DataDef R]
   , classes   :: [ClassDef R]
@@ -569,7 +708,7 @@ data Scope = Scope
 
 emptyState :: CtxState
 emptyState =
-  CtxState { scopes = NonEmpty.singleton emptyScope, envStack = mempty, tvarBindings = mempty, prelude = Nothing, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty, instances = mempty }
+  CtxState { scopes = NonEmpty.singleton emptyScope, envStack = mempty, tvarBindings = mempty, prelude = Nothing, loaderFn = error "should not import anything in Prelude!", modules = mempty, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty, instances = mempty }
 
 emptyScope :: Scope
 emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty, instScope = mempty }
@@ -578,12 +717,14 @@ getScopes :: Ctx (NonEmpty Scope)
 getScopes = RWST.gets scopes
 
 -- Add later after I do typechecking.
-mkState :: Prelude -> CtxState
-mkState prel = CtxState
+mkState :: Compiler.ModuleLoader -> Prelude -> CtxState
+mkState moduleLoader prel = CtxState
   { scopes = NonEmpty.singleton initialScope
   , envStack = mempty
   , tvarBindings = mempty
   , prelude = Just prel
+  , loaderFn = moduleLoader
+  , modules = mempty
   , inLambda = False
   , functions = mempty
   , datatypes = mempty
@@ -601,8 +742,8 @@ mkState prel = CtxState
       , instScope = Map.fromListWith (<>) $ preludeExports.instances <&> \inst -> (ExternalClass inst.instClass, Map.singleton (R.ExternalDatatype $ fst inst.instType) (ExternalInst inst))
       }
 
-    exportedVariables = Map.fromList $ preludeExports.variables <&> \uv ->
-      (uv.varName, PDefinedVariable uv)
+    exportedVariables = Map.fromList $ preludeExports.variables <&> \(uv, t) ->
+      (uv.varName, PExternalVariable uv t)
     exportedFunctions = Map.fromList $ preludeExports.functions <&> \fn ->
       (fn.functionDeclaration.functionId.varName, PExternalFunction fn)
 
@@ -632,19 +773,67 @@ lambdaVar = do
   let var = Def.VI { varID = vid, varName = Def.VN (Text.pack "lambda") }
   return var
 
-resolveVar :: Def.VarName -> Ctx (Def.Locality, R.Variable)
-resolveVar name = do
+resolveVar :: Qualified Def.VarName -> Ctx (Def.Locality, R.Variable)
+resolveVar qname@(Qualified Nothing name) = do
   curlev <- currentLevel
   allScopes <- getScopes
   case lookupScope curlev name (fmap varScope allScopes) of
     Just (l, v) -> (l,) <$> protoVariableToVariable v
     Nothing -> do
-      err $ UndefinedVariable name
+      err $ UndefinedVariable qname
       (Def.Local,) . R.DefinedVariable <$> placeholderVar name
+
+resolveVar (Qualified (Just mq) name) = do
+  curlev <- currentLevel
+  let locality = if curlev == 0 then Def.Local else Def.FromEnvironment 0
+  tryFindExternalModule mq >>= \case
+    Just tmod -> do
+      -- This is very similar to 'Use' checking and importing! TODO: FEEEEECS
+      snapshot <- getScopeSnapshot  -- hope it's not eagerly evaluated!
+
+      let
+        findVar = findInExternalModule tmod Common.variables $ \(v, t) ->
+          if v.varName == name
+            then Just $ R.ExternalVariable v t
+            else Nothing
+
+        findFun = findInExternalModule tmod Common.functions $ \fn ->
+          if fn.functionDeclaration.functionId.varName == name
+            then Just $ R.ExternalFunction fn snapshot
+            else Nothing
+
+        findClassFun = findInExternalModule tmod Common.classes $ \cd ->
+          case find (\(CFD _ funId _ _ _) -> funId.varName == name) cd.classFunctions of
+            Just cfd -> Just $ R.ExternalClassFunction cfd snapshot
+            Nothing -> Nothing
+
+
+      case findVar <|> findFun <|> findClassFun of
+        Just x ->
+          pure (locality, x)
+        Nothing -> do
+          err $ ModuleDoesNotExportVariable name mq
+          (locality,) . DefinedVariable <$> generateVar name
+
+    Nothing -> (locality,) . DefinedVariable <$> generateVar name
+
+      -- case find undefined tmod.exports.variables of
+      --   Nothing ->
+      --     case find undefined tmod.exports.functions of
+      --       Nothing ->
+      --         case find undefined tmod.exports.classes of
+      --           Nothing -> undefined
+
+      --           Just _ -> undefined
+
+      --       Just _ -> undefined
+
+      --   Just _ -> undefined
 
 protoVariableToVariable :: R.VariableProto -> Ctx R.Variable
 protoVariableToVariable = \case
   R.PDefinedVariable uv -> pure $ R.DefinedVariable uv
+  R.PExternalVariable uv t -> pure $ R.ExternalVariable uv t
   R.PDefinedFunction fn -> do
     snapshot <- getScopeSnapshot
     pure $ R.DefinedFunction fn snapshot
@@ -672,8 +861,8 @@ newCon :: DataCon R -> Ctx ()
 newCon dc = do
   modifyThisScope $ \sc -> sc { conScope = Map.insert dc.conID.conName (R.DefinedConstructor dc) sc.conScope }
 
-resolveCon :: Def.ConName -> Ctx (Maybe R.Constructor)
-resolveCon name = do
+resolveCon :: Qualified Def.ConName -> Ctx (Maybe R.Constructor)
+resolveCon (Qualified Nothing name) = do
   allScopes <- getScopes
   curlev <- currentLevel
   -- This has been generalized to return Maybe instead of throwing an error.
@@ -681,6 +870,16 @@ resolveCon name = do
   --    This is more in line with the spiritual usage of Haskell - bubble up errors and handle them there. this makes it obvious what is happening with the value - no need to check inside the function. (remember this :3)
   let maybeCon = snd <$> lookupScope curlev name (fmap conScope allScopes)
   pure maybeCon
+
+resolveCon (Qualified (Just mq) name) = tryFindExternalModule mq >>= \case -- we place a placeholder value here, because otherwise the error about the constructor not being found will be reported ALONGSIDE the error about the module not being found.
+  Just tmod ->
+    sequenceA $ findInExternalModule tmod Common.datatypes $ \case
+      (DD { ddCons = Right cons }) -> find ((==name) . Def.conName . conID) cons <&> pure . R.ExternalConstructor
+
+      _ -> Nothing
+
+  Nothing -> do
+    Just <$> placeholderCon name
 
 placeholderCon :: Def.ConName -> Ctx R.Constructor
 placeholderCon name = do
@@ -713,19 +912,28 @@ registerClass cd = do
 
   RWST.modify $ \ctx -> ctx { classes = cd : ctx.classes }
 
-resolveClass :: Def.ClassName -> Ctx R.Class
-resolveClass cn = do
+resolveClass :: Qualified Def.ClassName -> Ctx R.Class
+resolveClass qcn@(Qualified Nothing cn) = do
   allScopes <- getScopes
   curlev <- currentLevel
   let cnAsTCon = Def.TC cn.fromTN :: Def.TCon
   case lookupScope curlev cnAsTCon (fmap tyScope allScopes) of
     Just (_, Left c) -> pure c
     Just (_, Right dd) -> do
-      err $ ExpectedClassNotDatatype cn (R.asUniqueType dd)
+      err $ ExpectedClassNotDatatype qcn (R.asUniqueType dd)
       placeholderClass cn
     Nothing -> do
-      err $ UndefinedClass cn
+      err $ UndefinedClass qcn
       placeholderClass cn
+
+resolveClass (Qualified (Just mq) cn) = do
+  tryFindExternalModule mq >>= \case
+    Just tmod -> case findInExternalModule tmod Common.classes (\k -> if k.classID.className == cn then Just k else Nothing) of
+      Just cd -> pure $ R.ExternalClass cd
+      Nothing -> do
+        err $ ModuleDoesNotExportClass cn mq
+        placeholderClass cn
+    Nothing -> undefined
 
 placeholderClass :: Def.ClassName -> Ctx R.Class
 placeholderClass = undefined
@@ -763,6 +971,33 @@ registerInst inst = do
 
   RWST.modify $ \ctx -> ctx { instances = inst : ctx.instances }
 
+
+-------------
+-- Modules --
+-------------
+
+tryLoadModule :: U.ModuleQualifier -> Ctx (Maybe (Module TC))
+tryLoadModule modq = do
+  moduleLoader <- RWST.gets loaderFn
+  lift $ moduleLoader modq
+
+useModule :: U.ModuleQualifier -> Module TC -> Ctx ()
+useModule mq tmod = do
+  -- NOTE: if I decide to make it illegal to reimport modules, put error here.
+  RWST.modify $ \s -> s { modules = Map.insert mq tmod s.modules }
+
+tryFindExternalModule :: U.ModuleQualifier -> Ctx (Maybe (Module TC))
+tryFindExternalModule mq = do
+  mods <- RWST.gets modules
+  case mods !? mq of
+    Just tmod -> pure $ Just tmod
+    Nothing -> do
+      err $ ModuleNotImported mq
+      pure Nothing
+
+
+findInExternalModule :: Module TC -> (Exports TC -> [k]) -> (k -> Maybe a) -> Maybe a
+findInExternalModule tmod selectorFn findFn = Def.firstJust findFn $ selectorFn tmod.exports
 
 
 
@@ -826,7 +1061,7 @@ placeholderTVar utv = do
   var <- generateVar $ Def.VN $ "placeholderVarForTVar" <> utv.fromUTV
   pure (R.bindTVar mempty (BindByVar var) utv)
 
-resolveType :: Def.TCon -> Ctx R.DataType
+resolveType :: U.Qualified Def.TCon -> Ctx R.DataType
 resolveType name = do
   tOrC <- resolveTypeOrClass name
   case tOrC of
@@ -834,10 +1069,10 @@ resolveType name = do
     Left c -> do
       let cid = R.asUniqueClass c
       err $ UsingClassNameInPlaceOfType cid
-      placeholderType name
+      placeholderType name.qualify
 
-resolveTypeOrClass :: Def.TCon -> Ctx (Either R.Class R.DataType)
-resolveTypeOrClass name = do
+resolveTypeOrClass :: Qualified Def.TCon -> Ctx (Either R.Class R.DataType)
+resolveTypeOrClass (Qualified Nothing name) = do
   allScopes <- getScopes
   curlev <- currentLevel
   case lookupScope curlev name (fmap tyScope allScopes) of
@@ -846,6 +1081,9 @@ resolveTypeOrClass name = do
     Nothing -> do
       err $ UndefinedType name
       Right <$> placeholderType name
+resolveTypeOrClass (Qualified (Just _) name) = do
+  error "todo"
+
 
 placeholderType :: Def.TCon -> Ctx R.DataType
 placeholderType name = do
@@ -873,7 +1111,7 @@ unit = do
 
     -- When we're resolving prelude, find it from the environment.
     Nothing ->
-      resolveCon Prelude.unitName <&> \case
+      resolveCon (U.unqualified Prelude.unitName) <&> \case
         Just uc -> uc
         Nothing -> error $ "[COMPILER ERROR]: Could not find Unit type with the name: '" <> show Prelude.unitName <> "'. This must not happen."
 
@@ -881,14 +1119,15 @@ err :: ResolveError -> Ctx ()
 err = RWST.tell .  (:[])
 
 data ResolveError
-  = UndefinedVariable Def.VarName
-  | UndefinedConstructor Def.ConName
+  = UndefinedVariable (Qualified Def.VarName)
+  | UndefinedConstructor (Qualified Def.ConName)
   | UndefinedType Def.TCon
   | UnboundTypeVariable Def.UnboundTVar
   | FurtherConstrainingExistingTVar (TVar R) Def.UniqueClass
   | TypeRedeclaration Def.TCon
   | CannotMutateFunctionDeclaration Def.VarName
   | CannotMutateNonLocalVariable Def.VarName
+  | CannotMutateImportedVariable Def.UniqueVar
 
   | DidNotDefineMember Def.MemName (Def.UniqueType, [Def.MemName])
   | MemberNotInDataDef Def.MemName (Def.UniqueType, [Def.MemName])
@@ -896,14 +1135,24 @@ data ResolveError
 
   | NotARecordType Def.UniqueType
 
-  | UndefinedClass Def.ClassName
-  | ExpectedClassNotDatatype Def.ClassName Def.UniqueType
+  | UndefinedClass (Qualified Def.ClassName)
+  | ExpectedClassNotDatatype (Qualified Def.ClassName) Def.UniqueType
   | UsingClassNameInPlaceOfType Def.UniqueClass  -- IDs are only, because I'm currently too lazy to make a Show instance.
   | UndefinedFunctionOfThisClass Def.UniqueClass Def.VarName
 
   | AppliedTypesToClassInType Def.UniqueClass
 
   | UsingPointerConstructor
+
+  | ModuleDoesNotExist U.ModuleQualifier
+  | ModuleDoesNotExportVariable Def.VarName U.ModuleQualifier
+  | ModuleDoesNotExportType Def.TCon U.ModuleQualifier
+  | ModuleDoesNotExportClass Def.ClassName U.ModuleQualifier
+  | ModuleDoesNotExportTypeOrClass Def.TCon U.ModuleQualifier
+  | ModuleNotImported U.ModuleQualifier
+  | TryingToImportConstructorsFromARecordType Def.TCon Def.UniqueType U.ModuleQualifier
+  | TryingToImportNonExistingConstructorOfType Def.ConName Def.UniqueType U.ModuleQualifier
+  | TryingToImportNonExistingFunctionOfClass Def.VarName Def.UniqueClass U.ModuleQualifier
   deriving Show
 
 
@@ -952,7 +1201,7 @@ scopeToExports sc = Exports
   , classes   = cls
   , instances = insts
   } where
-    vars = mapMaybe (\case { PDefinedVariable var -> Just var; _ -> Nothing }) $ Map.elems sc.varScope
+    vars = mapMaybe (\case { PDefinedVariable var -> Just (var, ()); _ -> Nothing }) $ Map.elems sc.varScope
 
     funs = mapMaybe (\case { PDefinedFunction fun -> Just fun; _ -> Nothing }) $ Map.elems sc.varScope
 

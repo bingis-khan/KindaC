@@ -28,12 +28,12 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..))
+import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), ModuleName (..))
 import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), XClassConstraints, Node (..), DeclaredType (..), MutAccess (..))
 import Data.Functor.Foldable (cata)
 import Control.Monad ((<=<))
 import Data.Either (partitionEithers)
-import AST.Untyped (Untyped, U, UntypedStmt (..), ClassConstraint (..))
+import AST.Untyped (Untyped, U, UntypedStmt (..), ClassConstraint (..), Qualified (..), ModuleQualifier (..), Use (..), UseItem (..))
 import qualified AST.Untyped as U
 import qualified AST.Common as Common
 
@@ -66,6 +66,7 @@ statement = choice
   , sPrint
   , sReturn
   , sWhile
+  , sUse
 
   , sClass
   , sInst
@@ -113,9 +114,9 @@ sDeconstruction :: Parser (Decon U)
 sDeconstruction = caseVariable <|> caseRecord <|> caseConstructor
  where
     caseVariable = node . CaseVariable <$> variable
-    caseConstructor =  fmap node $ CaseConstructor <$> dataConstructor <*> args
+    caseConstructor =  fmap node $ CaseConstructor <$> qualified dataConstructor <*> args
     caseRecord = do
-      name <- try $ typeName <* lookAhead (symbol "{")
+      name <- try $ qualified typeName <* lookAhead (symbol "{")
       decons <- NonEmpty.fromList <$> between (symbol "{") (symbol "}") (sepBy1 recordFieldDecon (symbol ","))
       pure $ node $ CaseRecord name decons
 
@@ -179,6 +180,35 @@ sReturn = do
 sWhile :: Parser (Stmt U)
 sWhile = scope While $ keyword "while" >> expression
 
+sUse :: Parser (Stmt U)
+sUse = recoverableIndentBlock $ do
+  keyword "use"
+  modules <- ModuleQualifier . NonEmpty.fromList <$> moduleName `sepBy1` "."
+  return $ L.IndentMany Nothing (pure . Other . UseStmt . Use modules) sUseItem
+
+sUseItem :: Parser UseItem
+sUseItem = choice
+  [ UseVarOrFun <$> variable        -- variableOrFunction
+  , do                              -- Type + constructors
+    tc <- typeName
+    _ <- choice
+      [ between (symbol "(") (symbol ")") $ choice
+        [ do                        -- (Constructor, Constructor2, ...)
+          con <- dataConstructor
+          cons <- many $ symbol "," >> dataConstructor
+          pure $ UseType tc (con :| cons)
+
+        , do                        -- (classFun, classFun2, ...)
+          cfn <- variable
+          cfns <- many $ symbol "," >> variable
+          pure $ UseClass ((TCN . fromTC) tc) (cfn :| cfns)
+        , pure $ UseTypeOrClass tc  -- Type ()
+        ]
+      , pure $ UseTypeOrClass tc    -- TypeOrClass
+      ]
+    undefined
+  ]
+
 sClass :: Parser (Stmt U)
 sClass = recoverableIndentBlock $ do
   keyword "class"
@@ -215,10 +245,10 @@ sDefinedFunctionHeader = do
 sInst :: Parser (Stmt Untyped)
 sInst = recoverableIndentBlock $ do
   keyword "inst"
-  name <- className
+  name <- qualified className
 
   instType <- do
-    tcon <- typeName
+    tcon <- qualified typeName
     targs <- many generic
     pure (tcon, targs)
 
@@ -245,7 +275,7 @@ sClassConstraints = do
 
 sClassConstraint :: Parser U.ClassConstraint
 sClassConstraint = do
-  name <- className
+  name <- qualified className
   tv <- generic
   pure $ CC name tv
 
@@ -312,13 +342,13 @@ sFunctionOrCall = recoverableIndentBlock $ do
           stmts@(_:_) -> Fun . U.FunDef header . NonEmpty.fromList <$> annotateStatements stmts
           [] ->
             let args = map (deconToExpr . fst) header.functionParameters
-                funName = node $ Var header.functionId ()
+                funName = node $ Var (Qualified Nothing header.functionId) ()
             in pure $ ExprStmt $ node $ Call funName args
 
 -- some construction might also be misrepresented as a deconstruction.
 deconToExpr :: Decon U -> Expr U
 deconToExpr = cata $ \(N _ decon) -> node $ case decon of
-  CaseVariable v                  -> Var v ()
+  CaseVariable v                  -> Var (Qualified Nothing v) ()
   CaseConstructor con []          -> Con con ()
   CaseConstructor con exprs@(_:_) -> Call (node $ Con con ()) exprs
   CaseRecord con mems             -> RecCon con mems
@@ -344,7 +374,7 @@ functionHeader = do
 --   Either a normal ADT or a record type.
 sDataDefinition :: Parser (Stmt U)
 sDataDefinition = recoverableIndentBlock $ do
-  tname <- typeName
+  tname <- try $ typeName <* notFollowedBy (symbol ".")  -- NOTE: quick disambiguation from qualified names. (or maybe we should parse expression first?)
   polys <- many generic
   return $ flip (L.IndentMany Nothing) (recoverCon conOrRecOrAnnotation) $ toRecordOrADT tname polys <=< assignAnnotations (\ann -> bimap (Annotated ann) (\fdc -> fdc ann))
    where
@@ -562,12 +592,12 @@ eGrouping = between (symbol "(") (symbol ")") expression
 
 eIdentifier :: Parser (Expr U)
 eIdentifier = do
-  id <- (flip Var () <$> variable) <|> (Con <$> dataConstructor <*> pure ())
+  id <- (flip Var () <$> qualified variable) <|> (Con <$> qualified dataConstructor <*> pure ())
   retfe id
 
 eRecordConstruction :: Parser (Expr U)
 eRecordConstruction = do
-  name <- try $ typeName <* lookAhead (symbol "{")
+  name <- try $ qualified typeName <* lookAhead (symbol "{")
   recordDef <- NonEmpty.fromList <$> between (symbol "{") (symbol "}") (sepBy1 memberdef (symbol ","))
 
   retfe $ RecCon name recordDef
@@ -603,7 +633,7 @@ pType = do
 
   where
     concrete = do
-      tcon <- typeName
+      tcon <- qualified typeName
       targs <- many typeTerm
       return $ Fix $ TCon tcon targs ()
     groupingOrParams = between (symbol "(") (symbol ")") $ sepBy pType (symbol ",")
@@ -619,7 +649,7 @@ typeTerm = choice
   where
     grouping = between (symbol "(") (symbol ")") pType
     concreteType = do
-      tname <- typeName
+      tname <- qualified typeName
       retf $ TCon tname [] ()
 
 poly :: Parser (Type U)
@@ -648,7 +678,7 @@ pClassType
 
         where
           concrete = do
-            tcon <- typeName
+            tcon <- qualified typeName
             targs <- many classTypeTerm
             return $ Fix $ NormalType $ TCon tcon targs ()
           groupingOrParams = between (symbol "(") (symbol ")") $ sepBy pClassType (symbol ",")
@@ -663,9 +693,21 @@ classTypeTerm = choice
   where
     grouping = between (symbol "(") (symbol ")") pClassType
     concreteType = do
-      tname <- typeName
+      tname <- qualified typeName
       retf $ NormalType $ TCon tname [] ()
 
+
+qualified :: Parser a -> Parser (Qualified a)
+qualified px = do
+  mods <- many $ try $ do
+    m <- moduleName
+    symbol "."
+    pure m
+
+  x <- px
+  pure $ case mods of
+    [] -> Qualified Nothing x
+    (m:ms) -> Qualified (Just (ModuleQualifier (m :| ms))) x
 
 
 -- This'll be tricky: a function definition can look exactly like a function call. Welp, I guess I know why `def`s are needed.
@@ -679,11 +721,10 @@ classTypeTerm = choice
 
 -- type-level identifiers
 typeName :: Parser TCon
-typeName = do
-  lexeme $ do
-    x <- upperChar
-    xs <- many identifierChar
-    pure $ TC $ T.pack (x:xs)
+typeName = TC . fromCN <$> dataConstructor
+
+moduleName :: Parser ModuleName
+moduleName = ModName . fromCN <$> dataConstructor
 
 generic :: Parser UnboundTVar
 generic = UTV <$> identifier

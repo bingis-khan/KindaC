@@ -736,12 +736,13 @@ replaceInExpr su cia = cata $ \(N t e) -> fmap embed $ N t <$> case e of
 -- Exports: what the current module will export.
 inferExports :: Exports R -> Infer (Exports TC)
 inferExports e = do
+  vars  <- traverse (\(v, ()) -> (v,) <$> var v) e.variables
   dts   <- traverse inferDataDef e.datatypes
   fns   <- traverse inferFunction e.functions
   cls   <- traverse inferClassDef e.classes
   insts <- traverse inferInstance e.instances
   pure $ Exports
-    { variables = e.variables
+    { variables = vars
     , functions = fns
     , datatypes = dts
     , classes   = cls

@@ -20,6 +20,8 @@ import qualified Control.Exception as E
 import Test.HUnit.Lang (HUnitFailure(HUnitFailure), FailureReason (ExpectedButGot))
 import Control.Exception (catch)
 import GHC.Exception (SomeException)
+import CompilerContext (compilerContext)
+import qualified Data.List.NonEmpty as NonEmpty
 
 -- smol config
 testdir :: FilePath
@@ -104,11 +106,12 @@ type Error = Text
 compileAndOutputFile :: Prelude -> FilePath -> FilePath -> IO (Either Error FilePath)
 compileAndOutputFile prelude filepath outdirpath = do
   let compile = do
-        etmod <- loadModule (Just prelude) filepath
+        let basePath = "."  -- maybe make a special testing "module" directory for testing module imports?
+        etmod <- compilerContext basePath prelude $ loadModule filepath
         case etmod of
-          Left err -> pure $ Left err
-          Right tmod -> do
-            cmod <- finalizeModule prelude tmod
+          Left err -> pure $ Left $ Text.unlines $ NonEmpty.toList err
+          Right tmods -> do
+            cmod <- finalizeModule tmods
             let outpath = outdirpath </> takeBaseName filepath <> ".c"
             TextIO.writeFile outpath cmod
             pure $ Right outpath

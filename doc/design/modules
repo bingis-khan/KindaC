@@ -1,0 +1,121 @@
+Actual informal spec for modules.
+
+
+Modules themselves:
+
+	use Term
+
+	Term.print('dupa')
+
+
+Import by name:
+
+	use Term
+		println  # now, we don't need to prefix it.
+
+	println('DUPSKO')
+
+Import types/cons:
+
+	use Stuff
+		Datatype(Con1, Con2)
+		Record  # right now, I would automatically import record types.
+		Class(classFun, classFun2)  # will it have any uppercase parts (should I import associated types?)
+
+
+Nested modules:
+
+	use Nested.Module
+
+	Nested.Module.f(420)
+
+
+Module aliases:
+
+	use Nested.Module as MyMod
+		g  # obv. you can do this and not have to prefix it
+
+	MyMod.f(1337)
+	g(True)
+
+
+
+------------
+
+Possible 'use's:
+
+	use Term
+
+	Term.print('ayo')
+
+	use ElseModule
+
+	ElseModule.dupa()
+
+
+	f ()
+		use SomeOtherModule  # local imports!
+		return SomeOtherModule.g
+
+
+Also, it can override the function name:
+
+
+f ()
+	print 'aaaaa'
+
+use SomeModule
+	f
+
+f()  # NOT aaaaaa
+
+
+
+----------
+
+Which order will they get included in?
+
+- create an acyclic graph of modules
+- order it in a specific way
+	ex. if there are two distinct subtrees of modules, first generate the code for the module that was imported earlier!
+
+
+---- Std vs user-defined
+
+I want short module names. But they might conflict with user-defined modules. how do i solve this?
+	- do I add an "Std" to everything?
+	- just overload them? i dunno.
+
+right now, I'll just do std shit.
+
+
+---- Is it possible / how to re-export modules.
+
+Maybe by default, don't reexport imported items. You would have to annotate them with the 'export' directive.
+'export' sees only the stuff that is visible at the end of the file.
+
+
+---- Should reimporting modules be an error?
+
+	use Term
+	use Term  # this should be banned, but...
+
+	use Term
+
+	# ...
+
+	use Term
+		println  # this seems okay.
+
+Right now I'll allow it.
+
+
+
+----- Architecture
+
+loadPrelude
+compilerContext:
+	loadModule "actual/path" -calls-> moduleLoader -calls-> loadModule ....
+
+Ah fuck, I ended up changing `Ctx` to `Ctx m` everywhere in Resolver........ fuck.
+I removed this thing. I did something very hacky. Will prolly need to change it in the future.

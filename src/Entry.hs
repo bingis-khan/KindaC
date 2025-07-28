@@ -7,28 +7,33 @@ import System.Environment (getArgs)
 import qualified AST.Def as Def
 import AST.Def (PP(..))
 import Pipeline (loadPrelude, loadModule, finalizeModule)
+import CompilerContext (compilerContext)
+import Control.Monad.IO.Class (liftIO)
+import qualified System.FilePath as FilePath
+import qualified Data.Text as Text
+import qualified Data.List.NonEmpty as NonEmpty
 
 
 compilerMain :: IO ()
 compilerMain = do
   (filename, outputC) <- parseArgs
 
-  -- first, get dat prelude
+  let basePath = FilePath.takeDirectory filename
+
   prelude <- loadPrelude
 
-  -- try compile module
-  emod <- loadModule (Just prelude) filename
+  -- first, get dat prelude
+  errOrModules <- compilerContext basePath prelude $ loadModule filename
 
-  case emod of
-    Left errs -> TextIO.putStrLn errs
-    Right modul -> do
-      pure ()
+  case errOrModules of
+    Left errs -> TextIO.putStrLn $ Text.unlines $ NonEmpty.toList errs
+    Right modules -> do
       -- TEMP: i wanna check the typechecked module.
-      cmod <- finalizeModule prelude modul
+      cmod <- liftIO $ finalizeModule modules
 
       if outputC 
-        then TextIO.writeFile "test.c" cmod
-        else TextIO.putStrLn cmod
+        then liftIO $ TextIO.writeFile "test.c" cmod
+        else liftIO $ TextIO.putStrLn cmod
 
 
 parseArgs :: IO (Filename, ShouldOutputC)

@@ -27,6 +27,7 @@ library
       AST.Resolved
       AST.Typed
       AST.Untyped
+      CompilerContext
       CPrinter
       Entry
       Misc.Memo
