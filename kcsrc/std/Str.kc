@@ -3,6 +3,15 @@ use Cnile
 class Str
 	# later should write to some buffer instead of printing directly.
 	print-str (self _) -> Unit
+	length (self _) -> Int
+
+
+StrConcat l r
+	StrConcat l r
+
+concat (l a, r b) -> StrConcat a b <= Str a, Str b
+	return StrConcat(l, r)
+
 
 # ConstStr is defined in Prelude
 inst Str ConstStr
@@ -10,9 +19,38 @@ inst Str ConstStr
 		Cnile.printf('%s', self)
 		return
 
+	length (self ConstStr) -> Int
+		return Cnile.strlen(self)
 
-StrConcat l r
-	StrConcat l r
+inst Str Int
+	print-str (self Int) -> Unit
+		Cnile.printf('%d', self)
+		return
+
+	length (self Int) -> Int
+		if self == 0
+			return 1
+			
+		digits = 0
+		while self > 0
+			self <= self / 10
+			digits <= digits + 1
+
+		return digits
+
+inst Str Bool
+	print-str (self Bool) -> Unit
+		if self
+			print-str('True')
+		else
+			print-str('False')
+		return
+
+	length (self Bool) -> Int
+		if self
+			return 4  # 'True': 4
+		else
+			return 5  # 'False': 5
 
 inst Str StrConcat l r
 	print-str (StrConcat(l, r)) -> Unit
@@ -20,6 +58,16 @@ inst Str StrConcat l r
 		print-str(r)
 		return
 
+	length (StrConcat(l, r)) -> Int
+		return length(l) + length(r)
 
-concat (l a, r b) -> StrConcat a b <= Str a, Str b
-	return StrConcat(l, r)
+
+inst Str Maybe a
+	print-str (self Maybe a) -> Unit <= Str a
+		case self
+			Just(x)
+				print-str(concat('Just(', concat(x, ')')))
+			None
+				print-str('None')
+
+

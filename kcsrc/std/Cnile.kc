@@ -6,3 +6,5 @@ Void
 #[cfunname 'printf', cstdinclude 'stdio.h']
 external printf (format ConstStr, x a) -> Void
 
+#[cstdinclude 'string.h']
+external strlen (s ConstStr) -> Int

@@ -51,6 +51,7 @@ type instance XNode Resolved = ()
 type instance XFunType Resolved = DeclaredType R
 type instance XDataScheme Resolved = [TVar R]
 type instance XMutAccess Resolved = MutAccess R
+type instance XInstExport R = Inst
 
 
 data Env = Env { envID :: Def.EnvID, envStackLevel :: Def.EnvStack, fromEnv :: [(VariableProto, Def.Locality)] }

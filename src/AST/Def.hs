@@ -38,7 +38,7 @@ import Data.Functor.Foldable (cata)
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = rc
+defaultContext = dc
 
 dc = debugContext
 rc = runtimeContext
@@ -346,6 +346,7 @@ instance PP (g (f a)) => PP ((g :. f) a) where
 instance PP LitType where
   pp (LInt i) = pretty i
   pp (LFloat f) = fromString $ show f
+  pp (LString s) = pretty s
 
 instance PP UnboundTVar where
   pp tv = pretty tv.fromUTV
@@ -602,6 +603,8 @@ ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
       ACStdInclude s -> "cstdinclude" <+> quote s
       ACLit s -> "clit" <+> quote s
       AActualPointerType -> "actual-pointer-type"
+      ACFunName s -> "cfunname" <+> quote s
+      AExternal -> "external"
 
     quote = pure . PP.squotes . PP.pretty
 

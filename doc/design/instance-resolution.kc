@@ -114,3 +114,16 @@ f = print-str  <= here (but I decided it on a whim, i don't have any supporting 
 f(x)
 
 So, the conclusion is: during instantiations. sheeesh. where should I embed these instances?
+
+
+
+------
+
+Instance imports
+
+
+From Haskell report 2010:
+All instances in scope within a module are always exported and any import brings all instances in from the imported module.
+Thus, an instance declaration is in scope if and only if a chain of import declarations leads to the module containing the instance declaration. 
+
+So the imported instances get REEXPORTED YO.

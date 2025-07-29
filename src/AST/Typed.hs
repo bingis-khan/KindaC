@@ -11,7 +11,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, DeconF, ExprF, XNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, ClassType, Rec, Decon, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, XClassConstraints, XClassFunDec, XLamVar, instFunDec, functionOther, instFuns, instClassFunDec, functionEnv, MutAccess, XMutAccess)
+import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, DeconF, ExprF, XNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, ClassType, Rec, Decon, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, XClassConstraints, XClassFunDec, XLamVar, instFunDec, functionOther, instFuns, instClassFunDec, functionEnv, MutAccess, XMutAccess, XInstExport)
 import qualified AST.Def as Def
 import Data.Map (Map)
 import Data.Text (Text)
@@ -96,6 +96,7 @@ type instance XFunType TC = Type TC
 type instance XTVar TC = TVar TC
 type instance XClassConstraints TC = ()
 type instance XMutAccess TC = (MutAccess TC, Type TC)
+type instance XInstExport TC = InstDef TC
 
 data LamDec = LamDec Def.UniqueVar Env
 type instance XLamOther TC = LamDec

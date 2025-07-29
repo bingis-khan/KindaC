@@ -744,7 +744,9 @@ inferExports e = do
   dts   <- traverse inferDataDef e.datatypes
   fns   <- traverse inferFunction e.functions
   cls   <- traverse inferClassDef e.classes
-  insts <- traverse inferInstance e.instances
+  insts <- for e.instances $ \case
+    R.DefinedInst rinst -> inferInstance rinst
+    R.ExternalInst tinst -> pure tinst
   pure $ Exports
     { variables = vars
     , functions = fns
@@ -820,7 +822,7 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
       let rfundec = rfn.instFunDec
       let anns = rfundec.functionOther
 
-      params <- for (Def.exactZipWith (\(d, p) cp -> (d, p, cp)) rfundec.functionParameters (snd <$> cparams)) $ \(v, definedType, ct) -> do
+      params <- for (zipWith (\(d, p) cp -> (d, p, cp)) rfundec.functionParameters (snd <$> cparams)) $ \(v, definedType, ct) -> do  -- NOTE: they SHOULD be exact, but if there was an error and we get a placeholder function, it'll error out on user error, which is bad.
         tv <- inferDecon v
         let vt = Common.typeOfNode tv
 
@@ -2290,6 +2292,18 @@ instance Show TypeError where
       printf "Function type %s constrained by class %s (function types cannot implement classes, bruh.)" (pp t) (pp cd.classID)
 
 
+
+-- zipWith which ensures lists are equal.
+--   I want to encode this at the function/assertion level.
+{-# NOINLINE [1] exactZipWith #-}  -- See Note [Fusion for zipN/zipWithN]
+exactZipWith :: (a->b->c) -> [a]->[b]->[c]
+exactZipWith f = go
+  where
+    go (x:xs) (y:ys) = f x y : go xs ys
+    go [] [] = []
+
+    go [] _ = error "right list is longer"
+    go _ [] = error "left list is longer"
 
 
 -----

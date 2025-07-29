@@ -1248,7 +1248,7 @@ scopeToExports sc = Exports
 
     cls = mapMaybe (\case { R.DefinedClass cd -> Just cd; _ -> Nothing }) $ lefts $ Map.elems sc.tyScope
 
-    insts = concatMap (mapMaybe (\case { R.DefinedInst inst -> Just inst; _ -> Nothing })) $ Map.elems $ Map.elems <$> sc.instScope
+    insts = concat $ Map.elems $ Map.elems <$> sc.instScope
 
 
 isPointer :: Constructor -> Bool

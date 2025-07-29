@@ -51,7 +51,6 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 
 ## todo
 
-- instance propagation rules for modules (eg. I don't want to import Str module to use the Term module)
 - add circular dependency checking for modules
 - lots tests for modules, namespaces and importing.
 - this is kinda important: for semantics, we need to ensure, that the type of the instance function matches the class function. is there a SMART way to do it (by unification instead of validation?)

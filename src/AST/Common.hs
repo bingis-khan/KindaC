@@ -281,12 +281,14 @@ data InstFun phase = InstFun
   }
 
 
+type family XInstExport phase
+
 data Exports phase = Exports
   { variables :: [(UniqueVar, XNode phase)]
   , functions :: [Function phase]
   , datatypes :: [DataDef phase]
   , classes :: [ClassDef phase]
-  , instances :: [InstDef phase]
+  , instances :: [XInstExport phase]  -- Resolved exports both local and imported instances (see doc/instance-resolution)
   }
 
 type family Module phase
