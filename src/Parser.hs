@@ -89,8 +89,8 @@ sPass = do
 
 sIf :: Parser (Stmt U)
 sIf = do
-  (cond, ifBody) <- scope (,) (keyword "if" >> expression)
-  elifs <- many $ scope (,) (keyword "elif" >> expression)
+  (cond, ifBody) <- scope (,) (keyword "if" >> expression sc)
+  elifs <- many $ scope (,) (keyword "elif" >> expression sc)
   elseBody <- optional $ scope (const id) (keyword "else")
   pure $ If $ IfStmt cond ifBody elifs elseBody
 
@@ -98,7 +98,7 @@ sCase :: Parser (Stmt U)
 sCase = recoverableIndentBlock $ do
   -- case header
   keyword "case"
-  condition <- expression
+  condition <- expression sc
 
   -- switch inner
   pure $ L.IndentSome Nothing (pure . Switch condition . NE.fromList) sSingleCase
@@ -134,13 +134,13 @@ sDeconstruction = caseVariable <|> caseRecord <|> caseConstructor
 sPrint :: Parser (Stmt U)
 sPrint = do
   keyword "print"
-  expr <- expression
+  expr <- expression sc
   pure $ Print expr
 
 sDefinition :: Parser (Stmt U)
-sDefinition = do
-  name <- try $ variable <* symbol "="
-  rhs <- expression
+sDefinition = L.lineFold scn $ \sc' -> do
+  name <- try $ variable <* symbol' sc' "="
+  rhs <- expression sc'
   pure $ Assignment name rhs
 
 sMutAssignment :: Parser (Stmt U)
@@ -149,7 +149,7 @@ sMutAssignment = do
     v <- variable
     accesses <- thatFunnyMutationOperator
     pure (v, accesses)
-  rhs <- expression
+  rhs <- expression sc
   pure $ Mutation name () accesses rhs
 
 -- maybe it's overly permissive?
@@ -175,11 +175,11 @@ thatFunnyMutationOperator = lexeme $ do
 sReturn :: Parser (Stmt U)
 sReturn = do
   keyword "return"
-  expr <- optional expression
+  expr <- optional $ expression sc
   pure $ Return expr
 
 sWhile :: Parser (Stmt U)
-sWhile = scope While $ keyword "while" >> expression
+sWhile = scope While $ keyword "while" >> expression sc
 
 sUse :: Parser (Stmt U)
 sUse = recoverableIndentBlock $ do
@@ -317,7 +317,7 @@ sInstFunction = recoverableIndentBlock $ do
 sExpression :: Parser (Stmt U)
 sExpression = do
   from <- getOffset
-  expr@(Fix (N _ chkExpr)) <- expression
+  expr@(Fix (N _ chkExpr)) <- expression sc
   to <- getOffset
   case chkExpr of
     Call _ _ -> pure $ ExprStmt expr
@@ -367,7 +367,7 @@ functionHeader = do
   name <- variable
   params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
   ret <- choice
-    [ Left <$> (symbol ":" >> expression)
+    [ Left <$> (symbol ":" >> expression sc)
     , Right <$> optional (symbol "->" >> pType)
     ]
 
@@ -484,11 +484,11 @@ annotationOr x = Left <$> annotation <|> Right <$> x
 -- Expressions --
 -----------------
 
-expression :: Parser (Expr U)
-expression = makeExprParser term operatorTable
+expression :: Parser () -> Parser (Expr U)
+expression sc = makeExprParser term (operatorTable sc)
 
-operatorTable :: [[Operator Parser (Expr U)]]
-operatorTable =
+operatorTable :: Parser () -> [[Operator Parser (Expr U)]]
+operatorTable s =
   [ [ interleavable
     , recordUpdate
     ]
@@ -496,7 +496,7 @@ operatorTable =
   --   , prefix "not" Not
   --   ]
   , [ binary' "*" Times
-    , binaryS' (try $ symbol "/" <* notFollowedBy "=") Divide
+    , binaryS' (try $ symbol' s "/" <* notFollowedBy "=") Divide
     ]
   , [ binary' "+" Plus
     , binary' "-" Minus
@@ -515,14 +515,14 @@ operatorTable =
   , [ lowPrecedencePrefixOps
     ]
   ] where
-    binary' name op = binary name $ \x y -> Fix $ N () $ Op x op y
+    binary' name op = binary s name $ \x y -> Fix $ N () $ Op x op y
     binaryS' name op = binaryS name $ \x y -> Fix $ N () $ Op x op y
 
 binaryS :: Parser () -> (expr -> expr -> expr) -> Operator Parser expr
 binaryS s f = InfixL $ f <$ s
 
-binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
-binary s f = InfixL $ f <$ symbol s
+binary :: Parser () -> Text -> (expr -> expr -> expr) -> Operator Parser expr
+binary sc s f = InfixL $ f <$ symbol' sc s
 
 -- For some reason (i dunno, maybe that's how the OperatorTable works.), we can't properly chain postfix operators.
 -- Making a general function like this is a fix for that.
@@ -531,6 +531,7 @@ interleavable = Postfix $ fmap (foldl1 (.) . reverse) $ some $ choice
   [ subscript
   , call
   , deref
+  , postfixCall
   ]
 
 deref :: Parser (Expr U -> Expr U)
@@ -541,8 +542,14 @@ subscript = (symbol "." >> member) <&> \memname e -> node $ MemAccess e memname
 
 call :: Parser (Expr U -> Expr U)
 call = do
-    args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
+    args <- between (symbol "(") (symbol ")") $ expression sc `sepBy` symbol ","
     return $ node . flip Call args
+
+postfixCall :: Parser (Expr U -> Expr U)
+postfixCall = do
+  fnName <- notFollowedBy (symbol "as") *> eIdentifier  -- both functions and constructors are allowed to be called like this. 'as' HACK!
+  args <- between (symbol "(") (symbol ")") $ expression sc `sepBy` symbol ","
+  pure $ \firstArg -> node $ Call fnName (firstArg : args)  -- transforms it into a normal call expression. not exact AST representation, but hopefully, location information will make the difference invisible.
 
 recordUpdate :: Operator Parser (Expr U)
 recordUpdate = Postfix $ between (symbol "{") (symbol "}") $ do
@@ -601,11 +608,11 @@ eDecimal = do
   retfe $ Lit $ LInt decimal
 
 eGrouping :: Parser (Expr U)
-eGrouping = between (symbol "(") (symbol ")") expression
+eGrouping = between (symbol "(") (symbol ")") $ expression sc
 
 eString :: Parser (Expr U)
 eString = do
-  stringLiteral <- char '\'' *> manyTill L.charLiteral (char '\'')
+  stringLiteral <- lexeme $ char '\'' *> manyTill L.charLiteral (char '\'')
   retfe $ Lit $ LString stringLiteral
 
 eIdentifier :: Parser (Expr U)
@@ -624,7 +631,7 @@ memberdef :: Parser (MemName, Expr U)
 memberdef = do
       mem <- member
       symbol ":"
-      e <- expression
+      e <- expression sc
       pure (mem, e)
 
 -----------
@@ -783,8 +790,16 @@ stringLiteral = do
   s <- manyTill L.charLiteral (char '\'')
   return $ T.pack s
 
+
+lineFold :: (Parser () -> Parser a) -> Parser a
+lineFold px = L.lineFold scn px
+  
+
 symbol :: Text -> Parser ()
 symbol = void . L.symbol sc
+
+symbol' :: Parser () -> Text -> Parser ()
+symbol' s = void . L.symbol s
 
 keyword :: Text -> Parser ()
 keyword kword = void $ lexeme (try $ string kword <* notFollowedBy identifierChar)

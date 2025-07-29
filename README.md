@@ -7,15 +7,17 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 ## current
 
-- Making a quick iterator library.
-- Making a quick string library.
+- Line folds and postfix calling.
+- Making a quick iterator library (with incorrect types because... yknow).
 
 
 --
 
+I didn't add tests for: line folding, modules, type classes, external functions!
+
 (note: currently, instance generalization and instantiation is scuffed, but in a weird way: it's actually more powerful, so I'm able to write all the classes and instances I want. but it's also super weird. after I implement modules and errors, I want to redo it, so that it matches Rust or similar.... or maybe I'll use this somehow?)
 
-No dependency checking
+No circular dependency checking
 
 Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs are in separate text files in doc/compiler/ and a small minority in doc/design/.
 
