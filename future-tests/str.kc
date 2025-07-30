@@ -1,0 +1,44 @@
+use Term
+use Str
+	concat
+	Str(length)
+
+s = 'dup'
+p = 'sko'
+print s
+print p
+
+f (x ConstStr) -> Unit
+	print x
+	print x
+	return
+
+r (x ConstStr) -> ConstStr
+	print 'id string thing'
+	return x
+
+spawn () -> ConstStr
+	return 'returned!'
+
+f(s)
+print r('uaosduoua')
+print spawn()
+
+Term.println('dupsko!!\nayooo\n')
+Term.println(123)
+
+s = Str.concat('ayo', Str.concat(123, Str.concat('bobins', 'numba one')))
+
+Term.println(s)
+Term.println(Str.concat('Length: ', Str.length(s)))
+Term.println(Just(69) as Maybe Int)
+Term.println(Str.concat('Real american patriots say it\'s: ', True))
+x = 1
+s = ('abc' Str.concat('bbb') Str.concat('ccccc') Str.concat(123123) Str.concat(False))
+'aaaaaA' concat(True) concat(False) concat(Just(420)) concat(None as Maybe Bool) Term.println()
+
+Term.println(s)
+Term.println(s length())
+
+x = 420 Just()
+Term.println(x)

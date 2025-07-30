@@ -31,6 +31,7 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 - `error-handling/` - put files here, when error is stupid or unreadable
 - `ctest/` - testing stuff in C
 - `incorrect/` - files which do not compile / produce incorrect results
+- `future-tests/` - files which I should make tests out of
 
 
 ## regressions

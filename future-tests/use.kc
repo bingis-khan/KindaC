@@ -1,0 +1,18 @@
+use Term
+	println
+use Std.Hidden
+use NoExistado.Really.NooooExistadoooo
+
+
+f () -> Unit
+	print 420
+
+f()
+println(123)
+fn = Term.println2
+fn(1337)
+
+Term.println2(11111)
+
+
+print Std.Hidden.hidden-fn(1)

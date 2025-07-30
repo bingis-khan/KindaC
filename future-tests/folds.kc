@@ -1,0 +1,60 @@
+# testing line folds
+use Term
+
+# remember how all of it works. parses first item, then uses its position in the new space consumer.
+
+# I will write down folds which should or should not be parsed.
+# Instead of adding them all at once, I should start writing something and see which are needed.
+# So, TODO: more folds to cum.
+
+# basic expression folds (ill use + so I won't have to think which operators I'll use. I should make tests out of 'em later (preferably one example per test.))
+x =
+ 23
+
+x = 23
+ + 2
+
+x = 1 + 2 +
+ 3
+
+x = 1
+ + 2
+ + 3
+
+x = 1 +
+ 2 +
+ 3
+
+x =  # should I allow it?
+ 1
+ +
+ 2
+ +
+ 3
+
+x =   # wtfffff (but Haskell allows it gegeg)
+ 1
+    +
+ 2
+ +
+                 3
+
+#if 1 +  # IS AMBIGOUS (i mean, it's not, but it'll parse wrong)
+# x = 2
+
+#if 1  # PROBABLY WRONG BUT NOT AMBIGUOUS
+# + 2 == 3 
+#  Term.println('asd')
+
+#if elems  # WRONG! ambiguous as shit!
+# filter(x: x > 0)
+# null()
+
+#if (elems  # but this is OKAY!
+# filter(x: x > 0)
+# null())
+# Term.println('dupa!')
+
+Term.println(x)
+
+x Term.println()  # this should be correct

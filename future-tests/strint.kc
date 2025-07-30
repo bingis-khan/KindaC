@@ -1,0 +1,18 @@
+use Term
+
+x = 'miau'
+funny = 420
+empty = ''
+s = 'lets interpolate \(x) with \(funny) (empty string: "\(empty)")'
+Term.println(s)
+
+s' = 'ayo. \(s) <= that was this funny string yo'
+Term.println(s')
+
+make-record (from, to)
+	return '{ \(from): \(to) }'
+
+Term.println(make-record(1, 1))
+Term.println(make-record(420, 'ayo'))
+Term.println(make-record(True, &False))
+Term.println(&420)

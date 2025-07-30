@@ -1,0 +1,13 @@
+use Term
+
+addn (x Int): n: x + n
+add1 = addn(1)
+add69 = addn(69)
+
+x = 1 add1() add1() add1() add69()
+
+# should we allow this?
+# x = 1 sum-fun() (if what: fn1 else: fn2)()
+# obviously no, because it's ambiguous.
+
+Term.println(x)
