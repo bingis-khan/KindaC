@@ -19,10 +19,10 @@ import Data.Foldable (find)
 import Text.Printf (printf)
 import AST.Prelude (Prelude (..))
 import qualified AST.Prelude as Prelude
-import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), Node (..), datatypes)
+import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), Node (..), datatypes, LitType (..))
 import qualified AST.Def as Def
 import AST.Typed (TC, Mod (topLevelStatements))
-import AST.Def (Result(..), phase, PP (..), LitType (..))
+import AST.Def (Result(..), phase, PP (..))
 import Mono (mono)
 import CPrinter (cModule)
 import CompilerContext (CompilerContext)
@@ -178,6 +178,18 @@ loadPrelude = do
               Just dc -> pure dc
               Nothing -> Failure $ ne "[Prelude: Unit] Could not find suitable Unit type (Unit type name + Unit constructor, no tvars, single constructor)"
 
+      let findStrConcat :: PreludeErr (DataCon TC)
+          findStrConcat = 
+            let
+                mdd :: DataDef TC -> Maybe (DataCon TC)
+                mdd (DD ut (T.Scheme [_, _] []) (Right [con]) _) | ut.typeName == Prelude.strConcatTypeName = Just con
+                mdd _ = Nothing
+
+                mdc   = listToMaybe $ mapMaybe mdd pmod.exports.datatypes
+            in case mdc of
+              Just dc -> pure dc
+              Nothing -> Failure $ ne "[Prelude: StrConcat] Could not find suitable StrConcat type (StrConcat type name + StrConcat constructor, two tvars, single constructor)"
+
           mkTopLevelReturn :: Type TC -> Expr TC
           mkTopLevelReturn t =
             let lit = Lit (LInt 0)
@@ -198,12 +210,13 @@ loadPrelude = do
 
       let eprelude = do  -- should compile to applicative do! TODO: test it somehow.
             unit <- findUnit
+            strConcat <- findStrConcat
             bool <- findBasicType Prelude.boolTypeName
             int  <- findBasicType Prelude.intTypeName
             float <- findBasicType Prelude.floatTypeName
             ptr <- findPtrType
             constStr <- findBasicType Prelude.constStrTypeName
-            pure $ Prelude { tpModule = pmod, unitValue = unit, boolType = bool, intType = int, floatType = float, toplevelReturn = mkTopLevelReturn int, mkPtr = ptr, constStrType = constStr }
+            pure $ Prelude { tpModule = pmod, unitValue = unit, boolType = bool, intType = int, floatType = float, toplevelReturn = mkTopLevelReturn int, mkPtr = ptr, constStrType = constStr, strConcatValue = strConcat }
 
       case eprelude of
         Failure errs -> liftIO $ do

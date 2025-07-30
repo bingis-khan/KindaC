@@ -11,7 +11,7 @@ module Resolver (resolve, ResolveError) where
 
 import Data.Unique (newUnique)
 import Control.Monad.IO.Class (liftIO)
-import Data.Functor.Foldable (transverse, cata, embed)
+import Data.Functor.Foldable (transverse, cata, embed, project)
 import Data.Foldable (fold, for_)
 import Control.Monad.Trans.RWS (RWST)
 import Data.Map (Map, (!?))
@@ -47,9 +47,8 @@ import AST.Def (type (:.)(O), Annotated (..), Binding (..))
 import qualified AST.Def as Def
 import qualified AST.Common as Common
 import AST.Prelude (Prelude (..))
-import Control.Monad (when, foldM)
+import Control.Monad ( when, foldM, void )
 import AST.Typed (TC)
-import Control.Monad (void)
 import CompilerContext (CompilerContext)
 import qualified CompilerContext as Compiler
 import Control.Monad.Trans.Class (lift)
@@ -60,7 +59,7 @@ import Control.Monad.Trans.Class (lift)
 resolve :: Maybe Prelude -> Compiler.ModuleLoader -> Module U -> CompilerContext ([ResolveError], Module R)
 resolve mPrelude moduleLoader (U.Mod ustmts) = do
   let newState = maybe emptyState (mkState moduleLoader) mPrelude
-  (rstmts, state, errs) <- RWST.runRWST (rStmts ustmts) () newState
+  (rstmts, state, errs) <- RWST.runRWST (rStmts ustmts) mPrelude newState
 
   let topLevelScope = NonEmpty.head state.scopes
   let moduleExports = scopeToExports topLevelScope
@@ -570,7 +569,22 @@ rDecon = transverse $ \(N () d) -> fmap (N ()) $ case d of
 
 rExpr :: Expr U -> Ctx (Expr R)
 rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but unshittified
-  Lit x -> pure $ Lit x
+  Lit cx -> case cx of
+    LInt i -> pure $ Lit $ LInt i
+    LFloat f -> pure $ Lit $ LFloat f
+    LString si -> mkStringInterpolation si
+    --   rsi <- for2 si $ \vn -> do
+    --       (loc, v) <- resolveVar vn
+
+    --       -- we only allow defined variables in string interpolation
+    --       case v of
+    --         DefinedVariable {} -> pure ()
+    --         ExternalVariable {} -> pure ()
+    --         _ -> err $ OnlyVariablesAreAllowedInStringInterpolation vn
+
+    --       pure (v, loc)
+
+
   Var v () -> do
     (l, vid) <- resolveVar v
     pure $ Var vid l
@@ -707,16 +721,60 @@ closure eid x = do
   return x'
 
 
+-- cheap and bad string interpolation. (it would be more readable if we generated types on the fly. the errors would be slightly better!)
+mkStringInterpolation :: XStringInterpolation U -> Ctx (ExprF R (Expr R))
+mkStringInterpolation si = do
+  let
+    e = Fix . N ()
+    mkStackedConcat = fmap e . \case
+      [] -> pure $ Lit $ LString ""
+      [Left s] -> pure $ Lit $ LString s
+      [Right vn] -> do
+        (loc, v) <- resolveVar vn
 
-type Ctx = RWST () [ResolveError] CtxState CompilerContext  -- I might add additional context later.
+        -- we only allow defined variables in string interpolation
+        case v of
+          DefinedVariable {} -> pure ()
+          ExternalVariable {} -> pure ()
+          _ -> err $ OnlyVariablesAreAllowedInStringInterpolation vn
+
+        pure $ Var v loc
+
+      xs@(_:_:_) -> do
+        concatCon <- findBuiltinStrConcat  -- NOTE: resolve it here, not outside, because we might still want to use strings before StrConcat is defined?
+        let half = length xs `div` 2
+        l <- mkStackedConcat (take half xs)
+        r <- mkStackedConcat (drop half xs)
+
+        emptyEnv <- newEnvID
+        pure $ Call (e (Con concatCon emptyEnv)) [l, r]
+
+  (\(N _ v) -> v) . project <$> mkStackedConcat si
+
+-- NOTE: FORMER (and probably future) string interpolation.
+--   LEFT HERE FOR FUTURE REFERENCE.
+-- mkStringInterpolation :: XStringInterpolation U -> Ctx (ExprF R (Expr R))
+-- mkStringInterpolation si = do
+--   strClass <- findBuiltinStrClass
+--   ut <- undefined
+--   uc <- undefined
+--   let
+--     tvars = [ TV ("si" <> fromString (show idx)) (BindByType ut) (Set.singleton strClass) | idx <- [1..length si] ] :: [TVar R]
+--     dc = DC { conDataDef = dd, conID = uc, conTypes = Fix . TO . TVar <$> tvars, conAnns = [] }
+--     dd = DD { ddName = ut, ddScheme = tvars, ddCons = Right [dc], ddAnns = [] } :: DataDef R
+--   undefined
+
+-- findBuiltinStrClass :: Ctx R.Class
+-- findBuiltinStrClass = undefined
+
+
+type Ctx = RWST (Maybe Prelude) [ResolveError] CtxState CompilerContext  -- I might add additional context later.
 
 data CtxState = CtxState
   { scopes :: NonEmpty Scope
   , envStack :: [Def.EnvID]
   , inLambda :: Bool  -- hack to check if we're in a lambda currently. when the lambda is not in another lambda, we put "Local" locality.
   , tvarBindings :: Map Def.UnboundTVar (TVar R)
-
-  , prelude :: Maybe Prelude  -- Only empty when actually parsing prelude.
 
   , loaderFn :: Compiler.ModuleLoader
   , modules :: Map U.ModuleQualifier (Module TC)  -- list imported modules. automatically gets scoped, so dunt wurry.
@@ -739,7 +797,7 @@ data Scope = Scope
 
 emptyState :: CtxState
 emptyState =
-  CtxState { scopes = NonEmpty.singleton emptyScope, envStack = mempty, tvarBindings = mempty, prelude = Nothing, loaderFn = error "should not import anything in Prelude!", modules = mempty, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty, instances = mempty }
+  CtxState { scopes = NonEmpty.singleton emptyScope, envStack = mempty, tvarBindings = mempty, loaderFn = error "should not import anything in Prelude!", modules = mempty, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty, instances = mempty }
 
 emptyScope :: Scope
 emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty, instScope = mempty }
@@ -753,7 +811,6 @@ mkState moduleLoader prel = CtxState
   { scopes = NonEmpty.singleton initialScope
   , envStack = mempty
   , tvarBindings = mempty
-  , prelude = Just prel
   , loaderFn = moduleLoader
   , modules = mempty
   , inLambda = False
@@ -1141,10 +1198,10 @@ lookupScope :: (Ord b) => Int -> b -> NonEmpty (Map b c) -> Maybe (Def.Locality,
 lookupScope curlev k = foldr (\(locality, l) r -> (locality,) <$> Map.lookup k l <|> r) Nothing . (\(cur :| envs) -> (Def.Local, cur) :| fmap (\(l, sc) -> (Def.FromEnvironment l, sc)) (zip [curlev-1, curlev-2 .. 0] envs))
 
 
-unit :: Ctx R.Constructor
+unit, findBuiltinStrConcat :: Ctx R.Constructor
 unit = do
-  ctx <- RWST.get
-  case ctx.prelude of
+  prelude <- RWST.ask
+  case prelude of
     -- When prelude was already typechecked, it should always be available.
     Just prelud -> pure $ R.ExternalConstructor prelud.unitValue
 
@@ -1153,6 +1210,20 @@ unit = do
       resolveCon (U.unqualified Prelude.unitName) <&> \case
         Just uc -> uc
         Nothing -> error $ "[COMPILER ERROR]: Could not find Unit type with the name: '" <> show Prelude.unitName <> "'. This must not happen."
+
+-- COPY!
+findBuiltinStrConcat = do
+  prelude <- RWST.ask
+  case prelude of
+    -- When prelude was already typechecked, it should always be available.
+    Just prelud -> pure $ R.ExternalConstructor prelud.strConcatValue
+
+    -- When we're resolving prelude, find it from the environment.
+    Nothing ->
+      resolveCon (U.unqualified Prelude.strConcatName) <&> \case
+        Just uc -> uc
+        Nothing -> error $ "[COMPILER ERROR]: Could not find StrConcat type with the name: '" <> show Prelude.strConcatName <> "'. This must not happen."
+
 
 err :: ResolveError -> Ctx ()
 err = RWST.tell .  (:[])
@@ -1192,6 +1263,8 @@ data ResolveError
   | TryingToImportConstructorsFromARecordType Def.TCon Def.UniqueType U.ModuleQualifier
   | TryingToImportNonExistingConstructorOfType Def.ConName Def.UniqueType U.ModuleQualifier
   | TryingToImportNonExistingFunctionOfClass Def.VarName Def.UniqueClass U.ModuleQualifier
+
+  | OnlyVariablesAreAllowedInStringInterpolation (Qualified Def.VarName)  -- badtype, only to appease Show.
   deriving Show
 
 

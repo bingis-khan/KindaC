@@ -28,8 +28,8 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), LitType (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), ModuleName (..))
-import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), XClassConstraints, Node (..), DeclaredType (..), MutAccess (..))
+import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), ModuleName (..))
+import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), XClassConstraints, Node (..), DeclaredType (..), MutAccess (..), LitType (..))
 import Data.Functor.Foldable (cata)
 import Control.Monad ((<=<))
 import Data.Either (partitionEithers)
@@ -612,7 +612,15 @@ eGrouping = between (symbol "(") (symbol ")") $ expression sc
 
 eString :: Parser (Expr U)
 eString = do
-  stringLiteral <- lexeme $ char '\'' *> manyTill L.charLiteral (char '\'')
+  let
+    varInterpolation = do
+      void $ string "\\("
+      v <- qualified variable
+      void $ char ')'
+      pure $ Right v
+    strLiteral = Left . Text.pack <$> some (notFollowedBy (char '\'') *> L.charLiteral)
+    stringPart = varInterpolation <|> strLiteral
+  stringLiteral <- lexeme $ char '\'' *> manyTill stringPart (char '\'')
   retfe $ Lit $ LString stringLiteral
 
 eIdentifier :: Parser (Expr U)

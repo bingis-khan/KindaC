@@ -49,10 +49,10 @@ import Misc.Memo (memo, Memo(..), emptyMemo)
 import qualified AST.Common as Common
 import AST.Prelude (Prelude)
 import qualified AST.Prelude as Prelude
-import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, Node (..), DeclaredType (..), XClassFunDec, MutAccess (..))
+import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, Node (..), DeclaredType (..), XClassFunDec, MutAccess (..), LitType (..))
 import AST.Resolved (R)
 import AST.Typed ( TC, Scheme(..), TOTF(..) )
-import AST.Def ((:.)(..), LitType (..), PP (..), Op (..), Binding (..), sctx, ppDef)
+import AST.Def ((:.)(..), PP (..), Op (..), Binding (..), sctx, ppDef)
 import qualified AST.Def as Def
 import Data.String (fromString)
 import Debug.Trace (trace)
@@ -355,10 +355,10 @@ inferExpr = cata (fmap embed . inferExprType)
 
         Lit lt -> do
           t <- case lt of
-            LInt _  -> findBuiltinType Prelude.intFind
-            LFloat _ -> findBuiltinType Prelude.floatFind
-            LString _ -> findBuiltinType Prelude.constStrFind
-          pure (Lit lt, t)
+            LInt {} -> findBuiltinType Prelude.intFind
+            LFloat {} -> findBuiltinType Prelude.floatFind
+            LString {} -> findBuiltinType Prelude.constStrFind
+          pure (Lit $ Common.relit id lt, t)
 
 
         Var v loc -> do

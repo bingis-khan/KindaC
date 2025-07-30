@@ -6,9 +6,6 @@ class Str
 	length (self _) -> Int
 
 
-StrConcat l r
-	StrConcat l r
-
 concat (l a, r b) -> StrConcat a b <= Str a, Str b
 	return StrConcat(l, r)
 
@@ -69,5 +66,20 @@ inst Str Maybe a
 				print-str(concat('Just(', concat(x, ')')))
 			None
 				print-str('None')
+
+	length (self Maybe a) -> Int <= Str a
+		case self
+			None
+				return 4
+
+			Just(x)
+				return 5 + length(x) + 1
+
+inst Str Ptr a
+	print-str (Ptr(self) Ptr a) -> Unit <= Str a
+		print-str('Ptr(\(self))')
+
+	length (Ptr(self) Ptr a) -> Int <= Str a
+		return 4 + length(self) + 1
 
 

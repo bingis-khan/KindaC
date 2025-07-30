@@ -4,7 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 module AST.Mono (module AST.Mono) where
-import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess)
+import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation)
 import qualified AST.Def as Def
 import AST.Def (Locality, PP (..), (<+>))
 import Data.List.NonEmpty (NonEmpty)
@@ -12,6 +12,7 @@ import AST.Typed (TC)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.String (fromString)
 import Data.Functor ((<&>))
+import Data.Text (Text)
 
 
 data Mono
@@ -45,6 +46,7 @@ type instance XTVar M = ()
 type instance XOther M = ()
 type instance XInstDef M = ()
 type instance XMutAccess M = (MutAccess M, Type M)
+type instance XStringInterpolation M = Text
 
 newtype EnvDefs = EnvDefs [Either EnvMod EnvDef]
 

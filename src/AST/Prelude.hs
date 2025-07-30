@@ -3,7 +3,7 @@ module AST.Prelude (module AST.Prelude) where
 
 import qualified AST.Def as Def
 import AST.Typed (TC)
-import AST.Common (Module, DataCon, Expr, Type, Node (..))
+import AST.Common (Module, DataCon, Expr, Type, Node (..), ClassDef)
 import Data.Fix (Fix(..))
 
 
@@ -19,27 +19,31 @@ data Prelude = Prelude
   { tpModule       :: Module TC
 
   -- extra stuff for resolving/typechecking that is always needed.
-  , unitValue      :: DataCon TC
   , toplevelReturn :: Expr  TC  -- includes the type one should refer to. should be Int (later U8)
   , boolType       :: Type TC
   , intType        :: Type TC
   , floatType      :: Type TC
   , constStrType   :: Type TC
   , mkPtr          :: Type TC -> Type TC
+
+  , unitValue      :: DataCon TC
+  , strConcatValue :: DataCon TC
   }
 
 
-unitName :: Def.ConName
-unitName = Def.CN "Unit"
+unitName, strConcatName :: Def.ConName
+unitName      = Def.CN "Unit"
+strConcatName = Def.CN "StrConcat"
 
-tlReturnTypeName, boolTypeName, intTypeName, floatTypeName, unitTypeName, ptrTypeName, constStrTypeName :: Def.TCon
-tlReturnTypeName = Def.TC "Int"  -- later U8
-intTypeName      = Def.TC "Int"  -- later a typeclass?
-floatTypeName    = Def.TC "Float"
-boolTypeName     = Def.TC "Bool"
-unitTypeName     = Def.TC "Unit"
-ptrTypeName      = Def.TC "Ptr"
-constStrTypeName = Def.TC "ConstStr"
+tlReturnTypeName, boolTypeName, intTypeName, floatTypeName, unitTypeName, ptrTypeName, constStrTypeName, strConcatTypeName :: Def.TCon
+tlReturnTypeName  = Def.TC "Int"  -- later U8
+intTypeName       = Def.TC "Int"  -- later a typeclass?
+floatTypeName     = Def.TC "Float"
+boolTypeName      = Def.TC "Bool"
+unitTypeName      = Def.TC "Unit"
+ptrTypeName       = Def.TC "Ptr"
+constStrTypeName  = Def.TC "ConstStr"
+strConcatTypeName = Def.TC "StrConcat"
 
 
 -- Kinda of a weird solution. This "pack" describes the way a type could be found without Prelude.
@@ -56,3 +60,9 @@ constStrFind = PF constStrTypeName constStrType
 ptrFind :: Type TC -> PreludeFind
 ptrFind t = PF ptrTypeName (`mkPtr` t)
 
+
+--- CLASSES
+-- (right now only string, but there's also going to be Num n shiet.)
+
+strClassName :: Def.ClassName
+strClassName = Def.TCN "Str"

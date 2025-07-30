@@ -39,7 +39,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Traversable (for)
 import Data.Either (lefts)
 import qualified Data.Map as Map
-import AST.Common (Module, AnnStmt, StmtF (..), Decon, DeconF (..), DataCon (..), DataDef (..), Type, Expr, Node (..), ExprF (..), TypeF (..), Function, IfStmt (..), MutAccess (..))
+import AST.Common (Module, AnnStmt, StmtF (..), Decon, DeconF (..), DataCon (..), DataDef (..), Type, Expr, Node (..), ExprF (..), TypeF (..), Function, IfStmt (..), MutAccess (..), LitType (..))
 import AST.Mono (M, EnvMod (assignee, assigned))
 import AST.Def ((:.)(..), Annotated (..), CtxData (..), Op (..), Locality, pp, fmap2)
 import qualified AST.Def as Def
@@ -284,8 +284,8 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
 
   -- branch without the need for added types.
   pe -> case fmap snd pe of
-    Lit (Def.LInt x) -> pls x
-    Lit (Def.LString x) -> escapeStringLiteral x
+    Lit (LInt x) -> pls x
+    Lit (LString x) -> escapeStringLiteral x
 
     -- here, referencing a normal variable. no need to do anything special.
     Var v loc -> cVar t loc v
@@ -299,8 +299,9 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
     -- NOTE: interesting, we still have "As", although it's not needed after typechecking. another reason to modify the Common AST
     _ -> undefined
 
-escapeStringLiteral :: String -> PL
-escapeStringLiteral s = fromString $ show s
+-- show automatically escapes the string gegegegege
+escapeStringLiteral :: Text -> PL
+escapeStringLiteral = fromString . show
 
 isLValue :: Expr M -> Bool
 isLValue = maybe False (<= 0) . go where

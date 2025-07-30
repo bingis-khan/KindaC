@@ -23,6 +23,9 @@ Float
 #[ctype 'const char*']
 ConstStr  # TODO: later, make a ptr + length struct string.
 
+# stolen from Str std module. used in string interpolation
+StrConcat l r
+	StrConcat l r
 
 # #[ctype 'uint8_t', cstdinclude 'stdint.h']
 # U8

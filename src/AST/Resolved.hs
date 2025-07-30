@@ -17,6 +17,7 @@ import Data.Functor ((<&>))
 import AST.Def (PP (..), PPDef, ppDef)
 import AST.Typed (TC)
 import Data.String (fromString)
+import Data.Text (Text)
 
 data Resolved
 type R = Resolved
@@ -52,6 +53,7 @@ type instance XFunType Resolved = DeclaredType R
 type instance XDataScheme Resolved = [TVar R]
 type instance XMutAccess Resolved = MutAccess R
 type instance XInstExport R = Inst
+type instance XStringInterpolation R = Text  -- we "unpack" string interpolation pretty early - here. NOTE: I might change it if the errors are bad tho.
 
 
 data Env = Env { envID :: Def.EnvID, envStackLevel :: Def.EnvStack, fromEnv :: [(VariableProto, Def.Locality)] }

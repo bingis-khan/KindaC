@@ -88,8 +88,17 @@ typeOfNode :: Fix (Node phase nodeF) -> XNode phase
 typeOfNode (Fix (N t _)) = t
 
 
+type family XStringInterpolation phase
+
+data LitType phase
+  -- Number types. They have infinite precision, because I don't want to lose the information and give the appropriate message.
+  = LInt Integer
+  | LFloat Rational
+  | LString (XStringInterpolation phase)
+
+
 data ExprF phase a
-  = Lit Def.LitType  -- NOTE: all these types are not set in stone. If I need to change it later (to be dependent on phase) then I should do it.
+  = Lit (LitType phase)  -- NOTE: all these types are not set in stone. If I need to change it later (to be dependent on phase) then I should do it.
   | Var (XVar phase) (XVarOther phase)
   | Con (XCon phase) (XConOther phase)
 
@@ -334,6 +343,13 @@ classFunDecToClassType :: ClassFunDec a -> ClassType phase
 classFunDecToClassType (CFD _ _ params ret _) =
   Fix $ NormalType $ TFun undefined undefined undefined
 
+relit :: (XStringInterpolation phase -> XStringInterpolation phase') -> LitType phase -> LitType phase'
+relit fn = \case
+  LInt x -> LInt x
+  LFloat f -> LFloat f
+  LString s -> LString $ fn s
+
+
 ---------------
 -- Instances --
 ---------------
@@ -421,7 +437,7 @@ instance PP (XMem phase) => PP (MutAccess phase) where
     MutRef -> "&"
     MutField mem -> "." <> pp mem
 
-instance (PP a, PP (XCon phase), PP (XVar phase), PP (XTCon phase), PP (XMem phase), PP (XVarOther phase), PP (XLamOther phase), PP (Type phase), PP (XLamVar phase), PPDef (XTCon phase)) => PP (ExprF phase a) where
+instance (PP a, PP (XCon phase), PP (XVar phase), PP (XTCon phase), PP (XMem phase), PP (XVarOther phase), PP (XLamOther phase), PP (Type phase), PP (XLamVar phase), PPDef (XTCon phase), PP (XStringInterpolation phase)) => PP (ExprF phase a) where
   pp expr = case pp <$> expr of
     Lit l -> pp l
     Var v other -> pp other <> pp v  -- HACK (other is probably only going to be "Locality")
@@ -507,7 +523,7 @@ instance (PP (XEnv phase), PP (XFunVar phase), PP (XLVar phase), PP (XMem phase)
     pp v <+> Def.encloseSepBy "(" ")" ", " (fmap (\(pName, pType) -> ppDef pName <+> pp pType) params) <+> pp retType <+> pp extra <+> pp fenv
 
 instance
-  (PP (XVar phase), PP (XLVar phase), PP (XFunVar phase), PP (XCon phase), PP (XEnv phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XTVar phase), PP (XTCon phase), PP (XVarOther phase), PP (XLamOther phase), PP (Type phase), PP (XNode phase), PP (XFunType phase), PPDef (XClass phase), PPDef (XTCon phase), PP (XLamVar phase), PP (XMutAccess phase), PP (XFunOther phase)) => PP (InstDef phase) where
+  (PP (XVar phase), PP (XLVar phase), PP (XFunVar phase), PP (XCon phase), PP (XEnv phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XTVar phase), PP (XTCon phase), PP (XVarOther phase), PP (XLamOther phase), PP (Type phase), PP (XNode phase), PP (XFunType phase), PPDef (XClass phase), PPDef (XTCon phase), PP (XLamVar phase), PP (XMutAccess phase), PP (XFunOther phase), PP (XStringInterpolation phase)) => PP (InstDef phase) where
   pp inst =
     let
       header = "inst" <+> ppDef inst.instClass <+> ppDef (fst inst.instType) <+> Def.sepBy " " (pp <$> snd inst.instType)
@@ -566,7 +582,7 @@ instance (PP (XDClass phase), PP (XFunVar phase), PP (XLVar phase), PP (XMem pha
 instance (PP (XLVar phase), PP (XFunVar phase), PP (XMem phase), PP (XCon phase), PP (XTCon phase), PP (XNode phase), PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (ClassFunDec phase) where
   pp (CFD _ v params ret _) = pp v <+> Def.encloseSepBy "(" ")" ", " (fmap (\(pDecon, pType) -> pp pDecon <+> pp pType) params) <+> pp ret
 
-instance (PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XVar phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XEnv phase), PP (XFunVar phase), PP (Type phase), PP (XNode phase), PP (XFunType phase), PP (XLamVar phase), PPDef (XTCon phase), PP (XMutAccess phase), PP (XFunOther phase)) => PP (Function phase) where
+instance (PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XVar phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XEnv phase), PP (XFunVar phase), PP (Type phase), PP (XNode phase), PP (XFunType phase), PP (XLamVar phase), PPDef (XTCon phase), PP (XMutAccess phase), PP (XFunOther phase), PP (XStringInterpolation phase)) => PP (Function phase) where
   pp fn = Def.ppBody' pp (pp fn.functionDeclaration) fn.functionBody
 
 instance (PP (XMem phase), PP (XLVar phase), PP (XCon phase), PP (XTCon phase)) => PP (Fix (DeconF phase)) where
@@ -579,3 +595,8 @@ instance (PP (XTOther phase), PP (XTFun phase), PPDef (XTCon phase)) => PP (Decl
 
 instance PP (XDClass phase) => PPDef (ClassDef phase) where
   ppDef cd = pp cd.classID
+
+instance PP (XStringInterpolation phase) => PP (LitType phase) where
+  pp (LInt i) = Def.pretty i
+  pp (LFloat f) = pp f
+  pp (LString s) = pp s

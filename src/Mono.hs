@@ -38,7 +38,7 @@ import Control.Monad (void)
 import Data.String (fromString)
 import Data.List (find, partition)
 import AST.Typed (TC)
-import AST.Common (AnnStmt, Module, StmtF (..), Expr, Node (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), XMutAccess)
+import AST.Common (AnnStmt, Module, StmtF (..), Expr, Node (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), XMutAccess, LitType (..))
 import AST.Mono (M)
 import AST.IncompleteMono (IM)
 import AST.Def ((:.) (..), Annotated (..), Locality (..), phase, PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>))
@@ -313,7 +313,7 @@ mExpr = cata $ fmap embed . \(N t expr) -> do
           um <- member (dd, memname)
           pure $ MemAccess me um
 
-        Lit lit -> pure $ Lit lit
+        Lit lit -> pure $ Lit $ Common.relit id lit
         Op l op r -> pure $ Op l op r
         Call e args -> pure $ Call e args
         As (Fix (N _ e)) _ -> do
@@ -1107,7 +1107,8 @@ mfExpr = cata $ \(N imt imexpr) -> do
       mfe <- e
       pure $ MemAccess mfe um
 
-    Lit lt -> pure $ Lit lt
+    Lit lt -> pure $ Lit $ Common.relit id lt
+
     Op l op r -> Op <$> l <*> pure op <*> r
     Call c args -> Call <$> c <*> sequenceA args
     As e t -> As <$> e <*> mfType t

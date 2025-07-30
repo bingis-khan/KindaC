@@ -11,20 +11,17 @@
 {-# LANGUAGE UndecidableInstances #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, DeconF, ExprF, XNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, ClassType, Rec, Decon, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, XClassConstraints, XClassFunDec, XLamVar, instFunDec, functionOther, instFuns, instClassFunDec, functionEnv, MutAccess, XMutAccess, XInstExport)
+import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, XNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, Rec, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, XClassConstraints, XClassFunDec, XLamVar, instFunDec, functionOther, MutAccess, XMutAccess, XInstExport, XStringInterpolation)
 import qualified AST.Def as Def
 import Data.Map (Map)
 import Data.Text (Text)
 import Data.Fix (Fix (..))
-import AST.Def ((:.), Annotated, PP (..), (<+>), PPDef)
+import AST.Def (PP (..), (<+>))
 import Data.Biapplicative (bimap)
 import Data.Functor.Classes (Ord1 (..), Eq1 (..))
 import Data.Functor ((<&>))
 import Data.String (fromString)
 import qualified Data.Map as Map
-import Data.List.NonEmpty (NonEmpty)
-import Data.Foldable (find)
-import Data.Maybe (fromJust)
 import qualified Data.Set as Set
 
 
@@ -97,6 +94,7 @@ type instance XTVar TC = TVar TC
 type instance XClassConstraints TC = ()
 type instance XMutAccess TC = (MutAccess TC, Type TC)
 type instance XInstExport TC = InstDef TC
+type instance XStringInterpolation TC = Text  -- here, we're eliminating the string interpolation completely!
 
 data LamDec = LamDec Def.UniqueVar Env
 type instance XLamOther TC = LamDec
@@ -298,7 +296,7 @@ instance Ord Variable where
 
 --------
 
-instance (PP (XLVar phase), PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XTOther phase), PP (XTFun phase), PP (XNode phase), Def.PPDef (XTCon phase), PP (XLamVar phase), PP (XMutAccess phase)) => PP (Mod phase) where
+instance (PP (XLVar phase), PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XTOther phase), PP (XTFun phase), PP (XNode phase), Def.PPDef (XTCon phase), PP (XLamVar phase), PP (XMutAccess phase), PP (XStringInterpolation phase)) => PP (Mod phase) where
   pp m = Def.ppLines pp m.topLevelStatements
 
 instance PP FunOther where

@@ -11,6 +11,7 @@ import qualified AST.Def as Def
 import Data.List.NonEmpty (NonEmpty)
 import AST.Def (PP (..), (<+>), PPDef (..))
 import qualified Data.List.NonEmpty as NonEmpty
+import Data.Text (Text)
 
 
 data Untyped
@@ -41,6 +42,7 @@ type instance XTConOther Untyped = ()
 type instance XNode Untyped = ()
 type instance XFunType Untyped = DeclaredType U
 type instance XMutAccess Untyped = MutAccess U
+type instance XStringInterpolation Untyped = [Either Text (Qualified Def.VarName)]
 
 data ClassConstraint = CC (Qualified Def.ClassName) Def.UnboundTVar deriving Eq
 type instance XClassConstraints Untyped = [ClassConstraint]

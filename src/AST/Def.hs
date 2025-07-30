@@ -1,4 +1,4 @@
- {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -97,14 +97,6 @@ data Op
   | GreaterThan
   deriving (Eq, Ord, Show)
 
-data LitType
-  -- Number types. They have infinite precision, because I don't want to lose the information and give the appropriate message.
-  = LInt Integer
-  | LFloat Rational
-  | LString String
-
-  -- | LString Text
-  deriving (Eq, Ord, Show)
 
 -- Different annotation types.
 -- TODO: right now they are parsed and typed properly. But they don't really have to be.
@@ -309,6 +301,8 @@ instance PP () where
 
 instance PP Int
 
+instance PP Rational
+
 instance PP a => PP (Maybe a) where
   pp = \case
     Nothing -> "Nothing"
@@ -342,11 +336,6 @@ instance (PP l, PP r) => PP (Either l r) where
 
 instance PP (g (f a)) => PP ((g :. f) a) where
   pp (O x) = pp x
-
-instance PP LitType where
-  pp (LInt i) = pretty i
-  pp (LFloat f) = fromString $ show f
-  pp (LString s) = pretty s
 
 instance PP UnboundTVar where
   pp tv = pretty tv.fromUTV
@@ -669,6 +658,9 @@ fmap3 = fmap . fmap . fmap
 
 traverse2 :: (Applicative f, Traversable t1, Traversable t2) => (a -> f b) -> t1 (t2 a) -> f (t1 (t2 b))
 traverse2 = traverse . traverse
+
+for2 :: (Applicative f, Traversable t1, Traversable t2) => t1 (t2 a) -> (a -> f b) -> f (t1 (t2 b))
+for2 = flip traverse2
 
 sequenceA2 :: (Applicative f, Traversable t1, Traversable t2) => t1 (t2 (f a)) -> f (t1 (t2 a))
 sequenceA2 = traverse sequenceA
