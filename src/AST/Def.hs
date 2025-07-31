@@ -84,7 +84,7 @@ newtype MemName = MN { fromMN :: Text } deriving (Show, Eq, Ord)
 newtype ClassName = TCN { fromTN :: Text } deriving (Show, Eq, Ord)
 newtype ModuleName = ModName { fromModName :: Text } deriving (Show, Eq, Ord)
 
-data Op
+data BinOp
   = Plus
   | Minus
   | Times
@@ -94,7 +94,19 @@ data Op
   | NotEquals
 
   | LessThan
+  | LessEqual
   | GreaterThan
+  | GreaterEqual
+
+  | And
+  | Or
+  deriving (Eq, Ord, Show)
+
+data UnOp
+  = Not
+  | Negation
+  | Ref
+  | Deref
   deriving (Eq, Ord, Show)
 
 
@@ -108,6 +120,10 @@ data Ann
 
   | AActualPointerType
   | AExternal  -- added by the compiler to external functions!
+
+  | AUndefinedReturn
+  | AGoofyCast
+  | AGoofyPtrOffset
   deriving (Show, Eq, Ord)
 
 -- Annotation decorator thing.
@@ -448,6 +464,9 @@ mustOr _ (Just x) = x
 defaultEmpty :: (Monoid v, Ord k) => k -> Map k v -> v
 defaultEmpty k m = fromMaybe mempty $ m !? k
 
+findAnnotation :: [Ann] -> (Ann -> Maybe a) -> Maybe a
+findAnnotation anns fn = listToMaybe $ mapMaybe fn anns
+
 
 -----------------
 -- Printing stuff
@@ -594,6 +613,9 @@ ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
       AActualPointerType -> "actual-pointer-type"
       ACFunName s -> "cfunname" <+> quote s
       AExternal -> "external"
+      AUndefinedReturn -> "goofy-ahh-undefined-return"
+      AGoofyCast -> "goofy-ahh-cast"
+      AGoofyPtrOffset -> "goofy-ahh-pointer-offset"
 
     quote = pure . PP.squotes . PP.pretty
 

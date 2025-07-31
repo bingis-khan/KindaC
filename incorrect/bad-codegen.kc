@@ -1,32 +1,21 @@
-#$ This is related to the issue of mutating outside of closure. The only problem here is that I don't yet support mutation outside of closures. Whether I add it is also up for debate.
+use Term
+use Mem
+	Allocator(allocate, free)
+	Slice
+	offset-ptr
+	addresses
+use Iter
+	range
+	zip
 
-id (x)
-	return x
 
-uni (l asd, r asd)
+set-ptr-value (p Ptr a, x a) -> Unit
+	p <&= x
 	return
 
-nuttin ()
-	print 123
-	return
+al = Mem.get-c-allocator()
+xs = al allocate(3) as Slice Int
 
-ff = nuttin
-
-f (x a) -> Unit
-	g (y b) -> Unit
-		printn ()
-			print x
-			print y
-			return
-
-		ff <= printn
-		return
-
-	g(Unit)
-	g(420)
-	return
-
-f(Unit)
-f(420)
-f(True)
-print 69420
+xs addresses() Iter.for-each(p: set-ptr-value(p, 0))
+xs zip(range(10, 20)) Iter.for-each(Term.println)
+al free(xs)

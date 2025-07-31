@@ -41,7 +41,7 @@ import Data.Either (lefts)
 import qualified Data.Map as Map
 import AST.Common (Module, AnnStmt, StmtF (..), Decon, DeconF (..), DataCon (..), DataDef (..), Type, Expr, Node (..), ExprF (..), TypeF (..), Function, IfStmt (..), MutAccess (..), LitType (..))
 import AST.Mono (M, EnvMod (assignee, assigned))
-import AST.Def ((:.)(..), Annotated (..), CtxData (..), Op (..), Locality, pp, fmap2)
+import AST.Def ((:.)(..), Annotated (..), CtxData (..), Locality, pp, fmap2, BinOp (..), UnOp (..))
 import qualified AST.Def as Def
 
 
@@ -74,7 +74,7 @@ cMain stmts = pl $ addTopLevel $ "int" § "main" & "()" <§ cBlock (cStmt <$> st
 
 
 cStmt :: AnnStmt M -> PP
-cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
+cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
   Pass -> mempty
   Print et ->
     let e = cExpr et
@@ -111,6 +111,10 @@ cStmt = cata $ \(O (Annotated _ monoStmt)) -> case monoStmt of
   --   pl "// ERROR: we don't handle references yet!"
   --   statement $ cVarName uv § "=" § cExpr e
   ExprStmt e -> statement $ cExpr e
+  Return e | Def.AUndefinedReturn `elem` anns -> do  -- RETARDE HACK pt 2
+    let v = "cool_undefined_x"
+    statement $ cDefinition (Common.typeOfNode e) v
+    statement $ "return" § v
   Return e ->
     statement $ "return" § cExpr e
   While cond bod ->
@@ -220,6 +224,11 @@ cDeconAccess basevar mdecon = fmap2 (\fn -> fn basevar) $ flip cata mdecon $ \(N
 
 cExpr :: Expr M -> PL
 cExpr expr = flip para expr $ \(N t e) -> case e of
+
+  -- ultra-bodged pointer offset (INCREDIBLY BRITTLE)
+  Call (Fix (N _ (Var (M.DefinedFunction fn) _)), _) [ptr, count] | Def.AGoofyPtrOffset `elem` fn.functionDeclaration.functionOther -> do
+    enclose "(" ")" $ enclose "(" ")" (snd ptr) § "+" § enclose "(" ")" (snd count)
+
   Call (ogfn, fn) args ->
       let ft = Common.typeOfNode ogfn
           union = case ft of
@@ -233,14 +242,14 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
               v <- createIntermediateVariable ft fn
               cCall (v & ".fun") $ ("&" & v & ".env") : fmap snd args
 
-  Op (l, le) Equals (r, re) | not (isBuiltinType (Common.typeOfNode l))-> do
+  BinOp (l, le) Equals (r, re) | not (isBuiltinType (Common.typeOfNode l))-> do
     le' <- createIntermediateVariable (Common.typeOfNode l) le
     re' <- createIntermediateVariable (Common.typeOfNode r) re
 
     include "string.h"
     enclose "(" ")" $ "0" § "==" § cCall "memcmp" [cRef le', cRef re', cSizeOf (Common.typeOfNode l)]
 
-  Op (l, le) NotEquals (r, re) | not (isBuiltinType (Common.typeOfNode l))-> do
+  BinOp (l, le) NotEquals (r, re) | not (isBuiltinType (Common.typeOfNode l))-> do
     le' <- createIntermediateVariable (Common.typeOfNode l) le
     re' <- createIntermediateVariable (Common.typeOfNode r) re
 
@@ -249,8 +258,8 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
 
   RecUpdate (e, ee) upd -> do
     let et = Common.typeOfNode e
-    let dd@DD { ddCons = erecs } = case project et of
-          TCon dd _ _ -> dd
+    let (dd@DD { ddCons = erecs }, ts) = case project et of
+          TCon dd ts _ -> (dd, ts)
           _ -> undefined
     let records = case erecs of
           Left recs -> recs
@@ -268,7 +277,7 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
     let initializeUpdatedFields = upd <&> \(um, (_, me)) ->
           (um, me)
 
-    cRecordInit dd (NonEmpty.prependList initializePersistedFields initializeUpdatedFields)
+    cRecordInit dd ts (NonEmpty.prependList initializePersistedFields initializeUpdatedFields)
 
   -- Handle references. Right now, I want to mimic C. Create a real reference, or, if it's not possible, create a temporary variable.
   -- TODO:
@@ -277,8 +286,8 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
   -- [V] 2.5. &ptr.og-iter  (straight up create pointer to a field)
   -- [V] 3. &((&(ptr&.og-iter))&)  (this is ref/deref)
   -- [V] 4. &((&(ptr&.og-iter))&.og2-iter)  (this is ref/deref + fields)
-  Ref (oge, e) | isLValue oge -> cRef e  -- is it enough?
-  Ref (oge, e) -> do
+  UnOp Ref (oge, e) | isLValue oge -> cRef e  -- is it enough?
+  UnOp Ref (oge, e) -> do
     newVar <- createIntermediateVariable (Common.typeOfNode oge) e
     cRef newVar
 
@@ -290,11 +299,14 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
     -- here, referencing a normal variable. no need to do anything special.
     Var v loc -> cVar t loc v
     Con uc _ -> cCon uc
-    Op l op r -> enclose "(" ")" $ l § cOp op § r
+    BinOp l op r -> enclose "(" ")" $ l § cOp op § r
+    UnOp Negation x -> enclose "(" ")" $ "-" & x
+    UnOp Not x -> enclose "(" ")" $ "!" & x
     Lam env params body -> cLambda env params t body
     MemAccess ee mem -> ee & "." & cRecMember mem
-    RecCon dd insts -> cRecordInit dd insts
-    Deref ee -> cDeref ee
+    RecCon dd insts ->
+      cRecordInit dd (error "record types do not need these") insts
+    UnOp Deref ee -> cDeref ee
 
     -- NOTE: interesting, we still have "As", although it's not needed after typechecking. another reason to modify the Common AST
     _ -> undefined
@@ -317,16 +329,15 @@ isLValue = maybe False (<= 0) . go where
 
   go = cata $ \(N _ e) -> case e of
     Var {} -> Just 0 :: Maybe Int
-    Deref x -> x <&> subtract 1  -- we don't care if we're dealing with a pointer, so negative values are OKAY
-    Ref x -> x <&> (+ 1)
+    UnOp Deref x -> x <&> subtract 1  -- we don't care if we're dealing with a pointer, so negative values are OKAY
+    UnOp Ref x -> x <&> (+ 1)
     MemAccess x _ -> x
 
     _ -> Nothing
 
-cRecordInit :: DataDef M -> NonEmpty (Def.UniqueMem, PL) -> PL
-cRecordInit (DD ut _ _ _) insts =
-  let dataTypeName = plt ut.typeName.fromTC & "__" & pls (hashUnique ut.typeID)
-  in enclose "(" ")" dataTypeName § Def.encloseSepBy "{" "}" ", " [
+cRecordInit :: DataDef M -> [Type M] -> NonEmpty (Def.UniqueMem, PL) -> PL
+cRecordInit dd ts insts =
+  enclose "(" ")" (cDataType dd ts) § Def.encloseSepBy "{" "}" ", " [
       "." & cRecMember um § "=" § e | (um, e) <- NonEmpty.toList insts
     ]
 
@@ -416,18 +427,19 @@ cEnvMod M.EnvMod { M.assigned = assigned, M.assignee = fn } = do
       else cFunction t v
 
   case assigned of
-    M.LocalEnv env@(M.Env _ vars) -> statement $ do
+    M.LocalEnv env@(M.Env _ vars) -> do
       -- TODO: copied.
       -- NOTE 18.07.25 - what the fuck am i doing here.
       --     Ah, right. We're getting all variables that much assignee. NOT SURE IF THERE IS GOING TO BE MORE THAN ONE FUNCTION, but just to be safe I guess. TODO: make an assert for this to find a counter example.
-      --     uniqueDefVars are finaly variables that will be put into that environment.
+      --  UPDATE 31.7.25: I think I found it. Check incorrect/bad-codegen.kc. I haven't delved into why it happened yet.
+      --     uniqueDefVars are variables that will be put into that environment.
       let uniqueDefVars = fmap snd $ Map.toList $ Map.fromList $ vars <&> \case
             tup@(v@(M.DefinedFunction _), _, t) | doesFunctionNeedExplicitEnvironment t -> ((v, Just t), tup)
             tup@(v, _, _) -> ((v, Nothing), tup)
       let currentInstVars = mapMaybe (\case { (M.DefinedFunction fn', l, t)| fn' == fn -> Just (fn', l, t); _ -> Nothing }) uniqueDefVars
-      env <- cEnv env  -- Env which we assign TO.
 
-      for_ currentInstVars $ \(fn, _, t) ->
+      for_ currentInstVars $ \(fn, _, t) -> statement $ do
+        env <- cEnv env  -- Env which we assign TO.
         env.envName & "." & envVarName fn t § "=" § cVar t Def.Local (M.DefinedFunction fn)
 
     M.LocalEnv {} -> error "UNREACHABLE?"
@@ -707,6 +719,15 @@ cRecordStruct recs = "struct" <§ cBlock
 
 
 cVar :: Type M -> Locality -> M.Variable -> PL
+
+-- ultra-bodged type casting
+cVar t _ (M.DefinedFunction fn) | Def.AGoofyCast `elem` fn.functionDeclaration.functionOther = do
+  let (TFun _ _ ret) = project t
+  enclose "(" ")" $ cType ret
+
+-- even more bodged pointer offset (i should really replace this soon - we need expression replacement for arithmetic, so its high time it happens?)
+cVar t _ (M.DefinedFunction fn) | Def.AGoofyCast `elem` fn.functionDeclaration.functionOther = ""  -- don't generate anything here. code will be generated at Call
+
 -- bodged external function thing.
 --  NOTE: (for some reason its not being added to the environment. THAT'S GOOD! but i don't know why....... TODO i guess)
 cVar _ _ (M.DefinedFunction fn) | Def.AExternal `elem` fn.functionDeclaration.functionOther = do
@@ -825,16 +846,20 @@ cCall fun args = fun & "(" & sepBy ", " args & ")"
 cTernary :: PL -> PL -> PL -> PL
 cTernary cond ifTrue ifFalse = cond § "?" § ifTrue § ":" § ifFalse
 
-cOp :: Op -> PL
+cOp :: BinOp -> PL
 cOp = \case
-  Plus        -> "+"
-  Minus       -> "-"
-  Times       -> "*"
-  Divide      -> "/"
-  Equals      -> "=="
-  NotEquals   -> "!="
-  LessThan    -> "<"
-  GreaterThan -> ">"
+  Plus         -> "+"
+  Minus        -> "-"
+  Times        -> "*"
+  Divide       -> "/"
+  Equals       -> "=="
+  NotEquals    -> "!="
+  LessThan     -> "<"
+  LessEqual    -> "<="
+  GreaterThan  -> ">"
+  GreaterEqual -> ">="
+  And          -> "&&"
+  Or           -> "||"
 
 
 cRef :: PL -> PL

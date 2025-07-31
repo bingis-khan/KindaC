@@ -1,0 +1,79 @@
+use Mem
+	offset-ptr
+	undefined
+	ptr-size-of
+use Str
+	Str(print-str, length)
+use Iter
+	IntoIter(into-iter)
+	Iter(next)
+use Error
+
+
+# maybe move slice into its own module?
+Slice a
+	ptr Ptr a
+	count Int
+
+elem-size-of (slice Slice a):
+	slice.ptr ptr-size-of()
+
+# When these functions will be in their own module, we won't need the Slice prefix.
+
+get (slice Slice a, i Int) -> a
+	if i < 0 or i >= slice.count
+		Error.critical('Access to slice at index \(i). (max: \(slice.count))')
+		return undefined()
+
+	elem = slice.ptr offset-ptr(i)&
+	return elem
+
+try-get (slice Slice a, i Int) -> Maybe a
+	if i < 0 or i >= slice.count
+		return None
+	elem = slice.ptr offset-ptr(i)&
+	return Just(elem)
+
+
+SliceIter a
+	slice Slice a
+	current-offset Int
+
+inst IntoIter Slice a
+	into-iter (self):
+		SliceIter { slice: self, current-offset: 0 }
+
+inst IntoIter SliceIter a
+	into-iter (self): self
+
+inst Iter SliceIter a
+	next (self Ptr (SliceIter a)) -> Maybe a
+		off = self&.current-offset
+		if off + 1 > self&.slice.count
+			return None
+
+		elem = self&.slice.ptr offset-ptr(off)&
+		self <&.current-offset= off + 1
+		return Just(elem)
+
+
+SliceAddressIter a
+	slice Slice a
+	current-offset Int
+
+addresses (slice Slice a):
+	SliceAddressIter { slice, current-offset: 0 }
+
+
+inst IntoIter SliceAddressIter a
+	into-iter (self): self
+
+inst Iter SliceAddressIter a
+	next (self Ptr (SliceAddressIter a)) -> Maybe (Ptr a)
+		off = self&.current-offset
+		if off + 1 > self&.slice.count
+			return None
+
+		elem = self&.slice.ptr offset-ptr(off)
+		self <&.current-offset= off + 1
+		return Just(elem)

@@ -1,17 +1,18 @@
-{-# LANGUAGE LambdaCase, OverloadedStrings #-}
+{-# LANGUAGE LambdaCase, OverloadedStrings, GeneralizedNewtypeDeriving #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use <$>" #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Parser (parse) where
 
 
-import Text.Megaparsec hiding (parse)
-import Text.Megaparsec.Char
-import qualified Text.Megaparsec as TM (parse)
+import qualified Text.Megaparsec as TM
 import qualified Text.Megaparsec.Char.Lexer as L
 import Control.Monad.Combinators.Expr
 import Data.Bifunctor (first, bimap)
@@ -28,21 +29,35 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), Op (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), ModuleName (..))
+import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), ModuleName (..), UnOp (..), BinOp (..))
 import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), XClassConstraints, Node (..), DeclaredType (..), MutAccess (..), LitType (..))
 import Data.Functor.Foldable (cata)
-import Control.Monad ((<=<))
+import Control.Monad ((<=<), MonadPlus, join)
 import Data.Either (partitionEithers)
 import AST.Untyped (Untyped, U, UntypedStmt (..), ClassConstraint (..), Qualified (..), ModuleQualifier (..), Use (..), UseItem (..))
 import qualified AST.Untyped as U
 import qualified AST.Common as Common
+import Control.Monad.Trans.Reader (Reader, ReaderT (..))
+import qualified Control.Monad.Trans.Reader as Reader
+import Control.Applicative (Alternative, many, (<|>), some)
+import Text.Megaparsec (ParsecT, ShowErrorComponent, Pos, choice, try, optional, between, lookAhead, sepBy1, sepBy, notFollowedBy, manyTill, ParseError (..), ErrorFancy (..), registerParseError, MonadParsec, eof, Parsec)
+import Control.Monad.Trans.Class (lift)
+import Data.String (IsString, fromString)
+import Text.Megaparsec.Char (eol, string, char)
 
 
-type Parser = Parsec MyParseError Text
-type FileName = String
+newtype Parser a = Parser { fromParser :: ReaderT (Parser ()) (Parsec MyParseError Text) a }
+  deriving (Functor, Applicative, Monad, Alternative, MonadPlus, MonadFail)
+deriving instance MonadParsec MyParseError Text Parser
+instance (a ~ TM.Tokens Text) => IsString (Parser a) where
+  fromString s = Parser $ ReaderT $ const (fromString s :: Parsec MyParseError Text Text)
 
-parse :: FileName -> Text -> Either Text (Module Untyped)
-parse filename = first (Text.pack . errorBundlePretty) . TM.parse (scn >> topLevels <* eof) filename
+parse :: FilePath -> Text -> Either Text (Module Untyped)
+parse filename prog =
+  let
+    tl = scn >> topLevels <* eof
+    eParsed = TM.runParser (Reader.runReaderT (fromParser tl) sc) filename prog
+  in first (Text.pack . TM.errorBundlePretty) eParsed
 
 
 -- Top level
@@ -89,8 +104,8 @@ sPass = do
 
 sIf :: Parser (Stmt U)
 sIf = do
-  (cond, ifBody) <- scope (,) (keyword "if" >> expression sc)
-  elifs <- many $ scope (,) (keyword "elif" >> expression sc)
+  (cond, ifBody) <- scope (,) (keyword "if" >> expression)
+  elifs <- many $ scope (,) (keyword "elif" >> expression)
   elseBody <- optional $ scope (const id) (keyword "else")
   pure $ If $ IfStmt cond ifBody elifs elseBody
 
@@ -98,7 +113,7 @@ sCase :: Parser (Stmt U)
 sCase = recoverableIndentBlock $ do
   -- case header
   keyword "case"
-  condition <- expression sc
+  condition <- expression
 
   -- switch inner
   pure $ L.IndentSome Nothing (pure . Switch condition . NE.fromList) sSingleCase
@@ -134,13 +149,13 @@ sDeconstruction = caseVariable <|> caseRecord <|> caseConstructor
 sPrint :: Parser (Stmt U)
 sPrint = do
   keyword "print"
-  expr <- expression sc
+  expr <- expression
   pure $ Print expr
 
 sDefinition :: Parser (Stmt U)
-sDefinition = L.lineFold scn $ \sc' -> do
-  name <- try $ variable <* symbol' sc' "="
-  rhs <- expression sc'
+sDefinition = lineFold $ do
+  name <- try $ oneline variable <* symbol "="
+  rhs <- expression
   pure $ Assignment name rhs
 
 sMutAssignment :: Parser (Stmt U)
@@ -149,7 +164,7 @@ sMutAssignment = do
     v <- variable
     accesses <- thatFunnyMutationOperator
     pure (v, accesses)
-  rhs <- expression sc
+  rhs <- expression
   pure $ Mutation name () accesses rhs
 
 -- maybe it's overly permissive?
@@ -175,11 +190,11 @@ thatFunnyMutationOperator = lexeme $ do
 sReturn :: Parser (Stmt U)
 sReturn = do
   keyword "return"
-  expr <- optional $ expression sc
+  expr <- optional expression
   pure $ Return expr
 
 sWhile :: Parser (Stmt U)
-sWhile = scope While $ keyword "while" >> expression sc
+sWhile = scope While $ keyword "while" >> expression
 
 sUse :: Parser (Stmt U)
 sUse = recoverableIndentBlock $ do
@@ -315,10 +330,10 @@ sInstFunction = recoverableIndentBlock $ do
 
 
 sExpression :: Parser (Stmt U)
-sExpression = do
-  from <- getOffset
-  expr@(Fix (N _ chkExpr)) <- expression sc
-  to <- getOffset
+sExpression = lineFold $ do
+  from <- TM.getOffset
+  expr@(Fix (N _ chkExpr)) <- expression
+  to <- TM.getOffset
   case chkExpr of
     Call _ _ -> pure $ ExprStmt expr
     _ -> do
@@ -362,16 +377,16 @@ deconToExpr = cata $ \(N _ decon) -> node $ case decon of
   CaseRecord con mems             -> RecCon con mems
 
 functionHeader :: Parser (FunDec U, Maybe (Expr U))
-functionHeader = do
+functionHeader = lineFold $ do
   let param = liftA2 (,) sDeconstruction (Common.fromMaybeToDeclaredType <$> optional pType)
-  name <- variable
-  params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
+  name <- oneline variable
+  params <- oneline $ between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
   ret <- choice
-    [ Left <$> (symbol ":" >> expression sc)
-    , Right <$> optional (symbol "->" >> pType)
+    [ Left <$> (symbol ":" >> expression)
+    , Right <$> oneline (optional (symbol "->" >> pType))
     ]
 
-  constraints <- sClassConstraints
+  constraints <- oneline sClassConstraints
 
   return $ case ret of
     Left expr -> (FD () name params TypeNotDeclared constraints, Just expr)
@@ -384,32 +399,43 @@ sDataDefinition :: Parser (Stmt U)
 sDataDefinition = recoverableIndentBlock $ do
   tname <- try $ typeName <* notFollowedBy (symbol ".")  -- NOTE: quick disambiguation from qualified names. (or maybe we should parse expression first?)
   polys <- many generic
-  return $ flip (L.IndentMany Nothing) (recoverCon conOrRecOrAnnotation) $ toRecordOrADT tname polys <=< assignAnnotations (\ann -> bimap (Annotated ann) (\fdc -> fdc ann))
-   where
-    conOrRecOrAnnotation :: Parser (Either [Ann] (Either (XMem U, Type U) ([Ann] -> DataCon U)))
-    conOrRecOrAnnotation = Left <$> annotation <|> Right . Left <$> dataRec <|> Right . Right <$> dataCon
+  choice
+    [ parseShortenedDD tname polys
+    , parseNormalDD tname polys
+    ]
+  where
+    parseShortenedDD tname polys = do
+      symbol ":"
+      dc <- dataCon <&> ($ [])  -- for now, no annotations!
+      let dd = DD tname polys (Right [dc]) []
+      pure $ L.IndentNone $ Other $ DataDefinition dd
 
-    toRecordOrADT :: TCon -> [UnboundTVar] -> [Either (Annotated (XMem U, Type U)) (DataCon U)] -> Parser (Stmt U)
-    -- empty datatype
-    toRecordOrADT tname polys [] = pure $ Other $ DataDefinition $ DD tname polys (Right []) []
+    parseNormalDD tname polys = pure $ flip (L.IndentMany Nothing) (recoverCon conOrRecOrAnnotation) $ toRecordOrADT tname polys <=< assignAnnotations (\ann -> bimap (Annotated ann) (\fdc -> fdc ann))
+     where
+      conOrRecOrAnnotation :: Parser (Either [Ann] (Either (XMem U, Type U) ([Ann] -> DataCon U)))
+      conOrRecOrAnnotation = Left <$> annotation <|> Right . Left <$> dataRec <|> Right . Right <$> dataCon
 
-    toRecordOrADT tname polys (first : rest) =
-      let (records, cons) = partitionEithers rest
-      in case first of
-        Left rec ->
-          case cons of
-            [] ->
-              pure $ Other $ DataDefinition $ DD tname polys (Left $ rec :| records) []
+      toRecordOrADT :: TCon -> [UnboundTVar] -> [Either (Annotated (XMem U, Type U)) (DataCon U)] -> Parser (Stmt U)
+      -- empty datatype
+      toRecordOrADT tname polys [] = pure $ Other $ DataDefinition $ DD tname polys (Right []) []
 
-            _:_ -> do
-              fail "Encountered constructors in a Record definition."
+      toRecordOrADT tname polys (first : rest) =
+        let (records, cons) = partitionEithers rest
+        in case first of
+          Left rec ->
+            case cons of
+              [] ->
+                pure $ Other $ DataDefinition $ DD tname polys (Left $ rec :| records) []
 
-        Right dc ->
-          case records of
-            [] ->
-              pure $ Other $ DataDefinition $ DD tname polys (Right $ dc : cons) []
-            _:_ -> do
-              fail "Encountered record fields in an ADT definition."  -- should not end parsing, but im lazy.
+              _:_ -> do
+                fail "Encountered constructors in a Record definition."
+
+          Right dc ->
+            case records of
+              [] ->
+                pure $ Other $ DataDefinition $ DD tname polys (Right $ dc : cons) []
+              _:_ -> do
+                fail "Encountered record fields in an ADT definition."  -- should not end parsing, but im lazy.
 
 
 dataRec :: Parser (XMem U, Type U)
@@ -432,13 +458,13 @@ dataCon = do
 
 annotation :: Parser [Ann]
 annotation = do
-  void $ string commentDelimeter  -- Important that we don't consume whitespace after this (symbol consumes whitespace at the end).
+  void $ char commentDelimeter  -- Important that we don't consume whitespace after this (symbol consumes whitespace at the end).
   manns <- between (symbol "[") (symbol "]") $ annotation `sepBy1` symbol ","
   pure $ catMaybes manns
 
   where
     annotation = do
-      keyOffset <- getOffset
+      keyOffset <- TM.getOffset
       key <- identifier  -- just parse the "key" part
       case key of
         "ctype" -> do
@@ -455,6 +481,10 @@ annotation = do
           ann $ ACFunName value
 
         "actual-pointer-type" -> ann AActualPointerType
+        "goofy-ahh-undefined-return" -> ann AUndefinedReturn
+        "goofy-ahh-cast" -> ann AGoofyCast
+        "goofy-ahh-pointer-offset" -> ann AGoofyPtrOffset
+
         unknownKey -> do
           registerExpect keyOffset unknownKey ["ctype", "cstdinclude", "clit"]
           pure Nothing
@@ -484,27 +514,32 @@ annotationOr x = Left <$> annotation <|> Right <$> x
 -- Expressions --
 -----------------
 
-expression :: Parser () -> Parser (Expr U)
-expression sc = makeExprParser term (operatorTable sc)
+expression :: Parser (Expr U)
+expression = makeExprParser term operatorTable
 
-operatorTable :: Parser () -> [[Operator Parser (Expr U)]]
-operatorTable s =
+operatorTable :: [[Operator Parser (Expr U)]]
+operatorTable =
   [ [ interleavable
     , recordUpdate
     ]
-  -- , [ prefix "-" Negation
-  --   , prefix "not" Not
-  --   ]
+  , [ prefix "-" Negation
+    , prefix "not" Not
+    ]
   , [ binary' "*" Times
-    , binaryS' (try $ symbol' s "/" <* notFollowedBy "=") Divide
+    , binaryS' (try $ symbol "/" <* notFollowedBy "=") Divide
     ]
   , [ binary' "+" Plus
     , binary' "-" Minus
     ]
   , [ binary' "==" Equals
     , binary' "/=" NotEquals
+    , binary' "<=" LessEqual
+    , binary' ">=" GreaterEqual
     , binary' "<"  LessThan
     , binary' ">"  GreaterThan
+    ]
+  , [ binary' "or" Or
+    , binary' "and" And
     ]
   , [ as
     ]
@@ -515,14 +550,15 @@ operatorTable s =
   , [ lowPrecedencePrefixOps
     ]
   ] where
-    binary' name op = binary s name $ \x y -> Fix $ N () $ Op x op y
-    binaryS' name op = binaryS name $ \x y -> Fix $ N () $ Op x op y
+    binary' name op = binary name $ \x y -> Fix $ N () $ BinOp x op y
+    binaryS' name op = binaryS name $ \x y -> Fix $ N () $ BinOp x op y
+    prefix s op = Prefix $ Fix . N () . UnOp op <$ symbol s
 
 binaryS :: Parser () -> (expr -> expr -> expr) -> Operator Parser expr
 binaryS s f = InfixL $ f <$ s
 
-binary :: Parser () -> Text -> (expr -> expr -> expr) -> Operator Parser expr
-binary sc s f = InfixL $ f <$ symbol' sc s
+binary :: Text -> (expr -> expr -> expr) -> Operator Parser expr
+binary s f = InfixL $ f <$ symbol s
 
 -- For some reason (i dunno, maybe that's how the OperatorTable works.), we can't properly chain postfix operators.
 -- Making a general function like this is a fix for that.
@@ -535,20 +571,20 @@ interleavable = Postfix $ fmap (foldl1 (.) . reverse) $ some $ choice
   ]
 
 deref :: Parser (Expr U -> Expr U)
-deref = symbol "&" $> node . Deref
+deref = symbol "&" $> node . UnOp Deref
 
 subscript :: Parser (Expr U -> Expr U)
 subscript = (symbol "." >> member) <&> \memname e -> node $ MemAccess e memname
 
 call :: Parser (Expr U -> Expr U)
 call = do
-    args <- between (symbol "(") (symbol ")") $ expression sc `sepBy` symbol ","
+    args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
     return $ node . flip Call args
 
 postfixCall :: Parser (Expr U -> Expr U)
 postfixCall = do
-  fnName <- notFollowedBy (symbol "as") *> eIdentifier  -- both functions and constructors are allowed to be called like this. 'as' HACK!
-  args <- between (symbol "(") (symbol ")") $ expression sc `sepBy` symbol ","
+  fnName <- notFollowedBy (symbol "as" <|> symbol "or" <|> symbol "and") *> eIdentifier  -- both functions and constructors are allowed to be called like this. 'as' HACK!
+  args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
   pure $ \firstArg -> node $ Call fnName (firstArg : args)  -- transforms it into a normal call expression. not exact AST representation, but hopefully, location information will make the difference invisible.
 
 recordUpdate :: Operator Parser (Expr U)
@@ -570,7 +606,7 @@ lowPrecedencePrefixOps = Prefix $ fmap (foldr1 (.)) $ some $ choice
   ]
 
 ref :: Parser (Expr U -> Expr U)
-ref = symbol "&" $> node . Ref
+ref = symbol "&" $> node . UnOp Ref
 
 lambda :: Parser (Expr U -> Expr U)
 lambda = do
@@ -596,26 +632,34 @@ node = Fix . N ()
 term :: Parser (Expr U)
 term = choice
   [ eDecimal
-  , eGrouping
-  , eString
+  , oneline eGrouping
+  , oneline eString
   , eRecordConstruction
   , eIdentifier
   ]
 
 eDecimal :: Parser (Expr U)
 eDecimal = do
-  decimal <- lexeme (L.signed sc L.decimal)
+  decimal <- lexeme $ L.signed sc L.decimal
   retfe $ Lit $ LInt decimal
 
 eGrouping :: Parser (Expr U)
-eGrouping = between (symbol "(") (symbol ")") $ expression sc
+eGrouping = between (symbol "(") (symbol ")") $ expression
 
 eString :: Parser (Expr U)
 eString = do
   let
+    innerVar = oneline $ do
+      v <- qualified variable
+      mods <- fmap (foldl (.) id . reverse) $ many $ choice
+            [ subscript
+            , deref
+            ]
+      pure $ mods $ Fix $ N () $ Var v ()
+
     varInterpolation = do
       void $ string "\\("
-      v <- qualified variable
+      v <- innerVar
       void $ char ')'
       pure $ Right v
     strLiteral = Left . Text.pack <$> some (notFollowedBy (char '\'') *> L.charLiteral)
@@ -631,16 +675,24 @@ eIdentifier = do
 eRecordConstruction :: Parser (Expr U)
 eRecordConstruction = do
   name <- try $ qualified typeName <* lookAhead (symbol "{")
-  recordDef <- NonEmpty.fromList <$> between (symbol "{") (symbol "}") (sepBy1 memberdef (symbol ","))
+  recordDef <- NonEmpty.fromList <$> between' (symbol "{") (symbol "}") (memberdef `sepBy1` symbol ",")
 
   retfe $ RecCon name recordDef
 
 memberdef :: Parser (MemName, Expr U)
 memberdef = do
       mem <- member
-      symbol ":"
-      e <- expression sc
-      pure (mem, e)
+      choice
+        [ do  -- typical thing.
+          symbol ":"
+          e <- expression
+          pure (mem, e)
+        , do  -- nahh... the record name is the same as the variable name.
+          -- let's see the error messages. if they are bad, then I should make a separate datatype for this case.
+          let qvn = Qualified Nothing $ VN $ fromMN mem
+          let expr = Fix $ N () $ Var qvn ()
+          pure (mem, expr)
+        ]
 
 -----------
 -- Types --
@@ -775,21 +827,21 @@ className = TCN . fromTC <$> typeName
 identifier :: Parser Text
 identifier = do
   lexeme $ do
-    x <- lowerChar
+    x <- C.lowerChar
     xs <- many identifierChar
     pure $ T.pack (x:xs)
 
 dataConstructor :: Parser ConName
 dataConstructor =
   lexeme $ do
-    x <- upperChar
+    x <- C.upperChar
     xs <- many identifierChar
     pure $ CN $ T.pack (x:xs)
 
 
 -- identifiers: common
 identifierChar :: Parser Char
-identifierChar = alphaNumChar <|> char '\'' <|> try (char '-' <* notFollowedBy hspace1)
+identifierChar = C.alphaNumChar <|> char '\'' <|> try (char '-' <* notFollowedBy C.hspace1)
 
 
 stringLiteral :: Parser Text
@@ -798,16 +850,8 @@ stringLiteral = do
   s <- manyTill L.charLiteral (char '\'')
   return $ T.pack s
 
-
-lineFold :: (Parser () -> Parser a) -> Parser a
-lineFold px = L.lineFold scn px
-  
-
 symbol :: Text -> Parser ()
-symbol = void . L.symbol sc
-
-symbol' :: Parser () -> Text -> Parser ()
-symbol' s = void . L.symbol s
+symbol t = void $ L.symbol fsc t
 
 keyword :: Text -> Parser ()
 keyword kword = void $ lexeme (try $ string kword <* notFollowedBy identifierChar)
@@ -819,22 +863,28 @@ scope f ref = recoverableIndentBlock $ do
 
 lineComment :: Parser ()
 lineComment =
-  try (string commentDelimeter <* notFollowedBy "[") *> void (takeWhileP (Just "character") (/= '\n'))
+  try (char commentDelimeter <* notFollowedBy "[") *> void (TM.takeWhileP (Just "character") (/= '\n'))
 
 -- lineComment = L.skipLineComment "#"  -- previous implementation without considering annotations.
 
-commentDelimeter :: Text
-commentDelimeter = "#"
+commentDelimeter :: Char
+commentDelimeter = '#'
 
 
 scn :: Parser ()
-scn = L.space space1 lineComment empty
+scn = L.space C.space1 lineComment TM.empty
 
 sc :: Parser ()
-sc = L.space hspace1 lineComment empty
+sc = L.space C.hspace1 lineComment TM.empty
+
+fsc :: Parser ()  -- foldable newline
+fsc = void $ optional $ try $ join $ Parser Reader.ask  -- the optional + try part is VERY BAD..! i think...  i had problems with trailing tokens, where they consumed too much whitespace with the old space consumer and failed. not sure how to solve this problem... with this we're doing a lot of backtracking
+
+oneline :: Parser a -> Parser a
+oneline px = Parser $ Reader.withReaderT (const sc) $ fromParser px
 
 lexeme :: Parser a -> Parser a
-lexeme = L.lexeme sc
+lexeme = L.lexeme fsc
 
 retf :: f (Fix f) -> Parser (Fix f)
 retf = return . Fix
@@ -845,6 +895,19 @@ retfe = return . Fix . N ()
 -- As a complement to retf
 ret :: a -> Parser a
 ret = pure
+
+lineFold :: Parser a -> Parser a
+lineFold px = L.lineFold scn $ \sc' -> do
+  Parser $ Reader.withReaderT (const sc') (fromParser px)
+
+-- between, but it makes you not care about indentation like in other languages!
+between' :: Parser () -> Parser () -> Parser a -> Parser a
+between' l r px =
+  between (consumeln l) r (consumeln px)
+
+-- removes indentation checking by replacing the space consumer with the newline consumer one
+consumeln :: Parser a -> Parser a
+consumeln px = Parser $ Reader.withReaderT (const scn) (fromParser px)
 
 
 -- Errors
@@ -864,13 +927,13 @@ instance ShowErrorComponent MyParseError where
 
 
 registerCustom :: MyParseError -> Parser ()
-registerCustom err@(MyPE (from, _) _) = registerParseError $ FancyError from $ Set.singleton $ ErrorCustom err
+registerCustom err@(MyPE (from, _) _) = TM.registerParseError $ FancyError from $ Set.singleton $ ErrorCustom err
 
 registerExpect :: Int -> Text -> [Text] -> Parser ()
-registerExpect offset found expected = registerParseError $ TrivialError offset tokenFound tokenExpected
+registerExpect offset found expected = TM.registerParseError $ TrivialError offset tokenFound tokenExpected
   where
-    tokenFound = Just $ Tokens $ text2token found
-    tokenExpected = Set.fromList $ map (Tokens . text2token) expected
+    tokenFound = Just $ TM.Tokens $ text2token found
+    tokenExpected = Set.fromList $ map (TM.Tokens . text2token) expected
     text2token = NE.fromList . T.unpack
 
 
@@ -881,7 +944,7 @@ recoverCon :: Parser (Either [Ann] (Either (XMem U, Type U) ([Ann] -> DataCon U)
 recoverCon = recoverLine $ Right $ Right $ DC () (CN "PLACEHOLDER") []
 
 recoverLine :: a -> Parser a -> Parser a
-recoverLine sentinel = withRecovery (\err -> registerParseError err >> many (anySingleBut '\n') >> char '\n' $> sentinel)
+recoverLine sentinel = TM.withRecovery (\err -> registerParseError err >> many (TM.anySingleBut '\n') >> C.char '\n' $> sentinel)
 
 
 recoverableIndentBlock ::
@@ -932,6 +995,6 @@ indentedItems ref lvl p = go
             | pos <= ref -> return []
             | pos == lvl -> (:) <$> p <*> go
             | otherwise -> do
-              o <- getOffset
+              o <- TM.getOffset
               registerParseError $ FancyError o $ Set.singleton $ ErrorIndentation EQ lvl pos
               (:) <$> p <*> go

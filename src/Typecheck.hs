@@ -52,7 +52,7 @@ import qualified AST.Prelude as Prelude
 import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, Node (..), DeclaredType (..), XClassFunDec, MutAccess (..), LitType (..))
 import AST.Resolved (R)
 import AST.Typed ( TC, Scheme(..), TOTF(..) )
-import AST.Def ((:.)(..), PP (..), Op (..), Binding (..), sctx, ppDef)
+import AST.Def ((:.)(..), PP (..), Binding (..), sctx, ppDef, BinOp (..))
 import qualified AST.Def as Def
 import Data.String (fromString)
 import Debug.Trace (trace)
@@ -412,7 +412,7 @@ inferExpr = cata (fmap embed . inferExprType)
 
           pure (MemAccess te memname, t)
 
-        Op il op ir -> do
+        BinOp il op ir -> do
           l <- il
           r <- ir
 
@@ -424,12 +424,19 @@ inferExpr = cata (fmap embed . inferExprType)
               lt `uni` rt
               findBuiltinType Prelude.boolFind
 
-            else if op == LessThan || op == GreaterThan
+            else if op `elem` [LessThan, LessEqual, GreaterThan, GreaterEqual]
             then do
               intt <- findBuiltinType Prelude.intFind
               lt `uni` intt
               rt `uni` intt
               findBuiltinType Prelude.boolFind
+
+            else if op `elem` [And, Or]
+            then do
+              boolt <- findBuiltinType Prelude.boolFind
+              lt `uni` boolt
+              rt `uni` boolt
+              pure boolt
 
             else do
               intt <- findBuiltinType Prelude.intFind
@@ -437,7 +444,7 @@ inferExpr = cata (fmap embed . inferExprType)
               rt `uni` intt
               pure intt
 
-          pure (Op l op r, t)
+          pure (BinOp l op r, t)
 
 
         Call callee args -> do
@@ -453,20 +460,37 @@ inferExpr = cata (fmap embed . inferExprType)
 
           pure (Call callee' args', ret)
 
-        Ref ee -> do
+        UnOp Def.Not ee -> do
+          boolType <- findBuiltinType Prelude.boolFind
+          re <- ee
+          let t = Common.typeOfNode re
+
+          t `uni` boolType
+
+          pure (UnOp Def.Not re, boolType)
+
+        UnOp Def.Negation ee -> do
+          intType <- findBuiltinType Prelude.intFind
+          re <- ee
+          let t = Common.typeOfNode re
+
+          t `uni` intType
+          pure (UnOp Def.Negation re, intType)
+
+        UnOp Def.Ref ee -> do
           te <- ee
           let t = Common.typeOfNode te
           ptrType <- mkPtr t
-          pure (Ref te, ptrType)
+          pure (UnOp Def.Ref te, ptrType)
 
-        Deref ee -> do
+        UnOp Def.Deref ee -> do
           te <- ee
           let t = Common.typeOfNode te
 
           insidePtr <- fresh
           ptrType <- mkPtr insidePtr
           t `uni` ptrType
-          pure (Deref te, insidePtr)
+          pure (UnOp Def.Deref te, insidePtr)
 
 
 

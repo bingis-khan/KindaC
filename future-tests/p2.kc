@@ -1,0 +1,17 @@
+use Term
+use Mem
+	proxy
+use Cnile
+
+Term.println(2)
+
+zeroed () -> a
+	x = Mem.undefined()
+	Cnile.memset(Cnile.cast(&x), 0, Cnile.sizeof(x))
+	return x
+
+# x = Cnile.sizeof(420)
+# Term.println(x proxy())
+x = zeroed() as Int
+y = Cnile.cast(x) as Bool
+Term.println(x)

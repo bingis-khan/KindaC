@@ -42,7 +42,7 @@ type instance XTConOther Untyped = ()
 type instance XNode Untyped = ()
 type instance XFunType Untyped = DeclaredType U
 type instance XMutAccess Untyped = MutAccess U
-type instance XStringInterpolation Untyped = [Either Text (Qualified Def.VarName)]
+type instance XStringInterpolation Untyped = [Either Text (Expr Untyped)]
 
 data ClassConstraint = CC (Qualified Def.ClassName) Def.UnboundTVar deriving Eq
 type instance XClassConstraints Untyped = [ClassConstraint]

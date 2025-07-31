@@ -19,6 +19,14 @@ inst Str ConstStr
 	length (self ConstStr) -> Int
 		return Cnile.strlen(self)
 
+inst Str Unit
+	print-str (self Unit) -> Unit
+		print-str('Unit')
+		return
+
+	length (self Unit) -> Int
+		return 4
+
 inst Str Int
 	print-str (self Int) -> Unit
 		Cnile.printf('%d', self)
@@ -83,3 +91,10 @@ inst Str Ptr a
 		return 4 + length(self) + 1
 
 
+inst Str Tuple l r
+	print-str (Tuple(l, r)) -> Unit
+		print-str('(\(l), \(r))')
+		return
+
+	length (Tuple(l, r)) -> Int
+		return 1 + length(l) + 2 + length(r) + 1

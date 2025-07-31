@@ -1,0 +1,163 @@
+class IntoIter
+	into-iter (self _) -> itershit
+
+class Iter
+	next (self Ptr _) -> Maybe item
+
+
+
+Map it from to
+	og it
+	fn from -> to
+
+
+inst IntoIter Map
+	into-iter (self Map it from to) -> Map it from to
+		return self
+
+inst Iter Map
+	next (self Ptr (Map og from to)) -> Maybe to <= Iter og
+		case next(&self&.og)
+			None
+				return None
+			Just(x)
+				return Just(self&.fn(x))
+
+
+map (iterable it, fn from -> to) -> Map it' from to <= IntoIter it
+	it = into-iter(iterable)
+	return Map { og: it, fn: fn }
+
+
+
+Filter it item
+	og it
+	fn item -> Bool
+
+
+inst IntoIter Filter
+	into-iter (self Filter it from) -> Filter it from
+		return self
+
+inst Iter Filter
+	next (self Ptr (Filter it item)) -> Maybe item <= Iter it
+		while True
+			case next(&self&.og)
+				None
+					return None
+				Just(x)
+					if self&.fn(x)
+						return Just(x)
+
+
+filter (iterable it, fn from -> Bool) -> Filter it' from <= IntoIter it
+	it = into-iter(iterable)
+	return Filter { og: it, fn: fn }
+
+
+Zip it it'
+	left-it it
+	right-it it'
+
+
+inst IntoIter Zip
+	into-iter (self Zip it it'): self
+
+inst Iter Zip
+	next (self Ptr (Zip it it')) -> Maybe (Tuple item item') <= Iter it, Iter it'
+		copy = self&  # kind of stupid but it works. we should not consume elements if we can't. i mean, the user should probably take care of his iter not having side effects. i guess.
+		while True
+			case next(&copy.left-it)
+				None
+					return None
+				Just(left-x)
+					case next(&copy.right-it)
+						None
+							return None
+						Just(right-x)
+							# consume the two (yeah, kinda funny)
+							next(&self&.left-it)
+							next(&self&.right-it)
+							return Just(Tuple(left-x, right-x))
+
+zip (left it, right it') <= IntoIter it, IntoIter it'
+	left-it = left into-iter()
+	right-it = right into-iter()
+	return Zip { left-it, right-it }
+
+
+
+reduce (iterable it, base a, fn (item, a) -> a) -> a <= IntoIter it
+	x = base
+	it = into-iter(iterable)
+	while True
+		case next(&it)
+			None
+				return x
+			Just(res)
+				x <= fn(res, x)
+
+
+sum (iterable it) <= IntoIter it
+	return reduce(iterable, 0, (x, y): x + y)
+
+
+for-each (iterable it, fn item -> Unit) <= IntoIter it
+	it = into-iter(iterable)
+	while True
+		case next(&it)
+			None
+				return
+			Just(x)
+				fn(x)
+
+
+Range
+	from Int
+	to Int
+
+range (from Int, to Int): Range { from, to }
+to (from Int, to Int): Range { from, to }
+
+
+RangeIter
+	og  Range
+	cur Int
+
+inst IntoIter Range
+	# testing different struct conventions
+	into-iter (self Range): RangeIter {  
+			og: self,
+			cur: self.from
+	}
+
+inst IntoIter RangeIter
+	into-iter (self RangeIter):
+		self
+
+inst Iter RangeIter
+	next (self Ptr RangeIter) -> Maybe Int
+		r = self&.og
+		if self&.cur > r.to
+			return None
+
+		x = Just(self&.cur)
+		self <&.cur= self&.cur + 1
+		return x
+
+
+# infinite iterator!
+FromIter
+	current Int
+
+inst IntoIter FromIter
+	into-iter (self FromIter): self
+
+inst Iter FromIter
+	next (self Ptr FromIter) -> Maybe Int
+		x = self&.current
+		self <&.current= x + 1
+		return Just(x)
+
+from (x Int):
+	FromIter { current: x }

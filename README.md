@@ -7,7 +7,7 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 ## current
 
-- Line folds and postfix calling.
+- Line folds.
 - Making a quick iterator library (with incorrect types because... yknow).
 
 
@@ -63,10 +63,11 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
   - later try to define a type for a C Function type.
   - and make it illegal to pass normal functions as C function types (make the user go through deconstruction to account for the possible environment)
 - make assignments deconstructable.
+- make lambda arguments deconstructable
 - in a record deconstruction, if you don't specify the right side (after ':'), bind the member to the variable of the same name.
 - when updating records, bind the current variable to the expression. ex: `p = p { v1: v1 { z = 0 } }` <- here, `v1` is bound only on the right side of ':'. No need to write `p.v1` like in Haskell.
-- string interpolation! `'Just rammed \(num-glowies) glowies with my car.'` (support only variables inside, seems simpler)
-  - think about internationalization? apparently,that's the biggest drawback of string interpolation
+- [V] string interpolation! `'Just rammed \(num-glowies) glowies with my car.'` (support only variables inside, seems simpler)
+  - [ ] think about internationalization? apparently,that's the biggest drawback of string interpolation
 - kinds? fixpoint?
 - change testing so that:
   - tests are grouped by their type
@@ -148,3 +149,102 @@ I'm not exactly sure if it should stay allowed. When it's from the environment, 
 However, it's easier to copy code around without changing stuff. In most cases, user's won't return functions, so it's kinda nice to write like this.
 
 I haven't exactly decided. I want to explicitly pass stuff like the allocator, so "hidden" behavior like this might not fit the "feel" of the language...
+
+
+### `not` should be a function instead of an operator?
+
+Like the title says. Instead of a slightly weird operator, make it a function:
+
+```python
+if not x or y
+  pass
+
+if not(x) or y
+  pass
+
+if not (x or y)
+  pass
+```
+
+That would be an interesting choice. IMO `not` in Python was always slightly weird syntactically.
+
+
+### design of `Mem` module
+
+Imagine: `alloc` allocates a SLICE!
+
+```
+Slice a
+  ptr Ptr a
+  count Size  # *currently Int
+```
+
+The size of an element should be inferred from `a` (but getting the size is also funny - see later)
+
+
+### getting sizes of things
+
+Examples of a possible interface:
+
+```
+size = Mem.size(x)  
+size = size-of(x)  # common word, so maybe a different one would be better if it's going to be imported by default?
+size = x size-of() # uglier postix
+
+size = size-of-proxied(Proxy as Proxy SomeBigType)  # this should be a lighter version.
+size = size-of-pointed(&x)  # bad fun name geg
+size = ptr-size-of(&x)  # shorter, but less descriptive?
+size = size-of-elem(slice)  # nice!
+```
+
+Currently, we have to pass the whole value to some function to get its size. Inside, we explicitly create an undefined value and then C `sizeof` it. Ideally we should optimize this.
+
+
+### ffi and interacting with the "base layer" (eg. C, LLVM, my own stuff)
+
+For ffi, I have the `external` keyword. They are a quick addition, so the AST does not fully understand this and I hacked it by adding a special annotation.
+
+I should think about how my language should interact with the base layer. Currently, for ffi, I rely on C's weak type system where I'm using `Int`s everywhere. I should have special C types for FFI n shi.
+
+Another thing are common operations, eg. addition, casting, sizeof-ing, etc. Currently, it's text substitution hacks on top of external functions. How do I represent this? Special AST nodes? Special annotations? I want it to be possible to overload addition, but how do I generate basic operations?
+
+Maybe something like:
+
+```
+  # keyword tbd
+  baselayer add-f32(l F32, r F32) -> F32
+
+  # or reduce keywords:
+  #[baselayer]
+  external add-f32(l F32, r F32) -> F32
+```
+
+These functions will then have to be implemented by the backend. Nice. But, how do we interact with them in code? They are function declarations, so how would they interact in this context?
+
+Maybe not even define them textually, they will only be a part of the compiler. It'll be a special AST node for these, so they won't be used as functions n shi. Like, special syntax:
+
+```
+  %add-f32(1.0, 2.0)
+```
+
+But what if we want to do something `proxy-size-of()` which requires a type itself? So its type is not concrete. Then, we would have to define this function in userspace...
+I guess, a function like `get-typesize`, which would return a `TypeSize a: TypeSize Int` and then we would have to cast the result type! But still, it's polymorphic, so might be kind of hard. This `TypeSize` may be some generic struct and only in userspace it'll be treated as a thing.
+
+How do other languages do that?
+
+### naming convention: `slice-try-get` vs `Slice.try-get`
+
+Also modularity - more modules or less? Like, it's less annoying to import same modules.
+
+```
+  xs slice-get(5)
+  xs Slice.get(5)
+  Slice.get(xs, 5)
+
+  # not counted
+  xs get(5)
+```
+
+I think the first one is the least ugly......
+
+I might also do a Getter typeclass, which will unify all the `get()` functions (and also probably will support indexing `[x]` by extension)

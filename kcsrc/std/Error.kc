@@ -1,0 +1,8 @@
+use Cnile
+use Str
+	Str(print-str)
+
+critical (errmsg Str) -> Unit
+	print-str('CRITICAL: \(errmsg)\n')
+	Cnile.exit(1)
+	return

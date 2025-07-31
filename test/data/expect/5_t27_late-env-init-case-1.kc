@@ -19,8 +19,8 @@ class MyStr
 MyStrPtr a
 	MyStrPtr a
 
-StrConcat l r
-	StrConcat l r
+MyStrConcat l r
+	MyStrConcat l r
 
 
 mystrptr = Unit
@@ -30,8 +30,8 @@ inst MyStr MyStrPtr a
 		print-str(x)
 
 str-concat-const = 666
-inst MyStr StrConcat l r
-	print-str (StrConcat(l, r)) -> Unit
+inst MyStr MyStrConcat l r
+	print-str (MyStrConcat(l, r)) -> Unit
 		print str-concat-const
 		print-str(l)
 		print-str(r)
@@ -54,5 +54,5 @@ inst MyStr Unit
 		print unit-const
 		print x
 
-ccc = StrConcat(MyStrPtr(StrConcat(StrConcat(3, True), Unit)), 2)
+ccc = MyStrConcat(MyStrPtr(MyStrConcat(MyStrConcat(3, True), Unit)), 2)
 print-str(ccc)

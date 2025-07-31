@@ -314,14 +314,12 @@ mExpr = cata $ fmap embed . \(N t expr) -> do
           pure $ MemAccess me um
 
         Lit lit -> pure $ Lit $ Common.relit id lit
-        Op l op r -> pure $ Op l op r
+        BinOp l op r -> pure $ BinOp l op r
+        UnOp op x -> pure $ UnOp op x
         Call e args -> pure $ Call e args
         As (Fix (N _ e)) _ -> do
           -- Ignore 'as' by unpacking the variable and passing in the previous expression.
           pure e
-
-        Ref e -> pure $ Ref e
-        Deref e -> pure $ Deref e
 
   pure $ N mt mexpr
 
@@ -1109,12 +1107,10 @@ mfExpr = cata $ \(N imt imexpr) -> do
 
     Lit lt -> pure $ Lit $ Common.relit id lt
 
-    Op l op r -> Op <$> l <*> pure op <*> r
+    BinOp l op r -> BinOp <$> l <*> pure op <*> r
+    UnOp op x -> UnOp op <$> x
     Call c args -> Call <$> c <*> sequenceA args
     As e t -> As <$> e <*> mfType t
-
-    Ref e -> Ref <$> e
-    Deref e -> Deref <$> e
 
 mfVariable :: IM.Variable -> EnvContext M.Variable
 mfVariable = \case

@@ -48,7 +48,7 @@ import qualified AST.Def as Def
 import qualified AST.Common as Common
 import AST.Prelude (Prelude (..))
 import Control.Monad ( when, foldM, void )
-import AST.Typed (TC)
+import AST.Typed (TC, functionAnnotations)
 import CompilerContext (CompilerContext)
 import qualified CompilerContext as Compiler
 import Control.Monad.Trans.Class (lift)
@@ -157,6 +157,10 @@ rStmts = traverse -- traverse through the list with Ctx
       ExprStmt e -> do
         re <- rExpr e
         stmt $ ExprStmt re
+      Return _ | Def.AUndefinedReturn `elem` anns -> do  -- RETARDED HACK
+        let vn = Def.VN "cock cock cock cock cock"
+        uv <- newVar vn
+        stmt $ Return $ Fix $ N () $ Var (R.DefinedVariable uv) Def.Local
       Return e -> do
         mre <- traverse rExpr e
         re <- case mre of
@@ -384,7 +388,7 @@ rStmts = traverse -- traverse through the list with Ctx
           -- set the environment
           --   NOTE: don't forget to remove self reference - it does not need to be in the environment.
           -- TODO: maybe just make it a part of 'closure'?
-          let innerEnv = Set.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
+          let innerEnv = Map.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
           env <- mkEnv eid innerEnv
 
         stmt $ Fun function
@@ -484,7 +488,7 @@ rStmts = traverse -- traverse through the list with Ctx
           -- set the environment
           --   NOTE: don't forget to remove self reference - it does not need to be in the environment.
           -- TODO: maybe just make it a part of 'closure'?
-          let innerEnv = Set.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
+          let innerEnv = Map.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
           env <- mkEnv eid innerEnv
           let fundec = FD env vid rparams rret anns
 
@@ -640,7 +644,8 @@ rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but
     mems' <- Def.sequenceA2 mems
     pure $ RecUpdate e' mems'
 
-  Op l op r -> Op <$> l <*> pure op <*> r
+  BinOp l op r -> BinOp <$> l <*> pure op <*> r
+  UnOp op x -> UnOp op <$> x
   Call c args -> Call <$> c <*> sequenceA args
   As e t -> As <$> e <*> rType t
   Lam () params body -> do
@@ -654,9 +659,6 @@ rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but
     let innerEnv = gatherVariablesFromExpr rBody -- TODO: environment making in 'closure' function.
     env <- mkEnv eid innerEnv
     pure $ Lam (R.LamDec lamId env) rParams rBody
-
-  Ref e -> Ref <$> e
-  Deref e -> Deref <$> e
 
 rType :: Type U -> Ctx (Type R)
 rType = transverse rType'
@@ -726,19 +728,28 @@ mkStringInterpolation :: XStringInterpolation U -> Ctx (ExprF R (Expr R))
 mkStringInterpolation si = do
   let
     e = Fix . N ()
+    digOutVar :: Expr R -> R.Variable
+    digOutVar (Fix (N () expr)) = case expr of
+      UnOp Def.Deref x -> digOutVar x
+      MemAccess x _ -> digOutVar x
+      Var v _ -> v
+
+      _ -> error "[COMPILER ERROR]: incorrect expression in interpolated string"
+
     mkStackedConcat = fmap e . \case
       [] -> pure $ Lit $ LString ""
       [Left s] -> pure $ Lit $ LString s
-      [Right vn] -> do
-        (loc, v) <- resolveVar vn
+      [Right ee] -> do
+        re@(Fix (N () re')) <- rExpr ee
+        -- (loc, v) <- resolveVar vn
 
         -- we only allow defined variables in string interpolation
-        case v of
+        case digOutVar re of
           DefinedVariable {} -> pure ()
           ExternalVariable {} -> pure ()
-          _ -> err $ OnlyVariablesAreAllowedInStringInterpolation vn
+          v -> err $ OnlyVariablesAreAllowedInStringInterpolation $ Def.varName $ R.asPUniqueVar $ R.asProto v
 
-        pure $ Var v loc
+        pure re'
 
       xs@(_:_:_) -> do
         concatCon <- findBuiltinStrConcat  -- NOTE: resolve it here, not outside, because we might still want to use strings before StrConcat is defined?
@@ -1024,7 +1035,7 @@ resolveClass (Qualified (Just mq) cn) = do
     Nothing -> undefined
 
 placeholderClass :: Def.ClassName -> Ctx R.Class
-placeholderClass = undefined
+placeholderClass = error . Def.printf "todo: placeholder class '%s'" . Def.pp
 
 findFunctionInClass :: Def.VarName -> R.Class -> Ctx (XClassFunDec R)
 findFunctionInClass vn ecd =
@@ -1264,43 +1275,48 @@ data ResolveError
   | TryingToImportNonExistingConstructorOfType Def.ConName Def.UniqueType U.ModuleQualifier
   | TryingToImportNonExistingFunctionOfClass Def.VarName Def.UniqueClass U.ModuleQualifier
 
-  | OnlyVariablesAreAllowedInStringInterpolation (Qualified Def.VarName)  -- badtype, only to appease Show.
+  | OnlyVariablesAreAllowedInStringInterpolation Def.VarName  -- badtype, only to appease Show.
   deriving Show
 
 
 -- environment stuff
-mkEnv :: Def.EnvID -> Set VariableProto -> Ctx (XEnv R)
+mkEnv :: Def.EnvID -> Map VariableProto Def.Locality -> Ctx (XEnv R)
 mkEnv eid innerEnv = do
   currentEnvStack <- RWS.gets envStack
-  locality <- localityOfVariablesAtCurrentScope
-  pure $ Env eid currentEnvStack (mapMaybe (\v -> (locality !? R.asPUniqueVar v) <&> \(_, loc) -> (v, loc)) $ Set.toList innerEnv)  -- filters variables to ones that are in the environment.
+  curlev <- currentLevel
+  -- locality <- localityOfVariablesAtCurrentScope
+  -- pure $ Env eid currentEnvStack (mapMaybe (\v -> (locality !? R.asPUniqueVar v) <&> \(_, loc) -> (v, loc)) $ Set.toList innerEnv)  -- filters variables to ones that are in the environment.
+  let remapLocality = \case
+        (_, Def.Local) -> Nothing
+        (_, Def.FromEnvironment lev) | lev > curlev -> Nothing
+        (PExternalFunction fn, _) | Def.AExternal `elem` fn.functionDeclaration.functionOther.functionAnnotations -> Nothing  -- controversial! we must exclude external functions. what is controversial is if we should do it here or during codegen?
+        (PDefinedFunction fn, _) | Def.AExternal `elem` fn.functionDeclaration.functionOther -> Nothing  -- controversial! we must exclude external functions. what is controversial is if we should do it here or during codegen?
+
+        (v, Def.FromEnvironment lev) | lev == curlev -> Just (v, Def.Local)
+        (v, Def.FromEnvironment lev) -> Just (v, Def.FromEnvironment lev)
+  let varsWithNewLocalities = mapMaybe remapLocality $ Map.toList innerEnv
+  pure $ Env eid currentEnvStack varsWithNewLocalities
 
 -- Make a new env ID.
 newEnvID :: Ctx Def.EnvID
 newEnvID = Def.EnvID <$> liftIO newUnique
 
-localityOfVariablesAtCurrentScope :: Ctx (Map Def.UniqueVar (R.VariableProto, Def.Locality))
-localityOfVariablesAtCurrentScope = do
-  allScopes <- getScopes
-  curlev <- currentLevel
-  pure $ foldr (\(locality, l) r -> Map.fromList (fmap (\v -> (R.asPUniqueVar v, (v, locality))) $ Map.elems l.varScope) <> r) mempty $ (\(cur :| envs) -> (Def.Local, cur) :| fmap (\(l, sc) -> (Def.FromEnvironment l, sc)) (zip [curlev-1, curlev-2 .. 0] envs)) allScopes
-
 -- used for function definitions
-gatherVariables :: AnnStmt R -> Set R.VariableProto
+gatherVariables :: AnnStmt R -> Map R.VariableProto Def.Locality
 gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesFromExpr bstmt of
-  Mutation v _ _ expr -> Set.insert (R.PDefinedVariable v) expr
+  Mutation v loc _ expr -> Map.insert (R.PDefinedVariable v) loc expr
   Return expr -> gatherVariablesFromExpr expr
   Fun fn ->
     let dec = fn.functionDeclaration
-        envVars = Set.fromList $ fst <$> dec.functionEnv.fromEnv
+        envVars = Map.fromList dec.functionEnv.fromEnv
     in envVars
-  Inst idef -> foldMap (\fn -> Set.fromList $ fst <$> fn.instFunDec.functionEnv.fromEnv) idef.instFuns
+  Inst idef -> foldMap (\fn -> Map.fromList fn.instFunDec.functionEnv.fromEnv) idef.instFuns
   stmt -> bifold stmt
 
 -- used for lambdas
-gatherVariablesFromExpr :: Expr R -> Set VariableProto
+gatherVariablesFromExpr :: Expr R -> Map VariableProto Def.Locality
 gatherVariablesFromExpr = cata $ \(N () e) -> case e of
-  Var v _ -> Set.singleton (R.asProto v)  -- TODO: Is this... correct? It's used for making the environment, but now we can just use this variable to know. This is todo for rewrite.
+  Var v loc -> Map.singleton (R.asProto v) loc  -- TODO: Is this... correct? It's used for making the environment, but now we can just use this variable to know. This is todo for rewrite.
                                 --   Update: I don't understand the comment above.
   expr -> fold expr
 

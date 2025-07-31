@@ -15,7 +15,7 @@ module AST.Common (module AST.Common) where
 import qualified AST.Def as Def
 import Data.List.NonEmpty (NonEmpty)
 import Data.Fix (Fix (..))
-import AST.Def ((:.) (..), Annotated (..), PP (..), (<+>), Op (..), (<+?>), UniqueVar, PPDef (..))
+import AST.Def ((:.) (..), Annotated (..), PP (..), (<+>), (<+?>), UniqueVar, PPDef (..), BinOp (..))
 import Data.Functor.Foldable (cata, Recursive (..))
 import Data.Foldable (foldl')
 import Data.Bifunctor.TH (deriveBifunctor, deriveBifoldable, deriveBitraversable)
@@ -106,13 +106,11 @@ data ExprF phase a
   | RecUpdate a (NonEmpty (XMem phase, a))
   | MemAccess a (XMem phase)
 
-  | Op a Def.Op a
+  | UnOp Def.UnOp a  -- TODO: put ref/deref here.
+  | BinOp a Def.BinOp a
   | Call a [a]
   | As a (Type phase)
   | Lam (XLamOther phase) [XLamVar phase] a
-
-  | Ref a
-  | Deref a
   deriving (Functor, Foldable, Traversable)
 type Expr phase = Fix (Node phase ExprF)
 
@@ -139,7 +137,7 @@ data DataDef phase = DD
   { ddName :: XDTCon phase
   , ddScheme  :: XDataScheme phase
   , ddCons   :: Either (NonEmpty (Mem phase)) [DataCon phase]
-  , ddAnns   :: [Def.Ann]  -- TEMP: not very typesafe in Untyped, but should be okay. Might later change it to "extra".
+  , ddAnns   :: [Def.Ann]  -- TEMP: not very typesafe in Untyped, but should be okay. Might later change it to "extra". (not typesafe, because we assign an empty list by default during construction and only later do we update it.)
   }
 
 
@@ -448,12 +446,15 @@ instance (PP a, PP (XCon phase), PP (XVar phase), PP (XTCon phase), PP (XMem pha
     RecUpdate c upd -> c <+> ppRecordMems upd
     MemAccess c mem -> c <> "." <> pp mem
 
-    Op l op r -> l <+> ppOp op <+> r
+    BinOp l op r -> l <+> ppOp op <+> r
+    UnOp Def.Ref x -> "&" <> x
+    UnOp Def.Deref x -> x <> "&"
+    UnOp Def.Not x -> "-" <> x
+    UnOp Def.Negation x -> "not" <+> x
+
     Call f args -> f <> Def.encloseSepBy "(" ")" ", " args
     As x at -> x <+> "as" <+> pp at
     Lam extra params e -> pp extra <+> Def.encloseSepBy "(" ")" ", " (map pp params) <> ":" <+> e
-    Ref x -> "&" <> x
-    Deref x -> x <> "&"
     where
       ppOp op = case op of
         Plus -> "+"
@@ -464,6 +465,10 @@ instance (PP a, PP (XCon phase), PP (XVar phase), PP (XTCon phase), PP (XMem pha
         NotEquals -> "/="
         LessThan -> "<"
         GreaterThan -> ">"
+        LessEqual -> "<="
+        GreaterEqual -> ">="
+        Or -> "or"
+        And -> "and"
 
 ppRecordMems :: PP mem => NonEmpty (mem, Def.Context) -> Def.Context
 ppRecordMems = Def.encloseSepBy "{" "}" ", " . fmap (\(mem, e) -> pp mem <> ":" <+> e) . NonEmpty.toList
