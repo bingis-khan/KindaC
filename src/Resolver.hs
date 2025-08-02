@@ -43,7 +43,7 @@ import Data.Traversable (for)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Either (rights, lefts)
 import Data.List (find)
-import AST.Def (type (:.)(O), Annotated (..), Binding (..))
+import AST.Def (type (:.)(O), Annotated (..), Binding (..), Located (..), pp)
 import qualified AST.Def as Def
 import qualified AST.Common as Common
 import AST.Prelude (Prelude (..))
@@ -52,6 +52,10 @@ import AST.Typed (TC, functionAnnotations)
 import CompilerContext (CompilerContext)
 import qualified CompilerContext as Compiler
 import Control.Monad.Trans.Class (lift)
+import Error (Error (..), renderError)
+import Text.Printf (printf)
+import Data.String (fromString)
+import Data.Text (Text)
 
 
 
@@ -73,72 +77,72 @@ rStmts :: [AnnStmt U] -> Ctx [AnnStmt R]
 rStmts = traverse -- traverse through the list with Ctx
   rStmt' -- go through Stmt recursively with Ctx. cata (fmap embed . ...) is transverse without the forall type.
   where
-    rStmt' = cata (fmap embed . (\(O utStmt) -> O <$> rStmt utStmt))
+    rStmt' = cata (fmap embed . (\(O (O utStmt)) -> O . O <$> rStmt utStmt))
     -- actual logic
     -- maybe try to generalize it if possible using traverse n shit
-    rStmt (Annotated anns uStmt) =
-      let stmt = pure . Annotated anns
-          pass = pure $ Annotated [] Pass
+    rStmt (Annotated anns (Located location uStmt)) =
+      let stmt = pure . Annotated anns . Located location
+          pass = pure $ Annotated [] $ Located location Pass
       in case uStmt of
       Print e -> do
         re <- rExpr e
         stmt $ Print re
-      Assignment name e -> do
+      Assignment name location e -> do
         re <- rExpr e
         vid <- newVar name
-        stmt $ Assignment vid re
+        stmt $ Assignment vid location re
       Pass -> stmt Pass
-      Mutation name () accesses e -> do
+      Mutation name varLocation () accesses e -> do
         re <- rExpr e
         let raccesses = flip map accesses $ \case  -- noop to map "phase"
-              MutRef -> MutRef
-              MutField mem -> MutField mem
-        (loc, vf) <- resolveVar (U.unqualified name)
+              MutRef location -> MutRef location
+              MutField location mem -> MutField location mem
+        (loc, vf) <- resolveVar varLocation (U.unqualified name)
 
         case vf of
           -- LOCAL VAR
           R.DefinedVariable vid | loc == Def.Local ->
-            stmt $ Mutation vid loc raccesses re
+            stmt $ Mutation vid varLocation loc raccesses re
 
           -- when we're using a ref, we're actually mutating outside shit, so it's good.
-          R.DefinedVariable vid | MutRef `elem` raccesses -> do
-            stmt $ Mutation vid loc raccesses re
+          R.DefinedVariable vid | any (\case { MutRef {} -> True; _ -> False }) raccesses -> do
+            stmt $ Mutation vid varLocation loc raccesses re
 
           R.DefinedVariable vid -> do
-            err $ CannotMutateNonLocalVariable name
-            stmt $ Mutation vid loc raccesses re
+            err $ CannotMutateNonLocalVariable location name
+            stmt $ Mutation vid varLocation loc raccesses re
 
 
           -- IMPORTED VAR (basically a copy!)
           -- NOTE TODO: RIGHT NOW I WON'T ALLOW MUTATING EXTERNAL VARIABLES DUE TO THE ARCHITECTURE AND MY OWN OPINION. THIS MIGHT (WILL PROBABLY) CHANGE IN THE FUTURE.
           R.ExternalVariable vid _ -> do
-            err $ CannotMutateImportedVariable vid
+            err $ CannotMutateImportedVariable location vid
             stmt Pass
 
 
           R.DefinedFunction fun _ -> do
-            err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
+            err $ CannotMutateFunctionDeclaration location fun.functionDeclaration.functionId.varName
 
             vid <- generateVar name
-            stmt $ Mutation vid loc [] re
+            stmt $ Mutation vid varLocation loc [] re
 
           R.ExternalFunction fun _ -> do
-            err $ CannotMutateFunctionDeclaration fun.functionDeclaration.functionId.varName
+            err $ CannotMutateFunctionDeclaration location fun.functionDeclaration.functionId.varName
 
             vid <- generateVar name
-            stmt $ Mutation vid loc [] re
+            stmt $ Mutation vid varLocation loc [] re
 
-          R.DefinedClassFunction (CFD _ cfdUV _ _ _) _ -> do
-            err $ CannotMutateFunctionDeclaration cfdUV.varName
-
-            vid <- generateVar name
-            stmt $ Mutation vid loc [] re
-
-          R.ExternalClassFunction (CFD _ cfdUV _ _ _) _ -> do
-            err $ CannotMutateFunctionDeclaration cfdUV.varName
+          R.DefinedClassFunction (CFD _ cfdUV _ _ _ _) _ -> do
+            err $ CannotMutateFunctionDeclaration location cfdUV.varName
 
             vid <- generateVar name
-            stmt $ Mutation vid loc [] re
+            stmt $ Mutation vid varLocation loc [] re
+
+          R.ExternalClassFunction (CFD _ cfdUV _ _ _ _) _ -> do
+            err $ CannotMutateFunctionDeclaration location cfdUV.varName
+
+            vid <- generateVar name
+            stmt $ Mutation vid varLocation loc [] re
 
 
       If (IfStmt { condition, ifTrue, ifElifs, ifElse }) -> do
@@ -160,7 +164,7 @@ rStmts = traverse -- traverse through the list with Ctx
       Return _ | Def.AUndefinedReturn `elem` anns -> do  -- RETARDED HACK
         let vn = Def.VN "cock cock cock cock cock"
         uv <- newVar vn
-        stmt $ Return $ Fix $ N () $ Var (R.DefinedVariable uv) Def.Local
+        stmt $ Return $ Fix $ N location $ Var (R.DefinedVariable uv) Def.Local
       Return e -> do
         mre <- traverse rExpr e
         re <- case mre of
@@ -168,7 +172,7 @@ rStmts = traverse -- traverse through the list with Ctx
           Nothing -> do
             uc <- unit
             eid <- newEnvID
-            pure $ Fix $ N () (Con uc eid)
+            pure $ Fix $ N location (Con uc eid)
 
         stmt $ Return re
 
@@ -198,7 +202,7 @@ rStmts = traverse -- traverse through the list with Ctx
                         case mfn of
                           Just fn -> pure $ PExternalFunction fn
                           Nothing -> do
-                            err $ ModuleDoesNotExportVariable vn use.moduleQualifier
+                            err $ ModuleDoesNotExportVariable location vn use.moduleQualifier
                             PDefinedVariable <$> generateVar vn
 
                 modifyThisScope $ \sc -> sc { varScope = Map.insert vn v sc.varScope }
@@ -212,20 +216,20 @@ rStmts = traverse -- traverse through the list with Ctx
 
                     -- check if any of the cons were not imported (and error 'em)
                     for_ (importedCons \\ Map.keysSet cons) $ \importedButNonExistingCon ->
-                      err $ TryingToImportNonExistingConstructorOfType importedButNonExistingCon ut use.moduleQualifier
+                      err $ TryingToImportNonExistingConstructorOfType location importedButNonExistingCon ut use.moduleQualifier
 
                     pure (ExternalDatatype dd, cons)
 
                   -- error paths
                   Just dd@(DD ut _ (Left _) _) -> do
-                    err $ TryingToImportConstructorsFromARecordType tc ut use.moduleQualifier
+                    err $ TryingToImportConstructorsFromARecordType location ut use.moduleQualifier
 
                     -- placeholders
                     cons <- fmap (Map.fromList . NonEmpty.toList) $ for usedCons $ \cn -> (cn,) <$> placeholderCon cn
                     pure (ExternalDatatype dd, cons)
 
                   Nothing -> do
-                    err $ ModuleDoesNotExportType tc use.moduleQualifier
+                    err $ ModuleDoesNotExportType location tc use.moduleQualifier
 
                     -- placeholders
                     dd <- placeholderType tc
@@ -243,17 +247,17 @@ rStmts = traverse -- traverse through the list with Ctx
                   Just klass -> do
                     let
                       importedClassFuns = Set.fromList $ NonEmpty.toList usedClassFuns
-                      cfns = Map.fromList $ (\cfn@(CFD _ cfnId _ _ _) -> (cfnId.varName, R.PExternalClassFunction cfn)) <$> filter (\(CFD _ funId _ _ _) -> funId.varName `Set.member` importedClassFuns) klass.classFunctions  -- filter used cons and construct a con Map.
+                      cfns = Map.fromList $ (\cfn@(CFD _ cfnId _ _ _ _) -> (cfnId.varName, R.PExternalClassFunction cfn)) <$> filter (\(CFD _ funId _ _ _ _) -> funId.varName `Set.member` importedClassFuns) klass.classFunctions  -- filter used cons and construct a con Map.
 
                     -- check if any of the cons were not imported (and error 'em)
                     for_ (importedClassFuns \\ Map.keysSet cfns) $ \importedButNonExistingCFN ->
-                      err $ TryingToImportNonExistingFunctionOfClass importedButNonExistingCFN klass.classID use.moduleQualifier
+                      err $ TryingToImportNonExistingFunctionOfClass location importedButNonExistingCFN klass.classID use.moduleQualifier
 
                     pure (ExternalClass klass, cfns)
 
                   Nothing -> do
                     klass <- placeholderClass cn
-                    err $ ModuleDoesNotExportClass ((Def.className . R.asUniqueClass) klass) use.moduleQualifier
+                    err $ ModuleDoesNotExportClass location ((Def.className . R.asUniqueClass) klass) use.moduleQualifier
 
                     cfns <- fmap (Map.fromList . NonEmpty.toList) $ for usedClassFuns $ \cvn -> do
                       uv <- placeholderVar cvn
@@ -277,7 +281,7 @@ rStmts = traverse -- traverse through the list with Ctx
                       pure $ Left $ ExternalClass klass
 
                     Nothing -> do
-                      err $ ModuleDoesNotExportTypeOrClass tncn use.moduleQualifier
+                      err $ ModuleDoesNotExportTypeOrClass location tncn use.moduleQualifier
                       Right <$> placeholderType tncn
 
                 modifyThisScope $ \sc -> sc
@@ -308,7 +312,7 @@ rStmts = traverse -- traverse through the list with Ctx
 
 
         let tvars = mkTVars (Def.BindByType tid) dd.ddScheme
-        rCons <- bindTVars tvars $ case dd.ddCons of
+        rCons <- bindTVars ((location,) <$> tvars) $ case dd.ddCons of
           Right cons ->
             fmap Right $ for cons $ \(DC () cname ctys conAnns) -> do
               cid <- generateCon cname
@@ -330,7 +334,7 @@ rStmts = traverse -- traverse through the list with Ctx
 
       -- TODO: THIS IS ALL TEMPORARY - I SHOULD PROBABLY MAKE DIFFERENT DATA STRUCTURES FOR THIS!
       --  CURRENTLY, YOU MAY NOT USE EXTERNAL FUNCTIONS ALONGSIDE OTHER FUNCTIONS. SHIT WILL BREAK. THIS IS A QUICK HACK.
-      Other (U.ExternalFunctionDeclaration (FD () name params ret uconstraints)) -> do
+      Other (U.ExternalFunctionDeclaration (FD () name params ret (uconstraints, headerLocation))) -> do
         vid <- generateVar name
         constraints <- rConstraints uconstraints
         -- get all unbound tvars
@@ -342,7 +346,7 @@ rStmts = traverse -- traverse through the list with Ctx
               t -> fold <$> sequenceA t
 
         eid <- newEnvID
-        (rparams, rret) <- bindTVars (Set.toList tvars) $ closure eid $ do
+        (rparams, rret) <- bindTVars ((headerLocation,) <$> Set.toList tvars) $ closure eid $ do
           rparams' <- traverse (\(n, t) -> do
             rn <- rDecon n
             rt <- rDeclaredType t
@@ -355,10 +359,10 @@ rStmts = traverse -- traverse through the list with Ctx
         -- TODO: maybe just make it a part of 'closure'?
         env <- mkEnv eid mempty
 
-        newFunction $ Function (FD env vid rparams rret (Def.AExternal : anns)) $ NonEmpty.singleton $ Fix $ O $ Annotated [] Pass
+        newFunction $ Function (FD env vid rparams rret (Def.AExternal : anns, headerLocation)) $ NonEmpty.singleton $ Fix $ O $ O $ Annotated [] $ Located location Pass
         stmt Pass
 
-      Fun (U.FunDef (FD () name params ret uconstraints) body) -> do
+      Fun (U.FunDef (FD () name params ret (uconstraints, headerLocation)) body) -> do
         vid <- generateVar name  -- NOTE: this is added to scope in `newFunction` (for some reason.) TODO: change it later (after I finish implementing records.) TODO: to what?????
 
         constraints <- rConstraints uconstraints
@@ -372,11 +376,11 @@ rStmts = traverse -- traverse through the list with Ctx
               t -> fold <$> sequenceA t
 
         rec
-          let function = Function (FD env vid rparams rret anns) rbody
+          let function = Function (FD env vid rparams rret (anns, headerLocation)) rbody
           newFunction function
 
           eid <- newEnvID
-          (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure eid $ do
+          (rparams, rret, rbody) <- bindTVars ((headerLocation,) <$> Set.toList tvars) $ closure eid $ do
             rparams' <- traverse (\(n, t) -> do
               rn <- rDecon n
               rt <- rDeclaredType t
@@ -405,13 +409,14 @@ rStmts = traverse -- traverse through the list with Ctx
                 { classID = uc
                 -- , classDependentTypes = deps   -- TEMP remove
                 , classFunctions = fundecs
+                , classDeclarationLocation = cd.classDeclarationLocation
                 }
 
           -- TODO: define dependent types... at least, later
           -- let _ = cd.classDependentTypes
           -- let deps = []
 
-          fundecs <- for cd.classFunctions $ \(CFD () name params ret uconstraints) -> do
+          fundecs <- for cd.classFunctions $ \(CFD () name params ret uconstraints classFunctionHeaderLocation) -> do
             funid <- generateVar name
 
             constraints <- rConstraints uconstraints
@@ -425,7 +430,7 @@ rStmts = traverse -- traverse through the list with Ctx
                   t -> fold <$> sequenceA t
 
             -- HACK: ALSO COPIED FROM DefinedFunction!!
-            (rparams, rret) <- bindTVars (Set.toList tvars) $ do
+            (rparams, rret) <- bindTVars ((cd.classDeclarationLocation,) <$> Set.toList tvars) $ do
               rparams' <- traverse (\(n, t) -> do
                 rn <- rDecon n
                 rt <- rClassType t
@@ -433,16 +438,16 @@ rStmts = traverse -- traverse through the list with Ctx
               rret' <- rClassType ret
               pure (rparams', rret')
 
-            pure $ CFD rcd funid rparams rret ()
+            pure $ CFD rcd funid rparams rret () classFunctionHeaderLocation
 
           registerClass rcd
         pass
 
 
       Inst rinst -> mdo
-        klass <- resolveClass rinst.instClass
+        klass <- resolveClass location rinst.instClass
 
-        klassType <- resolveType $ fst rinst.instType
+        klassType <- resolveType (error "location in types!") $ fst rinst.instType
         constraints <- rConstraints rinst.instConstraints
 
         let instTVars = map (\utv -> R.bindTVar (Def.defaultEmpty utv constraints) (BindByInst (R.asUniqueClass klass)) utv) $ snd rinst.instType
@@ -462,10 +467,10 @@ rStmts = traverse -- traverse through the list with Ctx
 
 
         fns <- for rinst.instFuns $ \ifn -> do
-          cfd <- findFunctionInClass ifn.instFunDec.functionId klass
+          cfd <- findFunctionInClass (error "todo") ifn.instFunDec.functionId klass
           vid <- generateVar ifn.instFunDec.functionId
 
-          constraints <- rConstraints ifn.instFunDec.functionOther
+          constraints <- rConstraints $ fst ifn.instFunDec.functionOther
 
           -- get all unbound tvars
           let allTypes = catNotDeclared $ ifn.instFunDec.functionReturnType : (snd <$> ifn.instFunDec.functionParameters)
@@ -476,7 +481,7 @@ rStmts = traverse -- traverse through the list with Ctx
                 t -> fold <$> sequenceA t
 
           eid <- newEnvID
-          (rparams, rret, rbody) <- bindTVars (Set.toList tvars) $ closure eid $ do
+          (rparams, rret, rbody) <- bindTVars ((snd ifn.instFunDec.functionOther,) <$> Set.toList tvars) $ closure eid $ do
             rparams' <- traverse (\(n, t) -> do
               rn <- rDecon n
               rt <- rDeclaredType t
@@ -490,7 +495,7 @@ rStmts = traverse -- traverse through the list with Ctx
           -- TODO: maybe just make it a part of 'closure'?
           let innerEnv = Map.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
           env <- mkEnv eid innerEnv
-          let fundec = FD env vid rparams rret anns
+          let fundec = FD env vid rparams rret (anns, snd ifn.instFunDec.functionOther)
 
           pure InstFun
             { instFunDec = fundec
@@ -522,11 +527,11 @@ currentLevel = subtract 1 . length <$> RWS.gets scopes
 -- must be called BEFORE binding tvars. It checks and errors out if there is a bound tvar that's being constrained.
 rConstraints :: XClassConstraints U -> Ctx (Map Def.UnboundTVar (Set Class))
 rConstraints constraints = do
-  let f m (U.CC klass utv) = do
-        rklass <- resolveClass klass
+  let f m (U.CC location klass utv) = do
+        rklass <- resolveClass location klass
         tryResolveTVar utv >>= \case
-          Just tv -> do
-            err $ FurtherConstrainingExistingTVar tv (R.asUniqueClass rklass)
+          Just spanAndTV -> do
+            err $ FurtherConstrainingExistingTVar spanAndTV (location, R.asUniqueClass rklass)
             pure m
           Nothing -> do
             pure $ Map.insertWith (<>) utv (Set.singleton rklass) m
@@ -534,20 +539,20 @@ rConstraints constraints = do
   foldM f Map.empty constraints
 
 rDecon :: Decon U -> Ctx (Decon R)
-rDecon = transverse $ \(N () d) -> fmap (N ()) $ case d of
+rDecon = transverse $ \(N location d) -> fmap (N location) $ case d of
   CaseVariable var -> do
     rvar <- newVar var
     pure $ CaseVariable rvar
   CaseConstructor conname decons -> do
-    con <- resolveCon conname >>= \case
+    con <- resolveCon location conname >>= \case
       Just con -> pure con
       Nothing -> do
-        err $ UndefinedConstructor conname
+        err $ UndefinedConstructor location conname
         placeholderCon conname.qualify
 
     CaseConstructor con <$> sequenceA decons
   CaseRecord tyName members -> do
-    ty <- resolveType tyName
+    ty <- resolveType (error "location in types!") tyName
     mems <- traverse sequenceA members
 
     -- NOTE: we can check here if members exist in datatype.
@@ -562,21 +567,21 @@ rDecon = transverse $ \(N () d) -> fmap (N ()) $ case d of
         let extraneousMems = currentMems \\ tyMems
 
         for_ extraneousMems $ \mem ->
-          err $ MemberNotInDataDef mem (R.asUniqueType ty, NonEmpty.toList recs)
+          err $ MemberNotInDataDef (error "todo", mem) (R.asUniqueType ty, NonEmpty.toList recs)
 
         let memDefinitions = Map.unionsWith (+) $ flip Map.singleton (1 :: Int) . fst <$> mems
         let redefinedMems = fmap fst $ filter ((>1) . snd) $ Map.toList memDefinitions  -- find member variables that were defined more than once.
         for_ redefinedMems $ \mem ->
-          err $ RedefinedMember mem
+          err $ RedefinedMember (error "todo") mem
 
     pure $ CaseRecord ty mems
 
 rExpr :: Expr U -> Ctx (Expr R)
-rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but unshittified
+rExpr = cata $ \(N location expr) -> embed . N location <$> case expr of  -- transverse, but unshittified
   Lit cx -> case cx of
     LInt i -> pure $ Lit $ LInt i
     LFloat f -> pure $ Lit $ LFloat f
-    LString si -> mkStringInterpolation si
+    LString si -> mkStringInterpolation location si
     --   rsi <- for2 si $ \vn -> do
     --       (loc, v) <- resolveVar vn
 
@@ -590,18 +595,18 @@ rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but
 
 
   Var v () -> do
-    (l, vid) <- resolveVar v
+    (l, vid) <- resolveVar location v
     pure $ Var vid l
   Con conname () -> do
-    con <- resolveCon conname >>= \case
+    con <- resolveCon location conname >>= \case
       Just con -> pure con
       Nothing -> do
-        err $ UndefinedConstructor conname
+        err $ UndefinedConstructor location conname
         placeholderCon conname.qualify
 
     -- you may not use the constructor of a pointer!
     --  only when deconstructing!
-    when (isPointer con) $ err UsingPointerConstructor
+    when (isPointer con) $ err $ UsingPointerConstructor location
 
     eid <- newEnvID
     pure $ Con con eid
@@ -609,7 +614,7 @@ rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but
     rexpr <- e
     pure $ MemAccess rexpr memname
   RecCon tyname mems -> do
-    ty <- resolveType tyname
+    ty <- resolveType (error "location in types!") tyname
     mems' <- Def.sequenceA2 mems
 
     case R.tryGetMembersFromDatatype ty of
@@ -624,18 +629,18 @@ rExpr = cata $ \(N () expr) -> embed . N () <$> case expr of  -- transverse, but
         -- report members not in the current datatype.
         let extraneousMems = currentMems \\ tyMems
         for_ extraneousMems $ \mem ->
-          err $ MemberNotInDataDef mem dd
+          err $ MemberNotInDataDef (error "todo", mem) dd
 
         -- report members that were not defined, but should have been.
         let undefinedMems = tyMems \\ currentMems
         for_ undefinedMems $ \mem ->
-          err $ DidNotDefineMember mem dd
+          err $ DidNotDefineMember (error "todo", mem) dd
 
         -- report redefinitions.
         let memDefinitions = Map.unionsWith (+) $ flip Map.singleton (1 :: Int) . fst <$> mems
         let redefinedMems = fmap fst $ filter ((>1) . snd) $ Map.toList memDefinitions  -- find member variables that were defined more than once.
         for_ redefinedMems $ \mem ->
-          err $ RedefinedMember mem
+          err $ RedefinedMember (error "todo") mem
 
     pure $ RecCon ty mems'
 
@@ -676,7 +681,7 @@ rClassType = transverse $ \case
 rType' :: TypeF U (Ctx a) -> Ctx (TypeF R a)
 rType' = \case
   TCon t tapps () -> do
-    rt <- resolveTypeOrClass t
+    rt <- resolveTypeOrClass (error "location in types!") t
     rtApps <- sequenceA tapps
     case (rt, rtApps) of
       (Left klass, []) ->
@@ -685,13 +690,13 @@ rType' = \case
         pure $ TCon dt rtApps ()
 
       (Left klass, _:_) -> do
-        err $ AppliedTypesToClassInType (R.asUniqueClass klass)
+        err $ AppliedTypesToClassInType (error "todo") (R.asUniqueClass klass)
 
         -- what's better for error reporting here? returning a type or a class? what would produce better error messages?
         pure $ TO $ TClass klass
 
   TO v -> do
-    tv <- resolveTVar v
+    tv <- resolveTVar (error "location in types!") v
     pure $ TO $ TVar tv
   TFun () args ret -> do
     rArgs <- sequence args
@@ -724,43 +729,43 @@ closure eid x = do
 
 
 -- cheap and bad string interpolation. (it would be more readable if we generated types on the fly. the errors would be slightly better!)
-mkStringInterpolation :: XStringInterpolation U -> Ctx (ExprF R (Expr R))
-mkStringInterpolation si = do
+mkStringInterpolation :: Def.Location ->  XStringInterpolation U -> Ctx (ExprF R (Expr R))
+mkStringInterpolation fullInterpolationLocation si = do
   let
-    e = Fix . N ()
+    e loc = Fix . N loc
     digOutVar :: Expr R -> R.Variable
-    digOutVar (Fix (N () expr)) = case expr of
+    digOutVar (Fix (N location expr)) = case expr of
       UnOp Def.Deref x -> digOutVar x
       MemAccess x _ -> digOutVar x
       Var v _ -> v
 
       _ -> error "[COMPILER ERROR]: incorrect expression in interpolated string"
 
-    mkStackedConcat = fmap e . \case
+    mkStackedConcat loc = fmap (e loc) . \case
       [] -> pure $ Lit $ LString ""
       [Left s] -> pure $ Lit $ LString s
       [Right ee] -> do
-        re@(Fix (N () re')) <- rExpr ee
+        re@(Fix (N varLocation re')) <- rExpr ee
         -- (loc, v) <- resolveVar vn
 
         -- we only allow defined variables in string interpolation
         case digOutVar re of
           DefinedVariable {} -> pure ()
           ExternalVariable {} -> pure ()
-          v -> err $ OnlyVariablesAreAllowedInStringInterpolation $ Def.varName $ R.asPUniqueVar $ R.asProto v
+          v -> err $ OnlyVariablesAreAllowedInStringInterpolation fullInterpolationLocation varLocation $ Def.varName $ R.asPUniqueVar $ R.asProto v
 
         pure re'
 
       xs@(_:_:_) -> do
         concatCon <- findBuiltinStrConcat  -- NOTE: resolve it here, not outside, because we might still want to use strings before StrConcat is defined?
         let half = length xs `div` 2
-        l <- mkStackedConcat (take half xs)
-        r <- mkStackedConcat (drop half xs)
+        l@(Fix (N lloc _)) <- mkStackedConcat loc (take half xs)
+        r@(Fix (N rloc _)) <- mkStackedConcat loc (drop half xs)
 
         emptyEnv <- newEnvID
-        pure $ Call (e (Con concatCon emptyEnv)) [l, r]
+        pure $ Call (e (lloc <> rloc) (Con concatCon emptyEnv)) [l, r]
 
-  (\(N _ v) -> v) . project <$> mkStackedConcat si
+  (\(N _ v) -> v) . project <$> mkStackedConcat fullInterpolationLocation si
 
 -- NOTE: FORMER (and probably future) string interpolation.
 --   LEFT HERE FOR FUTURE REFERENCE.
@@ -785,7 +790,7 @@ data CtxState = CtxState
   { scopes :: NonEmpty Scope
   , envStack :: [Def.EnvID]
   , inLambda :: Bool  -- hack to check if we're in a lambda currently. when the lambda is not in another lambda, we put "Local" locality.
-  , tvarBindings :: Map Def.UnboundTVar (TVar R)
+  , tvarBindings :: Map Def.UnboundTVar (Def.Location, TVar R)
 
   , loaderFn :: Compiler.ModuleLoader
   , modules :: Map U.ModuleQualifier (Module TC)  -- list imported modules. automatically gets scoped, so dunt wurry.
@@ -872,20 +877,20 @@ lambdaVar = do
   let var = Def.VI { varID = vid, varName = Def.VN (Text.pack "lambda") }
   return var
 
-resolveVar :: Qualified Def.VarName -> Ctx (Def.Locality, R.Variable)
-resolveVar qname@(Qualified Nothing name) = do
+resolveVar :: Def.Location -> Qualified Def.VarName -> Ctx (Def.Locality, R.Variable)
+resolveVar loc qname@(Qualified Nothing name) = do
   curlev <- currentLevel
   allScopes <- getScopes
   case lookupScope curlev name (fmap varScope allScopes) of
     Just (l, v) -> (l,) <$> protoVariableToVariable v
     Nothing -> do
-      err $ UndefinedVariable qname
+      err $ UndefinedVariable loc qname
       (Def.Local,) . R.DefinedVariable <$> placeholderVar name
 
-resolveVar (Qualified (Just mq) name) = do
+resolveVar loc (Qualified (Just mq) name) = do
   curlev <- currentLevel
   let locality = if curlev == 0 then Def.Local else Def.FromEnvironment 0
-  tryFindExternalModule mq >>= \case
+  tryFindExternalModule loc mq >>= \case
     Just tmod -> do
       -- This is very similar to 'Use' checking and importing! TODO: FEEEEECS
       snapshot <- getScopeSnapshot  -- hope it's not eagerly evaluated!
@@ -902,7 +907,7 @@ resolveVar (Qualified (Just mq) name) = do
             else Nothing
 
         findClassFun = findInExternalModule tmod Common.classes $ \cd ->
-          case find (\(CFD _ funId _ _ _) -> funId.varName == name) cd.classFunctions of
+          case find (\(CFD _ funId _ _ _ _) -> funId.varName == name) cd.classFunctions of
             Just cfd -> Just $ R.ExternalClassFunction cfd snapshot
             Nothing -> Nothing
 
@@ -911,7 +916,7 @@ resolveVar (Qualified (Just mq) name) = do
         Just x ->
           pure (locality, x)
         Nothing -> do
-          err $ ModuleDoesNotExportVariable name mq
+          err $ ModuleDoesNotExportVariable loc name mq
           (locality,) . DefinedVariable <$> generateVar name
 
     Nothing -> (locality,) . DefinedVariable <$> generateVar name
@@ -960,8 +965,8 @@ newCon :: DataCon R -> Ctx ()
 newCon dc = do
   modifyThisScope $ \sc -> sc { conScope = Map.insert dc.conID.conName (R.DefinedConstructor dc) sc.conScope }
 
-resolveCon :: Qualified Def.ConName -> Ctx (Maybe R.Constructor)
-resolveCon (Qualified Nothing name) = do
+resolveCon :: Def.Location -> Qualified Def.ConName -> Ctx (Maybe R.Constructor)
+resolveCon _ (Qualified Nothing name) = do
   allScopes <- getScopes
   curlev <- currentLevel
   -- This has been generalized to return Maybe instead of throwing an error.
@@ -970,7 +975,7 @@ resolveCon (Qualified Nothing name) = do
   let maybeCon = snd <$> lookupScope curlev name (fmap conScope allScopes)
   pure maybeCon
 
-resolveCon (Qualified (Just mq) name) = tryFindExternalModule mq >>= \case -- we place a placeholder value here, because otherwise the error about the constructor not being found will be reported ALONGSIDE the error about the module not being found.
+resolveCon location (Qualified (Just mq) name) = tryFindExternalModule location mq >>= \case -- we place a placeholder value here, because otherwise the error about the constructor not being found will be reported ALONGSIDE the error about the module not being found.
   Just tmod ->
     sequenceA $ findInExternalModule tmod Common.datatypes $ \case
       (DD { ddCons = Right cons }) -> find ((==name) . Def.conName . conID) cons <&> pure . R.ExternalConstructor
@@ -1006,52 +1011,52 @@ registerClass cd = do
     { tyScope = Map.insert (Def.uniqueClassAsTypeName cd.classID) (Left (R.DefinedClass cd)) sc.tyScope
 
     -- inner functions
-    , varScope = foldr (\cfd@(CFD _ uv _ _ _) -> Map.insert uv.varName (R.PDefinedClassFunction cfd)) sc.varScope cd.classFunctions
+    , varScope = foldr (\cfd@(CFD _ uv _ _ _ _) -> Map.insert uv.varName (R.PDefinedClassFunction cfd)) sc.varScope cd.classFunctions
     }
 
   RWST.modify $ \ctx -> ctx { classes = cd : ctx.classes }
 
-resolveClass :: Qualified Def.ClassName -> Ctx R.Class
-resolveClass qcn@(Qualified Nothing cn) = do
+resolveClass :: Def.Location -> Qualified Def.ClassName -> Ctx R.Class
+resolveClass location qcn@(Qualified Nothing cn) = do
   allScopes <- getScopes
   curlev <- currentLevel
   let cnAsTCon = Def.TC cn.fromTN :: Def.TCon
   case lookupScope curlev cnAsTCon (fmap tyScope allScopes) of
     Just (_, Left c) -> pure c
     Just (_, Right dd) -> do
-      err $ ExpectedClassNotDatatype qcn (R.asUniqueType dd)
+      err $ ExpectedClassNotDatatype location qcn (R.asUniqueType dd)
       placeholderClass cn
     Nothing -> do
-      err $ UndefinedClass qcn
+      err $ UndefinedClass location qcn
       placeholderClass cn
 
-resolveClass (Qualified (Just mq) cn) = do
-  tryFindExternalModule mq >>= \case
+resolveClass location (Qualified (Just mq) cn) = do
+  tryFindExternalModule location mq >>= \case
     Just tmod -> case findInExternalModule tmod Common.classes (\k -> if k.classID.className == cn then Just k else Nothing) of
       Just cd -> pure $ R.ExternalClass cd
       Nothing -> do
-        err $ ModuleDoesNotExportClass cn mq
+        err $ ModuleDoesNotExportClass location cn mq
         placeholderClass cn
     Nothing -> undefined
 
 placeholderClass :: Def.ClassName -> Ctx R.Class
 placeholderClass = error . Def.printf "todo: placeholder class '%s'" . Def.pp
 
-findFunctionInClass :: Def.VarName -> R.Class -> Ctx (XClassFunDec R)
-findFunctionInClass vn ecd =
+findFunctionInClass :: Def.Location -> Def.VarName -> R.Class -> Ctx (XClassFunDec R)
+findFunctionInClass searchLocation vn ecd =
   let
     mcfd = case ecd of
-      R.DefinedClass cd -> R.DefinedClassFunDec <$> find (\(CFD _ uv _ _ _) -> uv.varName == vn) cd.classFunctions
-      R.ExternalClass cd -> R.ExternalClassFunDec <$> find (\(CFD _ uv _ _ _) -> uv.varName == vn) cd.classFunctions
+      R.DefinedClass cd -> R.DefinedClassFunDec <$> find (\(CFD _ uv _ _ _ _) -> uv.varName == vn) cd.classFunctions
+      R.ExternalClass cd -> R.ExternalClassFunDec <$> find (\(CFD _ uv _ _ _ _) -> uv.varName == vn) cd.classFunctions
     cid = R.asUniqueClass ecd
   in case mcfd of
     Just cfd -> pure cfd
     Nothing -> do
-      err $ UndefinedFunctionOfThisClass cid vn
+      err $ UndefinedFunctionOfThisClass searchLocation cid vn
       uv <- generateVar vn
       pure $ case ecd of
-        R.DefinedClass cd -> R.DefinedClassFunDec $ CFD cd uv [] (Fix Self) ()
-        R.ExternalClass cd -> R.ExternalClassFunDec $ CFD cd uv [] (Fix Self) ()
+        R.DefinedClass cd -> R.DefinedClassFunDec $ CFD cd uv [] (Fix Self) () searchLocation
+        R.ExternalClass cd -> R.ExternalClassFunDec $ CFD cd uv [] (Fix Self) () searchLocation
 
 
 getScopeSnapshot :: Ctx R.ScopeSnapshot
@@ -1093,13 +1098,13 @@ quietlyAddInstancesFromImportedModule tmod = do
     { instScope = Map.unionWith (<>) instMap sc.instScope
     }
 
-tryFindExternalModule :: U.ModuleQualifier -> Ctx (Maybe (Module TC))
-tryFindExternalModule mq = do
+tryFindExternalModule :: Def.Location -> U.ModuleQualifier -> Ctx (Maybe (Module TC))
+tryFindExternalModule location mq = do
   mods <- RWST.gets modules
   case mods !? mq of
     Just tmod -> pure $ Just tmod
     Nothing -> do
-      err $ ModuleNotImported mq
+      err $ ModuleNotImported location mq
       pure Nothing
 
 
@@ -1124,7 +1129,7 @@ registerDatatype dd = do
   currentScope <- NonEmpty.head <$> getScopes
   case currentScope.tyScope !? name of
     Just (Right (R.DefinedDatatype _)) -> pure ()
-    Just (Right (R.ExternalDatatype _)) -> err $ TypeRedeclaration name  -- maybe we should shadow still?????
+    Just (Right (R.ExternalDatatype _)) -> pure ()  -- err $ TypeRedeclaration (error "bruh. i think we want to redeclare types.") name  -- maybe we should shadow still?????
     _ -> pure ()
 
   modifyThisScope $ \sc -> sc { tyScope = Map.insert name (Right $ R.DefinedDatatype dd) sc.tyScope }
@@ -1135,12 +1140,12 @@ registerDatatype dd = do
 mkTVars :: Def.Binding -> [Def.UnboundTVar] -> [TVar R]
 mkTVars b = fmap $ R.bindTVar mempty b
 
-bindTVars :: [TVar R] -> Ctx a -> Ctx a
+bindTVars :: [(Def.Location, TVar R)] -> Ctx a -> Ctx a
 bindTVars tvs cx = do
     oldBindings <- RWS.gets tvarBindings
 
     -- make bindings and merge them with previous bindings
-    let bindings = Map.fromList $ fmap (\tv -> (Def.UTV tv.fromTV, tv)) tvs
+    let bindings = Map.fromList $ fmap (\(location, tv) -> (Def.UTV tv.fromTV, (location, tv))) tvs
     RWS.modify $ \ctx -> ctx { tvarBindings = bindings <> ctx.tvarBindings }
 
     x <- cx
@@ -1149,18 +1154,18 @@ bindTVars tvs cx = do
 
     pure x
 
-tryResolveTVar :: Def.UnboundTVar -> Ctx (Maybe (TVar R))
+tryResolveTVar :: Def.UnboundTVar -> Ctx (Maybe (Def.Location, TVar R))
 tryResolveTVar utv = do
   tvs <- RWS.gets tvarBindings
   pure $ tvs !? utv
 
-resolveTVar :: Def.UnboundTVar -> Ctx (TVar R)
-resolveTVar utv = do
+resolveTVar :: Def.Location -> Def.UnboundTVar -> Ctx (TVar R)
+resolveTVar location utv = do
   mtv <- tryResolveTVar utv
   case mtv of
-    Just tv -> pure tv
+    Just (_, tv) -> pure tv
     Nothing -> do
-      err $ UnboundTypeVariable utv
+      err $ UnboundTypeVariable location utv
       placeholderTVar utv
 
 placeholderTVar :: Def.UnboundTVar -> Ctx (TVar R)
@@ -1168,27 +1173,27 @@ placeholderTVar utv = do
   var <- generateVar $ Def.VN $ "placeholderVarForTVar" <> utv.fromUTV
   pure (R.bindTVar mempty (BindByVar var) utv)
 
-resolveType :: U.Qualified Def.TCon -> Ctx R.DataType
-resolveType name = do
-  tOrC <- resolveTypeOrClass name
+resolveType :: Def.Location -> U.Qualified Def.TCon -> Ctx R.DataType
+resolveType location name = do
+  tOrC <- resolveTypeOrClass (error "locaiton in types!") name
   case tOrC of
     Right t -> pure t
     Left c -> do
       let cid = R.asUniqueClass c
-      err $ UsingClassNameInPlaceOfType cid
+      err $ UsingClassNameInPlaceOfType location cid
       placeholderType name.qualify
 
-resolveTypeOrClass :: Qualified Def.TCon -> Ctx (Either R.Class R.DataType)
-resolveTypeOrClass (Qualified Nothing name) = do
+resolveTypeOrClass :: Def.Location -> Qualified Def.TCon -> Ctx (Either R.Class R.DataType)
+resolveTypeOrClass location (Qualified Nothing name) = do
   allScopes <- getScopes
   curlev <- currentLevel
   case lookupScope curlev name (fmap tyScope allScopes) of
     Just (_, typeOrClass) -> pure typeOrClass
 
     Nothing -> do
-      err $ UndefinedType name
+      err $ UndefinedType location name
       Right <$> placeholderType name
-resolveTypeOrClass (Qualified (Just _) name) = do
+resolveTypeOrClass location (Qualified (Just _) name) = do
   error "todo"
 
 
@@ -1218,7 +1223,7 @@ unit = do
 
     -- When we're resolving prelude, find it from the environment.
     Nothing ->
-      resolveCon (U.unqualified Prelude.unitName) <&> \case
+      resolveCon (error "location in types!") (U.unqualified Prelude.unitName) <&> \case
         Just uc -> uc
         Nothing -> error $ "[COMPILER ERROR]: Could not find Unit type with the name: '" <> show Prelude.unitName <> "'. This must not happen."
 
@@ -1231,7 +1236,7 @@ findBuiltinStrConcat = do
 
     -- When we're resolving prelude, find it from the environment.
     Nothing ->
-      resolveCon (U.unqualified Prelude.strConcatName) <&> \case
+      resolveCon (error "location in types!") (U.unqualified Prelude.strConcatName) <&> \case
         Just uc -> uc
         Nothing -> error $ "[COMPILER ERROR]: Could not find StrConcat type with the name: '" <> show Prelude.strConcatName <> "'. This must not happen."
 
@@ -1240,43 +1245,92 @@ err :: ResolveError -> Ctx ()
 err = RWST.tell .  (:[])
 
 data ResolveError
-  = UndefinedVariable (Qualified Def.VarName)
-  | UndefinedConstructor (Qualified Def.ConName)
-  | UndefinedType Def.TCon
-  | UnboundTypeVariable Def.UnboundTVar
-  | FurtherConstrainingExistingTVar (TVar R) Def.UniqueClass
-  | TypeRedeclaration Def.TCon
-  | CannotMutateFunctionDeclaration Def.VarName
-  | CannotMutateNonLocalVariable Def.VarName
-  | CannotMutateImportedVariable Def.UniqueVar
+  = UndefinedVariable Def.Location (Qualified Def.VarName)
+  | UndefinedConstructor Def.Location (Qualified Def.ConName)
+  | UndefinedType Def.Location Def.TCon
+  | UnboundTypeVariable Def.Location Def.UnboundTVar
+  | FurtherConstrainingExistingTVar (Def.Location, TVar R) (Def.Location, Def.UniqueClass)
+  -- | TypeRedeclaration Def.Location Def.TCon
+  | CannotMutateFunctionDeclaration Def.Location Def.VarName
+  | CannotMutateNonLocalVariable Def.Location Def.VarName
+  | CannotMutateImportedVariable Def.Location Def.UniqueVar
 
-  | DidNotDefineMember Def.MemName (Def.UniqueType, [Def.MemName])
-  | MemberNotInDataDef Def.MemName (Def.UniqueType, [Def.MemName])
-  | RedefinedMember    Def.MemName
+  | DidNotDefineMember (Def.Location, Def.MemName) (Def.UniqueType, [Def.MemName])
+  | MemberNotInDataDef (Def.Location, Def.MemName) (Def.UniqueType, [Def.MemName])
+  | RedefinedMember    Def.Location Def.MemName
 
-  | NotARecordType Def.UniqueType
+  | NotARecordType Def.Location Def.UniqueType
 
-  | UndefinedClass (Qualified Def.ClassName)
-  | ExpectedClassNotDatatype (Qualified Def.ClassName) Def.UniqueType
-  | UsingClassNameInPlaceOfType Def.UniqueClass  -- IDs are only, because I'm currently too lazy to make a Show instance.
-  | UndefinedFunctionOfThisClass Def.UniqueClass Def.VarName
+  | UndefinedClass Def.Location (Qualified Def.ClassName)
+  | ExpectedClassNotDatatype Def.Location (Qualified Def.ClassName) Def.UniqueType
+  | UsingClassNameInPlaceOfType Def.Location Def.UniqueClass  -- IDs are only, because I'm currently too lazy to make a Show instance.
+  | UndefinedFunctionOfThisClass Def.Location Def.UniqueClass Def.VarName
 
-  | AppliedTypesToClassInType Def.UniqueClass
+  | AppliedTypesToClassInType Def.Location Def.UniqueClass
 
-  | UsingPointerConstructor
+  | UsingPointerConstructor Def.Location
 
-  | ModuleDoesNotExist U.ModuleQualifier
-  | ModuleDoesNotExportVariable Def.VarName U.ModuleQualifier
-  | ModuleDoesNotExportType Def.TCon U.ModuleQualifier
-  | ModuleDoesNotExportClass Def.ClassName U.ModuleQualifier
-  | ModuleDoesNotExportTypeOrClass Def.TCon U.ModuleQualifier
-  | ModuleNotImported U.ModuleQualifier
-  | TryingToImportConstructorsFromARecordType Def.TCon Def.UniqueType U.ModuleQualifier
-  | TryingToImportNonExistingConstructorOfType Def.ConName Def.UniqueType U.ModuleQualifier
-  | TryingToImportNonExistingFunctionOfClass Def.VarName Def.UniqueClass U.ModuleQualifier
+  | ModuleDoesNotExist Def.Location U.ModuleQualifier
+  | ModuleDoesNotExportVariable Def.Location Def.VarName U.ModuleQualifier
+  | ModuleDoesNotExportType Def.Location Def.TCon U.ModuleQualifier
+  | ModuleDoesNotExportClass Def.Location Def.ClassName U.ModuleQualifier
+  | ModuleDoesNotExportTypeOrClass Def.Location Def.TCon U.ModuleQualifier
+  | ModuleNotImported Def.Location U.ModuleQualifier
+  | TryingToImportConstructorsFromARecordType Def.Location Def.UniqueType U.ModuleQualifier
+  | TryingToImportNonExistingConstructorOfType Def.Location Def.ConName Def.UniqueType U.ModuleQualifier
+  | TryingToImportNonExistingFunctionOfClass Def.Location Def.VarName Def.UniqueClass U.ModuleQualifier
 
-  | OnlyVariablesAreAllowedInStringInterpolation Def.VarName  -- badtype, only to appease Show.
-  deriving Show
+  | OnlyVariablesAreAllowedInStringInterpolation Def.Location Def.Location Def.VarName  -- badtype, only to appease Show.
+
+
+instance Error ResolveError where
+  toError source = \case
+    UndefinedVariable location vn -> renderError source (fs $ printf "Undefined variable %s" (pp vn)) $ ln (location, Just "this guy")
+    UndefinedConstructor location cn -> renderError source (fs $ printf "Undefined constructor %s" (pp cn)) $ ln (location, Just "dis")
+    UndefinedType location tn -> renderError source (fs $ printf "Undefined type %s" (pp tn)) $ ln (location, Just "diz")
+    UnboundTypeVariable location utv -> renderError source (fs $ printf "Unbound type variable %s" (pp utv)) $ ln (location, Just "miau")
+    FurtherConstrainingExistingTVar (location, tv) (location', uc) -> renderError source (fs $ printf "Further constraining existing tvar %s with class %s" (pp tv) (pp uc)) $ lns [(location, Just "this is where the tvar was defined"), (location', Just "that's the constraint")]
+    -- TypeRedeclaration location ty -> renderError source (fs $ printf "") $ ln (location, Just "")
+    CannotMutateFunctionDeclaration location vn -> renderError source (fs $ printf "Cannot mutate a function.") $ ln (location, Just (fs $ printf "%s is a function, ya dingus" (pp vn)))
+    CannotMutateNonLocalVariable location vn -> renderError source (fs $ printf "Currently, we cannot mutate non local variables.") $ ln (location, Just "might change, i dunno")
+    CannotMutateImportedVariable location vn -> renderError source (fs $ printf "Currently, we cannot mutate imported variables.") $ ln (location, Just "might change, might not i dunno")
+
+    DidNotDefineMember (location, undefinedMem) (recordType, mems) -> renderError source (fs $ printf "You forgot to define %s when constructing an instance of %s." (pp undefinedMem) (pp recordType)) $ ln (location, Nothing)
+    MemberNotInDataDef (location, mem) (ty, possibleMems) -> renderError source (fs $ printf "Field %s not in type %s." (pp ty) (pp mem)) $ ln (location, Just (Def.tsctx possibleMems))
+    RedefinedMember location mem -> renderError source (fs $ printf "Redefined member %s" (pp mem)) $ ln (location, Nothing)
+
+    NotARecordType location ty -> renderError source (fs $ printf "Type %s is not a record type!" (pp ty)) $ ln (location, Nothing)
+
+    UndefinedClass location className -> renderError source (fs $ printf "Undefined class %s" (pp className)) $ ln (location, Nothing)
+    ExpectedClassNotDatatype location className ty -> renderError source (fs $ printf "Expected class, but %s is a datatype." (pp ty)) $ ln (location, Nothing)
+    UsingClassNameInPlaceOfType location klass -> renderError source (fs $ printf "Expected type but %s is actually a type yo." (pp klass)) $ ln (location, Just "this should be a type yo")  -- IDs are only, because I'm currently too lazy to make a Show instance.
+
+    UndefinedFunctionOfThisClass location klass vn -> renderError source (fs $ printf "Class %s don't have function %s, yo." (pp klass) (pp vn)) $ ln (location, Nothing)
+
+    AppliedTypesToClassInType location klass -> renderError source (fs $ printf "%s is a class and you just applied types to it. Bruh." (pp klass)) $ ln (location, Nothing)
+
+    UsingPointerConstructor location -> renderError source (fs $ printf "Cannot use Ptr constructor in normal code.") $ ln (location, Just "you just... can't, ok???")
+
+    ModuleDoesNotExist location modul -> renderError source (fs $ printf "Could not find module %s." (pp modul)) $ ln (location, Nothing)
+    ModuleDoesNotExportVariable location vn modul -> renderError source (fs $ printf "Module %s does not export %s." (pp modul) (pp vn)) $ ln (location, Nothing)
+    ModuleDoesNotExportType location ty modul -> renderError source (fs $ printf "Module %s does not export type %s." (pp modul) (pp ty)) $ ln (location, Nothing)
+    ModuleDoesNotExportClass location klass modul -> renderError source (fs $ printf "Module %s does not export class %s." (pp modul) (pp klass)) $ ln (location, Nothing)
+    ModuleDoesNotExportTypeOrClass location ty modul -> renderError source (fs $ printf "Module %s does not export this class or type %s." (pp modul) (pp ty)) $ ln (location, Nothing)
+    ModuleNotImported location modul -> renderError source (fs $ printf "Could not import module %s." (pp modul)) $ ln (location, Nothing)
+    TryingToImportConstructorsFromARecordType location ty modul -> renderError source undefined undefined
+    TryingToImportNonExistingConstructorOfType location cn ty modul -> renderError source undefined undefined
+    TryingToImportNonExistingFunctionOfClass location vn uc modul -> renderError source undefined undefined
+
+    OnlyVariablesAreAllowedInStringInterpolation fullLocation location vn -> renderError source (fs $ printf "Only variables are allowed in string interpolation.") $ lns [(fullLocation, Nothing), (location, Just "it's a function, you dingus")]
+
+ln :: a -> NonEmpty a
+ln = NonEmpty.singleton
+
+lns :: [a] -> NonEmpty a
+lns = NonEmpty.fromList
+
+fs :: String -> Text
+fs = fromString
 
 
 -- environment stuff
@@ -1290,7 +1344,7 @@ mkEnv eid innerEnv = do
         (_, Def.Local) -> Nothing
         (_, Def.FromEnvironment lev) | lev > curlev -> Nothing
         (PExternalFunction fn, _) | Def.AExternal `elem` fn.functionDeclaration.functionOther.functionAnnotations -> Nothing  -- controversial! we must exclude external functions. what is controversial is if we should do it here or during codegen?
-        (PDefinedFunction fn, _) | Def.AExternal `elem` fn.functionDeclaration.functionOther -> Nothing  -- controversial! we must exclude external functions. what is controversial is if we should do it here or during codegen?
+        (PDefinedFunction fn, _) | Def.AExternal `elem` fst fn.functionDeclaration.functionOther -> Nothing  -- controversial! we must exclude external functions. what is controversial is if we should do it here or during codegen?
 
         (v, Def.FromEnvironment lev) | lev == curlev -> Just (v, Def.Local)
         (v, Def.FromEnvironment lev) -> Just (v, Def.FromEnvironment lev)
@@ -1303,8 +1357,8 @@ newEnvID = Def.EnvID <$> liftIO newUnique
 
 -- used for function definitions
 gatherVariables :: AnnStmt R -> Map R.VariableProto Def.Locality
-gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesFromExpr bstmt of
-  Mutation v loc _ expr -> Map.insert (R.PDefinedVariable v) loc expr
+gatherVariables = cata $ \(O (O (Annotated _ (Located _ bstmt)))) -> case first gatherVariablesFromExpr bstmt of
+  Mutation v _ loc _ expr -> Map.insert (R.PDefinedVariable v) loc expr
   Return expr -> gatherVariablesFromExpr expr
   Fun fn ->
     let dec = fn.functionDeclaration
@@ -1315,7 +1369,7 @@ gatherVariables = cata $ \(O (Annotated _ bstmt)) -> case first gatherVariablesF
 
 -- used for lambdas
 gatherVariablesFromExpr :: Expr R -> Map VariableProto Def.Locality
-gatherVariablesFromExpr = cata $ \(N () e) -> case e of
+gatherVariablesFromExpr = cata $ \(N _ e) -> case e of
   Var v loc -> Map.singleton (R.asProto v) loc  -- TODO: Is this... correct? It's used for making the environment, but now we can just use this variable to know. This is todo for rewrite.
                                 --   Update: I don't understand the comment above.
   expr -> fold expr

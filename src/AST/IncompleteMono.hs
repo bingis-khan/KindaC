@@ -4,8 +4,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE UndecidableInstances #-}
 module AST.IncompleteMono (module AST.IncompleteMono, Def.EnvID) where
-import AST.Common (Function, Type, XLVar, XReturn, XNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation)
+import AST.Common (Function, Type, XLVar, XReturn, XExprNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation)
 import qualified AST.Def as Def
 import AST.Def (Locality, PP (..), (<+>), PPDef)
 import Data.List.NonEmpty (NonEmpty)
@@ -24,7 +25,7 @@ type IM = IMono
 type instance Rec IM a = a
 type instance XLVar IM = Def.UniqueVar
 type instance XReturn IM = Expr IM
-type instance XNode IM = Type IM
+type instance XExprNode IM = Type IM
 type instance XLamOther IM = Env
 type instance XLamVar IM = (Def.UniqueVar, Type IM)
 type instance XVarOther IM = Locality

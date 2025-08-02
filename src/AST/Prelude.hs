@@ -3,8 +3,7 @@ module AST.Prelude (module AST.Prelude) where
 
 import qualified AST.Def as Def
 import AST.Typed (TC)
-import AST.Common (Module, DataCon, Expr, Type, Node (..), ClassDef)
-import Data.Fix (Fix(..))
+import AST.Common (Module, DataCon, Expr, Type)
 
 
 -- the funny anti-cyclic (cucklic) module dependency
@@ -19,7 +18,7 @@ data Prelude = Prelude
   { tpModule       :: Module TC
 
   -- extra stuff for resolving/typechecking that is always needed.
-  , toplevelReturn :: Expr  TC  -- includes the type one should refer to. should be Int (later U8)
+  , toplevelReturn :: Def.Location -> Expr  TC  -- includes the type one should refer to. should be Int (later U8)
   , boolType       :: Type TC
   , intType        :: Type TC
   , floatType      :: Type TC
@@ -51,7 +50,7 @@ data PreludeFind = PF Def.TCon (Prelude -> Type TC)
 
 -- since we have TCs, not sure if we need the added types (int, bool). maybe we can just find them normally, through conNames/tyNames.
 tlReturnFind, boolFind, intFind, floatFind, constStrFind :: PreludeFind
-tlReturnFind = PF tlReturnTypeName ((\(Fix (N t _)) -> t) . toplevelReturn)
+tlReturnFind = PF tlReturnTypeName intType
 boolFind = PF boolTypeName boolType
 intFind = PF intTypeName intType
 floatFind = PF floatTypeName floatType

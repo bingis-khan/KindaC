@@ -1,9 +1,4 @@
 
-#[goofy-ahh-cast]
-external cast (x a) -> b  # 'external' so we won't generate a body.
-
-#[goofy-ahh-pointer-offset]
-external shitty-offset-ptr (ptr Ptr a, count Int) -> Ptr a
 
 
 # safe version of the cast (but introduces a function call...)
@@ -22,9 +17,6 @@ external printf (format ConstStr, x a) -> Void
 #[cstdinclude 'string.h']
 external strlen (s ConstStr) -> Int
 
-
-# very very brittly geg. sizeof is not even a real function.
-external sizeof (s a) -> Int
 
 # mem shit
 

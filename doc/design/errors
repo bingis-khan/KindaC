@@ -1,0 +1,83 @@
+How do I want errors to look like?
+
+1. Right now, I will just use Megaparsec's error display to show errors to keep it consistent.
+
+Example error. It uses offsets.
+
+expr.kc:2:1:
+  |
+2 | 123 + 2
+  | ^^^^^^^
+Only call as an expression.
+
+
+Actually, I won't use this. Why? I am unable to signal errors on multiple locations.
+I'll make a bootleg version of this thing.
+
+
+2. But what's the ideal way?
+
+How do I underline a line?
+
+  dupsko
+  ^^^^^^  <- this one is the comfiest i think
+
+  dupsko
+  ~~~~~~
+
+  dupsko
+  ######
+
+Error design:
+
+(let's copy megaparsec/rust slightly)
+
+Error with one error location:
+
+  error: some cool error message
+     |
+  69 |  suck-cock(696969)
+     |            ^^^^^^---- bruh, extra message to error.
+
+
+Error with two error locations on the same line:
+
+  error: whatever
+     |
+  69 | suck-cock(42069)
+     | ^^^^^^^^^ ^^^^^--- wrong number
+                ----- no gay
+
+
+Error with two error locations on multiple lines:
+
+  error: whatever
+     |
+  69 | suck-cock(42069)
+     |           ^^^^^--- wrong number
+
+     |
+  42 | another-thing = 6969
+     |                 ^^^^--- better number
+
+
+Right now this is pretty basic. I want to add:
+  1. rendering lines close enough together
+  2. proper coloring
+    2.1. gray out other lines in the file
+
+but this'll happen later
+
+
+##### The interface: #####
+
+Do we need a typeclass? I guess, not really now. Although it might be better if we want to deal with multiple errors at the same time i guess?
+
+Right now, I'll implement a very simple typeclass just for readability:
+
+class Error err
+  toError :: err -> Text   <- I guess we don't really need anything except text kek! Unless we want to further make datatypes which will be rendered... but it's okay
+
+To render a text like this, I think one function is good:
+
+renderError :: ErrorTitle -> NonEmpty (Location, Maybe Comment) -> Text

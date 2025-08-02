@@ -19,7 +19,7 @@ import Data.Foldable (find)
 import Text.Printf (printf)
 import AST.Prelude (Prelude (..))
 import qualified AST.Prelude as Prelude
-import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), Node (..), datatypes, LitType (..))
+import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), ExprNode (..), datatypes, LitType (..))
 import qualified AST.Def as Def
 import AST.Typed (TC, Mod (topLevelStatements))
 import AST.Def (Result(..), phase, PP (..))
@@ -31,6 +31,8 @@ import Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.Trans.RWS as RWST
 import Data.Map ((!?))
 import qualified System.Directory as Directory
+import Error (Error (..))
+import qualified System.FilePath as FilePath
 
 
 
@@ -44,32 +46,33 @@ stdPath = "kcsrc/std/"
 --   However, right now, I can just turn them into strings. THIS IS TEMPORARY.
 loadModule :: FilePath -> CompilerContext (Maybe (Module TC))
 loadModule filename = do
+  let moduleName = Text.pack $ FilePath.takeFileName filename
   source <- liftIO $ TextIO.readFile filename
   prelude <- RWST.asks snd
 
   phase "Parsing"
   case parse filename source of
     Left err -> do
-      Compiler.addErrors [err]
+      Compiler.addErrors moduleName [err]
       pure Nothing
 
     Right ast -> do
       Def.ctxPrint ast
 
       phase "Resolving"
-      (rerrs, rmod) <- resolve (Just prelude) moduleLoader ast
+      (rerrs, rmod) <- resolve (Just prelude) (moduleLoader moduleName) ast
       Def.ctxPrint rmod
 
       
       phase "Typechecking"
       (terrs, tmod) <- liftIO $ typecheck (Just prelude) rmod
 
-      Compiler.addErrors $ s2t rerrs ++ s2t terrs
+      Compiler.addErrors moduleName $ map (" " <>) $ s2t source rerrs ++ s2t source terrs
       pure $ Just tmod
 
 
-moduleLoader :: Compiler.ModuleLoader
-moduleLoader mq = do
+moduleLoader :: Text -> Compiler.ModuleLoader
+moduleLoader compilingModule mq = do
   mtmod <- RWST.gets Compiler.loadedModules
   case mtmod !? mq of
     Nothing -> do
@@ -92,7 +95,7 @@ moduleLoader mq = do
               Compiler.storeModule mq lmtmod
               pure lmtmod
             else do
-              Compiler.addErrors $ Text.pack <$> [Def.printf "Could not find module %s. (Searched both for '%s' and std '%s')" (show mq) filepath stdpath]
+              Compiler.addErrors compilingModule [Text.pack $ Def.printf "Could not find module %s. (Searched both for '%s' and std '%s')" (show mq) filepath stdpath]
               pure Nothing
 
     Just lmtmod -> pure lmtmod
@@ -136,7 +139,7 @@ loadPrelude = do
         phase "Typechecking"
         (terrs, tmod) <- liftIO $ typecheck Nothing rmod
 
-        pure $ case s2t rerrs ++ s2t terrs of
+        pure $ case s2t source rerrs <> s2t source terrs of
           [] -> Right tmod
           errs@(_:_) -> Left $ Text.unlines errs
 
@@ -190,10 +193,10 @@ loadPrelude = do
               Just dc -> pure dc
               Nothing -> Failure $ ne "[Prelude: StrConcat] Could not find suitable StrConcat type (StrConcat type name + StrConcat constructor, two tvars, single constructor)"
 
-          mkTopLevelReturn :: Type TC -> Expr TC
-          mkTopLevelReturn t =
+          mkTopLevelReturn :: Type TC -> Def.Location -> Expr TC
+          mkTopLevelReturn t loc =
             let lit = Lit (LInt 0)
-            in Fix $ N t lit
+            in Fix $ N (T.ExprNode t loc) lit
 
       let
         findPtrType :: PreludeErr (Type TC -> Type TC)
@@ -231,5 +234,5 @@ type PreludeErr = Result (NonEmpty Text)
 
 
 
-s2t :: (Functor f, Show a) => f a -> f Text
-s2t = fmap (Text.pack . show)
+s2t :: (Functor f, Error a) => Text -> f a -> f Text
+s2t source = fmap (toError source)

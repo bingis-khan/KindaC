@@ -39,9 +39,9 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Traversable (for)
 import Data.Either (lefts)
 import qualified Data.Map as Map
-import AST.Common (Module, AnnStmt, StmtF (..), Decon, DeconF (..), DataCon (..), DataDef (..), Type, Expr, Node (..), ExprF (..), TypeF (..), Function, IfStmt (..), MutAccess (..), LitType (..))
+import AST.Common (Module, AnnStmt, StmtF (..), Decon, DeconF (..), DataCon (..), DataDef (..), Type, Expr, ExprNode (..), ExprF (..), TypeF (..), Function, IfStmt (..), MutAccess (..), LitType (..), askNode)
 import AST.Mono (M, EnvMod (assignee, assigned))
-import AST.Def ((:.)(..), Annotated (..), CtxData (..), Locality, pp, fmap2, BinOp (..), UnOp (..))
+import AST.Def ((:.)(..), Annotated (..), CtxData (..), Locality, pp, fmap2, BinOp (..), UnOp (..), Located (..))
 import qualified AST.Def as Def
 
 
@@ -69,12 +69,12 @@ runPP px =
 
 
 cMain :: [AnnStmt M] -> PP
-cMain stmts | null stmts || all (\(Fix (O (Annotated _ stmt))) -> case stmt of { Pass -> True; _ -> False }) stmts  = pl $ addTopLevel $ "int" § "main" & "()" <§ cBlock [statement "return 0"]  -- TEMP: return 0 when all statements are empty.
+cMain stmts | null stmts || all (\(Fix (O (O (Annotated _ (Located _ stmt))))) -> case stmt of { Pass -> True; _ -> False }) stmts  = pl $ addTopLevel $ "int" § "main" & "()" <§ cBlock [statement "return 0"]  -- TEMP: return 0 when all statements are empty.
 cMain stmts = pl $ addTopLevel $ "int" § "main" & "()" <§ cBlock (cStmt <$> stmts)
 
 
 cStmt :: AnnStmt M -> PP
-cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
+cStmt = cata $ \(O (O (Annotated anns (Located _ monoStmt)))) -> case monoStmt of
   Pass -> mempty
   Print et ->
     let e = cExpr et
@@ -101,8 +101,8 @@ cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
              in statement $ cPrintf (visibleType (Fix (TFun union args ret)) <> " at %p\\n") [enclose "(" ")" "void*" § e']
     where
       bareExpression = statement . (enclose "(" ")" "void" §)
-  Assignment uv e -> statement $ cDefinition (Common.typeOfNode e) (cVarName uv) § "=" § cExpr e
-  Mutation uv loc accesses e ->
+  Assignment uv _ e -> statement $ cDefinition (askNode e) (cVarName uv) § "=" § cExpr e
+  Mutation uv _ loc accesses e ->
     let var = case loc of
           Def.Local -> cVarName uv
           Def.FromEnvironment {} -> "env->" & cVarName uv
@@ -113,7 +113,7 @@ cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
   ExprStmt e -> statement $ cExpr e
   Return e | Def.AUndefinedReturn `elem` anns -> do  -- RETARDE HACK pt 2
     let v = "cool_undefined_x"
-    statement $ cDefinition (Common.typeOfNode e) v
+    statement $ cDefinition (askNode e) v
     statement $ "return" § v
   Return e ->
     statement $ "return" § cExpr e
@@ -130,7 +130,7 @@ cStmt = cata $ \(O (Annotated anns monoStmt)) -> case monoStmt of
       "else" <§ cBlock els
 
   Switch switch (firstCase :| otherCases) -> do
-    cond <- createIntermediateVariable' (Common.typeOfNode switch) (cExpr switch)
+    cond <- createIntermediateVariable' (askNode switch) (cExpr switch)
 
     "if" § enclose "(" ")" (cDeconCondition cond firstCase.deconstruction) <§ do
       let vars = cDeconAccess cond firstCase.deconstruction
@@ -175,8 +175,8 @@ cMutAccesses :: PL -> [(MutAccess M, Type M)] -> PL
 cMutAccesses og accs = foldr f og (reverse accs)
   where
     f :: (MutAccess M, Type M) -> PL -> PL
-    f (MutRef, _) = cDeref
-    f (MutField mem, _) = (& "." & cRecMember mem)
+    f (MutRef _, _) = cDeref
+    f (MutField _ mem, _) = (& "." & cRecMember mem)
 
 
 cDeconCondition :: PL -> Decon M -> PL
@@ -230,7 +230,7 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
     enclose "(" ")" $ enclose "(" ")" (snd ptr) § "+" § enclose "(" ")" (snd count)
 
   Call (ogfn, fn) args ->
-      let ft = Common.typeOfNode ogfn
+      let ft = askNode ogfn
           union = case ft of
             Fix (TFun munion _ _) -> munion
             _ -> undefined  -- should not happen.
@@ -242,22 +242,22 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
               v <- createIntermediateVariable ft fn
               cCall (v & ".fun") $ ("&" & v & ".env") : fmap snd args
 
-  BinOp (l, le) Equals (r, re) | not (isBuiltinType (Common.typeOfNode l))-> do
-    le' <- createIntermediateVariable (Common.typeOfNode l) le
-    re' <- createIntermediateVariable (Common.typeOfNode r) re
+  BinOp (l, le) Equals (r, re) | not (isBuiltinType (askNode l))-> do
+    le' <- createIntermediateVariable (askNode l) le
+    re' <- createIntermediateVariable (askNode r) re
 
     include "string.h"
-    enclose "(" ")" $ "0" § "==" § cCall "memcmp" [cRef le', cRef re', cSizeOf (Common.typeOfNode l)]
+    enclose "(" ")" $ "0" § "==" § cCall "memcmp" [cRef le', cRef re', cSizeOf (askNode l)]
 
-  BinOp (l, le) NotEquals (r, re) | not (isBuiltinType (Common.typeOfNode l))-> do
-    le' <- createIntermediateVariable (Common.typeOfNode l) le
-    re' <- createIntermediateVariable (Common.typeOfNode r) re
+  BinOp (l, le) NotEquals (r, re) | not (isBuiltinType (askNode l))-> do
+    le' <- createIntermediateVariable (askNode l) le
+    re' <- createIntermediateVariable (askNode r) re
 
     include "string.h"
-    enclose "(" ")" $ "0" § "!=" § cCall "memcmp" [cRef le', cRef re', cSizeOf (Common.typeOfNode l)]
+    enclose "(" ")" $ "0" § "!=" § cCall "memcmp" [cRef le', cRef re', cSizeOf (askNode l)]
 
   RecUpdate (e, ee) upd -> do
-    let et = Common.typeOfNode e
+    let et = askNode e
     let (dd@DD { ddCons = erecs }, ts) = case project et of
           TCon dd ts _ -> (dd, ts)
           _ -> undefined
@@ -288,7 +288,7 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
   -- [V] 4. &((&(ptr&.og-iter))&.og2-iter)  (this is ref/deref + fields)
   UnOp Ref (oge, e) | isLValue oge -> cRef e  -- is it enough?
   UnOp Ref (oge, e) -> do
-    newVar <- createIntermediateVariable (Common.typeOfNode oge) e
+    newVar <- createIntermediateVariable (askNode oge) e
     cRef newVar
 
   -- branch without the need for added types.

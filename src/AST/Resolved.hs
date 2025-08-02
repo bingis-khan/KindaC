@@ -3,9 +3,8 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE DeriveFunctor #-}
+
 module AST.Resolved (module AST.Resolved) where
 
 import AST.Common
@@ -44,16 +43,17 @@ type instance XDClass Resolved = Def.UniqueClass
 type instance XInstDef Resolved = InstDef R
 type instance XClassConstraints Resolved = () -- Map (TVar R) (Set Class)
 type instance XOther Resolved = ()
-type instance XFunOther Resolved = [Def.Ann]
+type instance XFunOther Resolved = ([Def.Ann], Def.Location)
 type instance XTOther Resolved = RTO
 type instance XTFun Resolved = ()
 type instance XTConOther Resolved = ()
-type instance XNode Resolved = ()
+type instance XExprNode Resolved = Def.Location
 type instance XFunType Resolved = DeclaredType R
 type instance XDataScheme Resolved = [TVar R]
 type instance XMutAccess Resolved = MutAccess R
 type instance XInstExport R = Inst
 type instance XStringInterpolation R = Text  -- we "unpack" string interpolation pretty early - here. NOTE: I might change it if the errors are bad tho.
+type instance XExportType R = ()
 
 
 data Env = Env { envID :: Def.EnvID, envStackLevel :: Def.EnvStack, fromEnv :: [(VariableProto, Def.Locality)] }
@@ -99,8 +99,8 @@ asPUniqueVar = \case
   PDefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
   PExternalFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
 
-  PDefinedClassFunction (CFD _ uv _ _ _) -> uv
-  PExternalClassFunction (CFD _ uv _ _ _) -> uv
+  PDefinedClassFunction (CFD _ uv _ _ _ _) -> uv
+  PExternalClassFunction (CFD _ uv _ _ _ _) -> uv
 
 asProto :: Variable -> VariableProto
 asProto = \case
@@ -151,7 +151,7 @@ data ClassFun
 data Inst
   = DefinedInst (InstDef R)
   | ExternalInst (InstDef TC)
-  
+
 
 type PossibleInstances = Map DataType Inst
 

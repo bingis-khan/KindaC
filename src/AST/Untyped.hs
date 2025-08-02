@@ -5,6 +5,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE UndecidableInstances #-}
 module AST.Untyped (module AST.Untyped) where
 import AST.Common
 import qualified AST.Def as Def
@@ -22,7 +23,7 @@ type instance XDTCon Untyped = Def.TCon
 type instance XMem Untyped = Def.MemName
 type instance XTVar Untyped = Def.UnboundTVar
 type instance XLamOther Untyped = ()
-type instance XFunOther Untyped = [ClassConstraint]
+type instance XFunOther Untyped = ([ClassConstraint], Def.Location)
 type instance XDataScheme Untyped = [Def.UnboundTVar]
 
 type instance XVar Untyped = Qualified Def.VarName
@@ -39,12 +40,12 @@ type instance XFunVar Untyped = Def.VarName
 type instance XTOther Untyped = Def.UnboundTVar
 type instance XTFun Untyped = ()
 type instance XTConOther Untyped = ()
-type instance XNode Untyped = ()
+type instance XExprNode Untyped = Def.Location
 type instance XFunType Untyped = DeclaredType U
 type instance XMutAccess Untyped = MutAccess U
 type instance XStringInterpolation Untyped = [Either Text (Expr Untyped)]
 
-data ClassConstraint = CC (Qualified Def.ClassName) Def.UnboundTVar deriving Eq
+data ClassConstraint = CC Def.Location (Qualified Def.ClassName) Def.UnboundTVar deriving Eq
 type instance XClassConstraints Untyped = [ClassConstraint]
 
 type instance XEnv Untyped = ()
@@ -54,6 +55,7 @@ type instance XReturn Untyped = Maybe (Expr Untyped)
 data FunDef = FunDef (FunDec Untyped) (NonEmpty (AnnStmt Untyped))
 type instance XFunDef Untyped = FunDef
 type instance XInstDef Untyped = InstDef Untyped
+type instance XExportType Untyped = ()
 
 data UntypedStmt
   = ClassDefinition (ClassDef U)
@@ -99,7 +101,7 @@ instance PP FunDef where
   pp (FunDef fd body) = Def.ppBody' pp (pp fd) body
 
 instance PP ClassConstraint where
-  pp (CC cn tv) = pp cn <+> pp tv
+  pp (CC _ cn tv) = pp cn <+> pp tv
 
 -- instance PP (Maybe (Expr U)) where
 --   pp = maybe mempty pp

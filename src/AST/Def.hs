@@ -34,11 +34,12 @@ import Data.Foldable1 (foldl1', Foldable1)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Fix (Fix)
 import Data.Functor.Foldable (cata)
+import qualified Text.Megaparsec as TM
 
 
 -- set printing config
 defaultContext, debugContext, runtimeContext, showContext, dc, rc :: CtxData
-defaultContext = rc
+defaultContext = dc
 
 dc = debugContext
 rc = runtimeContext
@@ -264,6 +265,30 @@ es `isHigherOrSameLevel` es' | length es > length es' = False
 es `isHigherOrSameLevel` es' = and $ zipWith (==) (reverse es) (reverse es')
 
 
+-- Megaparsec location information.
+data Location = Location
+  { offsetFrom :: Int
+  , offsetTo :: Int
+  , startPos :: TM.SourcePos
+  -- do I need anything more?
+  -- filename/module will be appended when printing errors, as I want to group them by module.
+  } deriving (Eq, Ord)
+
+data Located a = Located
+  { location :: Location
+  , thing :: a
+  } deriving Functor
+
+-- i got this idea from some guy, forgot where.
+-- pretty cool!
+instance Semigroup Location where
+  l <> r = Location
+    { offsetFrom = l.offsetFrom `min` r.offsetFrom
+    , offsetTo = l.offsetTo `max` r.offsetTo
+    , startPos = l.startPos `min` r.startPos
+    }
+
+
 --------------------
 -- Printing Stuff --
 --------------------
@@ -289,6 +314,9 @@ instance PPDef Context where
 
 instance PP a => PP (Annotated a) where
   pp (Annotated ann c) = annotate ann (pp c)
+
+instance PP a => PP (Located a) where
+  pp (Located loc x) = pp x <+> pp loc
 
 instance PP a => PP [a] where
   pp ps = encloseSepBy "[" "]" ", " $ pp <$> ps
@@ -424,6 +452,15 @@ instance PP UniqueFunctionInstantiation where
 instance PP Ann where
   pp = fromString . show
 
+instance PP Location where
+  pp (Location from to start) = fromString $ printf "<%s|%s:%s>" (pp start) (pp from) (pp to)
+
+instance PP TM.SourcePos where
+  pp sp = fromString $ printf "%s:%s" (pp sp.sourceLine) (pp sp.sourceColumn)
+
+instance PP TM.Pos where
+  pp = pp . TM.unPos
+
 
 ----------------
 -- Useful stuff
@@ -499,6 +536,9 @@ ctx = ctx' defaultContext pp
 
 sctx :: PP a => a -> String
 sctx = ctx' showContext pp
+
+tsctx :: PP a => a -> Text
+tsctx = Text.pack . sctx
 
 ctx' :: CtxData -> (a -> Context) -> a -> String
 ctx' c f = if c.silent

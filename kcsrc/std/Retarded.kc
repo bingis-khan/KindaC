@@ -1,0 +1,16 @@
+# this module collects all hacks and special shit.
+
+#[goofy-ahh-cast]
+external cast (x a) -> b  # 'external' so we won't generate a body.
+
+#[goofy-ahh-pointer-offset]
+external shitty-offset-ptr (ptr Ptr a, count Int) -> Ptr a
+
+undefined () -> a
+	# this is such a hack I wanna kms
+	# maybe i should just add an 'undefined' keyword-thingy-operator?
+	#[goofy-ahh-undefined-return]
+	return
+
+# very very brittly geg. sizeof is not even a real function.
+external sizeof (s a) -> Int

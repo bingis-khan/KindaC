@@ -4,6 +4,7 @@ use Str
 use Iter
 	IntoIter(into-iter)
 	Iter(next)
+use Retarded
 
 
 # Module for memory operations!
@@ -26,22 +27,18 @@ use Iter
 
 # but also, currently we don't do it like C does, we have to pass all the memory of a struct to get the size, which is kinda bad... but it works........ ahhh fuk i should write this somewhere visible so I won't forget.
 
+# shitty re-export of undefined
+undefined (): Retarded.undefined()
 
 offset-ptr(x Ptr a, count Int) -> Ptr a
-	return Cnile.shitty-offset-ptr(x, count)
+	return Retarded.shitty-offset-ptr(x, count)
 
-
-undefined () -> a
-	# this is such a hack I wanna kms
-	# maybe i should just add an 'undefined' keyword-thingy-operator?
-	#[goofy-ahh-undefined-return]
-	return
 
 TypeSize a
 	size Int
 
 get-typesize () -> TypeSize a  # don't need no arguments here!
-	return TypeSize { size: Cnile.sizeof(undefined() as a) }  # this is crap, because we are creating a large undefined value and passing it to `sizeof`. We should somehow pass a type instead.
+	return TypeSize { size: Retarded.sizeof(undefined() as a) }  # this is crap, because we are creating a large undefined value and passing it to `sizeof`. We should somehow pass a type instead.
 
 size-of (x a) -> Int
 	typesize = get-typesize() as TypeSize a
@@ -52,11 +49,11 @@ ptr-size-of (x Ptr a) -> Int
 	return typesize.size
 
 cast-ptr(p Ptr a) -> Ptr b
-	return Cnile.cast(p)
+	return Retarded.cast(p)
 
 
 zeroed () -> a
 	x = undefined()
-	Cnile.memset(Cnile.cast(&x), 0, Cnile.sizeof(x))
+	Cnile.memset(cast-ptr(&x), 0, size-of(x))
 	return x
 

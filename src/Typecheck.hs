@@ -49,13 +49,16 @@ import Misc.Memo (memo, Memo(..), emptyMemo)
 import qualified AST.Common as Common
 import AST.Prelude (Prelude)
 import qualified AST.Prelude as Prelude
-import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, Node (..), DeclaredType (..), XClassFunDec, MutAccess (..), LitType (..))
+import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, ExprNode (..), DeclaredType (..), XClassFunDec, MutAccess (..), LitType (..), asksNode)
 import AST.Resolved (R)
 import AST.Typed ( TC, Scheme(..), TOTF(..) )
 import AST.Def ((:.)(..), PP (..), Binding (..), sctx, ppDef, BinOp (..))
 import qualified AST.Def as Def
 import Data.String (fromString)
 import Debug.Trace (trace)
+import Error (Error (..), renderError)
+import AST.Typed (FunOther(..))
+import qualified Data.List.NonEmpty as NonEmpty
 
 
 
@@ -101,7 +104,7 @@ typecheck mprelude rStmts = do
 
     -- Step 2: Substitute the types with the inferred ones.
     let tStmts'' = subst su' tStmts'
-    let errs' = errs <> (AmbiguousType <$> Set.toList (ftv tStmts''))
+    let errs' = errs <> (AmbiguousType (error "what location should i put here???") <$> Set.toList (ftv tStmts''))
 
 
     Def.phase "Typechecking (After Substitution)"
@@ -169,24 +172,24 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
     -- go through additional layers (in the future also position information)...
     inferAnnStmt :: Base (AnnStmt R) (Infer a) -> Infer (Base (AnnStmt TC) a)
-    inferAnnStmt (O (Def.Annotated anns rStmt)) = do
+    inferAnnStmt (O (O (Def.Annotated anns (Def.Located location rStmt)))) = do
         tstmt <- bitraverse inferExpr id rStmt
 
         -- Map expr -> type for unification
-        let ttstmt = first (\expr@(Fix (N t _)) -> (expr, t)) tstmt
-        O . Def.Annotated anns <$> inferStmt ttstmt
+        let ttstmt = first (\expr@(Fix (N en _)) -> (expr, en.t)) tstmt
+        O . O . Def.Annotated anns . Def.Located location <$> inferStmt location ttstmt
 
-    inferStmt :: StmtF R (Expr TC, Type TC) a -> Infer (StmtF TC (Expr TC) a)
-    inferStmt stmt = case stmt of
+    inferStmt :: Def.Location -> StmtF R (Expr TC, Type TC) a -> Infer (StmtF TC (Expr TC) a)
+    inferStmt location stmt = case stmt of
 
-      Assignment v (rexpr, t) -> do
+      Assignment v varLocation (rexpr@(Fix (N en _)), t) -> do
         vt <- var v
-        vt `uni` t
+        (varLocation, vt) `uni` (Just en.loc, t)
 
-        pure $ Assignment v rexpr
+        pure $ Assignment v varLocation rexpr
 
 
-      Mutation v loc accesses (expr, t) -> do
+      Mutation v varLocation loc accesses (expr@(Fix (N ne _)), t) -> do
         vt <- var v
 
         case loc of
@@ -196,20 +199,26 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
         -- prepare accesses for typechecking.
         taccesses <- for accesses $ \case
-              MutRef -> (MutRef,) <$> fresh
-              MutField mem -> (MutField mem,) <$> fresh
+              MutRef loc -> (MutRef loc,) <$> fresh
+              MutField loc mem -> (MutField loc mem,) <$> fresh
 
         let
-          foldMutAccess :: Type TC -> (MutAccess TC, Type TC) -> Infer (Type TC)
-          foldMutAccess rightType = \case
-            (MutRef, accessT) -> do
+          maybeConcat :: Maybe Def.Location -> Def.Location -> Def.Location
+          maybeConcat Nothing = id
+          maybeConcat (Just s) = (s <>)
+
+          foldMutAccess :: (Type TC, Maybe Def.Location) -> (MutAccess TC, Type TC) -> Infer (Type TC, Maybe Def.Location)
+          foldMutAccess (rightType, mloc) = \case
+            (MutRef location, accessT) -> do
               ptrT <- mkPtr rightType
-              ptrT `uni` accessT
-              pure ptrT
-            (MutField mem, recordType) -> do
-              fieldType <- addMember recordType mem
-              fieldType `uni` rightType
-              pure recordType
+              let newLoc = maybeConcat mloc location
+              (location, ptrT) `uni` (Just newLoc, accessT)
+              pure (ptrT, Just newLoc)
+            (MutField location mem, recordType) -> do
+              fieldType <- addMember location recordType mem
+              let newLoc = maybeConcat mloc location
+              (location, fieldType) `uni` (Just newLoc, rightType)
+              pure (recordType, Just newLoc)
 
         -- we must build the type access by access, from RIGHT to LEFT.
         --  that's why it's reversed.
@@ -219,19 +228,19 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
         --    then, we deref x, so the current type is the derefed value.
         --     type x `uni` mkPtr t
         --  get it?
-        guessedType <- foldlM foldMutAccess t (reverse taccesses)
+        (guessedType, _) <- foldlM foldMutAccess (t, Nothing) (reverse taccesses)
 
-        vt `uni` guessedType
-        pure $ Mutation v loc taccesses expr
+        (varLocation, vt) `uni` (Just ne.loc, guessedType)
+        pure $ Mutation v varLocation loc taccesses expr
 
 
       If (IfStmt { condition = (cond, condt), ifTrue, ifElifs, ifElse }) -> do
         boolt <- findBuiltinType Prelude.boolFind
 
-        condt `uni` boolt
+        (asksNode T.loc cond, condt) `uni` (Nothing, boolt)
 
-        for_ ifElifs $ \((_, t), _) ->
-          t `uni` boolt
+        for_ ifElifs $ \((elifCond, t), _) ->
+          (asksNode T.loc elifCond, t) `uni` (Nothing, boolt)
 
         pure $ If $ IfStmt cond ifTrue ((fmap . first) fst ifElifs) ifElse
 
@@ -240,9 +249,9 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
         -- infer the type for the expression inserted into the switch...
         tdecons <- traverse inferCase cases
 
-        for_ tdecons $ \(_, dec) ->
+        for_ tdecons $ \(_, dect) ->
           -- ...each deconstruction should be of that type.
-          switchType `uni` dec
+          (asksNode T.loc rswitch, switchType) `uni` (Just (error "todo"), dect)
 
         pure $ Switch rswitch (fst <$> tdecons)
         where
@@ -250,21 +259,19 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
           inferCase Case { deconstruction = decon, caseCondition = caseCon, caseBody = body } = do
             tdecon <- inferDecon decon
             let tCaseCon = fst <$> caseCon
-            pure (Case tdecon tCaseCon body, Common.typeOfNode tdecon)
+            pure (Case tdecon tCaseCon body, asksNode T.t tdecon)
 
 
       Return rret -> do
         ret <- inferExpr rret
         emret <- RWS.asks returnType
-
-        let opty = maybe (findBuiltinType Prelude.tlReturnFind) pure  -- NOTE: When default return type is nothing, this means that we are parsing prelude. Return type from top level should be "Int" (or, in the future, U8).
-        eret <- opty emret
-        Common.typeOfNode ret `uni` eret
+        eret <- maybe (findBuiltinType Prelude.tlReturnFind) pure emret  -- NOTE: When default return type is nothing, this means that we are parsing prelude. Return type from top level should be "Int" (or, in the future, U8).
+        asksNode (\ne -> (ne.loc, ne.t)) ret `uni` (Nothing, eret)
         pure $ Return ret
 
       While (cond, condt) body -> do
         boolt <- findBuiltinType Prelude.boolFind
-        condt `uni` boolt
+        (asksNode T.loc cond, condt) `uni` (Nothing, boolt)
 
         pure $ While cond body
 
@@ -303,9 +310,9 @@ inferExpr :: Expr R -> Infer (Expr TC)
 inferExpr = cata (fmap embed . inferExprType)
   where
     inferExprType :: Base (Expr R) (Infer (Expr TC)) -> Infer (Base (Expr TC) (Expr TC))
-    inferExprType (N () e) = do
+    inferExprType (N location e) = do
       (e', t) <- inferLayer
-      pure $ N t e' where
+      pure $ N (T.ExprNode t location) e' where
 
       inferLayer = case e of
 
@@ -338,7 +345,7 @@ inferExpr = cata (fmap embed . inferExprType)
 
           ufi <- newFunctionInstantiation  -- i guess we don't really need to save that tho.
           union <- singleEnvUnion Nothing ufi [] fenv
-          let ret = Common.typeOfNode body'
+          let ret = asksNode T.t body'
           let t = Fix $ TFun union argts ret
 
           pure (Lam (T.LamDec uv fenv) args' body', t)
@@ -348,7 +355,7 @@ inferExpr = cata (fmap embed . inferExprType)
           e' <- ae
           t' <- inferType t
 
-          Common.typeOfNode e' `uni` t'
+          askUni e' `uni` (error "when type defs have location information, add it here", t')
 
           pure (As e' t', t')
 
@@ -362,7 +369,7 @@ inferExpr = cata (fmap embed . inferExprType)
 
 
         Var v loc -> do
-          (t, v') <- instantiateVariable loc =<< inferVariable v
+          (t, v') <- instantiateVariable location loc =<< inferVariable v
 
           case loc of
             Def.Local -> pure ()
@@ -387,8 +394,8 @@ inferExpr = cata (fmap embed . inferExprType)
           t <- instantiateRecord dd'
 
           for_ insts' $ \(name, me) -> do
-            mt <- addMember t name
-            uni mt (Common.typeOfNode me)
+            mt <- addMember (error "add location to member") t name
+            askUni me `uni` (Just (error "add location to member"), mt)
 
           pure (RecCon dd' insts', t)
 
@@ -399,16 +406,16 @@ inferExpr = cata (fmap embed . inferExprType)
 
           -- the type can be whatever, so we couldn't check these fields in the resolver ISSUE(anonymous-records)
           for_ updates' $ \(mem, me) -> do
-            memt <- addMember (Common.typeOfNode te) mem
-            uni memt (Common.typeOfNode me)
+            memt <- addMember (error "add location to member") (asksNode T.t te) mem
+            askUni me `uni` (Just (error "add location to member"), memt)
 
-          pure (RecUpdate te updates', Common.typeOfNode te)
+          pure (RecUpdate te updates', asksNode T.t te)
 
         MemAccess re memname -> do
           te <- re
 
           -- by now, we don't know the type of the member, because it's possible to define multiple members with the same name.
-          t <- addMember (Common.typeOfNode te) memname
+          t <- addMember location (asksNode T.t te) memname
 
           pure (MemAccess te memname, t)
 
@@ -416,32 +423,33 @@ inferExpr = cata (fmap embed . inferExprType)
           l <- il
           r <- ir
 
-          let lt = Common.typeOfNode l
-              rt = Common.typeOfNode r
+          let lt = askUni l
+              rt = askUni r
 
           t <- if op == NotEquals || op == Equals
             then do
-              lt `uni` rt
+              lt `uni` first Just rt
               findBuiltinType Prelude.boolFind
 
             else if op `elem` [LessThan, LessEqual, GreaterThan, GreaterEqual]
             then do
               intt <- findBuiltinType Prelude.intFind
-              lt `uni` intt
-              rt `uni` intt
+              lt `uni` justType intt
+              rt `uni` justType intt
               findBuiltinType Prelude.boolFind
 
             else if op `elem` [And, Or]
             then do
               boolt <- findBuiltinType Prelude.boolFind
-              lt `uni` boolt
-              rt `uni` boolt
+              lt `uni` justType boolt
+              rt `uni` justType boolt
               pure boolt
 
             else do
+              -- should be a better error. for example "in addition, ..."
               intt <- findBuiltinType Prelude.intFind
-              lt `uni` intt
-              rt `uni` intt
+              lt `uni` justType intt
+              rt `uni` justType intt
               pure intt
 
           pure (BinOp l op r, t)
@@ -449,47 +457,48 @@ inferExpr = cata (fmap embed . inferExprType)
 
         Call callee args -> do
           args' <- sequenceA args
-          let argts = Common.typeOfNode <$> args'
+          let argts = asksNode T.t <$> args'
           callee' <- callee
 
           ret <- fresh
           union <- emptyUnion
           let ft = Fix $ TFun union argts ret
 
-          Common.typeOfNode callee' `uni` ft
+          -- pretty bad errors for calls.
+          askUni callee' `uni` (Just location, ft)
 
           pure (Call callee' args', ret)
 
         UnOp Def.Not ee -> do
           boolType <- findBuiltinType Prelude.boolFind
           re <- ee
-          let t = Common.typeOfNode re
+          let t = askUni re
 
-          t `uni` boolType
+          t `uni` justType boolType
 
           pure (UnOp Def.Not re, boolType)
 
         UnOp Def.Negation ee -> do
           intType <- findBuiltinType Prelude.intFind
           re <- ee
-          let t = Common.typeOfNode re
+          let t = askUni re
 
-          t `uni` intType
+          t `uni` justType intType
           pure (UnOp Def.Negation re, intType)
 
         UnOp Def.Ref ee -> do
           te <- ee
-          let t = Common.typeOfNode te
+          let t = askType te
           ptrType <- mkPtr t
           pure (UnOp Def.Ref te, ptrType)
 
         UnOp Def.Deref ee -> do
           te <- ee
-          let t = Common.typeOfNode te
+          let t = askUni te
 
           insidePtr <- fresh
           ptrType <- mkPtr insidePtr
-          t `uni` ptrType
+          (location, ptrType) `uni` first Just t
           pure (UnOp Def.Deref te, insidePtr)
 
 
@@ -508,7 +517,7 @@ inferVariable = \case
     snapshot <- inferSnapshot rsnapshot
     pure $ T.DefinedFunction tfn mempty snapshot tempFunctionInstantiation
 
-  R.ExternalClassFunction cfd@(CFD cd _ _ _ ()) rsnapshot -> do
+  R.ExternalClassFunction cfd@(CFD cd _ _ _ () _) rsnapshot -> do
     -- insts <- fmap Map.fromList $ for (Map.toList (rinsts ! )) $ \(rdd, rinst) -> do
     --   dd <- inferDatatype rdd
     --   inst <- case rinst of
@@ -524,7 +533,7 @@ inferVariable = \case
     pure $ T.DefinedClassFunction cfd snapshot self tempClassInstantiation
 
   R.DefinedClassFunction rcfd rsnapshot -> do
-    cfd@(CFD cd _ _ _ ()) <- inferClassDeclaration rcfd
+    cfd@(CFD cd _ _ _ () _) <- inferClassDeclaration rcfd
     -- insts <- fmap Map.fromList $ traverse (bitraverse inferDatatype inferInstance) $ Map.toList rinsts
     snapshot <- inferSnapshot rsnapshot
     let insts = Def.defaultEmpty cd snapshot
@@ -675,17 +684,17 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
 
     -- Infer function declaration.
     let rfundec = rfn.functionDeclaration
-    let anns = rfundec.functionOther
+    let anns = fst rfundec.functionOther
 
     params <- for rfundec.functionParameters $ \(v, definedType) -> do
       tv <- inferDecon v
-      let vt = Common.typeOfNode tv
+      let vt = askType tv
 
       case definedType of
         DeclaredType rt -> do
           t <- inferType rt
 
-          vt `uni` t
+          askUni tv `uni` (Just (error "error location for types!"), t)
 
         TypeNotDeclared -> pure ()
       pure (tv, vt)
@@ -698,7 +707,7 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
     -- Set up temporary recursive env (if this function is recursive, this env will be used).
     let recenv = T.RecursiveEnv rfundec.functionEnv.envID (null $ R.fromEnv rfundec.functionEnv)
     let noGeneralizationScheme = Scheme mempty mempty
-    let fundec = FD recenv rfundec.functionId params ret $ T.FunOther noGeneralizationScheme [] anns
+    let fundec = FD recenv rfundec.functionId params ret $ T.FunOther noGeneralizationScheme [] anns (snd rfundec.functionOther)
     let fun = Function { functionDeclaration = fundec, functionBody = body }
 
     -- Add *ungeneralized* type.
@@ -731,40 +740,40 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
 
   pure fn
 
-replaceClassFunsWithInstantiations :: Traversable f => Subst -> T.ClassInstantiationAssocs -> f (AnnStmt TC) -> Infer (f (AnnStmt TC))
-replaceClassFunsWithInstantiations su cia = traverse $ cata $ \(O (Def.Annotated anns stmt)) -> do
-  replacedStmt <- case first (replaceInExpr su cia) stmt of
-        Return retExpr -> Return <$> replaceInExpr su cia retExpr
-        otherStmt -> bisequenceA otherStmt
-  pure $ (embed . O . Def.Annotated anns) replacedStmt
+-- replaceClassFunsWithInstantiations :: Traversable f => Subst -> T.ClassInstantiationAssocs -> f (AnnStmt TC) -> Infer (f (AnnStmt TC))
+-- replaceClassFunsWithInstantiations su cia = traverse $ cata $ \(O (Def.Annotated anns stmt)) -> do
+--   replacedStmt <- case first (replaceInExpr su cia) stmt of
+--         Return retExpr -> Return <$> replaceInExpr su cia retExpr
+--         otherStmt -> bisequenceA otherStmt
+--   pure $ (embed . O . Def.Annotated anns) replacedStmt
 
-replaceInExpr :: Subst -> T.ClassInstantiationAssocs -> Expr TC -> Infer (Expr TC)
-replaceInExpr su cia = cata $ \(N t e) -> fmap embed $ N t <$> case e of
-  Var v@(T.DefinedClassFunction _ snapshot self uci) loc ->
-    -- let mself = subst su self
-    case cia !? (Nothing, uci) of
-      Nothing -> pure $ Var v loc
-      Just (_, (typeApplication, ifn), _, ufi) -> do
-        let ucisInFunction = Set.fromList $ ifn.instFunDec.functionOther.functionAssociations <&> \(T.FunctionTypeAssociation _ to _ uci) -> (Just (ufi, to), uci)
-            appliedUCIs = Map.restrictKeys cia ucisInFunction
-        -- ufi <- newFunctionInstantiation
-        pure $ Var (T.DefinedFunction (Function ifn.instFunDec ifn.instFunBody) typeApplication snapshot ufi) loc
+-- replaceInExpr :: Subst -> T.ClassInstantiationAssocs -> Expr TC -> Infer (Expr TC)
+-- replaceInExpr su cia = cata $ \(N t e) -> fmap embed $ N t <$> case e of
+--   Var v@(T.DefinedClassFunction _ snapshot self uci) loc ->
+--     -- let mself = subst su self
+--     case cia !? (Nothing, uci) of
+--       Nothing -> pure $ Var v loc
+--       Just (_, (typeApplication, ifn), _, ufi) -> do
+--         let ucisInFunction = Set.fromList $ ifn.instFunDec.functionOther.functionAssociations <&> \(T.FunctionTypeAssociation _ to _ uci) -> (Just (ufi, to), uci)
+--             appliedUCIs = Map.restrictKeys cia ucisInFunction
+--         -- ufi <- newFunctionInstantiation
+--         pure $ Var (T.DefinedFunction (Function ifn.instFunDec ifn.instFunBody) typeApplication snapshot ufi) loc
 
-  -- note that this case should probably be the same as the one above after finding the actual function.
-  Var (T.DefinedFunction fn ts snapshot ufi) loc -> do
-    let ucisInFunction = Set.fromList $ fn.functionDeclaration.functionOther.functionAssociations <&> \(T.FunctionTypeAssociation _ to _ uci) -> (Just (ufi, to), uci)
-        appliedUCIs = Map.restrictKeys cia ucisInFunction
-    pure $ Var (T.DefinedFunction fn ts snapshot ufi) loc
+--   -- note that this case should probably be the same as the one above after finding the actual function.
+--   Var (T.DefinedFunction fn ts snapshot ufi) loc -> do
+--     let ucisInFunction = Set.fromList $ fn.functionDeclaration.functionOther.functionAssociations <&> \(T.FunctionTypeAssociation _ to _ uci) -> (Just (ufi, to), uci)
+--         appliedUCIs = Map.restrictKeys cia ucisInFunction
+--     pure $ Var (T.DefinedFunction fn ts snapshot ufi) loc
 
-  As x at -> As <$> x <*> pure at
+--   As x at -> As <$> x <*> pure at
 
-  expr -> sequenceA expr
+--   expr -> sequenceA expr
 
 
 -- Exports: what the current module will export.
 inferExports :: Exports R -> Infer (Exports TC)
 inferExports e = do
-  vars  <- traverse (\(v, ()) -> (v,) <$> var v) e.variables
+  vars  <- traverse (\(v, _) -> (v,) <$> var v) e.variables
   dts   <- traverse inferDataDef e.datatypes
   fns   <- traverse inferFunction e.functions
   cls   <- traverse inferClassDef e.classes
@@ -797,24 +806,24 @@ inferClassDef = memo memoClass (\mem s -> s { memoClass = mem }) $ \cd _ -> mdo
 inferClassFunDec :: ClassDef TC -> XClassFunDec R -> Infer (ClassFunDec TC)
 inferClassFunDec cd = \case
   (R.ExternalClassFunDec cfd) -> pure cfd
-  (R.DefinedClassFunDec (CFD _ uv params ret ())) -> do
+  (R.DefinedClassFunDec (CFD _ uv params ret () headerLocation)) -> do
     params' <- for params $ \(decon, rt) -> do
       d <- inferDecon decon
       t <- inferClassType rt
 
-      let dt = Common.typeOfNode d
+      let dt = askUni d
       self <- fresh
-      dt `uni` mkTypeFromClassType self t
+      dt `uni` (Just (error "location for types (in function parameters!)"), mkTypeFromClassType self t)
 
       pure (d, t)
 
     ret' <- inferClassType ret
-    pure $ CFD cd uv params' ret' ()
+    pure $ CFD cd uv params' ret' () headerLocation
 
 inferClassDeclaration :: ClassFunDec R -> Infer (ClassFunDec TC)
-inferClassDeclaration (CFD rcd uv _ _ ()) = do
+inferClassDeclaration (CFD rcd uv _ _ () _) = do
   tcd <- inferClassDef rcd
-  let mcfd = find (\(CFD _ cuv _ _ ()) -> cuv == uv) tcd.classFunctions
+  let mcfd = find (\(CFD _ cuv _ _ () _) -> cuv == uv) tcd.classFunctions
   pure $ Def.mustOr (printf "[COMPILER ERROR]: Could not find function %s in class %s." (pp uv) (pp tcd.classID)) mcfd
 
 inferInst :: R.Inst -> Infer (InstDef TC)
@@ -836,7 +845,7 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
         }
 
   fns <- for inst.instFuns $ \rfn -> do
-    cfd@(CFD _ _ cparams cret _) <- inferClassFunDec klass rfn.instClassFunDec
+    cfd@(CFD _ _ cparams cret _ classFunHeaderLocation) <- inferClassFunDec klass rfn.instClassFunDec
 
     -- TODO: add check?
     fn <- generalize $ mdo
@@ -844,11 +853,11 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
 
       -- Infer function declaration.
       let rfundec = rfn.instFunDec
-      let anns = rfundec.functionOther
+      let anns = fst rfundec.functionOther
 
       params <- for (zipWith (\(d, p) cp -> (d, p, cp)) rfundec.functionParameters (snd <$> cparams)) $ \(v, definedType, ct) -> do  -- NOTE: they SHOULD be exact, but if there was an error and we get a placeholder function, it'll error out on user error, which is bad.
         tv <- inferDecon v
-        let vt = Common.typeOfNode tv
+        let vt = askType tv
 
         -- map with CLASS TYPE FIRST!
         -- let tct = mkTypeFromClassType self ct
@@ -858,7 +867,7 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
           DeclaredType rt -> do
             t <- inferType rt
 
-            vt `uni` t
+            askUni tv `uni` (Just (error "error location for defined types"), t)
 
           TypeNotDeclared -> pure ()
         pure (tv, vt)
@@ -873,13 +882,15 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
 
       union <- emptyUnion
       let genFun = Fix $ TFun union (snd <$> params) ret
-      classFun `uni` genFun
+
+      let instFunHeaderLocation = snd rfn.instFunDec.functionOther
+      (instFunHeaderLocation, genFun) `uni` (Just classFunHeaderLocation, classFun)
 
 
       -- Set up temporary recursive env (if this function is recursive, this env will be used).
       let recenv = T.RecursiveEnv rfundec.functionEnv.envID (null $ R.fromEnv rfundec.functionEnv)
       let noGeneralizationScheme = Scheme mempty mempty
-      let fundec = FD recenv rfundec.functionId params ret $ T.FunOther noGeneralizationScheme [] anns
+      let fundec = FD recenv rfundec.functionId params ret $ T.FunOther noGeneralizationScheme [] anns (snd rfundec.functionOther)
       let fun = Function { functionDeclaration = fundec, functionBody = body }
 
       -- Infer body.
@@ -957,13 +968,13 @@ generalize ifn = do
   let generalizedFn = subst su fn
 
 
-  let generalizedFnWithScheme = generalizedFn { functionDeclaration = generalizedFn.functionDeclaration { functionOther = T.FunOther { T.functionScheme = scheme, T.functionAssociations = assocs, T.functionAnnotations = unsuFn.functionDeclaration.functionOther.functionAnnotations } } }
+  let generalizedFnWithScheme = generalizedFn { functionDeclaration = generalizedFn.functionDeclaration { functionOther = T.FunOther { T.functionScheme = scheme, T.functionAssociations = assocs, T.functionAnnotations = unsuFn.functionDeclaration.functionOther.functionAnnotations, T.functionLocation = unsuFn.functionDeclaration.functionOther.functionLocation } } }
 
   -- Also, remember the substitution! (tvars might escape the environment)
   --  TODO: not sure if that's the best way. maybe instead of doing this, just add it in the beginning and resubstitute the function.
   substituting $ do
     let (Subst _ tvars) = su  -- NOTE: safe!
-    for_ (Map.toList tvars) $ uncurry bind
+    for_ (Map.toList tvars) $ uncurry (bind undefined)
 
   pure generalizedFnWithScheme
 
@@ -994,12 +1005,12 @@ substAccess = do
   membersAccessed <- RWS.gets memberAccess
   csu <- RWS.gets typeSubstitution
   let subMembers = subst csu membersAccessed
-  substitutedMembers <- fmap filterDesignatedForRemoval $ for subMembers $ \(ogt, memname, t) -> do
-    (mexpectedType, shouldRemove) <- getExpectedType ogt memname
+  substitutedMembers <- fmap filterDesignatedForRemoval $ for subMembers $ \(ogt, memname, t, location) -> do
+    (mexpectedType, shouldRemove) <- getExpectedType location ogt memname
     case mexpectedType of
       Nothing -> pure ()
-      Just expectedType -> expectedType `uni` t
-    pure ((ogt, memname, t), shouldRemove)
+      Just expectedType -> (location, t) `uni` (Nothing, expectedType)
+    pure ((ogt, memname, t, location), shouldRemove)
 
   RWS.modify $ \s -> s { memberAccess = substitutedMembers }
   pure (length substitutedMembers < length subMembers)
@@ -1015,19 +1026,19 @@ substAssociations = do
   let subAssociations = first (subst csu) <$> assocs
   dbgAssociations "before" subAssociations
 
-  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval (foldr (<>) Map.empty) . unzip) $ for subAssociations $ \t@(T.TypeAssociation from to (CFD _ uv _ _ ()) uci baseUFI envsToAddTo, insts) -> do
+  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval (foldr (<>) Map.empty) . unzip) $ for subAssociations $ \t@(T.TypeAssociation (fromLocation, from) (toLocation, to) (CFD _ uv _ _ () _) uci baseUFI envsToAddTo, insts) -> do
     case project from of
         TCon dd _ _ -> case insts !? dd of
           Just inst -> do
             -- select instance function to instantiate.
-            let instFun = Def.mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (pp uv)) $ find (\InstFun { instClassFunDec = CFD _ cuv _ _ () } -> cuv == uv) inst.instFuns
+            let instFun = Def.mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (pp uv)) $ find (\InstFun { instClassFunDec = CFD _ cuv _ _ () _ } -> cuv == uv) inst.instFuns
 
             -- hope it's correct....
             let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
             -- TODO: FromEnvironment locality only here, because it means we won't add anything extra to the instantiations.
             (instFunType, T.DefinedFunction fn instAssocs _ ufi, env@(T.Env _ _ _ level)) <- instantiateFunction (Just uci) baseFunctionScopeSnapshot $ Function instFun.instFunDec instFun.instFunBody
 
-            to `uni` instFunType
+            (toLocation, to) `uni` justType instFunType
             Def.ctxPrint' $ Def.printf "ENV ASSOC: %s" $ pp env
             addExtraToEnv envsToAddTo env
 
@@ -1107,18 +1118,18 @@ reportAssociationErrors = do
   let subAssociations = first (subst su) <$> assocs
 
   -- first, report errors.
-  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation from _ (CFD cd _ _ _ ()) _ _ _, insts) -> do
+  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation (fromLocation, from) _ (CFD cd _ _ _ () _) _ _ _, insts) -> do
     case project from of
         TCon dd _ _ -> case insts !? dd of
           Just _ -> error "[COMPILER ERROR]: resolvable associated type found. should already be taken care of."
 
           Nothing -> do
-            err $ DataDefDoesNotImplementClass dd cd
+            err $ DataDefDoesNotImplementClass (fromLocation) dd cd
             pure (t, True)
 
         -- I guess we don't signal errors yet! We'll do it on the next pass.
         TFun {} -> do
-          err $ FunctionTypeConstrainedByClass from cd
+          err $ FunctionTypeConstrainedByClass fromLocation from cd
           pure (t, True)
 
         TO (TVar tv) -> do
@@ -1143,7 +1154,7 @@ rummageThroughAssociations funUV tyvars = do
   let subAssociations = first (subst su) <$> assocs
 
   -- first, report errors.
-  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation from _ (CFD cd _ _ _ ()) _ _ _, insts) -> do
+  substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation (fromLocation, from) _ (CFD cd _ _ _ () _) _ _ _, insts) -> do
     case project from of
         TO (TVar tv) | tv.binding == BindByVar funUV -> do
           -- will be added later to the association list!
@@ -1156,7 +1167,7 @@ rummageThroughAssociations funUV tyvars = do
   RWS.modify $ \s -> s { associations = substitutedAssociations }  -- TODO: what? what am i doing
 
   -- second: extract associations for the function.
-  let functionAssociationsAndFutureTVars = flip mapMaybe subAssociations $ \(T.TypeAssociation from to cfd uci _ _, _) -> case project from of
+  let functionAssociationsAndFutureTVars = flip mapMaybe subAssociations $ \(T.TypeAssociation (fromLocation, from) (toLocation, to) cfd uci _ _, _) -> case project from of
         TO (TVar tv) | tv.binding == BindByVar funUV ->
           Just (T.FunctionTypeAssociation tv to cfd uci, ftv to)
         _ -> Nothing
@@ -1226,7 +1237,7 @@ constructSchemeForFunctionDeclaration dec = do
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
             T.DefinedFunction f _ _ _ -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
-            T.DefinedClassFunction (CFD cd _ _ _ ()) snapshot _ _   -- TODO: I think we don't need to dig through instances?
+            T.DefinedClassFunction (CFD cd _ _ _ () _) snapshot _ _   -- TODO: I think we don't need to dig through instances?
               -> mempty
 
       (tyVarsOutside, unionsOutside) = digOutTyVarsAndUnionsFromEnv dec.functionEnv
@@ -1287,8 +1298,8 @@ findTVarsForIDInClassType euid = cata $ \case
 withReturn :: Type TC -> Infer a -> Infer a
 withReturn ret = RWS.local $ \e -> e { returnType = Just ret }
 
-getExpectedType :: Type TC -> Def.MemName -> Infer (Maybe (Type TC), Bool)  -- (maybe type, should remove from list?)
-getExpectedType t memname = case project t of
+getExpectedType :: Def.Location -> Type TC -> Def.MemName -> Infer (Maybe (Type TC), Bool)  -- (maybe type, should remove from list?)
+getExpectedType location t memname = case project t of
   TCon dd@(DD _ (Scheme ogTVs ogUnions) (Left recs) _) tvs unions ->
     case find (\(Def.Annotated _ (name, _)) -> name == memname) recs of
       Just (Def.Annotated _ (_, recType)) -> do
@@ -1297,7 +1308,7 @@ getExpectedType t memname = case project t of
         pure (Just recType', True)
 
       Nothing -> do
-        err $ DataTypeDoesNotHaveMember dd memname
+        err $ DataTypeDoesNotHaveMember location dd memname
         pure (Nothing, True)
 
   TO (TyVar _) ->
@@ -1305,23 +1316,23 @@ getExpectedType t memname = case project t of
     pure (Nothing, False)
 
   TCon dd@(DD _ _ (Right _) _) _ _ -> do
-    err $ DataTypeIsNotARecordType dd memname
+    err $ DataTypeIsNotARecordType location dd memname
     pure (Nothing, True)
 
   TFun {} -> do
-    err $ FunctionIsNotARecord t memname
+    err $ FunctionIsNotARecord location t memname
     pure (Nothing, True)
 
   TO (TVar tv) -> do
-    err $ TVarIsNotARecord tv memname
+    err $ TVarIsNotARecord location tv memname
     pure (Nothing, True)
 
 
 inferDecon :: Decon R -> Infer (Decon TC)
-inferDecon = cata $ \(N () d) -> fmap embed $ case d of
+inferDecon = cata $ \(N location d) -> fmap embed $ case d of
     CaseVariable uv -> do
       t <- var uv
-      pure $ N t $ CaseVariable uv
+      pure $ N (T.ExprNode { T.t = t, T.loc = location }) $ CaseVariable uv
 
     CaseRecord dd cases -> do
       dd' <- inferDatatype dd
@@ -1329,10 +1340,10 @@ inferDecon = cata $ \(N () d) -> fmap embed $ case d of
       cases' <- Def.sequenceA2 cases
 
       for_ cases' $ \(mem, decon) -> do
-        mt <- addMember t mem
-        uni mt (Common.typeOfNode decon)
+        mt <- addMember location t mem
+        askUni decon `uni` (Nothing, mt)
 
-      pure $ N t $ CaseRecord dd' cases'
+      pure $ N (T.ExprNode { T.t = t, T.loc = location }) $ CaseRecord dd' cases'
 
     CaseConstructor rcon idecons -> do
 
@@ -1348,11 +1359,11 @@ inferDecon = cata $ \(N () d) -> fmap embed $ case d of
       let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
       let ts = mapTVs <$> usts
 
-      let args = Common.typeOfNode <$> decons
-      uniMany ts args
+      let args = askType <$> decons
+      (location, args) `uniMany` (Just (error "todo: add location information to datatype declaration"), ts)
 
       let t = Fix $ TCon dd tvs unions
-      pure $ N t $ CaseConstructor con decons
+      pure $ N (T.ExprNode { T.t = t, T.loc = location }) $ CaseConstructor con decons
 
 
 ------
@@ -1360,14 +1371,14 @@ inferDecon = cata $ \(N () d) -> fmap embed $ case d of
 ------
 
 -- TODO: merge it with 'inferVariable'.
-instantiateVariable :: Def.Locality -> T.Variable -> Infer (Type TC, T.Variable)
-instantiateVariable loc = \case
+instantiateVariable :: Def.Location -> Def.Locality -> T.Variable -> Infer (Type TC, T.Variable)
+instantiateVariable location loc = \case
   T.DefinedVariable v -> var v <&> (,T.DefinedVariable v)
   T.DefinedFunction fn _ snapshot _ -> do
     (t, v, env) <- instantiateFunction Nothing snapshot fn -- notice that we use the UFI from here (inferVariable just creates a temp error type to not use it)
 
     associations <- RWS.gets associations
-    liftIO $ Def.ctxPrint' $ printf "Associations (instantiation): %s" (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation from to _ uci ufi _, _) -> printf "(%s) %s: %s" (pp (uci, ufi)) (pp from) (pp to) :: String)
+    liftIO $ Def.ctxPrint' $ printf "Associations (instantiation): %s" (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation (fromLocation, from) to _ uci ufi _, _) -> printf "(%s) %s: %s" (pp (uci, ufi)) (pp from) (pp to) :: String)
 
     -- add instantiations!
     --  only when it's a local function should you add stuff from its environment to instantiations.
@@ -1393,11 +1404,11 @@ instantiateVariable loc = \case
     pure (t, v)
 
 
-  T.DefinedClassFunction cfd@(CFD cd funid params ret ()) snapshot self _ -> do
+  T.DefinedClassFunction cfd@(CFD cd funid params ret () _) snapshot self _ -> do
     fnType <- instantiateClassFunction cfd self
     let insts = Def.defaultEmpty cd snapshot
     uci <- newClassInstantiation
-    associateType self fnType cfd insts uci Nothing
+    associateType (location, self) (location, fnType) cfd insts uci Nothing
     -- addClassFunctionUse fnUnion cfd self insts
     Def.ctxPrint' $ printf "INSTANTIATING CLASS FUN %s. INSTS: %s" (pp uci) $ pp $ fmap (\(DD { ddName }) -> ddName) $ Set.toList $ Map.keysSet insts
 
@@ -1405,7 +1416,7 @@ instantiateVariable loc = \case
     pure (fnType, T.DefinedClassFunction cfd snapshot self uci)
 
 instantiateClassFunction :: ClassFunDec TC -> Type TC -> Infer (Type TC)
-instantiateClassFunction (CFD _ funid params ret ()) self = do
+instantiateClassFunction (CFD _ funid params ret () _) self = do
     -- TODO: a lot of it is duplicated from DefinedFunction. sussy
     -- TODO TODO: NOT SURE IF IT'S ALL NECESSARY!!!!!!!!!!!!!!!!!!!!!!!!
     -- SHOULD EXPLAIN EACH LINE BECAUSE SOMETHING FEELS OFF
@@ -1463,10 +1474,10 @@ instantiateFunction muci snapshot fn = do
     ufi <- newFunctionInstantiation
 
     -- add new associations
-    assocs <- for fundec.functionOther.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(CFD cd _ _ _ ()) uci) -> do
+    assocs <- for fundec.functionOther.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(CFD cd _ _ _ () _) uci) -> do
       let from = mapTVs $ Fix $ TO $ TVar tv
       let mto = mapTVs to
-      associateType from mto cfd (fromMaybe mempty $ snapshot !? cd) uci (Just ufi) -- TEMP
+      associateType (fundec.functionOther.functionLocation, from) (fundec.functionOther.functionLocation, mto) cfd (fromMaybe mempty $ snapshot !? cd) uci (Just ufi) -- TEMP
       pure mto
 
     fnUnion <- singleEnvUnion muci ufi assocs fundec.functionEnv
@@ -1485,11 +1496,11 @@ instantiateFunction muci snapshot fn = do
     pure (fnType, v, mappedEnv)
 
 
-associateType :: Type TC -> Type TC -> ClassFunDec TC -> T.PossibleInstances -> Def.UniqueClassInstantiation -> Maybe Def.UniqueFunctionInstantiation -> Infer ()
-associateType based result cfd insts uci ufi = do
+associateType :: (Def.Location, Type TC) -> (Def.Location, Type TC) -> ClassFunDec TC -> T.PossibleInstances -> Def.UniqueClassInstantiation -> Maybe Def.UniqueFunctionInstantiation -> Infer ()
+associateType (fromLocation, based) (toLocation, result) cfd insts uci ufi = do
     Def.ctxPrint' $ Def.printf "ASSOC: %s %s" (pp uci) (pp ufi)
     estack <- RWS.gets envStack
-    let ta = T.TypeAssociation based result cfd uci ufi estack
+    let ta = T.TypeAssociation (fromLocation, based) (toLocation, result) cfd uci ufi estack
 
     RWS.modify $ \s -> s { associations = (ta, insts) : s.associations }
 
@@ -1655,10 +1666,10 @@ var v = do
       pure t
 
 
-addMember :: Type TC -> Def.MemName -> Infer (Type TC)
-addMember ogType memname = do
+addMember :: Def.Location -> Type TC -> Def.MemName -> Infer (Type TC)
+addMember loc ogType memname = do
   t <- fresh  -- we don't know its type yet.
-  RWS.modify $ \s -> s { memberAccess = (ogType, memname, t) : s.memberAccess }
+  RWS.modify $ \s -> s { memberAccess = (ogType, memname, t, loc) : s.memberAccess }
 
   pure t
 
@@ -1686,7 +1697,7 @@ mkPtr insidePtr = do
       case findMap Prelude.ptrTypeName (\(DD ut _ _ _) -> ut.typeName) ts of
         Just dd@(DD _ scheme _ _) -> do
           (tvs@[innerTyVar], unions) <- instantiateScheme mempty scheme
-          innerTyVar `uni` insidePtr
+          (error "should it even fail?", innerTyVar) `uni` (Nothing, insidePtr)
           pure $ Fix $ TCon dd tvs unions
 
         Nothing -> error $ "[COMPILER ERROR]: Could not find inbuilt type '" <> show Prelude.ptrTypeName <> "'."
@@ -1696,14 +1707,14 @@ mkPtr insidePtr = do
 -------------------------------
 --        UNIFICATION
 
-uni :: Type TC -> Type TC -> Infer ()
-uni t1 t2 = do
+uni :: (Def.Location, Type TC)-> (Maybe Def.Location, Type TC) -> Infer ()
+uni (l1, t1) (l2, t2) = do
   substituting $ do
     su <- RWS.gets ctxSubst
     let (t1', t2') = subst su (t1, t2)
-    unify t1' t2'
+    (l1, t1') `unify` (l2, t2')
 
-uniMany :: [Type TC] -> [Type TC] -> Infer ()
+uniMany :: (Def.Location, [Type TC]) -> (Maybe Def.Location, [Type TC]) -> Infer ()
 uniMany ts1 ts2 =
   substituting $ do
     su <- RWS.gets ctxSubst
@@ -1725,39 +1736,41 @@ substituting subctx = RWST $ \_ s -> do
 
 ------
 
-unify :: Type TC -> Type TC -> SubstCtx ()
-unify ttl ttr = do
+unify :: (Def.Location, Type TC) -> (Maybe Def.Location, Type TC) -> SubstCtx ()
+unify (locl, ttl) (locr, ttr) = do
   su <- RWS.gets ctxSubst
   let (tl, tr) = subst su (ttl, ttr)
   case bimap project project $ subst su (tl, tr) of
     (l, r) | l == r -> pure ()
     (TO (TyVar tyv), _) -> do
-      tyv `bind` tr
+      let bind' = bind (Left (locl, locr))
+      tyv `bind'` tr
       for_ tyv.tyvConstraints $ \klass ->
         addConstraint tr klass
 
     (_, TO (TyVar tyv)) -> do
-      tyv `bind` tl
+      let bind' = bind (Right (locr, locl))
+      tyv `bind'` tl
       for_ tyv.tyvConstraints $ \klass ->
         addConstraint tl klass
 
     (TFun lenv lps lr, TFun renv rps rr) -> do
-      unifyMany lps rps
-      unify lr rr
+      unifyMany (locl, lps) (locr, rps)
+      unify (locl, lr) (locr, rr)
       lenv `unifyFunEnv` renv
 
     (TCon t ta unions, TCon t' ta' unions') | t == t' -> do
-      unifyMany ta ta'
+      unifyMany (locl, ta) (locr, ta')
       zipWithM_ unifyFunEnv unions unions'
 
     (_, _) -> do
-      err $ TypeMismatch tl tr
+      err $ TypeMismatch (locl, tl) (locr, tr)
 
-unifyMany :: [Type TC] -> [Type TC] -> SubstCtx ()
-unifyMany [] [] = nun
-unifyMany (tl:ls) (tr:rs) | length ls == length rs = do  -- quick fix - we don't need recursion here.
-  unify tl tr
-  unifyMany ls rs
+unifyMany :: (Def.Location, [Type TC]) -> (Maybe Def.Location, [Type TC]) -> SubstCtx ()
+unifyMany (_, []) (_, []) = nun
+unifyMany (ll, tl:ls) (lr, tr:rs) | length ls == length rs = do  -- quick fix - we don't need recursion here.
+  unify (ll, tl) (lr, tr)
+  unifyMany (ll, ls) (lr, rs)
 
 unifyMany tl tr = err $ MismatchingNumberOfParameters tl tr
 
@@ -1767,7 +1780,7 @@ addConstraint t (klass, instances) = case project t of
         let mSelectedInst = instances !? dd
         case mSelectedInst of
           Nothing -> do
-            err $ DataDefDoesNotImplementClass dd klass
+            err $ DataDefDoesNotImplementClass (error "todo") dd klass
 
           Just _ -> do
             -- Don't do anything? like, we only have to confirm that the instance gets applied, right?
@@ -1775,28 +1788,30 @@ addConstraint t (klass, instances) = case project t of
 
       TO (TVar tv) -> do
         unless (Set.member klass tv.tvClasses) $ do
-          err $ TVarDoesNotConstrainThisClass tv klass
+          err $ TVarDoesNotConstrainThisClass (error "todo") tv klass
 
       TO (TyVar tyv) -> do
         -- create new tyvar with both classes merged!
         let cids = (klass, instances) : tyv.tyvConstraints
         newtyv <- freshTyVarInSubst cids
-        tyv `bind` Fix (TO (TyVar newtyv))
+        let bind' = bind (error "todo?")
+        tyv `bind'` Fix (TO (TyVar newtyv))
 
       TFun {} ->
-        err $ FunctionTypeConstrainedByClass t klass
+        err $ FunctionTypeConstrainedByClass (error "todo") t klass
 
-bind :: T.TyVar -> Type TC -> SubstCtx ()
-bind tyv (Fix (TO (TyVar tyv'))) | tyv == tyv' = nun
-bind tyv t | occursCheck tyv t =
-              err $ InfiniteType tyv t
-           | otherwise = do
-  RWS.modify $ \su -> su
-    { ctxSubst =
-        let singleSubst  = Subst mempty (Map.singleton tyv t)
-            Subst unions types = subst singleSubst su.ctxSubst  -- NOTE: safe!
-        in Subst unions (Map.insert tyv t types)
-    }
+bind :: Either (Def.Location, Maybe Def.Location) (Maybe Def.Location, Def.Location) -> T.TyVar -> Type TC -> SubstCtx ()
+bind _ tyv (Fix (TO (TyVar tyv'))) | tyv == tyv' = nun
+bind loc tyv t
+  | occursCheck tyv t =
+    err $ InfiniteType loc tyv t
+  | otherwise = do
+    RWS.modify $ \su -> su
+      { ctxSubst =
+          let singleSubst  = Subst mempty (Map.singleton tyv t)
+              Subst unions types = subst singleSubst su.ctxSubst  -- NOTE: safe!
+          in Subst unions (Map.insert tyv t types)
+      }
 
 unifyFunEnv :: T.EnvUnion -> T.EnvUnion -> SubstCtx ()
 unifyFunEnv lenv renv = do
@@ -1890,14 +1905,14 @@ instance Substitutable (Exports TC) where
   subst su e = e { functions = subst su e.functions }
 
 instance Substitutable (AnnStmt TC) where
-  ftv = cata $ \(O (Def.Annotated _ stmt)) -> case first ftv stmt of
+  ftv = cata $ \(O (O (Def.Annotated _ (Def.Located _ stmt)))) -> case first ftv stmt of
     Return ret -> ftv ret
-    Mutation _ _ accesses e -> ftv accesses <> e
+    Mutation _ _ _ accesses e -> ftv accesses <> e
     s -> bifold s
 
   subst su = cata $ embed . sub
     where
-      sub (O (Def.Annotated ann stmt)) = O . Def.Annotated ann $ case stmt of
+      sub (O (O (Def.Annotated ann (Def.Located location stmt)))) = O . O . Def.Annotated ann . Def.Located location $ case stmt of
         Switch cond cases ->
           let cond' = subst su cond
               cases' = subst su cases
@@ -1905,7 +1920,7 @@ instance Substitutable (AnnStmt TC) where
         Fun env -> Fun $ subst su env
         Inst inst -> Inst $ subst su inst
         Return ret -> Return  $ subst su ret
-        Mutation v other accesses e -> Mutation v other (subst su accesses) (subst su e)
+        Mutation v varLocation other accesses e -> Mutation v varLocation other (subst su accesses) (subst su e)
         s -> first (subst su) s
 
 instance Substitutable (MutAccess TC) where
@@ -1938,6 +1953,10 @@ instance Substitutable (Expr TC) where
     Var v loc -> Var (subst su v) loc
     e -> e)
 
+instance Substitutable T.ExprNode where
+  ftv = const mempty
+  subst = const id
+
 instance Substitutable T.LamDec where
   ftv (T.LamDec _ env) = ftv env
   subst su (T.LamDec uv env) = T.LamDec uv (subst su env)
@@ -1965,6 +1984,9 @@ instance Substitutable Def.UniqueFunctionInstantiation where
   ftv _ = mempty
   subst _ = id
 
+instance Substitutable Def.Location where
+  ftv = const mempty
+  subst _ = id
 
 
 instance Substitutable (Function TC) where
@@ -1977,7 +1999,7 @@ instance Substitutable (FunDec TC) where
 
 instance Substitutable T.FunOther where
   ftv other = ftv other.functionAssociations
-  subst su other = T.FunOther other.functionScheme (subst su other.functionAssociations) other.functionAnnotations
+  subst su other = T.FunOther other.functionScheme (subst su other.functionAssociations) other.functionAnnotations other.functionLocation
 
 instance Substitutable T.TypeAssociation where
   ftv (T.TypeAssociation from to _ _ _ _) = ftv from <> ftv to
@@ -2049,7 +2071,7 @@ instance Substitutable (T.EnvF (Type TC)) where
 
       tryExpandEnvironmentOfClass :: (T.Variable, Def.Locality, Type TC) -> [(T.Variable, Def.Locality, Type TC)]
       tryExpandEnvironmentOfClass = \case
-        vlt@(T.DefinedClassFunction cfd@(CFD cd _ _ _ ()) snap self@(Fix (TCon dd _ _)) uci, _, t) ->
+        vlt@(T.DefinedClassFunction cfd@(CFD cd _ _ _ () _) snap self@(Fix (TCon dd _ _)) uci, _, t) ->
           -- failable: select instantiated function env. this might have been after errors, so we're not assuming anything.
           let mvars = do
                 insts <- snap !? cd
@@ -2190,7 +2212,7 @@ findMap :: Eq a => a -> (b -> a) -> Map b c -> Maybe c
 findMap kk f = fmap snd . find (\(k, _) -> f k == kk). Map.toList
 
 classFunDecToClassType :: ClassFunDec R -> ClassType R
-classFunDecToClassType (CFD _ _ params ret _) =
+classFunDecToClassType (CFD _ _ params ret _ _) =
   Fix $ NormalType $ TFun undefined undefined undefined
 
 
@@ -2226,7 +2248,7 @@ data TypecheckingState = TypecheckingState
 
   , variableTypes :: Map Def.UniqueVar (Type TC)
 
-  , memberAccess :: [(Type TC, Def.MemName, Type TC)]  -- ((a :: t1).mem :: t2)
+  , memberAccess :: [(Type TC, Def.MemName, Type TC, Def.Location)]  -- ((a :: t1).mem :: t2)
   , classFunctionUnions :: [(T.EnvUnion, ClassFunDec TC, Type TC, T.PossibleInstances)]  -- TODO: currently unused. remove later.
   , associations :: [(T.TypeAssociation, Map (DataDef TC) (InstDef TC))]
 
@@ -2283,37 +2305,68 @@ type EnvAdditions = Map Def.EnvID [(T.Variable, Def.Locality, Type TC)]
 
 
 data TypeError
-  = InfiniteType T.TyVar (Type TC)
-  | TypeMismatch (Type TC) (Type TC)
-  | MismatchingNumberOfParameters [Type TC] [Type TC]
-  | AmbiguousType T.TyVar
+  = InfiniteType (Either (Def.Location, Maybe Def.Location) (Maybe Def.Location, Def.Location)) T.TyVar (Type TC)
+  | TypeMismatch (Def.Location, Type TC) (Maybe Def.Location, Type TC)
+  | MismatchingNumberOfParameters (Def.Location, [Type TC]) (Maybe Def.Location, [Type TC])
+  | AmbiguousType Def.Location T.TyVar
 
-  | DataTypeDoesNotHaveMember (DataDef TC) Def.MemName
-  | DataTypeIsNotARecordType (DataDef TC) Def.MemName
-  | FunctionIsNotARecord (Type TC) Def.MemName
-  | TVarIsNotARecord (TVar TC) Def.MemName
+  | DataTypeDoesNotHaveMember Def.Location (DataDef TC) Def.MemName
+  | DataTypeIsNotARecordType Def.Location (DataDef TC) Def.MemName
+  | FunctionIsNotARecord Def.Location (Type TC) Def.MemName
+  | TVarIsNotARecord Def.Location (TVar TC) Def.MemName
 
-  | DataDefDoesNotImplementClass (DataDef TC) (ClassDef TC)
-  | TVarDoesNotConstrainThisClass (TVar TC) (ClassDef TC)
-  | FunctionTypeConstrainedByClass (Type TC) (ClassDef TC)
-  | InstanceFunctionTypeNotMatchingClass (ClassFunDec TC) (Function TC) [(ClassType TC, Type TC)]
+  | DataDefDoesNotImplementClass Def.Location (DataDef TC) (ClassDef TC)
+  | TVarDoesNotConstrainThisClass Def.Location (TVar TC) (ClassDef TC)
+  | FunctionTypeConstrainedByClass Def.Location (Type TC) (ClassDef TC)
+  | InstanceFunctionTypeNotMatchingClass (Def.Location, ClassFunDec TC) (Def.Location, Function TC) [(ClassType TC, Type TC)]
+
+
+instance Error TypeError where
+  toError source = \case
+    InfiniteType _ tyv t -> error "InfiniteType" --undefined 
+    TypeMismatch (loc, t) (mloc', t') -> renderError source (fs $ Def.printf "type mismatch between %s and %s" (pp t) (pp t')) $ case mloc' of
+      Nothing -> ln (loc, Just $ fs $ printf "this one has type %s" (pp t))
+      Just loc' -> lns [(loc, Just $ fs $ printf "this one has type %s" (pp t)), (loc', Just $ fs $ printf "this one has type %s" (pp t'))]
+
+    MismatchingNumberOfParameters ts ts' -> error "MismatchingNumberOfParameters" --printf "Mismatching number of parameters: (%d) %s (%d) %s" (length ts) (sctx $ Def.ppList pp ts) (length ts') (sctx $ Def.ppList pp ts')
+    AmbiguousType _ tyv -> error "AmbiguousType" --printf "Ambiguous type: %s" (sctx $ pp tyv)
+
+    DataTypeDoesNotHaveMember _ (DD ut _ _ _) memname -> error "DataTypeDoesNotHaveMember" --printf "Record type %s does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
+    DataTypeIsNotARecordType _ (DD ut _ _ _) memname -> error "DataTypeIsNotARecordType" --printf "%s is not a record type and thus does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
+    FunctionIsNotARecord _ t _ -> error "FunctionIsNotARecord" --printf "Cannot subscript a function (%s)." (pp t)
+    TVarIsNotARecord _ tv _ -> error "TVarIsNotARecord" --printf "Cannot subscript a type variable. (%s)" (pp tv)
+    DataDefDoesNotImplementClass _ (DD ut _ _ _) cd -> error "DataDefDoesNotImplementClass" --printf "Type %s does not implement instance of class %s." (sctx $ pp ut) (sctx $ pp cd.classID)
+    TVarDoesNotConstrainThisClass _ tv cd -> error "TVarDoesNotConstrainThisClass" --printf "TVar %s is not constrained by class %s." (pp tv) (pp cd.classID)
+    FunctionTypeConstrainedByClass _ t cd -> error "FunctionTypeConstrainedByClass"
+    _ -> undefined
+--      printf "Function type %s constrained by class %s (function types cannot implement classes, bruh.)" (pp t) (pp cd.classID)
+  
+-- copied verbatim from Resolver. I mean, the error interface should change anyway, so whatever.
+ln :: a -> NonEmpty a
+ln = NonEmpty.singleton
+
+lns :: [a] -> NonEmpty a
+lns = NonEmpty.fromList
+
+fs :: String -> Text
+fs = fromString
 
 -- not sure if we have to have a show instance
-instance Show TypeError where
-  show = \case
-    InfiniteType tyv t -> unwords ["InfiniteType", sctx $ pp tyv, sctx $ pp t]
-    TypeMismatch t t' -> printf "Type Mismatch: %s %s" (sctx $ pp t) (sctx $ pp t')
-    MismatchingNumberOfParameters ts ts' -> printf "Mismatching number of parameters: (%d) %s (%d) %s" (length ts) (sctx $ Def.ppList pp ts) (length ts') (sctx $ Def.ppList pp ts')
-    AmbiguousType tyv -> printf "Ambiguous type: %s" (sctx $ pp tyv)
+-- instance Show TypeError where
+--   show = \case
+--     InfiniteType tyv t -> unwords ["InfiniteType", sctx $ pp tyv, sctx $ pp t]
+--     TypeMismatch t t' -> printf "Type Mismatch: %s %s" (sctx $ pp t) (sctx $ pp t')
+--     MismatchingNumberOfParameters ts ts' -> printf "Mismatching number of parameters: (%d) %s (%d) %s" (length ts) (sctx $ Def.ppList pp ts) (length ts') (sctx $ Def.ppList pp ts')
+--     AmbiguousType tyv -> printf "Ambiguous type: %s" (sctx $ pp tyv)
 
-    DataTypeDoesNotHaveMember (DD ut _ _ _) memname -> printf "Record type %s does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
-    DataTypeIsNotARecordType (DD ut _ _ _) memname -> printf "%s is not a record type and thus does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
-    FunctionIsNotARecord t _ -> printf "Cannot subscript a function (%s)." (pp t)
-    TVarIsNotARecord tv _ -> printf "Cannot subscript a type variable. (%s)" (pp tv)
-    DataDefDoesNotImplementClass (DD ut _ _ _) cd -> printf "Type %s does not implement instance of class %s." (sctx $ pp ut) (sctx $ pp cd.classID)
-    TVarDoesNotConstrainThisClass tv cd -> printf "TVar %s is not constrained by class %s." (pp tv) (pp cd.classID)
-    FunctionTypeConstrainedByClass t cd ->
-      printf "Function type %s constrained by class %s (function types cannot implement classes, bruh.)" (pp t) (pp cd.classID)
+--     DataTypeDoesNotHaveMember (DD ut _ _ _) memname -> printf "Record type %s does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
+--     DataTypeIsNotARecordType (DD ut _ _ _) memname -> printf "%s is not a record type and thus does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
+--     FunctionIsNotARecord t _ -> printf "Cannot subscript a function (%s)." (pp t)
+--     TVarIsNotARecord tv _ -> printf "Cannot subscript a type variable. (%s)" (pp tv)
+--     DataDefDoesNotImplementClass (DD ut _ _ _) cd -> printf "Type %s does not implement instance of class %s." (sctx $ pp ut) (sctx $ pp cd.classID)
+--     TVarDoesNotConstrainThisClass tv cd -> printf "TVar %s is not constrained by class %s." (pp tv) (pp cd.classID)
+--     FunctionTypeConstrainedByClass t cd ->
+--       printf "Function type %s constrained by class %s (function types cannot implement classes, bruh.)" (pp t) (pp cd.classID)
 
 
 
@@ -2328,6 +2381,23 @@ exactZipWith f = go
 
     go [] _ = error "right list is longer"
     go _ [] = error "left list is longer"
+
+
+
+--- Extra ExprNode operations
+
+askUni :: Fix (ExprNode TC nodeF) -> (Def.Location, Type TC)
+askUni = asksNode $ \ne -> (ne.loc, ne.t)
+
+askType :: Fix (ExprNode TC nodeF) -> Type TC
+askType = asksNode T.t
+
+-- shitty convenienve function for the right side of `uni`
+-- askUniR :: Expr TC -> (Maybe Def.Location, Type TC)
+-- askUniR = first Just . askUni
+
+justType :: Type TC -> (Maybe Def.Location, Type TC)
+justType = (Nothing,)
 
 
 -----

@@ -7,9 +7,6 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 ## current
 
-- Line folds.
-- Making a quick iterator library (with incorrect types because... yknow).
-
 
 --
 
@@ -41,8 +38,6 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 
 ## todo larger
 
-- line folding
-- error location + actual errors
 - integers in types (typed C arrays)  (maybe put this earlier to support C-style arrays)
 - finish (actually fix) recursion
 - typeclass constraints
@@ -54,6 +49,21 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 
 ## todo
 
+- printing context that does not rely on a global variable / special printing context for errors (it solves the problem of types disappearing when not printing IRs)
+- add proper end offset without trailing whitespace.
+- better errors (eg. type mismatch IN +, in call, should present the whole type)
+  ```
+   error: type mismatch between Int and Bool
+     |
+   8 | f(2 == True)
+     | ^--- this one has type Int
+
+     |
+   8 | f(2 == True)
+     | ^^^^^^^^^^^^--- this one has type Bool
+  ```
+  - it's actually incorrect. the argument types are mismatched, but we display the difference between the two whole structures.
+  - we should probably unify arguments separately?
 - add circular dependency checking for modules
 - lots tests for modules, namespaces and importing.
 - this is kinda important: for semantics, we need to ensure, that the type of the instance function matches the class function. is there a SMART way to do it (by unification instead of validation?)
@@ -77,6 +87,7 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
   - later check error messages
   - (or just check the datatypes!)
   - not sure which is better
+- add more line folding logic where appropriate
 
 
 ### todo misc

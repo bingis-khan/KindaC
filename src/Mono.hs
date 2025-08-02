@@ -38,10 +38,10 @@ import Control.Monad (void)
 import Data.String (fromString)
 import Data.List (find, partition)
 import AST.Typed (TC)
-import AST.Common (AnnStmt, Module, StmtF (..), Expr, Node (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), XMutAccess, LitType (..))
+import AST.Common (AnnStmt, Module, StmtF (..), Expr, ExprNode (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), XMutAccess, LitType (..), askNode)
 import AST.Mono (M)
 import AST.IncompleteMono (IM)
-import AST.Def ((:.) (..), Annotated (..), Locality (..), phase, PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>))
+import AST.Def ((:.) (..), Annotated (..), Locality (..), phase, PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>), Located (..))
 import qualified AST.IncompleteMono as IM
 import qualified AST.Def as Def
 
@@ -83,23 +83,23 @@ mono tmod = do
 
 mAnnStmt :: AnnStmt TC -> Context (AnnStmt IM)
 mAnnStmt = cata (fmap embed . f) where
-  f :: (:.) Annotated (StmtF TC (Expr TC)) (Context (AnnStmt IM)) -> Context ((:.) Annotated (StmtF IM (Expr IM)) (AnnStmt IM))
-  f (O (Annotated ann stmt)) = do
+  f :: (:.) ((:.) Annotated Located) (StmtF TC (Expr TC)) (Context (AnnStmt IM)) -> Context ((:.) ((:.) Annotated Located) ((StmtF IM (Expr IM))) (AnnStmt IM))
+  f (O (O (Annotated ann (Located location stmt)))) = do
     stmt' <- bitraverse mExpr id stmt
     let
-      mann, noann :: b a -> Context ((:.) Annotated b a)
-      mann = pure . O . Annotated ann
-      noann = pure . O . Annotated []
+      mann, noann :: b a -> Context ((:.) ((:.) Annotated Located) b a)
+      mann = pure . O . O . Annotated ann . Located location
+      noann = pure . O . O . Annotated [] . Located location
 
     -- NOTE: this is just remapping.......
     case stmt' of
       Pass -> mann Pass
       ExprStmt expr -> mann $ ExprStmt expr
-      Assignment vid expr -> mann $ Assignment vid expr
+      Assignment vid location expr -> mann $ Assignment vid location expr
       Print expr -> mann $ Print expr
-      Mutation vid l accesses expr -> do
+      Mutation vid location l accesses expr -> do
         maccesses <- mMutAccesses accesses
-        mann $ Mutation vid l maccesses expr  -- NOTE: we don't need to adjust locality, because we may only assign to variables but only class functions might have their locality changed.
+        mann $ Mutation vid location l maccesses expr  -- NOTE: we don't need to adjust locality, because we may only assign to variables but only class functions might have their locality changed.
       If (IfStmt cond iftrue elseIfs else') -> mann $ If $ IfStmt cond iftrue elseIfs else'
       Switch switch cases -> do
         mcases <- traverse mCase cases
@@ -147,14 +147,14 @@ mAnnStmt = cata (fmap embed . f) where
 
 mMutAccesses :: [(MutAccess TC, Type TC)] -> Context [(MutAccess IM, Type IM)]
 mMutAccesses accs = for accs $ \(acc, t) -> case acc of
-  MutRef -> do
+  MutRef location -> do
     mt <- mType t
-    pure (MutRef, mt)
-  MutField mem -> do
+    pure (MutRef location, mt)
+  MutField location mem -> do
     mt <- mType t
     let dd = expectIDataDef mt
     um <- member (dd, mem)
-    pure (MutField um, mt)
+    pure (MutField location um, mt)
 
 -- TODO: replace with actual types.
 -- LEFT: ENV ASSIGNMENT
@@ -261,8 +261,8 @@ getEnvDependencies _ = error "RECURSIVE ENV WHAT."
 
 
 mExpr :: Expr TC -> Context (Expr IM)
-mExpr = cata $ fmap embed . \(N t expr) -> do
-  mt <- mType t
+mExpr = cata $ fmap embed . \(N en expr) -> do
+  mt <- mType en.t
   mexpr <- case expr of
     Lam (T.LamDec _ env) args ret -> do
       margs <- Def.traverse2 mType args
@@ -284,7 +284,7 @@ mExpr = cata $ fmap embed . \(N t expr) -> do
           pure $ Var mv newLocality
 
         Con c eid -> do
-          mc <- constructor c t
+          mc <- constructor c en.t
 
           -- don't forget to register usage. (for codegen)
           void $ withEnv Nothing (T.Env eid [] mempty []) $ pure ()
@@ -301,7 +301,7 @@ mExpr = cata $ fmap embed . \(N t expr) -> do
 
         RecUpdate me upd -> do
           -- TODO: Before i had a reference to the data def, but i may add it later. Maybe I should add the info while I'm checking types?
-          let dd = expectIDataDef (Common.typeOfNode me)
+          let dd = expectIDataDef (askNode me)
           upd' <- for upd $ \(mem, meme) -> do
             ut <- member (dd, mem)
             pure (ut, meme)
@@ -309,7 +309,7 @@ mExpr = cata $ fmap embed . \(N t expr) -> do
           pure $ RecUpdate me upd'
 
         MemAccess me memname -> do
-          let dd = expectIDataDef (Common.typeOfNode me)
+          let dd = expectIDataDef (askNode me)
           um <- member (dd, memname)
           pure $ MemAccess me um
 
@@ -405,8 +405,8 @@ reLocality envStack ogLocality = \case
 
 
 findUsedVarsInExpr :: Expr TC -> Set (T.Variable, Type TC)
-findUsedVarsInExpr = cata $ \(N t expr) -> case expr of
-  Var v _ -> Set.singleton (v, t)
+findUsedVarsInExpr = cata $ \(N en expr) -> case expr of
+  Var v _ -> Set.singleton (v, en.t)
   e -> fold e
 
 mCase :: CaseF TC (Expr IM) (AnnStmt IM) -> Context (Case IM)
@@ -415,8 +415,8 @@ mCase kase = do
   pure $ Case decon kase.caseCondition kase.caseBody
 
 mDecon :: Decon TC -> Context (Decon IM)
-mDecon = cata $ fmap embed . \(N t d) -> do
-  mt <- mType t
+mDecon = cata $ fmap embed . \(N en d) -> do
+  mt <- mType en.t
   N mt <$> case d of
     CaseVariable uv -> do
       pure $ CaseVariable uv
@@ -435,7 +435,7 @@ mDecon = cata $ fmap embed . \(N t d) -> do
       pure $ CaseRecord dd margs
 
     CaseConstructor dc args -> do
-      mdc <- constructor dc t
+      mdc <- constructor dc en.t
       margs <- sequenceA args
       pure $ CaseConstructor mdc margs
 
@@ -539,7 +539,7 @@ forceFunctionType uciOrUfi et = case project et of
 
 
 selectInstance :: T.ScopeSnapshot -> Type TC -> Def.UniqueClassInstantiation -> ClassFunDec TC -> Context (InstFun TC)
-selectInstance snapshot self uci cfd@(CFD cd cfdId _ _ _) = do
+selectInstance snapshot self uci cfd@(CFD cd cfdId _ _ _ _) = do
   mself <- mType self
   ucis <- State.gets classInstantiationAssociations
   Def.ctxPrint' $ Def.printf "SNAPSHOT UCIS: %s" (ppDef $ Map.keysSet <$> ucis)
@@ -587,7 +587,7 @@ mBody dbgName body = do
 
 
 findUsedVarsInFunction :: Foldable t => t (AnnStmt TC) -> Set (T.Variable, Type TC)
-findUsedVarsInFunction = foldMap $ cata $ \(O (Annotated _ stmt)) -> case first findUsedVarsInExpr stmt of
+findUsedVarsInFunction = foldMap $ cata $ \(O (O (Annotated _ (Located _ stmt)))) -> case first findUsedVarsInExpr stmt of
   Return expr -> findUsedVarsInExpr expr
   s -> bifold s
 
@@ -772,13 +772,13 @@ withClassInstanceAssociations ci a = do
   --    Maybe. but what will happen if we use two different functions. will they be distinct?
   let classFuns = Map.fromList $ case ci of
         T.Env _ vars _ _ -> flip mapMaybe vars $ \case
-          (T.DefinedClassFunction (CFD cd _ _ _ _) snapshot _ uci, _, _) -> Just (uci, snapshot ! cd)
+          (T.DefinedClassFunction (CFD cd _ _ _ _ _) snapshot _ uci, _, _) -> Just (uci, snapshot ! cd)
           _ -> Nothing
 
         _ -> undefined
   let what = case ci of
         T.Env _ vars _ _ -> flip mapMaybe vars $ \case
-          (T.DefinedClassFunction (CFD cd _ _ _ _) snapshot _ uci, _, _) -> Just (uci, snapshot ! cd)
+          (T.DefinedClassFunction (CFD cd _ _ _ _ _) snapshot _ uci, _, _) -> Just (uci, snapshot ! cd)
           _ -> Nothing
 
         _ -> undefined
@@ -1010,11 +1010,13 @@ withEnvContext menvs allInstantiations cuckedUnionInstantiations x = fst <$> RWS
 
     envMemo = EnvMemo
       { memoIDatatype = emptyMemo
+      , memoIFunction = emptyMemo
+      , memoIUnion = emptyMemo
       }
 
 
 mfAnnStmts :: [AnnStmt IM] -> EnvContext [AnnStmt M]
-mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)) -> do
+mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (O (Annotated anns (Located location stmt)))) -> do
   stmt' <- bitraverse mfExpr id stmt
   let s = pure . Just
   let
@@ -1022,21 +1024,21 @@ mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (Annotated anns stmt)
     body bstmts =
       let eliminated = catMaybes $ NonEmpty.toList bstmts
       in case eliminated of
-        [] -> Fix (O (Annotated [] Pass)) :| []
+        [] -> Fix (O $ O (Annotated [] (Located location Pass))) :| []
         (st:sts) -> st :| sts
 
-  fmap (embed . O . Annotated anns) <$> case stmt' of
+  fmap (embed . O . O . Annotated anns . Located location) <$> case stmt' of
     Fun (IM.EnvDefs envs) -> do
       mfenvs <- traverse (bitraverse mfEnvMod mfEnvDef) envs
       s $ Fun $ M.EnvDefs $ NonEmpty.toList mfenvs
 
     Pass -> s Pass
     ExprStmt e -> s $ ExprStmt e
-    Assignment vid expr -> s $ Assignment vid expr
+    Assignment vid varLocation expr -> s $ Assignment vid varLocation expr
     Print e -> s $ Print e
-    Mutation vid loc accesses e -> do
-      mfaccesses <- traverse (bitraverse (pure . \case { MutRef -> MutRef; MutField um -> MutField um }) mfType) accesses  -- noop access reconstruction...
-      s $ Mutation vid loc mfaccesses e
+    Mutation vid varLocation loc accesses e -> do
+      mfaccesses <- traverse (bitraverse (pure . \case { MutRef location -> MutRef location; MutField location um -> MutField location um }) mfType) accesses  -- noop access reconstruction...
+      s $ Mutation vid varLocation loc mfaccesses e
     If (IfStmt { condition,  ifTrue,  ifElifs,  ifElse }) -> s $ If $ IfStmt condition (body ifTrue) (fmap2 body ifElifs) (body <$> ifElse)
     Switch e cases -> fmap (Just . Switch e) $ for cases $ \kase -> do
       mdecon <- mfDecon kase.deconstruction
@@ -1173,7 +1175,7 @@ mfType = para $ fmap embed . \case
 
 
 mfUnion :: IM.EnvUnion -> EnvContext M.EnvUnion
-mfUnion union = do
+mfUnion = memo memoIUnion (\mem s -> s { memoIUnion = mem }) $ \union _ -> do
   cuckedUnions <- RWS.asks cuckedUnionInsts
   mappedEnvs <- case cuckedUnions !? union of
       -- here should be no ftvs.
@@ -1224,10 +1226,10 @@ mfDataDef = memo memoIDatatype (\mem s -> s { memoIDatatype = mem }) $ \(idd, _)
 
 
 mfFunction :: Function IM -> EnvContext (Function M)
-mfFunction fun = do
+mfFunction = memo memoIFunction (\mem s -> s { memoIFunction = mem }) $ \fun _ -> do  -- maybe we should addMemo earlier?
   Def.ctxPrint' $ Def.printf "MF function %s" (pp fun.functionDeclaration.functionId)
   Def.ctxPrint fun
-
+  -- 
   -- just map everything.
   let fundec = fun.functionDeclaration
   env <- mfEnv' fundec.functionEnv
@@ -1240,7 +1242,7 @@ mfFunction fun = do
   let completedBody = case body of
         [] ->
           -- TODO: we need to automatically insert return values based on flow analysis (but that should be part of typechecking?)
-          let pass = Fix (O (Annotated [] Pass))
+          let pass = Fix (O (O (Annotated [] (Located (error "what should I insert here?") Pass))))
           in pass :| []
 
         (s:ss) -> s :| ss
@@ -1306,8 +1308,10 @@ data EnvContextUse = EnvContextUse
   }
 
 
-newtype EnvMemo = EnvMemo
+data EnvMemo = EnvMemo
   { memoIDatatype :: Memo (DataDef IM, [M.EnvUnion]) (DataDef M, Map (DataCon IM) (DataCon M))
+  , memoIFunction :: Memo (Function IM) (Function M)
+  , memoIUnion    :: Memo IM.EnvUnion M.EnvUnion
   }
 
 

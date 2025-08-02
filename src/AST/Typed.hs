@@ -9,15 +9,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE TupleSections #-}
 module AST.Typed (module AST.Typed) where
 
-import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, XNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, Rec, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, XClassConstraints, XClassFunDec, XLamVar, instFunDec, functionOther, MutAccess, XMutAccess, XInstExport, XStringInterpolation)
+import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, XExprNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, Rec, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, XClassConstraints, XClassFunDec, XLamVar, instFunDec, functionOther, MutAccess, XMutAccess, XInstExport, XStringInterpolation, XExportType, asksNode)
 import qualified AST.Def as Def
 import Data.Map (Map)
 import Data.Text (Text)
 import Data.Fix (Fix (..))
 import AST.Def (PP (..), (<+>))
-import Data.Biapplicative (bimap)
+import Data.Biapplicative (bimap, first)
 import Data.Functor.Classes (Ord1 (..), Eq1 (..))
 import Data.Functor ((<&>))
 import Data.String (fromString)
@@ -67,7 +68,15 @@ type instance XEnv TC = Env
 type instance XEnvUnion TC = EnvUnion
 type instance XVar TC = Variable
 type instance XVarOther TC = Def.Locality
-type instance XNode TC = Type TC
+type instance XExprNode TC = ExprNode
+
+data ExprNode = ExprNode
+  { t :: Type TC
+  , loc :: Def.Location
+  }
+
+
+
 type instance XLVar TC = Def.UniqueVar  -- This is not that good..... probably TEMP
 type instance XLamVar TC = (Def.UniqueVar, Type TC)
 type instance XTCon TC = DataDef TC
@@ -95,6 +104,7 @@ type instance XClassConstraints TC = ()
 type instance XMutAccess TC = (MutAccess TC, Type TC)
 type instance XInstExport TC = InstDef TC
 type instance XStringInterpolation TC = Text  -- here, we're eliminating the string interpolation completely!
+type instance XExportType TC = Type TC
 
 data LamDec = LamDec Def.UniqueVar Env
 type instance XLamOther TC = LamDec
@@ -147,6 +157,7 @@ data FunOther = FunOther
   , functionAssociations :: [FunctionTypeAssociation]
   -- , functionClassInstantiationAssocs :: ClassInstantiationAssocs  -- TODO: might not be necessary we can just map them.
   , functionAnnotations :: [Def.Ann]
+  , functionLocation :: Def.Location
   }
 
 data Scheme = Scheme [TVar TC] [EnvUnion]
@@ -156,7 +167,7 @@ data FunctionTypeAssociation = FunctionTypeAssociation (TVar TC) (Type TC) (Clas
 -- I'm not sure about level. We don't need type applications now.
 -- It's needed to check if we need to keep it in the environment or not.
 type ClassInstantiationAssocs = Map (Maybe (Def.UniqueFunctionInstantiation, Type TC), Def.UniqueClassInstantiation) (Type TC, ([Type TC], InstFun TC), Def.EnvStack, Def.UniqueFunctionInstantiation)
-data TypeAssociation = TypeAssociation (Type TC) (Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation (Maybe Def.UniqueFunctionInstantiation) [Def.EnvID]
+data TypeAssociation = TypeAssociation (Def.Location, Type TC) (Def.Location, Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation (Maybe Def.UniqueFunctionInstantiation) [Def.EnvID]  -- TODO: I think only one location is required. We can't really get location of self?
 
 
 data Mod phase = Mod
@@ -296,7 +307,7 @@ instance Ord Variable where
 
 --------
 
-instance (PP (XLVar phase), PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XTOther phase), PP (XTFun phase), PP (XNode phase), Def.PPDef (XTCon phase), PP (XLamVar phase), PP (XMutAccess phase), PP (XStringInterpolation phase)) => PP (Mod phase) where
+instance (PP (XLVar phase), PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XTOther phase), PP (XTFun phase), PP (XExprNode phase), Def.PPDef (XTCon phase), PP (XLamVar phase), PP (XMutAccess phase), PP (XStringInterpolation phase)) => PP (Mod phase) where
   pp m = Def.ppLines pp m.topLevelStatements
 
 instance PP FunOther where
@@ -318,17 +329,20 @@ instance PP TOTF where
 instance PP TyVar where
   pp (TyV t _) = "#" <> pp t
 
+instance PP ExprNode where
+  pp en = pp en.t <+> pp en.loc
+
 instance PP FunctionTypeAssociation where
   pp (FunctionTypeAssociation tv t _ _) = fromString $ Def.printf "(%s => %s)" (pp tv) (pp t)
 
 instance PP TypeAssociation where
-  pp (TypeAssociation from to _ _ _ _) = fromString $ Def.printf "(%s => %s)" (pp from) (pp to)
+  pp (TypeAssociation from to _ _ _ _) = fromString $ Def.printf "(%s => %s)" (pp (snd from)) (pp (snd to))
 
 instance PP a => PP (VariableF a) where
   pp = \case
     DefinedVariable v -> pp v
     DefinedFunction f assocs _ ufi -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv _ _ uci) -> pp (tv, uci)) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet pp assocs <> ")"
-    DefinedClassFunction (CFD cd uv _ _ _) insts self uci ->
+    DefinedClassFunction (CFD cd uv _ _ _ _) insts self uci ->
       fromString $ Def.printf "%s&%s&C<%s>[%s]" (pp uv) (pp uci) (pp self) (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts)))
 
 instance PP LamDec where

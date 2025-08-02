@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedRecordDot, OverloadedStrings #-}
 module CompilerContext (CompilerContext, CompilerState(..), BasePath, storeModule, ModuleLoader, compilerContext, addErrors, preludeHackContext, mkModulePath, relativeTo) where
 
 import Data.Text (Text)
@@ -76,8 +76,9 @@ storeModule mq mtmod = do
     Nothing -> pure ()
 
 -- Right now only text geg
-addErrors :: [Text] -> CompilerContext ()
-addErrors errs = RWST.modify $ \s -> s { errors = s.errors <> errs }  -- we append to the end here.
+addErrors :: Text -> [Text] -> CompilerContext ()
+addErrors _ [] = pure ()
+addErrors moduleName errs = RWST.modify $ \s -> s { errors = s.errors <> (("Errors in module " <> moduleName <> ":") : errs) }  -- we append to the end here.
 
 mkModulePath :: U.ModuleQualifier -> CompilerContext FilePath
 mkModulePath (U.ModuleQualifier modules) = do

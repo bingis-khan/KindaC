@@ -30,6 +30,7 @@ library
       CompilerContext
       CPrinter
       Entry
+      Error
       Misc.Memo
       Mono
       Parser

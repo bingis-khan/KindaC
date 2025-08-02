@@ -29,19 +29,18 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), ModuleName (..), UnOp (..), BinOp (..))
-import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), XClassConstraints, Node (..), DeclaredType (..), MutAccess (..), LitType (..))
+import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), ModuleName (..), UnOp (..), BinOp (..), Location (..), Located (..))
+import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), XClassConstraints, ExprNode (..), DeclaredType (..), MutAccess (..), LitType (..))
 import Data.Functor.Foldable (cata)
 import Control.Monad ((<=<), MonadPlus, join)
 import Data.Either (partitionEithers)
 import AST.Untyped (Untyped, U, UntypedStmt (..), ClassConstraint (..), Qualified (..), ModuleQualifier (..), Use (..), UseItem (..))
 import qualified AST.Untyped as U
 import qualified AST.Common as Common
-import Control.Monad.Trans.Reader (Reader, ReaderT (..))
+import Control.Monad.Trans.Reader (ReaderT (..))
 import qualified Control.Monad.Trans.Reader as Reader
 import Control.Applicative (Alternative, many, (<|>), some)
-import Text.Megaparsec (ParsecT, ShowErrorComponent, Pos, choice, try, optional, between, lookAhead, sepBy1, sepBy, notFollowedBy, manyTill, ParseError (..), ErrorFancy (..), registerParseError, MonadParsec, eof, Parsec)
-import Control.Monad.Trans.Class (lift)
+import Text.Megaparsec (ShowErrorComponent, Pos, choice, try, optional, between, lookAhead, sepBy1, sepBy, notFollowedBy, manyTill, ParseError (..), ErrorFancy (..), registerParseError, MonadParsec, eof, Parsec)
 import Data.String (IsString, fromString)
 import Text.Megaparsec.Char (eol, string, char)
 
@@ -63,7 +62,7 @@ parse filename prog =
 -- Top level
 topLevels :: Parser (Module Untyped)
 topLevels = do
-  eas <- many $ recoverStmt (L.nonIndented sc  (annotationOr statement)) <* scn
+  eas <- many $ recoverStmt (L.nonIndented sc (annotationOr (located statement))) <* scn
   ustmts <- annotateStatements eas
   pure $ U.Mod ustmts
 
@@ -127,14 +126,18 @@ sSingleCase = scope id $ do
   pure $ Case decon Nothing
 
 sDeconstruction :: Parser (Decon U)
-sDeconstruction = caseVariable <|> caseRecord <|> caseConstructor
+sDeconstruction = do
+  (from, sourcePos) <- fromPos
+  decon <- caseVariable <|> caseRecord <|> caseConstructor
+  to <- TM.getOffset
+  pure $ node (Location from to sourcePos) decon
  where
-    caseVariable = node . CaseVariable <$> variable
-    caseConstructor =  fmap node $ CaseConstructor <$> qualified dataConstructor <*> args
+    caseVariable = CaseVariable <$> variable
+    caseConstructor =  CaseConstructor <$> qualified dataConstructor <*> args
     caseRecord = do
       name <- try $ qualified typeName <* lookAhead (symbol "{")
       decons <- NonEmpty.fromList <$> between (symbol "{") (symbol "}") (sepBy1 recordFieldDecon (symbol ","))
-      pure $ node $ CaseRecord name decons
+      pure $ CaseRecord name decons
 
     recordFieldDecon = do
       fieldName <- member
@@ -154,18 +157,18 @@ sPrint = do
 
 sDefinition :: Parser (Stmt U)
 sDefinition = lineFold $ do
-  name <- try $ oneline variable <* symbol "="
+  (varLocation, name) <- try $ oneline (withLocation variable) <* symbol "="
   rhs <- expression
-  pure $ Assignment name rhs
+  pure $ Assignment name varLocation rhs
 
 sMutAssignment :: Parser (Stmt U)
 sMutAssignment = do
-  (name, accesses) <- try $ do
-    v <- variable
+  (varLocation, name, accesses) <- try $ do
+    (varLocation, v) <- withLocation variable
     accesses <- thatFunnyMutationOperator
-    pure (v, accesses)
+    pure (varLocation, v, accesses)
   rhs <- expression
-  pure $ Mutation name () accesses rhs
+  pure $ Mutation name varLocation () accesses rhs
 
 -- maybe it's overly permissive?
 --  I don't think I want to accept < .dupa=
@@ -181,8 +184,8 @@ thatFunnyMutationOperator = lexeme $ do
   -- _ <- char '='
   symbol "<"
   accesses <- many $ choice
-    [ symbol "&" $> MutRef
-    , symbol "." >> MutField <$> member
+    [ withLocation (symbol "&") <&> MutRef . fst
+    , withLocation (symbol "." >> member) <&> uncurry MutField
     ]
   symbol "="
   pure accesses
@@ -229,19 +232,21 @@ sExternal = do
   keyword "external"
   (header, mExpr) <- functionHeader
   case mExpr of
-    Nothing -> pure $ Other $ ExternalFunctionDeclaration header
-    Just _ -> undefined  -- parsing error!
+    Left _ -> pure $ Other $ ExternalFunctionDeclaration header
+    Right _ -> undefined  -- parsing error!
 
 sClass :: Parser (Stmt U)
 sClass = recoverableIndentBlock $ do
-  keyword "class"
-  name <- className
+  (loc, name) <- withLocation $ do
+    keyword "class"
+    className
   return $ flip (L.IndentMany Nothing) sDefinedFunctionHeader $ \funs ->
     -- let (deps, funs) = partitionEithers depsOrFunctions
     pure $ Other $ ClassDefinition $ ClassDef
       { classID = name
       -- , classDependentTypes = deps  -- TODO: add later
       , classFunctions = funs
+      , classDeclarationLocation = loc
       }
 
 -- sDepOrFunctionDec :: Parser (Either DependentType ClassFunDec)
@@ -252,17 +257,19 @@ sClass = recoverableIndentBlock $ do
 
 sDefinedFunctionHeader :: Parser (ClassFunDec U)
 sDefinedFunctionHeader = do
-  name <- variable
+  (location, fcfd) <- withLocation $ do
+    name <- variable
 
-  let param = liftA2 (,) sDeconstruction pClassType
-  params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
+    let param = liftA2 (,) sDeconstruction pClassType
+    params <- between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
 
-  symbol "->"  -- or just assume that no return = Unit
-  ret <- pClassType
+    symbol "->"  -- or just assume that no return = Unit
+    ret <- pClassType
 
-  constraints <- sClassConstraints
+    constraints <- sClassConstraints
+    pure $ CFD () name params ret constraints
 
-  pure $ CFD () name params ret constraints
+  pure $ fcfd location
 
 
 sInst :: Parser (Stmt Untyped)
@@ -298,9 +305,8 @@ sClassConstraints = do
 
 sClassConstraint :: Parser U.ClassConstraint
 sClassConstraint = do
-  name <- qualified className
-  tv <- generic
-  pure $ CC name tv
+  (location, (name, tv)) <- withLocation $ liftA2 (,) (qualified className) generic
+  pure $ CC location name tv
 
 
 -- sDepOrFunctionDef :: Parser (Either (DependentType, ClassType) (FunDec, NonEmpty AnnStmt))
@@ -318,13 +324,13 @@ sInstFunction :: Parser (InstFun U)
 sInstFunction = recoverableIndentBlock $ do
   (header, mExpr) <- functionHeader
   case mExpr of
-    Just expr ->
-      let expr2stmt = Fix . O . Annotated [] . Return . Just
+    Right expr@(Fix (N span _)) ->
+      let expr2stmt = Fix . O . O . Annotated [] . Located span . Return . Just
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
       in pure $ L.IndentNone $ InstFun { instFunDec = header, instFunBody = body, instClassFunDec = (), instDef = () }
-    Nothing -> do
-      pure $ flip (L.IndentSome Nothing) (recoverStmt (annotationOr statement)) $ \annsOrStmts -> do
+    Left _ -> do
+      pure $ flip (L.IndentSome Nothing) (recoverStmt (annotationOr (located statement))) $ \annsOrStmts -> do
         stmts <- NonEmpty.fromList <$> annotateStatements annsOrStmts
         pure $ InstFun { instFunDec = header, instFunBody = stmts, instClassFunDec = (), instDef = () }
 
@@ -332,7 +338,7 @@ sInstFunction = recoverableIndentBlock $ do
 sExpression :: Parser (Stmt U)
 sExpression = lineFold $ do
   from <- TM.getOffset
-  expr@(Fix (N _ chkExpr)) <- expression
+  expr@(Fix (N location chkExpr)) <- expression
   to <- TM.getOffset
   case chkExpr of
     Call _ _ -> pure $ ExprStmt expr
@@ -346,51 +352,60 @@ checkIfFunction = void $ lookAhead (functionHeader >> eol)
 
 sFunctionOrCall :: Parser (Stmt U)
 sFunctionOrCall = recoverableIndentBlock $ do
+  (fromHeader, sourcePos) <- fromPos
   (header, mExpr) <- functionHeader
+  toHeader <- TM.getOffset
 
   -- If it's a single expression function (has the ':'), we know it's not a call.
   ret $ case mExpr of
-    Just expr ->
-      let expr2stmt = Fix . O . Annotated [] . Return . Just
+    Right expr@(Fix (N location _)) ->
+      let expr2stmt = Fix . O . O . Annotated [] . Located location . Return . Just
           stmt = expr2stmt expr
           body = NonEmpty.singleton stmt
       in L.IndentNone $ Fun $ U.FunDef header body
 
-    Nothing ->
+    Left fnNameLocation ->
       -- If that's a normal function, we check if any types were defined
       let types = header.functionReturnType : map snd header.functionParameters
       in if any Common.isTypeDeclared types || not (null header.functionOther)
-        then L.IndentSome Nothing (fmap (Fun . U.FunDef header . NonEmpty.fromList) . annotateStatements) $ recoverStmt (annotationOr statement)
-        else flip (L.IndentMany Nothing) (recoverStmt (annotationOr statement)) $ \case
+        then L.IndentSome Nothing (fmap (Fun . U.FunDef header . NonEmpty.fromList) . annotateStatements) $ recoverStmt (annotationOr (located statement))
+        else flip (L.IndentMany Nothing) (recoverStmt (annotationOr (located statement))) $ \case
           stmts@(_:_) -> Fun . U.FunDef header . NonEmpty.fromList <$> annotateStatements stmts
           [] ->
             let args = map (deconToExpr . fst) header.functionParameters
-                funName = node $ Var (Qualified Nothing header.functionId) ()
-            in pure $ ExprStmt $ node $ Call funName args
+                funName = node fnNameLocation $ Var (Qualified Nothing header.functionId) ()
+            in pure $ ExprStmt $ node (Location fromHeader toHeader sourcePos) $ Call funName args
 
 -- some construction might also be misrepresented as a deconstruction.
 deconToExpr :: Decon U -> Expr U
-deconToExpr = cata $ \(N _ decon) -> node $ case decon of
+deconToExpr = cata $ \(N off decon) -> node off $ case decon of
   CaseVariable v                  -> Var (Qualified Nothing v) ()
   CaseConstructor con []          -> Con con ()
-  CaseConstructor con exprs@(_:_) -> Call (node $ Con con ()) exprs
+  CaseConstructor con exprs@(_:_) -> Call (node off $ Con con ()) exprs
   CaseRecord con mems             -> RecCon con mems
 
-functionHeader :: Parser (FunDec U, Maybe (Expr U))
+functionHeader :: Parser (FunDec U, Either Location (Expr U))  -- either it's a single expression function OR it's possible that it's a call (so we need to save the position)
 functionHeader = lineFold $ do
   let param = liftA2 (,) sDeconstruction (Common.fromMaybeToDeclaredType <$> optional pType)
-  name <- oneline variable
+
+  (fromHeader, spos) <- fromPos
+  (name, nameLocation) <- oneline $ do
+    (loc, v) <- withLocation variable
+    pure (v, loc)
+
   params <- oneline $ between (symbol "(") (symbol ")") $ sepBy param (symbol ",")
   ret <- choice
     [ Left <$> (symbol ":" >> expression)
     , Right <$> oneline (optional (symbol "->" >> pType))
     ]
+  toHeader <- TM.getOffset
+  let headerLocation = Location fromHeader toHeader spos
 
   constraints <- oneline sClassConstraints
 
   return $ case ret of
-    Left expr -> (FD () name params TypeNotDeclared constraints, Just expr)
-    Right mType -> (FD () name params (Common.fromMaybeToDeclaredType mType) constraints, Nothing)
+    Left expr -> (FD () name params TypeNotDeclared (constraints, headerLocation), Right expr)
+    Right mType -> (FD () name params (Common.fromMaybeToDeclaredType mType) (constraints, headerLocation), Left nameLocation)
 
 
 -- Data definitions.
@@ -491,8 +506,8 @@ annotation = do
         where
           ann = pure . Just
 
-annotateStatements :: [Either [Ann] (Stmt U)] -> Parser [AnnStmt U]
-annotateStatements = assignAnnotations $ \anns stmt -> Fix $ O $ Annotated anns stmt
+annotateStatements :: [Either [Ann] (Located (Stmt U))] -> Parser [AnnStmt U]
+annotateStatements = assignAnnotations $ \anns stmt -> Fix $ O $ O $ Annotated anns stmt
 
 assignAnnotations :: ([Ann] -> a -> b) -> [Either [Ann] a] -> Parser [b]
 assignAnnotations f annors =
@@ -550,9 +565,13 @@ operatorTable =
   , [ lowPrecedencePrefixOps
     ]
   ] where
-    binary' name op = binary name $ \x y -> Fix $ N () $ BinOp x op y
-    binaryS' name op = binaryS name $ \x y -> Fix $ N () $ BinOp x op y
-    prefix s op = Prefix $ Fix . N () . UnOp op <$ symbol s
+    mkBinOp :: BinOp -> Expr U -> Expr U -> Expr U
+    mkBinOp op l@(Fix (N loc _)) r@(Fix (N loc' _)) = Fix $ N (loc <> loc') $ BinOp l op r
+    binary' name op = binary name $ mkBinOp op
+    binaryS' name op = binaryS name $ mkBinOp op
+    prefix s op = Prefix $ do
+      (from, spos) <- fromPos
+      symbol s $> \e@(Fix (N (Location _ to _) _)) -> (Fix . N (Location from to spos) . UnOp op) e
 
 binaryS :: Parser () -> (expr -> expr -> expr) -> Operator Parser expr
 binaryS s f = InfixL $ f <$ s
@@ -563,52 +582,67 @@ binary s f = InfixL $ f <$ symbol s
 -- For some reason (i dunno, maybe that's how the OperatorTable works.), we can't properly chain postfix operators.
 -- Making a general function like this is a fix for that.
 interleavable :: Operator Parser (Expr U)
-interleavable = Postfix $ fmap (foldl1 (.) . reverse) $ some $ choice
-  [ subscript
-  , call
-  , deref
-  , postfixCall
-  ]
+interleavable = Postfix $ fmap (foldl1 (.) . reverse) $ some $ do
+  fn <- choice
+    [ subscript
+    , call
+    , deref
+    , postfixCall
+    ]
+  to <- TM.getOffset
+  pure $ \e@(Fix (N (Location from _ spos) _)) -> node (Location from to spos) (fn e)
 
-deref :: Parser (Expr U -> Expr U)
-deref = symbol "&" $> node . UnOp Deref
+deref :: Parser (Expr U -> ExprF U (Expr U))
+deref = do
+  symbol "&" $> UnOp Deref
 
-subscript :: Parser (Expr U -> Expr U)
-subscript = (symbol "." >> member) <&> \memname e -> node $ MemAccess e memname
+subscript :: Parser (Expr U -> ExprF U (Expr U))
+subscript = do
+  (symbol "." >> member) <&> \memname e -> MemAccess e memname
 
-call :: Parser (Expr U -> Expr U)
+call :: Parser (Expr U -> ExprF U (Expr U))
 call = do
-    args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
-    return $ node . flip Call args
+  args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
+  return $ flip Call args
 
-postfixCall :: Parser (Expr U -> Expr U)
+postfixCall :: Parser (Expr U -> ExprF U (Expr U))
 postfixCall = do
   fnName <- notFollowedBy (symbol "as" <|> symbol "or" <|> symbol "and") *> eIdentifier  -- both functions and constructors are allowed to be called like this. 'as' HACK!
   args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
-  pure $ \firstArg -> node $ Call fnName (firstArg : args)  -- transforms it into a normal call expression. not exact AST representation, but hopefully, location information will make the difference invisible.
+  pure $ \firstArg -> Call fnName (firstArg : args)  -- transforms it into a normal call expression. not exact AST representation, but hopefully, location information will make the difference invisible.
 
 recordUpdate :: Operator Parser (Expr U)
-recordUpdate = Postfix $ between (symbol "{") (symbol "}") $ do
-  mems <- NonEmpty.fromList <$> sepBy1 memberdef (symbol ",")
-  return $ node . flip RecUpdate mems
+recordUpdate = postfix $
+  between (symbol "{") (symbol "}") $ do
+    mems <- NonEmpty.fromList <$> sepBy1 memberdef (symbol ",")
+    pure $ flip RecUpdate mems
 
 as :: Operator Parser (Expr U)
-as = Postfix $ do
+as = postfix $ do
     symbol "as"
     t <- pType
-    return $ node . flip As t
+    pure $ flip As t
+
+postfix :: Parser (Expr U -> ExprF U (Expr U)) -> Operator Parser (Expr U)
+postfix pfn = Postfix $ do
+  fn <- pfn
+  to <- TM.getOffset
+  return $ \e@(Fix (N (Location from _ spos) _)) -> node (Location from to spos) (fn e)
 
 
 lowPrecedencePrefixOps :: Operator Parser (Expr U)
-lowPrecedencePrefixOps = Prefix $ fmap (foldr1 (.)) $ some $ choice
-  [ ref
-  , lambda
-  ]
+lowPrecedencePrefixOps = Prefix $ fmap (foldr1 (.)) $ some $ do
+  (from, spos) <- fromPos
+  fn <- choice
+    [ ref
+    , lambda
+    ]
+  pure $ \e@(Fix (N (Location _ to _) _)) -> node (Location from to spos) (fn e)
 
-ref :: Parser (Expr U -> Expr U)
-ref = symbol "&" $> node . UnOp Ref
+ref :: Parser (Expr U -> ExprF U (Expr U))
+ref = symbol "&" $> UnOp Ref
 
-lambda :: Parser (Expr U -> Expr U)
+lambda :: Parser (Expr U -> ExprF U (Expr U))
 lambda = do
   -- Correct lambda:
   -- :420
@@ -619,10 +653,16 @@ lambda = do
   let singleParam = variable <&> (:[])
   let paramList = fromMaybe [] <$> optional (multipleParams <|> singleParam)
   params <- try $ paramList <* symbol ":"
-  return $ node . Lam () params
+  return $ Lam () params
 
-node :: nodeF U (Fix (Node U nodeF)) -> Fix (Node U nodeF)
-node = Fix . N ()
+node :: Location -> nodeF U (Fix (ExprNode U nodeF)) -> Fix (ExprNode U nodeF)
+node off = Fix . N off
+
+fromPos :: Parser (Int, TM.SourcePos)
+fromPos = do
+  offset <- TM.getOffset
+  sourcePos <- TM.getSourcePos
+  pure (offset, sourcePos)
 
 
 -----------
@@ -639,23 +679,26 @@ term = choice
   ]
 
 eDecimal :: Parser (Expr U)
-eDecimal = do
+eDecimal = exprWithLocation $ do
   decimal <- lexeme $ L.signed sc L.decimal
-  retfe $ Lit $ LInt decimal
+  pure $ Lit $ LInt decimal
 
 eGrouping :: Parser (Expr U)
-eGrouping = between (symbol "(") (symbol ")") $ expression
+eGrouping = between (symbol "(") (symbol ")") expression
 
 eString :: Parser (Expr U)
 eString = do
   let
     innerVar = oneline $ do
-      v <- qualified variable
-      mods <- fmap (foldl (.) id . reverse) $ many $ choice
+      v <- exprWithLocation $ flip Var () <$> qualified variable
+      mods <- fmap (foldl (.) id . reverse) $ many $ do
+        fn <- choice
             [ subscript
             , deref
             ]
-      pure $ mods $ Fix $ N () $ Var v ()
+        to <- TM.getOffset
+        pure $ \e@(Fix (N (Location from _ spos) _)) -> node (Location from to spos) (fn e)
+      pure $ mods v
 
     varInterpolation = do
       void $ string "\\("
@@ -664,24 +707,27 @@ eString = do
       pure $ Right v
     strLiteral = Left . Text.pack <$> some (notFollowedBy (char '\'') *> L.charLiteral)
     stringPart = varInterpolation <|> strLiteral
-  stringLiteral <- lexeme $ char '\'' *> manyTill stringPart (char '\'')
-  retfe $ Lit $ LString stringLiteral
+
+  exprWithLocation $ do
+    stringLiteral <- lexeme $ char '\'' *> manyTill stringPart (char '\'')
+    pure $ Lit $ LString stringLiteral
 
 eIdentifier :: Parser (Expr U)
-eIdentifier = do
-  id <- (flip Var () <$> qualified variable) <|> (Con <$> qualified dataConstructor <*> pure ())
-  retfe id
+eIdentifier =
+  exprWithLocation $ (flip Var () <$> qualified variable) <|> (Con <$> qualified dataConstructor <*> pure ())
 
 eRecordConstruction :: Parser (Expr U)
-eRecordConstruction = do
+eRecordConstruction = exprWithLocation $ do
   name <- try $ qualified typeName <* lookAhead (symbol "{")
   recordDef <- NonEmpty.fromList <$> between' (symbol "{") (symbol "}") (memberdef `sepBy1` symbol ",")
 
-  retfe $ RecCon name recordDef
+  pure $ RecCon name recordDef
 
 memberdef :: Parser (MemName, Expr U)
 memberdef = do
+      (from, spos) <- fromPos
       mem <- member
+      to <- TM.getOffset
       choice
         [ do  -- typical thing.
           symbol ":"
@@ -690,9 +736,29 @@ memberdef = do
         , do  -- nahh... the record name is the same as the variable name.
           -- let's see the error messages. if they are bad, then I should make a separate datatype for this case.
           let qvn = Qualified Nothing $ VN $ fromMN mem
-          let expr = Fix $ N () $ Var qvn ()
+          let expr = Fix $ N (Location from to spos) $ Var qvn ()
           pure (mem, expr)
         ]
+
+withLocation :: Parser a -> Parser (Location, a)
+withLocation fx = do
+  (from, spos) <- fromPos
+  x <- fx
+  to <- TM.getOffset
+  pure (Location from to spos, x)
+
+exprWithLocation :: Parser (ExprF U (Expr U)) -> Parser (Expr U)
+exprWithLocation pe = do
+  (span, e) <- withLocation pe
+  retfe span e
+
+located :: Parser a -> Parser (Located a)
+located px = do
+  (from, spos) <- fromPos
+  x <- px
+  to <- TM.getOffset
+  pure $ Located (Location from to spos) x
+
 
 -----------
 -- Types --
@@ -859,7 +925,7 @@ keyword kword = void $ lexeme (try $ string kword <* notFollowedBy identifierCha
 scope :: (a -> NonEmpty (AnnStmt U) -> b) -> Parser a -> Parser b
 scope f ref = recoverableIndentBlock $ do
   x <- ref
-  return $ L.IndentSome Nothing (fmap (f x . NE.fromList) . annotateStatements) (annotationOr statement)
+  return $ L.IndentSome Nothing (fmap (f x . NE.fromList) . annotateStatements) (annotationOr (located statement))
 
 lineComment :: Parser ()
 lineComment =
@@ -889,8 +955,8 @@ lexeme = L.lexeme fsc
 retf :: f (Fix f) -> Parser (Fix f)
 retf = return . Fix
 
-retfe :: ExprF U (Expr U) -> Parser (Expr U)
-retfe = return . Fix . N ()
+retfe :: Location -> ExprF U (Expr U) -> Parser (Expr U)
+retfe span = return . Fix . N span
 
 -- As a complement to retf
 ret :: a -> Parser a
@@ -913,14 +979,14 @@ consumeln px = Parser $ Reader.withReaderT (const scn) (fromParser px)
 -- Errors
 
 data MyParseError = MyPE (Int, Int) MyParseErrorType
-  deriving (Eq, Show, Ord)
+  deriving (Eq, Ord)
 
 data MyParseErrorType
   = DisallowedExpressionAsStatement
   deriving (Eq, Show, Ord)
 
 instance ShowErrorComponent MyParseError where
-  showErrorComponent (MyPE _ err) = case err of
+  showErrorComponent (MyPE offs err) = case err of
     DisallowedExpressionAsStatement -> "Only call as an expression."
 
   errorComponentLen (MyPE (from, to) _) = to - from
@@ -937,8 +1003,8 @@ registerExpect offset found expected = TM.registerParseError $ TrivialError offs
     text2token = NE.fromList . T.unpack
 
 
-recoverStmt :: Parser (Either [Ann] (Stmt U)) -> Parser (Either [Ann] (Stmt U))
-recoverStmt = recoverLine (Right Pass)
+recoverStmt :: Parser (Either [Ann] (Located (Stmt U))) -> Parser (Either [Ann] (Located (Stmt U)))
+recoverStmt = recoverLine (Right $ Located (error "somehow get the location of the og line?") Pass)
 
 recoverCon :: Parser (Either [Ann] (Either (XMem U, Type U) ([Ann] -> DataCon U))) -> Parser (Either [Ann] (Either (XMem U, Type U) ([Ann] -> DataCon U)))
 recoverCon = recoverLine $ Right $ Right $ DC () (CN "PLACEHOLDER") []
