@@ -6,27 +6,31 @@ import Data.Text (Text)
 import qualified AST.Def as Def
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Text as Text
-import AST.Def (Location(startPos))
+import AST.Def (Location(startPos), PP)
 import Text.Megaparsec (SourcePos(sourceLine))
 import qualified Text.Megaparsec as TM
 import Data.Functor ((<&>))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Char (isSpace)
+import Data.String (fromString)
 
 
 class Error err where
   toError :: Text -> err -> Text
 
-renderError :: Text -> Text -> NonEmpty (Def.Location, Maybe Text) -> Text
+
+-- TODO: all are very ugly. I don't want the double newline at the end also.
+
+renderError :: Text -> Def.Context -> NonEmpty (Def.Location, Maybe Def.Context) -> Text
 renderError source errorTitle errors =
   let
     items = errors <&> uncurry (errorItem source)
   in Text.unlines
-   $ "error: " <> errorTitle
+   $ ("error: " <> Def.sctx errorTitle)
    : NonEmpty.toList items
-    
 
-errorItem :: Text -> Def.Location -> Maybe Text -> Text
+
+errorItem :: Text -> Def.Location -> Maybe Def.Context -> Text
 errorItem source location comment = Text.unlines
   [ padding <> "|"
   , " " <> Text.pack (show lineNum) <> " | " <> Text.strip line
@@ -50,7 +54,7 @@ errorItem source location comment = Text.unlines
 
     mComment = case comment of
       Nothing -> mempty
-      Just cum -> "--- " <> cum
+      Just cum -> fromString $ Def.sctx $ "--- " <> cum
 
 -- NOTE: i uglified this function to try to get padding n stuff
 wholeLineAtLocation :: Text -> Def.Location -> Text

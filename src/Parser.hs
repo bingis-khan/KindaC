@@ -29,7 +29,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
-import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), (:.) (..), ctx, UnboundTVar (..), MemName (..), ClassName (..), ModuleName (..), UnOp (..), BinOp (..), Location (..), Located (..))
+import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), (:.) (..), UnboundTVar (..), MemName (..), ClassName (..), ModuleName (..), UnOp (..), BinOp (..), Location (..), Located (..), pf)
 import AST.Common (ExprF (..), FunDec (..), DataCon (..), TypeF (..), StmtF (..), DataDef (..), DeconF (..), Module, Stmt, Decon, Expr, AnnStmt, Type, CaseF (..), Case, ClassFunDec (..), ClassDef (..), InstDef (..), ClassType, ClassTypeF (..), XMem, IfStmt (..), InstFun (..), XClassConstraints, ExprNode (..), DeclaredType (..), MutAccess (..), LitType (..))
 import Data.Functor.Foldable (cata)
 import Control.Monad ((<=<), MonadPlus, join)
@@ -779,7 +779,7 @@ pType = do
   case fun of
     Nothing -> case term of
       [t] -> return t
-      ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap ctx ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
+      ts -> fail $ pf "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (%)" ts  -- this would later mean that we're returning a tuple, so i'll leave it be.
     Just ret -> return $ Fix $ TFun () term ret
 
   where
@@ -824,7 +824,7 @@ pClassType
         case fun of
           Nothing -> case term of
             [t] -> return t
-            ts -> fail $ "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (" <> concatMap ctx ts <> ")"  -- this would later mean that we're returning a tuple, so i'll leave it be.
+            ts -> fail $ pf "Cannot use an argument list as a return value. (you forgot to write a return type for the function.) (%)" ts  -- this would later mean that we're returning a tuple, so i'll leave it be.
           Just ret -> return $ Fix $ NormalType $ TFun () term ret
 
         where

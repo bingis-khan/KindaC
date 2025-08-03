@@ -49,7 +49,9 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
 
 ## todo
 
-- printing context that does not rely on a global variable / special printing context for errors (it solves the problem of types disappearing when not printing IRs)
+- [V] printing context that does not rely on a global variable / special printing context for errors (it solves the problem of types disappearing when not printing IRs)
+- better arch for errors and less ugly errors. lots of redundand work, kind of icky algorithms. abstract it more, so I can make better looking errors.
+- figure out HOW should the errors look like (including spacing n shi) and then make it look like so.
 - add proper end offset without trailing whitespace.
 - better errors (eg. type mismatch IN +, in call, should present the whole type)
   ```

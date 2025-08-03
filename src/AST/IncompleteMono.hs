@@ -148,7 +148,7 @@ instance Ord Env where
 --------
 
 instance PP EnvDefs where
-  pp (EnvDefs eds) = flip Def.ppLines eds $ \case
+  pp (EnvDefs eds) = Def.ppLines $ eds <&> \case
     Left em -> pp em
     Right ed -> pp ed
 
@@ -164,7 +164,7 @@ instance PP EnvMod where
     let envAss = "<-" <+> pp (envID $ functionEnv $ functionDeclaration em.assignee)
     in case em.assigned of
       LocalEnv ea -> pp (envID ea) <+> envAss
-      EnvFromEnv eas -> Def.ppLines ((<+> envAss) . pp) eas
+      EnvFromEnv eas -> Def.ppLines $ fmap ((<+> envAss) . pp) eas
 
 instance PP EnvAccess where
   pp ea = Def.sepBy "." (NonEmpty.toList $ ea.access <&> \(fn, _) -> pp fn.functionDeclaration.functionId <> "(" <> pp (envID fn.functionDeclaration.functionEnv) <> ")") <> "." <> pp (envID ea.accessedEnv)

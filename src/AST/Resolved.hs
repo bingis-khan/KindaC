@@ -174,7 +174,7 @@ type instance Module Resolved = Mod
 -- Instances
 
 instance PP Mod where
-  pp mod = Def.ppLines pp mod.toplevel
+  pp mod = Def.ppLines mod.toplevel
 
 instance PP Variable where
   pp = pp . asPUniqueVar . asProto

@@ -76,7 +76,7 @@ Do we need a typeclass? I guess, not really now. Although it might be better if 
 Right now, I'll implement a very simple typeclass just for readability:
 
 class Error err
-  toError :: err -> Text   <- I guess we don't really need anything except text kek! Unless we want to further make datatypes which will be rendered... but it's okay
+  toError :: Source -> err -> Text   <- I guess we don't really need anything except text kek! Unless we want to further make datatypes which will be rendered... but it's okay
 
 To render a text like this, I think one function is good:
 

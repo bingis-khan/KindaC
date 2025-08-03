@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedRecordDot, OverloadedStrings #-}
-module CompilerContext (CompilerContext, CompilerState(..), BasePath, storeModule, ModuleLoader, compilerContext, addErrors, preludeHackContext, mkModulePath, relativeTo) where
+module CompilerContext (CompilerContext, CompilerState(..), BasePath, storeModule, ModuleLoader, compilerContext, addErrors, preludeHackContext, mkModulePath, relativeTo, prelude) where
 
 import Data.Text (Text)
 import Data.Map (Map)
@@ -16,15 +16,18 @@ import System.FilePath ((<.>), (</>))
 import qualified System.FilePath as FilePath
 import qualified AST.Def as Def
 import qualified Data.Text as Text
-import Data.Biapplicative (first)
+import AST.Def (PrintContext (..))
 
 
 
-compilerContext :: BasePath -> Prelude -> CompilerContext (Maybe (Module TC)) -> IO (Either (NonEmpty Text) (NonEmpty (Module TC)))
-compilerContext basepath prelude fn = fmap fst $ RWST.evalRWST go (basepath, prelude) $ CompilerState
+-- I cannot put this in Def, because it accesses other AST modules.
+
+
+compilerContext :: BasePath -> Prelude -> CompilerContext (Maybe (Module TC)) -> PrintContext (Either (NonEmpty Text) (NonEmpty (Module TC)))
+compilerContext bejspaf prilud fn = fmap fst $ RWST.evalRWST go (CCC { basepath = bejspaf, prelude = prilud }) $ CompilerState
   { errors = mempty
   , loadedModules = mempty
-  , orderedModules = NonEmpty.singleton prelude.tpModule
+  , orderedModules = NonEmpty.singleton prilud.tpModule
   } where
     go :: CompilerContext (Either (NonEmpty Text) (NonEmpty (Module TC)))
     go = do
@@ -40,21 +43,32 @@ compilerContext basepath prelude fn = fmap fst $ RWST.evalRWST go (basepath, pre
         Nothing -> do  -- module could not be compiled
           Left $ case errs of
             e:es -> e :| es
-            _ -> error "[COMPILER ERROR]: no errors while module could not be compiled."
+            _ -> error "[COMPILER ERROR]: no errors but module could not be compiled."
 
 
 relativeTo :: BasePath -> CompilerContext a -> CompilerContext a
-relativeTo newBasePath = RWST.local $ first $ const newBasePath
+relativeTo newBasePath = RWST.local $ \ccc ->
+  ccc { basepath = newBasePath }
 
-preludeHackContext :: CompilerContext a -> IO a
-preludeHackContext fn = fmap fst $ RWST.evalRWST fn ("kcsrc/prelude.kc", error "no prelude") $ CompilerState
-  { errors = mempty
-  , loadedModules = mempty
-  , orderedModules = NonEmpty.singleton (error "module")
+preludeHackContext :: CompilerContext a -> PrintContext a
+preludeHackContext fn = do
+  let ccc = CCC
+        { basepath = "kcsrc/prelude.kc"
+        , prelude = error "tried to access prelude WHILE parsing prelude."
+        }
+  fmap fst $ RWST.evalRWST fn ccc $ CompilerState
+    { errors = mempty
+    , loadedModules = mempty
+    , orderedModules = NonEmpty.singleton (error "module")
+    }
+
+
+type CompilerContext = RWST CCConfig () CompilerState PrintContext
+
+data CCConfig = CCC
+  { basepath :: BasePath
+  , prelude :: Prelude
   }
-
-
-type CompilerContext = RWST (BasePath, Prelude) () CompilerState IO
 
 type BasePath = FilePath
 data CompilerState = CompilerState
@@ -76,13 +90,15 @@ storeModule mq mtmod = do
     Nothing -> pure ()
 
 -- Right now only text geg
+-- its all kinda crappy.
+--   i want to be able to count the total amount of errors n shi
 addErrors :: Text -> [Text] -> CompilerContext ()
 addErrors _ [] = pure ()
 addErrors moduleName errs = RWST.modify $ \s -> s { errors = s.errors <> (("Errors in module " <> moduleName <> ":") : errs) }  -- we append to the end here.
 
 mkModulePath :: U.ModuleQualifier -> CompilerContext FilePath
 mkModulePath (U.ModuleQualifier modules) = do
-  basePath <- RWST.asks fst
+  basePath <- RWST.asks $ \ccc -> ccc.basepath
   let moduleFileNames = Text.unpack . Def.fromModName <$> NonEmpty.toList modules
   let fullpath = basePath </> FilePath.joinPath moduleFileNames <.> "kc"
   pure fullpath

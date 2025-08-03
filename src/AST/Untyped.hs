@@ -95,7 +95,7 @@ type instance Module Untyped = Mod
 --------
 
 instance PP Mod where
-  pp (Mod stmts) = Def.ppLines pp stmts
+  pp (Mod stmts) = Def.ppLines stmts
 
 instance PP FunDef where
   pp (FunDef fd body) = Def.ppBody' pp (pp fd) body

@@ -1,0 +1,29 @@
+
+How would I structure it?
+
+Basically, for convenience, I should be able to display debugging info from each phase by function arguments.
+
+Also, I need it for showing type info in errors n shit.
+
+
+What should I do?
+
+	1. reimplement printf for Context (https://stackoverflow.com/questions/7828072/how-does-haskell-printf-work)
+		(we need to make a special implementation, otherwise its arguments will lose that printing context)
+	2. Make a special printing context Reader thing, which gets initialized in the beginning.
+	3. args for controlling printing
+
+
+fuk i cant focussssss
+
+
+so, lets force it
+
+
+
+I would start by creating the printing context after parsing args. The args will have a '--debug' option to set the context.
+
+The PPContext is going to be a Reader CtxData.
+
+should i put it in a different module than Def??????????????????
+right now, ill keep it together.

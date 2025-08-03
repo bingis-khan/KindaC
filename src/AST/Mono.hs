@@ -131,10 +131,10 @@ instance Ord Env where
 --------
 
 instance PP Mod where
-  pp m = Def.ppLines pp m.topLevelStatements
+  pp m = Def.ppLines m.topLevelStatements
 
 instance PP EnvDefs where
-  pp (EnvDefs eds) = flip Def.ppLines eds $ \case
+  pp (EnvDefs eds) = Def.ppLines $ eds <&> \case
     Left em -> pp em
     Right ed -> pp ed
 

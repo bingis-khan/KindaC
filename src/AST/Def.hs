@@ -7,21 +7,19 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module AST.Def (module AST.Def) where
 
 import Data.Text (Text)
 import Data.Unique (Unique, hashUnique)
 import qualified Data.Text as Text
-import Control.Monad.Trans.Reader (Reader, runReader, ask)
+import Control.Monad.Trans.Reader (Reader, runReader, ask, ReaderT)
 import Prettyprinter (Doc)
 import Data.String (IsString (..))
 import qualified Prettyprinter as PP
 import Data.Foldable (fold)
 import Data.List (intersperse)
-import qualified Text.Printf
-import Text.Printf (PrintfArg(..), formatString)
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad (unless)
 import Data.Char (toUpper)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
@@ -35,6 +33,11 @@ import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Fix (Fix)
 import Data.Functor.Foldable (cata)
 import qualified Text.Megaparsec as TM
+import qualified Control.Monad.Trans.Reader as Reader
+import Control.Monad.Fix (MonadFix)
+import qualified Data.Text.IO as TextIO
+import Control.Monad.Trans.Class (lift, MonadTrans)
+import Control.Monad (when, unless)
 
 
 -- set printing config
@@ -235,7 +238,7 @@ instance Show UniqueClass where
 
 
 instance Show UniqueClassInstantiation where
-  show (UCI { fromUCI = un }) = printf "UCI%d" (hashUnique un)
+  show (UCI { fromUCI = un }) = "UCI" <> show (hashUnique un)
 
 
 -- ...plus additional tags
@@ -318,7 +321,10 @@ instance PP a => PP (Annotated a) where
 instance PP a => PP (Located a) where
   pp (Located loc x) = pp x <+> pp loc
 
-instance PP a => PP [a] where
+instance PP String where
+  pp = pretty
+
+instance {-# overlappable #-} PP a => PP [a] where
   pp ps = encloseSepBy "[" "]" ", " $ pp <$> ps
 
 instance PPDef a => PPDef [a] where
@@ -356,6 +362,9 @@ instance PP Unique where
   pp = pp . hashUnique
 
 instance PP Text where
+  pp = pretty
+
+instance PP Char where
   pp = pretty
 
 instance {-# OVERLAPPABLE #-} (Functor a, PP (a Context)) => PP (Fix a) where
@@ -429,7 +438,7 @@ instance PP UniqueMem where
 instance PP Locality where
   pp = \case
     Local -> ""
-    FromEnvironment level -> fromString $ printf "^(%d)" level
+    FromEnvironment level -> printf "^(%)" level
 
 instance PP UnionID where
   pp = ppUnionID
@@ -453,10 +462,10 @@ instance PP Ann where
   pp = fromString . show
 
 instance PP Location where
-  pp (Location from to start) = fromString $ printf "<%s|%s:%s>" (pp start) (pp from) (pp to)
+  pp (Location from to start) = printf "<%|%:%>" (pp start) (pp from) (pp to)
 
 instance PP TM.SourcePos where
-  pp sp = fromString $ printf "%s:%s" (pp sp.sourceLine) (pp sp.sourceColumn)
+  pp sp = printf "%:%" (pp sp.sourceLine) (pp sp.sourceColumn)
 
 instance PP TM.Pos where
   pp = pp . TM.unPos
@@ -505,6 +514,93 @@ findAnnotation :: [Ann] -> (Ann -> Maybe a) -> Maybe a
 findAnnotation anns fn = listToMaybe $ mapMaybe fn anns
 
 
+
+----------------------
+-- Printing Context --
+----------------------
+
+class PrintableContext p where
+  printInContext :: Context -> p
+
+pc :: (PP a, PrintableContext p, p ~ x unit, unit ~ ()) => a -> p
+pc = printInContext . pp
+
+instance PrintableContext (PrintContext ()) where  -- base instance
+  printInContext c = do
+    ctxData <- PrintContext Reader.ask
+
+    unless ctxData.silent $
+      liftIO $ TextIO.putStrLn $ ctx ctxData c
+
+-- m a ~ pc  <- that printable context is actually of structure m a
+-- a ~ ()    <- otherwise we get the ambiguous variable error. we assume a is () 
+instance (PrintableContext pc, m a ~ pc, a ~ (), MonadTrans t, Monad m) => PrintableContext (t m a) where
+  printInContext = lift . printInContext
+
+newtype PrintContext a = PrintContext { fromPrintContext :: ReaderT CtxData IO a  } deriving (Functor, Applicative, Monad, MonadIO, MonadFail, MonadFix)
+
+inPrintContext :: CtxData -> PrintContext a -> IO a
+inPrintContext ctxData pcx = Reader.runReaderT (fromPrintContext pcx) ctxData
+
+
+------------
+-- Printf --
+------------
+
+-- Context'd printf clone (without type specifiers!)
+
+pf :: PrintfType r => String -> r
+pf = printf
+
+printf :: PrintfType r => String -> r
+printf format =
+  let fd = PrintfData { formatString = format, args = [] }
+  in ppPrintfThing fd
+
+class PrintfType r where
+  ppPrintfThing :: PrintfData -> r
+
+data PrintfData = PrintfData
+  { formatString :: String
+  , args :: [Context]
+  }
+
+instance {-# overlappable #-} PrintableContext p => PrintfType p where
+  ppPrintfThing ppData =
+      printInContext $ printfNow ppData
+
+instance PrintfType Context where
+  ppPrintfThing = printfNow
+
+instance PrintfType Text where
+  ppPrintfThing ppData = ctx showContext $ printfNow ppData
+
+instance PrintfType String where
+  ppPrintfThing ppData = ctx showContext $ printfNow ppData
+
+printfNow :: PrintfData -> Context
+printfNow ppData =
+    let
+      as = reverse ppData.args
+      tryFormat :: Char -> [Context] -> ([Context], Context)
+      tryFormat '%' (current:remaining) = (remaining, current)
+      tryFormat '%' [] = error "didn't provide enough args!"
+      tryFormat c remaining = (remaining, pp c)
+
+      (remainingArgs, s) = foldr (\c (remaining, now) -> (<> now) <$> tryFormat c remaining) (as, "") ppData.formatString
+
+    in if null remainingArgs
+      then s
+      else error "printf did not slurp up all the args"
+
+
+instance {-# overlappable #-} (PP a, PrintfType x) => PrintfType (a -> x) where
+  ppPrintfThing fd arg = ppPrintfThing $ fd { args = pp arg : fd.args }
+
+
+
+
+
 -----------------
 -- Printing stuff
 -----------------
@@ -517,33 +613,19 @@ data CtxData = CtxData  -- basically stuff like printing options or something (e
   , displayTypeParameters :: Bool
   }
 
-ctxPrint :: (MonadIO io, PP a) => a -> io ()
-ctxPrint = unless defaultContext.silent . liftIO . putStrLn . ctx
-
-ctxPrint' :: MonadIO io => String -> io ()
-ctxPrint' = unless defaultContext.silent . liftIO . putStrLn
-
-ctxPrint'' :: MonadIO io => Context -> io ()
-ctxPrint'' = unless defaultContext.silent . liftIO . putStrLn . ctx
-
-phase :: MonadIO io => String -> io ()
+phase :: (PrintableContext pctx, x () ~ pctx) => String -> pctx
 phase text =
   let n = 10
-  in ctxPrint' $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
+  in printInContext $ pf $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
 
-ctx :: PP a => a -> String
-ctx = ctx' defaultContext pp
 
-sctx :: PP a => a -> String
-sctx = ctx' showContext pp
-
-tsctx :: PP a => a -> Text
-tsctx = Text.pack . sctx
-
-ctx' :: CtxData -> (a -> Context) -> a -> String
-ctx' c f = if c.silent
+ctx :: (PP a, IsString s, Monoid s) => CtxData -> a -> s
+ctx c = if c.silent
   then mempty
-  else show . flip runReader c . f
+  else fromString . show . flip runReader c . pp
+
+sctx :: (PP a, IsString s, Monoid s) => a -> s
+sctx = ctx showContext
 
 ppBody :: (a -> Context) -> Context -> [a] -> Context
 ppBody f header = indent header . sepBy "\n" . fmap f
@@ -554,12 +636,6 @@ ppBody' f header = ppBody f header . NonEmpty.toList
 vsep :: Foldable1 t => t Context -> Context
 vsep xs | null xs = ""
 vsep xs = foldl1' (\l r -> l <> "\n" <> r) xs
-
-printf :: Text.Printf.PrintfType r => String -> r
-printf = Text.Printf.printf
-
-instance Text.Printf.PrintfArg Context where
-  formatArg = Text.Printf.formatString . ctx
 
 -- Technically should be something like Text for the annotation type, but I need to have access to context in annotations
 comment :: Context -> Context -> Context
@@ -578,8 +654,8 @@ sepBy p = fold . intersperse p
 indent :: Context -> Context -> Context
 indent header body = fmap (PP.nest 2) (liftA2 (\l r -> PP.vsep [l, r]) header body) <> "\n"
 
-ppLines :: Foldable t => (a -> Context) -> t a -> Context
-ppLines f = foldMap ((<>"\n") . f)
+ppLines :: (PP a, Foldable t) => t a -> Context
+ppLines = foldMap ((<>"\n") . pp)
 
 ppLines' :: Foldable t => t Context -> Context
 ppLines' = foldMap (<> "\n")
@@ -590,10 +666,10 @@ ppVar l v = localTag <?+> pretty (fromVN v.varName) <> ppIdent ("$" <> pretty (h
   where
     localTag = case l of
       Local -> Nothing
-      FromEnvironment level -> Just $ fromString $ printf "^(%d)" level
+      FromEnvironment level -> Just $ printf "^(%)" level
 
 ppUniqueClass :: UniqueClass -> Context
-ppUniqueClass klass = fromString $ printf "%d@%s" (hashUnique klass.classID) (fromTN klass.className)
+ppUniqueClass klass = pf "%@%" (hashUnique klass.classID) (fromTN klass.className)
 
 -- annotate constructors with '@'
 ppTCon :: TCon -> Context
@@ -621,8 +697,11 @@ ppUnionID = pretty . hashUnique . fromUnionID
 ppUnique :: Unique -> Context
 ppUnique = pretty . hashUnique
 
-ppMap :: [(Context, Context)] -> Context
-ppMap = ppLines' . fmap (\(k, v) -> fromString $ printf "%s => %s" k v)
+ppMap :: (PP k, PP v) => [(k, v)] -> Context
+ppMap = ppLines' . fmap (uncurry (printf "%s => %s"))
+
+ppMap' :: (PP k, PP v) => Map k v -> Context
+ppMap' = ppMap . Map.toList
 
 ppTup :: (Context, Context) -> Context
 ppTup (l, r) = encloseSepBy "(" ")" ", " [l, r]
@@ -665,6 +744,8 @@ ppIdent ident = do
   if c.printIdentifiers
     then ident
     else ""
+
+
 
 infixr 6 <+>
 (<+>) :: Context -> Context -> Context

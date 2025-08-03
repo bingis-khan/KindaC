@@ -43,7 +43,7 @@ import Data.Traversable (for)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Either (rights, lefts)
 import Data.List (find)
-import AST.Def (type (:.)(O), Annotated (..), Binding (..), Located (..), pp)
+import AST.Def (type (:.)(O), Annotated (..), Binding (..), Located (..), pp, pf)
 import qualified AST.Def as Def
 import qualified AST.Common as Common
 import AST.Prelude (Prelude (..))
@@ -53,7 +53,6 @@ import CompilerContext (CompilerContext)
 import qualified CompilerContext as Compiler
 import Control.Monad.Trans.Class (lift)
 import Error (Error (..), renderError)
-import Text.Printf (printf)
 import Data.String (fromString)
 import Data.Text (Text)
 
@@ -1040,7 +1039,7 @@ resolveClass location (Qualified (Just mq) cn) = do
     Nothing -> undefined
 
 placeholderClass :: Def.ClassName -> Ctx R.Class
-placeholderClass = error . Def.printf "todo: placeholder class '%s'" . Def.pp
+placeholderClass = error . (Def.sctx :: Def.Context -> String) . pf "todo: placeholder class '%s'"
 
 findFunctionInClass :: Def.Location -> Def.VarName -> R.Class -> Ctx (XClassFunDec R)
 findFunctionInClass searchLocation vn ecd =
@@ -1285,43 +1284,43 @@ data ResolveError
 
 instance Error ResolveError where
   toError source = \case
-    UndefinedVariable location vn -> renderError source (fs $ printf "Undefined variable %s" (pp vn)) $ ln (location, Just "this guy")
-    UndefinedConstructor location cn -> renderError source (fs $ printf "Undefined constructor %s" (pp cn)) $ ln (location, Just "dis")
-    UndefinedType location tn -> renderError source (fs $ printf "Undefined type %s" (pp tn)) $ ln (location, Just "diz")
-    UnboundTypeVariable location utv -> renderError source (fs $ printf "Unbound type variable %s" (pp utv)) $ ln (location, Just "miau")
-    FurtherConstrainingExistingTVar (location, tv) (location', uc) -> renderError source (fs $ printf "Further constraining existing tvar %s with class %s" (pp tv) (pp uc)) $ lns [(location, Just "this is where the tvar was defined"), (location', Just "that's the constraint")]
-    -- TypeRedeclaration location ty -> renderError source (fs $ printf "") $ ln (location, Just "")
-    CannotMutateFunctionDeclaration location vn -> renderError source (fs $ printf "Cannot mutate a function.") $ ln (location, Just (fs $ printf "%s is a function, ya dingus" (pp vn)))
-    CannotMutateNonLocalVariable location vn -> renderError source (fs $ printf "Currently, we cannot mutate non local variables.") $ ln (location, Just "might change, i dunno")
-    CannotMutateImportedVariable location vn -> renderError source (fs $ printf "Currently, we cannot mutate imported variables.") $ ln (location, Just "might change, might not i dunno")
+    UndefinedVariable location vn -> renderError source (pf "Undefined variable %s" (pp vn)) $ ln (location, Just "this guy")
+    UndefinedConstructor location cn -> renderError source (pf "Undefined constructor %s" (pp cn)) $ ln (location, Just "dis")
+    UndefinedType location tn -> renderError source (pf "Undefined type %s" (pp tn)) $ ln (location, Just "diz")
+    UnboundTypeVariable location utv -> renderError source (pf "Unbound type variable %s" (pp utv)) $ ln (location, Just "miau")
+    FurtherConstrainingExistingTVar (location, tv) (location', uc) -> renderError source (pf "Further constraining existing tvar %s with class %s" (pp tv) (pp uc)) $ lns [(location, Just "this is where the tvar was defined"), (location', Just "that's the constraint")]
+    -- TypeRedeclaration location ty -> renderError source (pf "") $ ln (location, Just "")
+    CannotMutateFunctionDeclaration location vn -> renderError source (pf "Cannot mutate a function.") $ ln (location, Just (pf "%s is a function, ya dingus" (pp vn)))
+    CannotMutateNonLocalVariable location vn -> renderError source (pf "Currently, we cannot mutate non local variables.") $ ln (location, Just "might change, i dunno")
+    CannotMutateImportedVariable location vn -> renderError source (pf "Currently, we cannot mutate imported variables.") $ ln (location, Just "might change, might not i dunno")
 
-    DidNotDefineMember (location, undefinedMem) (recordType, mems) -> renderError source (fs $ printf "You forgot to define %s when constructing an instance of %s." (pp undefinedMem) (pp recordType)) $ ln (location, Nothing)
-    MemberNotInDataDef (location, mem) (ty, possibleMems) -> renderError source (fs $ printf "Field %s not in type %s." (pp ty) (pp mem)) $ ln (location, Just (Def.tsctx possibleMems))
-    RedefinedMember location mem -> renderError source (fs $ printf "Redefined member %s" (pp mem)) $ ln (location, Nothing)
+    DidNotDefineMember (location, undefinedMem) (recordType, mems) -> renderError source (pf "You forgot to define %s when constructing an instance of %s." (pp undefinedMem) (pp recordType)) $ ln (location, Nothing)
+    MemberNotInDataDef (location, mem) (ty, possibleMems) -> renderError source (pf "Field %s not in type %s." (pp ty) (pp mem)) $ ln (location, Just (pp possibleMems))
+    RedefinedMember location mem -> renderError source (pf "Redefined member %s" (pp mem)) $ ln (location, Nothing)
 
-    NotARecordType location ty -> renderError source (fs $ printf "Type %s is not a record type!" (pp ty)) $ ln (location, Nothing)
+    NotARecordType location ty -> renderError source (pf "Type %s is not a record type!" (pp ty)) $ ln (location, Nothing)
 
-    UndefinedClass location className -> renderError source (fs $ printf "Undefined class %s" (pp className)) $ ln (location, Nothing)
-    ExpectedClassNotDatatype location className ty -> renderError source (fs $ printf "Expected class, but %s is a datatype." (pp ty)) $ ln (location, Nothing)
-    UsingClassNameInPlaceOfType location klass -> renderError source (fs $ printf "Expected type but %s is actually a type yo." (pp klass)) $ ln (location, Just "this should be a type yo")  -- IDs are only, because I'm currently too lazy to make a Show instance.
+    UndefinedClass location className -> renderError source (pf "Undefined class %s" (pp className)) $ ln (location, Nothing)
+    ExpectedClassNotDatatype location className ty -> renderError source (pf "Expected class, but %s is a datatype." (pp ty)) $ ln (location, Nothing)
+    UsingClassNameInPlaceOfType location klass -> renderError source (pf "Expected type but %s is actually a type yo." (pp klass)) $ ln (location, Just "this should be a type yo")  -- IDs are only, because I'm currently too lazy to make a Show instance.
 
-    UndefinedFunctionOfThisClass location klass vn -> renderError source (fs $ printf "Class %s don't have function %s, yo." (pp klass) (pp vn)) $ ln (location, Nothing)
+    UndefinedFunctionOfThisClass location klass vn -> renderError source (pf "Class %s don't have function %s, yo." (pp klass) (pp vn)) $ ln (location, Nothing)
 
-    AppliedTypesToClassInType location klass -> renderError source (fs $ printf "%s is a class and you just applied types to it. Bruh." (pp klass)) $ ln (location, Nothing)
+    AppliedTypesToClassInType location klass -> renderError source (pf "%s is a class and you just applied types to it. Bruh." (pp klass)) $ ln (location, Nothing)
 
-    UsingPointerConstructor location -> renderError source (fs $ printf "Cannot use Ptr constructor in normal code.") $ ln (location, Just "you just... can't, ok???")
+    UsingPointerConstructor location -> renderError source (pf "Cannot use Ptr constructor in normal code.") $ ln (location, Just "you just... can't, ok???")
 
-    ModuleDoesNotExist location modul -> renderError source (fs $ printf "Could not find module %s." (pp modul)) $ ln (location, Nothing)
-    ModuleDoesNotExportVariable location vn modul -> renderError source (fs $ printf "Module %s does not export %s." (pp modul) (pp vn)) $ ln (location, Nothing)
-    ModuleDoesNotExportType location ty modul -> renderError source (fs $ printf "Module %s does not export type %s." (pp modul) (pp ty)) $ ln (location, Nothing)
-    ModuleDoesNotExportClass location klass modul -> renderError source (fs $ printf "Module %s does not export class %s." (pp modul) (pp klass)) $ ln (location, Nothing)
-    ModuleDoesNotExportTypeOrClass location ty modul -> renderError source (fs $ printf "Module %s does not export this class or type %s." (pp modul) (pp ty)) $ ln (location, Nothing)
-    ModuleNotImported location modul -> renderError source (fs $ printf "Could not import module %s." (pp modul)) $ ln (location, Nothing)
+    ModuleDoesNotExist location modul -> renderError source (pf "Could not find module %s." (pp modul)) $ ln (location, Nothing)
+    ModuleDoesNotExportVariable location vn modul -> renderError source (pf "Module %s does not export %s." (pp modul) (pp vn)) $ ln (location, Nothing)
+    ModuleDoesNotExportType location ty modul -> renderError source (pf "Module %s does not export type %s." (pp modul) (pp ty)) $ ln (location, Nothing)
+    ModuleDoesNotExportClass location klass modul -> renderError source (pf "Module %s does not export class %s." (pp modul) (pp klass)) $ ln (location, Nothing)
+    ModuleDoesNotExportTypeOrClass location ty modul -> renderError source (pf "Module %s does not export this class or type %s." (pp modul) (pp ty)) $ ln (location, Nothing)
+    ModuleNotImported location modul -> renderError source (pf "Could not import module %s." (pp modul)) $ ln (location, Nothing)
     TryingToImportConstructorsFromARecordType location ty modul -> renderError source undefined undefined
     TryingToImportNonExistingConstructorOfType location cn ty modul -> renderError source undefined undefined
     TryingToImportNonExistingFunctionOfClass location vn uc modul -> renderError source undefined undefined
 
-    OnlyVariablesAreAllowedInStringInterpolation fullLocation location vn -> renderError source (fs $ printf "Only variables are allowed in string interpolation.") $ lns [(fullLocation, Nothing), (location, Just "it's a function, you dingus")]
+    OnlyVariablesAreAllowedInStringInterpolation fullLocation location vn -> renderError source (pf "Only variables are allowed in string interpolation.") $ lns [(fullLocation, Nothing), (location, Just "it's a function, you dingus")]
 
 ln :: a -> NonEmpty a
 ln = NonEmpty.singleton

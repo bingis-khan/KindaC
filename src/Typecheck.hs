@@ -24,8 +24,8 @@ import Control.Monad.Trans.RWS (RWST (RWST), runRWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed, hoist, project, para)
-import Control.Monad (replicateM, zipWithM_, unless, when)
-import Data.Bitraversable (bitraverse, bisequenceA)
+import Control.Monad (replicateM, zipWithM_, unless)
+import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold, foldlM)
 import Data.Set (Set, (\\))
 import qualified Data.Set as Set
@@ -42,7 +42,6 @@ import Control.Monad.IO.Class (liftIO, MonadIO)
 import Data.Unique (newUnique)
 import Data.Functor ((<&>))
 import Data.Maybe (fromMaybe, mapMaybe)
-import Text.Printf (printf)
 import Control.Applicative (liftA3)
 import Data.List.NonEmpty (NonEmpty)
 import Misc.Memo (memo, Memo(..), emptyMemo)
@@ -52,10 +51,9 @@ import qualified AST.Prelude as Prelude
 import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, ExprNode (..), DeclaredType (..), XClassFunDec, MutAccess (..), LitType (..), asksNode)
 import AST.Resolved (R)
 import AST.Typed ( TC, Scheme(..), TOTF(..) )
-import AST.Def ((:.)(..), PP (..), Binding (..), sctx, ppDef, BinOp (..))
+import AST.Def ((:.)(..), PP (..), Binding (..), BinOp (..), pf, PrintContext, pc)
 import qualified AST.Def as Def
 import Data.String (fromString)
-import Debug.Trace (trace)
 import Error (Error (..), renderError)
 import AST.Typed (FunOther(..))
 import qualified Data.List.NonEmpty as NonEmpty
@@ -67,7 +65,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 --   - The previous typechecker was unreadable. Use appropriate variable names, avoid the functional composition hell.
 --   - Use comments even if something is obvious. (but not too obvious?)
 
-typecheck :: Maybe Prelude -> Module R -> IO ([TypeError], Module TC)
+typecheck :: Maybe Prelude -> Module R -> PrintContext ([TypeError], Module TC)
 typecheck mprelude rStmts = do
     let tcContext = Ctx { prelude = mprelude, returnType = Nothing }
     let senv = emptySEnv  -- we add typechecking state here, because it might be shared between modules? (especially memoization!)... hol up, is there anything to even share?
@@ -76,13 +74,13 @@ typecheck mprelude rStmts = do
     (tStmts, su, envAdds, errs) <- generateSubstitution tcContext senv rStmts
 
     Def.phase "Typechecking (Before substitution)"
-    Def.ctxPrint tStmts
+    pc tStmts
 
     ----- Step 1.25
     -- Now add those extra variables to all them envs.
     let envSu = subst su $ EnvAddition envAdds  -- after this, env addition might STILL have some tyvars left over, but this will be fixed by the final substitution (which will just work on the new environments!)
     Def.phase "Env Additions"
-    Def.ctxPrint' $ dbgSubst envSu
+    pc $ dbgSubst envSu
     let tStmts' = subst envSu tStmts
 
     ----- Step 1.5: Substitute tyvars in Subst's unions, because they are not actively substituted yet?
@@ -96,10 +94,10 @@ typecheck mprelude rStmts = do
 
 
     Def.phase "Typechecking (og subst)"
-    Def.ctxPrint' $ dbgSubst su
+    pc $ dbgSubst su
 
     Def.phase "Typechecking (fixed subst)"
-    Def.ctxPrint' $ dbgSubst su'
+    pc $ dbgSubst su'
 
 
     -- Step 2: Substitute the types with the inferred ones.
@@ -108,7 +106,7 @@ typecheck mprelude rStmts = do
 
 
     Def.phase "Typechecking (After Substitution)"
-    Def.ctxPrint tStmts''
+    pc tStmts''
 
     pure (errs', tStmts'')
 
@@ -117,7 +115,7 @@ typecheck mprelude rStmts = do
 --      INFERENCE        --
 ---------------------------
 
-generateSubstitution :: Context -> TypecheckingState -> Module R -> IO (Module TC, Subst, EnvAdditions, [TypeError])
+generateSubstitution :: Context -> TypecheckingState -> Module R -> PrintContext (Module TC, Subst, EnvAdditions, [TypeError])
 generateSubstitution env senv rModule = do
   (tvModule, s, errors) <- runRWST infer env senv
 
@@ -134,10 +132,10 @@ generateSubstitution env senv rModule = do
 
       -- run it one last time.
       cia <- substAccessAndAssociations
-      Def.ctxPrint cia
+      pc cia
 
       assocs <- RWS.gets associations
-      Def.ctxPrint' $ Def.printf "LAST ASSOCS: %s" (pp $ fst <$> assocs)
+      pf "LAST ASSOCS: %" (pp $ fst <$> assocs) :: Infer ()
       reportAssociationErrors
       su <- RWS.gets typeSubstitution
       -- addSelectedEnvironmentsFromInst
@@ -457,15 +455,23 @@ inferExpr = cata (fmap embed . inferExprType)
 
         Call callee args -> do
           args' <- sequenceA args
-          let argts = asksNode T.t <$> args'
+          let argts = askUni <$> args'
+          argfs <- for argts $ const fresh  -- fresh variables for better errors.
           callee' <- callee
 
           ret <- fresh
           union <- emptyUnion
-          let ft = Fix $ TFun union argts ret
+          let ft = Fix $ TFun union argfs ret
 
           -- pretty bad errors for calls.
-          askUni callee' `uni` (Just location, ft)
+          askUni callee' `uni` (Just location, ft)  -- first unify the whole function shape.
+
+          -- then, unify specific arguments.
+          case project $ askType callee' of
+            TFun _ funargs _ -> for_ (zip argts ((Nothing,) <$> funargs)) $ uncurry uni
+            _ -> pure ()  -- the type will be mismatched anyway, so don't unify
+
+          -- TODO: in the future, make a special function for calls, which will signal nice errors.
 
           pure (Call callee' args', ret)
 
@@ -575,7 +581,7 @@ inferConstructor = \case
     (DD _ _ cons _) <- inferDataDef rdd
 
     -- HACK?: Find constructor through memoized DataDefinition.
-    pure $ Def.mustOr (printf "[Compiler Error] Could not find constructor %s." (Def.ctx uc)) $
+    pure $ Def.mustOr (pf "[Compiler Error] Could not find constructor %." uc) $
       find (\(DC _ uc' _ _) -> uc == uc') =<< Def.eitherToMaybe cons
 
 
@@ -721,7 +727,7 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
       -- NOTE: We have to call it here, because some types in the declaration might be dependent on member types.
       --  At the end there will be one last member access.
       -- TODO: technically, we can do it all at the end. I should add it to state and replace them at the end (since they are all referred to by the unique instantiation id).
-      liftIO $ Def.ctxPrint' $ Def.printf "IN FUNCTION %s" (pp fundec.functionId)
+      pf "IN FUNCTION %s" (pp fundec.functionId) :: Infer ()
       classInstantiationAssocs <- substAccessAndAssociations
       su <- RWS.gets typeSubstitution
       -- replacedStmts <- replaceClassFunsWithInstantiations su classInstantiationAssocs stmts
@@ -824,7 +830,7 @@ inferClassDeclaration :: ClassFunDec R -> Infer (ClassFunDec TC)
 inferClassDeclaration (CFD rcd uv _ _ () _) = do
   tcd <- inferClassDef rcd
   let mcfd = find (\(CFD _ cuv _ _ () _) -> cuv == uv) tcd.classFunctions
-  pure $ Def.mustOr (printf "[COMPILER ERROR]: Could not find function %s in class %s." (pp uv) (pp tcd.classID)) mcfd
+  pure $ Def.mustOr (pf "[COMPILER ERROR]: Could not find function %s in class %s." (pp uv) (pp tcd.classID)) mcfd
 
 inferInst :: R.Inst -> Infer (InstDef TC)
 inferInst = \case
@@ -953,8 +959,8 @@ generalize :: Infer (Function TC) -> Infer (Function TC)
 generalize ifn = do
   unsuFn <- ifn
 
-  Def.ctxPrint' "Unsubstituted function:"
-  Def.ctxPrint unsuFn
+  pf "Unsubstituted function:"
+  pc unsuFn
 
   csu <- RWS.gets typeSubstitution
 
@@ -963,8 +969,8 @@ generalize ifn = do
   let fn = subst csu unsuFn
   (su, scheme, assocs) <- constructSchemeForFunctionDeclaration fn.functionDeclaration
 
-  Def.ctxPrint' $ printf "Scheme for %s: %s" (pp fn.functionDeclaration.functionId) (pp scheme)
-  Def.ctxPrint' $ printf "Assocs for %s: %s" (pp fn.functionDeclaration.functionId) (pp assocs)
+  pf "Scheme for %s: %s" (pp fn.functionDeclaration.functionId) (pp scheme) :: Infer ()
+  pf "Assocs for %s: %s" (pp fn.functionDeclaration.functionId) (pp assocs) :: Infer ()
   let generalizedFn = subst su fn
 
 
@@ -981,20 +987,20 @@ generalize ifn = do
 
 substAccessAndAssociations :: Infer T.ClassInstantiationAssocs
 substAccessAndAssociations = do
-  liftIO $ Def.phase "SUBST ACCESS"
+  Def.phase "SUBST ACCESS"
   go where
     go = do
       didAccessProgressedSubstitutions <- substAccess
       classInstantiationAssocs <- substAssociations
       let didAssociationsProgressedSubstitutions = not $ null classInstantiationAssocs
-      liftIO $ Def.ctxPrint' $ Def.printf "CIA KEYS: %s" $ pp $ Set.toList $ Map.keysSet classInstantiationAssocs
-      liftIO $ Def.ctxPrint classInstantiationAssocs
+      pf "CIA KEYS: %" $ pp $ Set.toList $ Map.keysSet classInstantiationAssocs
+      pc classInstantiationAssocs
 
       -- There should be no more than one UCI for a type. These are already selected.
       if didAccessProgressedSubstitutions || didAssociationsProgressedSubstitutions
         then Map.unionWith (error "more than one assoc for uci should not happen") classInstantiationAssocs <$> go
         else do
-          liftIO $ Def.phase "END SUBST ACCESS"
+          Def.phase "END SUBST ACCESS"
           pure mempty
 
 
@@ -1031,7 +1037,7 @@ substAssociations = do
         TCon dd _ _ -> case insts !? dd of
           Just inst -> do
             -- select instance function to instantiate.
-            let instFun = Def.mustOr (printf "[COMPILER ERROR]: Could not select function %s bruh," (pp uv)) $ find (\InstFun { instClassFunDec = CFD _ cuv _ _ () _ } -> cuv == uv) inst.instFuns
+            let instFun = Def.mustOr (pf "[COMPILER ERROR]: Could not select function %s bruh," (pp uv)) $ find (\InstFun { instClassFunDec = CFD _ cuv _ _ () _ } -> cuv == uv) inst.instFuns
 
             -- hope it's correct....
             let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
@@ -1039,7 +1045,7 @@ substAssociations = do
             (instFunType, T.DefinedFunction fn instAssocs _ ufi, env@(T.Env _ _ _ level)) <- instantiateFunction (Just uci) baseFunctionScopeSnapshot $ Function instFun.instFunDec instFun.instFunBody
 
             (toLocation, to) `uni` justType instFunType
-            Def.ctxPrint' $ Def.printf "ENV ASSOC: %s" $ pp env
+            pf "ENV ASSOC: %s" $ pp env
             addExtraToEnv envsToAddTo env
 
             pure ((t, True), Map.singleton ((,instFunType) <$> baseUFI, uci) (from, (instAssocs, instFun), level, ufi))
@@ -1133,7 +1139,7 @@ reportAssociationErrors = do
           pure (t, True)
 
         TO (TVar tv) -> do
-          error $ printf "[COMPILER ERROR]: associated type of tvar %s not bound by this function. should not happen?" (pp tv)
+          error $ pf "[COMPILER ERROR]: associated type of tvar %s not bound by this function. should not happen?" (pp tv)
 
         TO (TyVar _) -> do
           -- ignore!
@@ -1254,8 +1260,8 @@ constructSchemeForFunctionDeclaration dec = do
 
       tvarsDefinedForThisFunction = foldMap (definedTVars . snd) dec.functionParameters <> definedTVars dec.functionReturnType
 
-  Def.ctxPrint' $ Def.printf "FunDec for %s: %s" (pp dec.functionId) (pp dec)
-  Def.ctxPrint' $ Def.printf "UNIONS for %s: %s = %s \\\\ %s" (pp dec.functionId) (pp unionsOnlyFromHere) (pp unionsDeclaration) (pp unionsOutside)
+  pf "FunDec for %s: %s" (pp dec.functionId) (pp dec)
+  pf "UNIONS for %s: %s = %s \\\\ %s" (pp dec.functionId) (pp unionsOnlyFromHere) (pp unionsDeclaration) (pp unionsOutside)
 
   -- add associations.
   (assocs, tvmap) <- rummageThroughAssociations dec.functionId tyVarsOnlyFromHere -- remember to use the new Subst, which generalizes the associations.
@@ -1378,7 +1384,7 @@ instantiateVariable location loc = \case
     (t, v, env) <- instantiateFunction Nothing snapshot fn -- notice that we use the UFI from here (inferVariable just creates a temp error type to not use it)
 
     associations <- RWS.gets associations
-    liftIO $ Def.ctxPrint' $ printf "Associations (instantiation): %s" (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation (fromLocation, from) to _ uci ufi _, _) -> printf "(%s) %s: %s" (pp (uci, ufi)) (pp from) (pp to) :: String)
+    pf "Associations (instantiation): %" (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation (fromLocation, from) to _ uci ufi _, _) -> pf "(%) %: %" (pp (uci, ufi)) (pp from) (pp to) :: String)
 
     -- add instantiations!
     --  only when it's a local function should you add stuff from its environment to instantiations.
@@ -1410,7 +1416,7 @@ instantiateVariable location loc = \case
     uci <- newClassInstantiation
     associateType (location, self) (location, fnType) cfd insts uci Nothing
     -- addClassFunctionUse fnUnion cfd self insts
-    Def.ctxPrint' $ printf "INSTANTIATING CLASS FUN %s. INSTS: %s" (pp uci) $ pp $ fmap (\(DD { ddName }) -> ddName) $ Set.toList $ Map.keysSet insts
+    pf "INSTANTIATING CLASS FUN %s. INSTS: %s" (pp uci) $ pp $ fmap (\(DD { ddName }) -> ddName) $ Set.toList $ Map.keysSet insts :: Infer ()
 
 
     pure (fnType, T.DefinedClassFunction cfd snapshot self uci)
@@ -1462,12 +1468,12 @@ instantiateFunction muci snapshot fn = do
     let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions) unions
     let mapTVs = mapTVsWithMap tvmap unionmap . mapClassSnapshot (Set.fromList schemeTVars) snapshot
 
-    Def.ctxPrint' $ printf "Instantiation of %s" (pp fundec.functionId)
-    Def.ctxPrint' $ printf "TVars: %s" (pp schemeTVars)
-    Def.ctxPrint' $ printf "Scope Snapshot:\n%s" (T.dbgSnapshot snapshot)
+    pf "Instantiation of %s" (pp fundec.functionId) :: Infer ()
+    pf "TVars: %s" (pp schemeTVars)  :: Infer ()
+    pf "Scope Snapshot:\n%s" (T.dbgSnapshot snapshot) :: Infer ()
 
-    Def.ctxPrint $ (Def.ppMap . fmap (bimap pp pp) . Map.toList) tvmap
-    Def.ctxPrint $ (Def.ppMap . fmap (bimap Def.ppUnionID pp) . Map.toList) unionmap
+    pc $ (Def.ppMap . fmap (bimap pp pp) . Map.toList) tvmap
+    pc $ (Def.ppMap . fmap (bimap Def.ppUnionID pp) . Map.toList) unionmap
 
 
     -- Create type from function declaration
@@ -1488,17 +1494,17 @@ instantiateFunction muci snapshot fn = do
 
     let v = T.DefinedFunction fn assocs snapshot ufi
 
-    Def.ctxPrint' $ printf "For function %s:\n\tType %s.\n\tAfter instantiation: %s"
+    pf "For function %:\n\tType %.\n\tAfter instantiation: %"
       (pp fundec.functionId)
-      (printf "%s%s -> %s" (pp fundec.functionEnv) (Def.encloseSepBy "(" ")" ", " $ pp <$> fundec.functionParameters) (pp fundec.functionReturnType) :: String)
-      (pp fnType)
+      (pf "%% -> %" (pp fundec.functionEnv) (Def.encloseSepBy "(" ")" ", " $ pp <$> fundec.functionParameters) (pp fundec.functionReturnType) :: String)
+      (pp fnType) :: Infer ()
 
     pure (fnType, v, mappedEnv)
 
 
 associateType :: (Def.Location, Type TC) -> (Def.Location, Type TC) -> ClassFunDec TC -> T.PossibleInstances -> Def.UniqueClassInstantiation -> Maybe Def.UniqueFunctionInstantiation -> Infer ()
 associateType (fromLocation, based) (toLocation, result) cfd insts uci ufi = do
-    Def.ctxPrint' $ Def.printf "ASSOC: %s %s" (pp uci) (pp ufi)
+    pf "ASSOC: %s %s" (pp uci) (pp ufi)
     estack <- RWS.gets envStack
     let ta = T.TypeAssociation (fromLocation, based) (toLocation, result) cfd uci ufi estack
 
@@ -1533,7 +1539,7 @@ instantiateRecord dd@(DD _ scheme (Left _) _) = do
   (tvs, unions) <- instantiateScheme mempty scheme
   pure $ Fix $ TCon dd tvs unions
 
-instantiateRecord (DD ut scheme (Right _) _) = error $ printf "Attempted to instantiate ADT (%s) as a Record!" (pp ut)
+instantiateRecord (DD ut scheme (Right _) _) = error $ pf "Attempted to instantiate ADT (%s) as a Record!" (pp ut)
 
 
 instantiateScheme :: T.ScopeSnapshot -> Scheme -> Infer ([Type TC], [T.EnvUnion])
@@ -1614,7 +1620,7 @@ mapClassSnapshot tvs snapshot = mapType
 withEnv :: R.Env -> Infer (T.ClassInstantiationAssocs, a) -> Infer (T.Env, a)
 withEnv renv x = do
   let eid = renv.envID
-  Def.ctxPrint' $ printf "BEGIN ENV: %s" (pp renv)
+  pf "BEGIN ENV: %s" (pp renv)
 
   -- 1. clear environment - we only collect things from this scope.
   outOfEnvInstantiations <- RWS.gets instantiations
@@ -1640,7 +1646,7 @@ withEnv renv x = do
   --         })
         = mapMaybe (\(v, t) -> Map.lookup (T.asProto v) renvQuery <&> (v,,t)) $ Set.toList modifiedInstantiations
 
-  Def.ctxPrint' $ Def.printf "OLD ENV: %s\nMODIFIED INSTANTIATIONS: %s\nRESULTING ENV: %s" (pp renv) (pp $ Set.toList modifiedInstantiations) (pp newEnvVars)
+  pf "OLD ENV: %s\nMODIFIED INSTANTIATIONS: %s\nRESULTING ENV: %s" (pp renv) (pp $ Set.toList modifiedInstantiations) (pp newEnvVars)
 
 
   -- 4. and put that filtered stuff back. ? NO. ONLY IN ENV DEFS. SO WE COPY THAT ENVIRONMENT THERE NIGGA. inferFunction can be called for normal variables.
@@ -2221,8 +2227,8 @@ classFunDecToClassType (CFD _ _ params ret _ _) =
 ------------------------------------------
 
 -- TODO: after I finish, or earlier, maybe make sections for main logic, then put stuff like datatypes or utility functions at the bottom.
-type Infer = RWST Context [TypeError] TypecheckingState IO  -- normal inference
-type SubstCtx = RWST () [TypeError] SubstState IO     -- substitution
+type Infer = RWST Context [TypeError] TypecheckingState PrintContext  -- normal inference
+type SubstCtx = RWST () [TypeError] SubstState PrintContext     -- substitution
 
 data Context = Ctx
   { prelude :: Maybe Prelude
@@ -2324,9 +2330,9 @@ data TypeError
 instance Error TypeError where
   toError source = \case
     InfiniteType _ tyv t -> error "InfiniteType" --undefined 
-    TypeMismatch (loc, t) (mloc', t') -> renderError source (fs $ Def.printf "type mismatch between %s and %s" (pp t) (pp t')) $ case mloc' of
-      Nothing -> ln (loc, Just $ fs $ printf "this one has type %s" (pp t))
-      Just loc' -> lns [(loc, Just $ fs $ printf "this one has type %s" (pp t)), (loc', Just $ fs $ printf "this one has type %s" (pp t'))]
+    TypeMismatch (loc, t) (mloc', t') -> renderError source (pf "type mismatch between % and %" (pp t) (pp t')) $ case mloc' of
+      Nothing -> ln (loc, Just $ pf "this one has type %" (pp t))
+      Just loc' -> lns [(loc, Just $ pf "this one has type %" (pp t)), (loc', Just $ pf "this one has type %" (pp t'))]
 
     MismatchingNumberOfParameters ts ts' -> error "MismatchingNumberOfParameters" --printf "Mismatching number of parameters: (%d) %s (%d) %s" (length ts) (sctx $ Def.ppList pp ts) (length ts') (sctx $ Def.ppList pp ts')
     AmbiguousType _ tyv -> error "AmbiguousType" --printf "Ambiguous type: %s" (sctx $ pp tyv)
@@ -2406,12 +2412,12 @@ justType = (Nothing,)
 
 dbgSubst :: Subst -> String
 dbgSubst (Subst unions ts) =
-  let tvars = Map.toList ts <&> \(ty, t) -> printf "%s => %s" (Def.ctx ty) (Def.ctx t)
-      unionRels = Map.toList unions <&> \(uid, union) -> printf "%s => %s" (Def.ctx uid) (Def.ctx union)
+  let tvars = Map.toList ts <&> \(ty, t) -> pf "% => %" ty t
+      unionRels = Map.toList unions <&> \(uid, union) -> pf "% => %" uid union
   in unlines $ tvars <> ["--"] <> unionRels
 
-dbgSubst (EnvAddition envAdds) = fromString $ Def.ctx $ Def.ppMap $ fmap (bimap pp pp) $ Map.toList envAdds
+dbgSubst (EnvAddition envAdds) = pf "%" $ Def.ppMap $ fmap (bimap pp pp) $ Map.toList envAdds
 
-dbgAssociations :: MonadIO io => String -> [(T.TypeAssociation, Map (DataDef TC) (InstDef TC))] -> io ()
-dbgAssociations title associations = liftIO $ Def.ctxPrint' $ printf "Associations (%s): %s" title (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation from to _ uci ufi _, _) -> printf "(%s) %s: %s" (pp (uci, ufi)) (pp from) (pp to) :: String)
+dbgAssociations :: String -> [(T.TypeAssociation, Map (DataDef TC) (InstDef TC))] -> Infer ()
+dbgAssociations title associations = pf "Associations (%): %" title (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation from to _ uci ufi _, _) -> pf "(%) %: %" (pp (uci, ufi)) (pp from) (pp to) :: String)
 

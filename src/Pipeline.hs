@@ -22,7 +22,7 @@ import qualified AST.Prelude as Prelude
 import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), ExprNode (..), datatypes, LitType (..))
 import qualified AST.Def as Def
 import AST.Typed (TC, Mod (topLevelStatements))
-import AST.Def (Result(..), phase, PP (..))
+import AST.Def (Result(..), phase, PrintContext, pc, pf)
 import Mono (mono)
 import CPrinter (cModule)
 import CompilerContext (CompilerContext)
@@ -33,6 +33,7 @@ import Data.Map ((!?))
 import qualified System.Directory as Directory
 import Error (Error (..))
 import qualified System.FilePath as FilePath
+import Control.Monad.Trans.Class (lift)
 
 
 
@@ -48,7 +49,7 @@ loadModule :: FilePath -> CompilerContext (Maybe (Module TC))
 loadModule filename = do
   let moduleName = Text.pack $ FilePath.takeFileName filename
   source <- liftIO $ TextIO.readFile filename
-  prelude <- RWST.asks snd
+  prelude <- RWST.asks Compiler.prelude
 
   phase "Parsing"
   case parse filename source of
@@ -57,15 +58,15 @@ loadModule filename = do
       pure Nothing
 
     Right ast -> do
-      Def.ctxPrint ast
+      pc ast
 
       phase "Resolving"
       (rerrs, rmod) <- resolve (Just prelude) (moduleLoader moduleName) ast
-      Def.ctxPrint rmod
+      pc rmod
 
       
       phase "Typechecking"
-      (terrs, tmod) <- liftIO $ typecheck (Just prelude) rmod
+      (terrs, tmod) <- lift $ typecheck (Just prelude) rmod
 
       Compiler.addErrors moduleName $ map (" " <>) $ s2t source rerrs ++ s2t source terrs
       pure $ Just tmod
@@ -101,7 +102,7 @@ moduleLoader compilingModule mq = do
     Just lmtmod -> pure lmtmod
 
 
-finalizeModule :: NonEmpty (Module TC) -> IO Text
+finalizeModule :: NonEmpty (Module TC) -> PrintContext Text
 finalizeModule modules = do
   -- join both modules
   let joinedStatements = concatMap topLevelStatements modules
@@ -110,7 +111,7 @@ finalizeModule modules = do
   mmod <- mono joinedStatements
 
   phase "Monomorphized statements"
-  Def.ctxPrint mmod
+  pc mmod
 
   -- phase "C-ing"
   let cmod = cModule mmod
@@ -118,7 +119,7 @@ finalizeModule modules = do
 
 
 
-loadPrelude :: IO Prelude
+loadPrelude :: PrintContext Prelude
 loadPrelude = do
   epmod <- do
     source <- liftIO $ TextIO.readFile preludePath
@@ -129,15 +130,15 @@ loadPrelude = do
         pure $ Left err
 
       Right ast -> do
-        Def.ctxPrint ast
+        pc ast
 
         phase "Resolving"
         (rerrs, rmod) <- Compiler.preludeHackContext $ resolve Nothing (error "no module loader for prelude") ast
-        Def.ctxPrint rmod
+        pc rmod
 
       
         phase "Typechecking"
-        (terrs, tmod) <- liftIO $ typecheck Nothing rmod
+        (terrs, tmod) <- typecheck Nothing rmod
 
         pure $ case s2t source rerrs <> s2t source terrs of
           [] -> Right tmod
@@ -162,12 +163,12 @@ loadPrelude = do
                 isCorrectType _ = False
 
                 mdd  = find isCorrectType pmod.exports.datatypes
-                name = Def.ctx' Def.showContext pp typename
+                name = pf "%" typename :: Def.Context
             in case mdd of
               Just dd -> 
                 let bt = Fix $ TCon dd [] []
                 in pure bt
-              Nothing -> Failure $ ne $ printf "[Prelude: %s] Could not find suitable %s type (%s type name + no tvars)" name name name
+              Nothing -> Failure $ ne $ pf "[Prelude: %s] Could not find suitable %s type (%s type name + no tvars)" name name name
 
       let findUnit :: PreludeErr (DataCon TC)
           findUnit = 

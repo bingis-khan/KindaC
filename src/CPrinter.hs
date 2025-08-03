@@ -92,7 +92,7 @@ cStmt = cata $ \(O (O (Annotated anns (Located _ monoStmt)))) -> case monoStmt o
             statement $ cPrintf "%s\\n" [e]
           CustomType dd ts unions -> do
             bareExpression e
-            statement $ cPrintf (Def.ctx' (Def.defaultContext { silent = False, printIdentifiers = False, displayTypeParameters = True }) pp (Fix (TCon dd ts []) :: Type M) <> "\\n") []
+            statement $ cPrintf (Def.pf "%\\n" (Fix (TCon dd ts []) :: Type M)) []
           Function union args ret ->
             let e' =
                   if M.areAllEnvsEmpty union

@@ -17,7 +17,7 @@ import qualified AST.Def as Def
 import Data.Map (Map)
 import Data.Text (Text)
 import Data.Fix (Fix (..))
-import AST.Def (PP (..), (<+>))
+import AST.Def (PP (..), (<+>), pf)
 import Data.Biapplicative (bimap, first)
 import Data.Functor.Classes (Ord1 (..), Eq1 (..))
 import Data.Functor ((<&>))
@@ -253,7 +253,7 @@ isUnionEmpty _ = False
 
 
 dbgSnapshot :: ScopeSnapshot -> Def.Context
-dbgSnapshot = Def.ppLines (\(cd, insts) -> fromString $ Def.printf "%s => %s" (Def.ppDef cd) (Def.encloseSepBy "[" "]" ", " $ fmap (\dd -> pp dd.ddName) $ Set.toList $ Map.keysSet insts)) . Map.toList
+dbgSnapshot = Def.ppLines . fmap (\(cd, insts) -> pf "% => %" (Def.ppDef cd) (Def.encloseSepBy "[" "]" ", " $ fmap (\dd -> pp dd.ddName) $ Set.toList $ Map.keysSet insts) :: Def.Context) . Map.toList
 
 -----------
 
@@ -308,7 +308,7 @@ instance Ord Variable where
 --------
 
 instance (PP (XLVar phase), PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XTOther phase), PP (XTFun phase), PP (XExprNode phase), Def.PPDef (XTCon phase), PP (XLamVar phase), PP (XMutAccess phase), PP (XStringInterpolation phase)) => PP (Mod phase) where
-  pp m = Def.ppLines pp m.topLevelStatements
+  pp m = Def.ppLines m.topLevelStatements
 
 instance PP FunOther where
   pp fo = pp fo.functionScheme
