@@ -1,0 +1,5 @@
+#$ cascading union instantiation dependencies (most importantly, it should just compile)
+
+t = Tuple(1, 1)
+uncurry((xxx, r): Unit)(t)
+

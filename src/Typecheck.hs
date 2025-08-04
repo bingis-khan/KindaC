@@ -1559,6 +1559,19 @@ instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
   let mapOnlyTVsForUnions = mapTVsWithMap tvmap mempty . mapClassSnapshot (Set.fromList schemeTVars) insts
   unions <- traverse (\union -> cloneUnion (mapOnlyTVsForUnions <$> union)) schemeUnions
 
+  -- funny FIX (it should be done better.)
+  -- since we might need to substitute inside the new unions, and there might be chain dependency, just resubstitute until nothing changes in the type
+  let resubstitute unions =
+        let
+          unionMap = Map.fromList $ zip (T.unionID <$> schemeUnions) unions
+          unionSubst = Subst unionMap mempty
+          subUnions = subst unionSubst unions
+        in if unions /= subUnions
+          then resubstitute subUnions
+          else subUnions
+  let subUnions = resubstitute unions
+
+
   -- also, don't forget to constrain new types.
   for_ (zip tyvs schemeTVars) $ \(t, tv) -> do
     for_ tv.tvClasses $ \klass -> do
@@ -1566,7 +1579,7 @@ instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
       let constr = constrain (error "todo")
       t `constr` (klass, instmap)
 
-  pure (tyvs, unions)
+  pure (tyvs, subUnions)
 
 
 -- Should recursively map all the TVars in the type. (including in the unions.)
@@ -1951,10 +1964,12 @@ instance Substitutable (Decon TC) where
     CaseVariable _ -> mempty
     CaseConstructor _ ftvs -> mconcat ftvs
     CaseRecord _ ftvs -> foldMap snd ftvs
+    CaseIgnore -> mempty
   subst su = hoist $ \(N t d) -> N (subst su t) $ case d of
     CaseVariable v -> CaseVariable (subst su v)
     CaseConstructor uc ds -> CaseConstructor uc ds
     CaseRecord dd ds -> CaseRecord dd ds
+    CaseIgnore -> CaseIgnore
 
 instance Substitutable (Expr TC) where
   ftv = cata $ \(N et ee) -> ftv et <> case ee of
