@@ -155,6 +155,7 @@ data DeconF phase a
   = CaseVariable (XLVar phase)
   | CaseConstructor (XCon phase) [a]
   | CaseRecord (XTCon phase) (NonEmpty (XMem phase, a))
+  | CaseIgnore
   deriving Functor
 type Decon phase = Fix (ExprNode phase DeconF)
 

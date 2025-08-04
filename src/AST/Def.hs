@@ -52,6 +52,7 @@ debugContext = CtxData
   { silent = False
   , printIdentifiers = True
   , displayTypeParameters = False
+  , displayLocations = False
   }
 
 -- disable debug messages for "runtime".
@@ -59,6 +60,7 @@ runtimeContext = CtxData
   { silent = True
   , printIdentifiers = False
   , displayTypeParameters = False
+  , displayLocations = False
   }
 
 -- show types and stuff for the user (display types accurately to their definition, etc.)
@@ -66,6 +68,7 @@ showContext = CtxData
   { silent = False
   , printIdentifiers = False
   , displayTypeParameters = True
+  , displayLocations = False
   }
 
 
@@ -462,7 +465,11 @@ instance PP Ann where
   pp = fromString . show
 
 instance PP Location where
-  pp (Location from to start) = printf "<%|%:%>" (pp start) (pp from) (pp to)
+  pp (Location from to start) = do
+    ctxData <- Reader.ask
+    if ctxData.displayLocations
+      then printf "<%|%:%>" (pp start) (pp from) (pp to)
+      else mempty
 
 instance PP TM.SourcePos where
   pp sp = printf "%:%" (pp sp.sourceLine) (pp sp.sourceColumn)
@@ -581,13 +588,12 @@ instance PrintfType String where
 printfNow :: PrintfData -> Context
 printfNow ppData =
     let
-      as = reverse ppData.args
       tryFormat :: Char -> [Context] -> ([Context], Context)
       tryFormat '%' (current:remaining) = (remaining, current)
       tryFormat '%' [] = error "didn't provide enough args!"
       tryFormat c remaining = (remaining, pp c)
 
-      (remainingArgs, s) = foldr (\c (remaining, now) -> (<> now) <$> tryFormat c remaining) (as, "") ppData.formatString
+      (remainingArgs, s) = foldr (\c (remaining, now) -> (<> now) <$> tryFormat c remaining) (ppData.args, "") ppData.formatString
 
     in if null remainingArgs
       then s
@@ -611,6 +617,7 @@ data CtxData = CtxData  -- basically stuff like printing options or something (e
   { silent :: Bool
   , printIdentifiers :: Bool
   , displayTypeParameters :: Bool
+  , displayLocations :: Bool
   }
 
 phase :: (PrintableContext pctx, x () ~ pctx) => String -> pctx

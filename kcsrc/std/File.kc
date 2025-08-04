@@ -1,0 +1,52 @@
+use Term
+use Cnile
+	NULL(NULL)
+use Retarded
+use StrClass
+	Str(print-str, length)
+use Str
+	DynStr
+use Slice
+	Slice
+	subslice
+use Alloc
+	Allocator(allocate, free)
+use Mem
+use Iter
+	Iter(next)
+	IntoIter(into-iter)
+use Error
+	Failable(or-fail)
+
+
+# here, because Slice depends on Str already, so we couldn't put it in.
+
+null () -> Ptr a
+	return NULL Retarded.cast()
+
+
+try-read-contents (al, filename)
+	file = Cnile.fopen(filename, 'r')
+	if file == null()
+		return None
+
+	Cnile.fseek(file, 0, Cnile.seek-end)
+	file-size = Cnile.ftell(file)
+	Cnile.fseek(file, 0, Cnile.seek-set)
+
+	file-buf = al allocate(file-size + 1) as Slice Cnile.Char
+
+	Cnile.fread(file-buf.ptr, 1, file-size, file)
+	file-buf Slice.set(file-size, Str.code2char(0))
+
+	Cnile.fclose(file)
+
+	str = DynStr { content: file-buf }
+	return Just(str)
+
+read-contents (al, filename):
+	try-read-contents(al, filename) or-fail('could not open file \(filename)!')
+
+read-lines (filename)  # Str -> List Str
+	Term.println('todo: reading \(filename)')
+	return

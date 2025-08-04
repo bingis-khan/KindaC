@@ -1,5 +1,5 @@
 use Cnile
-use Str
+use StrClass
 	Str(print-str)
 
 println (s a) -> Unit <= Str a

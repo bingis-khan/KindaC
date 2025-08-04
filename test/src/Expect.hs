@@ -22,6 +22,8 @@ import Control.Exception (catch)
 import GHC.Exception (SomeException)
 import CompilerContext (compilerContext)
 import qualified Data.List.NonEmpty as NonEmpty
+import qualified AST.Def as Def
+import Control.Monad.IO.Class (liftIO)
 
 -- smol config
 testdir :: FilePath
@@ -31,7 +33,7 @@ testdir = "test/data/expect"
 expect :: IO ()
 expect = do
   tests <- sort <$> listDirectory testdir
-  prelude <- loadPrelude
+  prelude <- Def.inPrintContext Def.runtimeContext loadPrelude
 
   withTempDirectory "." "intermediate-test-outputs" $ \dir ->
     hspec $ parallel $ do
@@ -105,7 +107,7 @@ expectNoError (Left err) = expectationFailure $ "Compiling error:\n" <> Text.unp
 type Error = Text
 compileAndOutputFile :: Prelude -> FilePath -> FilePath -> IO (Either Error FilePath)
 compileAndOutputFile prelude filepath outdirpath = do
-  let compile = do
+  let compile = Def.inPrintContext Def.runtimeContext $ do
         let basePath = "."  -- maybe make a special testing "module" directory for testing module imports?
         etmod <- compilerContext basePath prelude $ loadModule filepath
         case etmod of
@@ -113,7 +115,7 @@ compileAndOutputFile prelude filepath outdirpath = do
           Right tmods -> do
             cmod <- finalizeModule tmods
             let outpath = outdirpath </> takeBaseName filepath <> ".c"
-            TextIO.writeFile outpath cmod
+            liftIO $ TextIO.writeFile outpath cmod
             pure $ Right outpath
   catch compile $ \e -> pure $ Left $ Text.pack $ "(exception)\n" <> show (e :: SomeException)
 

@@ -1,6 +1,4 @@
 use Cnile
-use Str
-	Str(print-str, length)
 use Iter
 	IntoIter(into-iter)
 	Iter(next)

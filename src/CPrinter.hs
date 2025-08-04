@@ -70,8 +70,13 @@ runPP px =
 
 cMain :: [AnnStmt M] -> PP
 cMain stmts | null stmts || all (\(Fix (O (O (Annotated _ (Located _ stmt))))) -> case stmt of { Pass -> True; _ -> False }) stmts  = pl $ addTopLevel $ "int" § "main" & "()" <§ cBlock [statement "return 0"]  -- TEMP: return 0 when all statements are empty.
-cMain stmts = pl $ addTopLevel $ "int" § "main" & "()" <§ cBlock (cStmt <$> stmts)
+cMain stmts = pl $ addTopLevel $ "int" § "main" & "(" & "int" § "argc" & "," § "char" § "*argv[]" & ")" <§ cBlock (addArgInitialization (cStmt <$> stmts))
 
+addArgInitialization :: [PP] -> [PP]
+addArgInitialization mainStmts
+  = statement (addTopLevel (statement "int global_argc") >> "global_argc = argc")
+  : statement (addTopLevel (statement "char **global_argv") >> "global_argv = argv")
+  : mainStmts
 
 cStmt :: AnnStmt M -> PP
 cStmt = cata $ \(O (O (Annotated anns (Located _ monoStmt)))) -> case monoStmt of
@@ -121,13 +126,20 @@ cStmt = cata $ \(O (O (Annotated anns (Located _ monoStmt)))) -> case monoStmt o
     "while" § enclose "(" ")" (cExpr cond) <§ cBlock bod
 
   If (IfStmt cond bodyIfTrue elseIfs elseBody) -> do
-    "if" § enclose "(" ")" (cExpr cond) <§ cBlock bodyIfTrue
+    -- HACK: exprs can generate extra statements, so else ifs will be fukd. when there are else ifs, we generate labels and don't do else
+    (maybeAddGoto, label) <- if null elseIfs then pure (id, mempty) else do
+      tmp <- pl nextTemp
+      pure ((<> NonEmpty.singleton (statement ("goto" § tmp))), statement $ tmp & ":" § "{}")
+
+    "if" § enclose "(" ")" (cExpr cond) <§ cBlock (maybeAddGoto bodyIfTrue)
 
     for_ elseIfs $ \(elifCond, elifBody) ->
-      "else" § "if" § enclose "(" ")" (cExpr elifCond) <§ cBlock elifBody
+      "if" § enclose "(" ")" (cExpr elifCond) <§ cBlock (maybeAddGoto elifBody)
 
     optional elseBody $ \els ->
-      "else" <§ cBlock els
+      (if null elseIfs then "else" else mempty) <§ cBlock els  -- HACK: see above
+
+    label
 
   Switch switch (firstCase :| otherCases) -> do
     cond <- createIntermediateVariable' (askNode switch) (cExpr switch)
@@ -182,6 +194,7 @@ cMutAccesses og accs = foldr f og (reverse accs)
 cDeconCondition :: PL -> Decon M -> PL
 cDeconCondition basevar mdecon =
   let conjunction = fmap (\fn -> fn basevar) $ flip cata mdecon $ \(N _ d) -> case d of
+        CaseIgnore -> []
         CaseVariable _ -> []
         CaseRecord _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) -> fmap (\fnc x -> fnc (x & "." & cRecMember um)) rec
         CaseConstructor (DC dd _ _ _) [innerDecons] | isPointer dd -> innerDecons <&> \fnarg x -> fnarg $ "(*" & x & ")"
@@ -204,6 +217,7 @@ cDeconCondition basevar mdecon =
 
 cDeconAccess :: PL -> Decon M -> [(Def.UniqueVar, Type M, PL)]
 cDeconAccess basevar mdecon = fmap2 (\fn -> fn basevar) $ flip cata mdecon $ \(N t d) -> case d of
+  CaseIgnore -> []
   CaseVariable uv -> [(uv, t, id)]
   CaseRecord _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) ->
     flip fmap2 rec $ \accfn x -> accfn $ x & "." & cRecMember um
@@ -796,7 +810,7 @@ cCon (DC dd c [] anns) = do
   ignore $ cDataType dd []
   let representsBuiltin = find (\case { Def.ACLit con -> Just con; _ -> Nothing }) anns
   case representsBuiltin of
-    Just t -> plt t
+    Just t -> verbatim t
     Nothing -> plt c.conName.fromCN & "__" & pls (hashUnique c.conID)
 
 
@@ -1003,6 +1017,9 @@ pls = fromString . show
 
 plt :: Text -> PL
 plt = fromString . Text.unpack . sanitize
+
+verbatim :: Text -> PL
+verbatim = fromString . Text.unpack
 
 
 

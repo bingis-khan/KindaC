@@ -38,8 +38,8 @@ import Control.Monad.Trans.Class (lift)
 
 
 preludePath, stdPath :: FilePath
-preludePath = "kcsrc/prelude.kc"
-stdPath = "kcsrc/std/"
+preludePath = "/home/bob/prj/KindaC/kcsrc/prelude.kc"
+stdPath = "/home/bob/prj/KindaC/kcsrc/std/"
 
 
 -- Loads and typechecks a module.

@@ -1,100 +1,106 @@
 use Cnile
+use StrClass
+	Str(print-str, length, chars)
+use Iter
+	IntoIter(into-iter)
+	Iter(next)
+	all
+	zip
+use Slice
+	Slice
+	subslice
+use Retarded
 
-class Str
-	# later should write to some buffer instead of printing directly.
-	print-str (self _) -> Unit
-	length (self _) -> Int
-
+# in the future, this should re-export Str class
 
 concat (l a, r b) -> StrConcat a b <= Str a, Str b
 	return StrConcat(l, r)
 
 
-# ConstStr is defined in Prelude
-inst Str ConstStr
-	print-str (self ConstStr) -> Unit
-		Cnile.printf('%s', self)
+# temporary function for string equality
+const-eq (l ConstStr, r ConstStr): Cnile.strcmp(l, r) == 0
+
+tupeq (Tuple(l, r)): l == r
+# for some reason, uncurry((l, r): l == r) generates an empty union somewhere during monomorphisation.
+eq (l, r): length(l) == length(r) and l chars() zip(r chars()) all(tupeq)
+
+
+#is-whitespace (c): False
+#
+#is-empty (s): True # s chars() all(x: True)
+
+
+# dyn str
+DynStr
+	content Slice Cnile.Char
+
+# i want to do substrings differently later.
+substr (s DynStr, from Int, to Int):
+	DynStr { content: s.content subslice(from, to) }
+
+code2char (code Int) -> Cnile.Char
+	return Retarded.cast(code)
+
+char2code (char Cnile.Char) -> Int
+	return Retarded.cast(char)
+
+
+LineIter
+	og DynStr
+	last Int
+
+lines (s DynStr): LineIter { og: s, last: 0 }
+
+inst IntoIter LineIter
+	into-iter (self LineIter): self
+
+
+
+newline = code2char(10)
+nullchar = code2char(0)
+
+inst Iter LineIter
+	next (self Ptr LineIter) -> Maybe DynStr
+		# should consume the last trailing newline
+		if self&.last >= self&.og.content.count or self&.og.content Slice.get(self&.last) == nullchar
+			return None
+
+		# iterator is left after last encountered newline
+		i = self&.last
+		while self&.og.content Slice.get(i) /= newline and i < self&.og.content.count
+			i <= i + 1
+
+		line = self&.og substr(self&.last, i)
+		i <= i + 1  # skip past the newline
+
+		# modify the state
+		self <&.last= i
+
+		return Just(line)
+
+
+
+DynStrIter
+	og Slice.SliceIter Cnile.Char
+
+inst IntoIter DynStrIter
+	into-iter (self): self
+
+inst Iter DynStrIter
+	next (self)
+		n = next(&self&.og)
+		if n == Just(nullchar)
+			return None
+		return n
+
+inst Str DynStr
+	print-str (self DynStr) -> Unit
+		Cnile.printf2('%.*s', self.content.count, self.content.ptr)
 		return
 
-	length (self ConstStr) -> Int
-		return Cnile.strlen(self)
+	length (self DynStr) -> Int
+		return self.content.count - 1
 
-inst Str Unit
-	print-str (self Unit) -> Unit
-		print-str('Unit')
-		return
+	chars (self):
+		DynStrIter { og: self.content into-iter() }
 
-	length (self Unit) -> Int
-		return 4
-
-inst Str Int
-	print-str (self Int) -> Unit
-		Cnile.printf('%d', self)
-		return
-
-	length (self Int) -> Int
-		if self == 0
-			return 1
-			
-		digits = 0
-		while self > 0
-			self <= self / 10
-			digits <= digits + 1
-
-		return digits
-
-inst Str Bool
-	print-str (self Bool) -> Unit
-		if self
-			print-str('True')
-		else
-			print-str('False')
-		return
-
-	length (self Bool) -> Int
-		if self
-			return 4  # 'True': 4
-		else
-			return 5  # 'False': 5
-
-inst Str StrConcat l r
-	print-str (StrConcat(l, r)) -> Unit
-		print-str(l)
-		print-str(r)
-		return
-
-	length (StrConcat(l, r)) -> Int
-		return length(l) + length(r)
-
-
-inst Str Maybe a
-	print-str (self Maybe a) -> Unit <= Str a
-		case self
-			Just(x)
-				print-str(concat('Just(', concat(x, ')')))
-			None
-				print-str('None')
-
-	length (self Maybe a) -> Int <= Str a
-		case self
-			None
-				return 4
-
-			Just(x)
-				return 5 + length(x) + 1
-
-inst Str Ptr a
-	print-str (Ptr(self) Ptr a) -> Unit <= Str a
-		print-str('Ptr(\(self))')
-
-	length (Ptr(self) Ptr a) -> Int <= Str a
-		return 4 + length(self) + 1
-
-
-inst Str Tuple l r
-	print-str (Tuple(l, r)) -> Unit
-		print-str('(\(l), \(r))')
-		return
-
-	length (Tuple(l, r)) -> Int
-		return 1 + length(l) + 2 + length(r) + 1

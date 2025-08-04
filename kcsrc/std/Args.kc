@@ -1,0 +1,24 @@
+use Slice
+	Slice
+use Retarded
+use Mem
+
+# hack to get the global variable that is args
+#[ctype 'char *argv[]']
+Argv
+	#[clit 'global_argv']
+	Argv
+
+#[ctype 'int']
+Argc
+	#[clit 'global_argc']
+	Argc
+
+
+# we require compiler support for this
+get () -> Slice ConstStr
+	argv = Retarded.cast(Argv)
+	argc = Retarded.cast(Argc)
+
+	# automatically cut off the program name, cuz it ez
+	return Slice { ptr: argv Mem.offset-ptr(1), count: argc - 1 }

@@ -53,7 +53,7 @@ relativeTo newBasePath = RWST.local $ \ccc ->
 preludeHackContext :: CompilerContext a -> PrintContext a
 preludeHackContext fn = do
   let ccc = CCC
-        { basepath = "kcsrc/prelude.kc"
+        { basepath = "/home/bob/prj/KindaC/kcsrc/prelude.kc"  -- HACK: im testing the standalone executable. quick hack to get all the source files.
         , prelude = error "tried to access prelude WHILE parsing prelude."
         }
   fmap fst $ RWST.evalRWST fn ccc $ CompilerState

@@ -1,0 +1,196 @@
+use Cnile
+use Retarded
+use Mem
+use Iter
+	IntoIter(into-iter)
+	Iter(next)
+	to
+	multiply
+	map
+
+# contains the Str class and instances for types defined in prelude.
+# this is to prevent circular dependencies.
+
+class Str
+	# later should write to some buffer instead of printing directly.
+	print-str (self _) -> Unit
+	length (self _) -> Int
+	chars (self _) -> iter  # our typesystem eta shit
+
+
+ConstStrIter
+	ogstr ConstStr
+	i Int
+
+inst IntoIter ConstStrIter
+	into-iter (self): self
+
+inst Iter ConstStrIter
+	next (self)
+		if self&.i >= Cnile.strlen(self&.ogstr)  # later this will be good, when the default string will also have a length.
+			return None
+
+		char-ptr = Retarded.cast(self&.ogstr) as Ptr Cnile.Char
+		c = (char-ptr Mem.offset-ptr(self&.i))&
+		self <&.i= self&.i + 1
+		return Just(c)
+
+# ConstStr is defined in Prelude
+inst Str ConstStr
+	print-str (self ConstStr) -> Unit
+		Cnile.printf('%s', self)
+		return
+
+	length (self ConstStr) -> Int
+		return Cnile.strlen(self)
+
+	chars (self ConstStr): ConstStrIter { ogstr: self, i: 0 }
+
+inst Str Unit
+	print-str (self Unit) -> Unit
+		print-str('Unit')
+		return
+
+	length (self Unit) -> Int
+		return 4
+
+	chars (self Unit): chars('Unit')
+
+
+IntStrIter
+	int Int
+	cur Int
+
+inst Str Int
+	print-str (self Int) -> Unit
+		Cnile.printf('%d', self)
+		return
+
+	length (self Int) -> Int
+		if self == 0
+			return 1
+
+		digits = 0
+		while self > 0
+			self <= self / 10
+			digits <= digits + 1
+
+		return digits
+
+	chars (self Int): IntStrIter { int: self, cur: 0 }
+
+inst Str Bool
+	print-str (self Bool) -> Unit
+		if self
+			print-str('True')
+		else
+			print-str('False')
+		return
+
+	length (self Bool) -> Int
+		if self
+			return 4  # 'True': 4
+		else
+			return 5  # 'False': 5
+
+	chars (self Bool)
+		if self
+			return chars('True')
+		else
+			return chars('False')
+
+StrConcatIter l r
+	left l
+	right r
+
+inst IntoIter StrConcatIter
+	into-iter (self): self
+
+inst Iter StrConcatIter
+	next (self):
+		next(&self&.left)
+			or-else(:next(&self&.right) or-else(:None))
+
+
+inst Str StrConcat l r
+	print-str (StrConcat(l, r)) -> Unit
+		print-str(l)
+		print-str(r)
+		return
+
+	length (StrConcat(l, r)) -> Int
+		return length(l) + length(r)
+
+	chars (StrConcat(l, r)):
+		StrConcatIter { left: chars(l), right: chars(r) }
+
+inst Str Maybe a
+	print-str (self Maybe a) -> Unit <= Str a
+		case self
+			Just(x)
+				print-str('Just(\(x))')
+			None
+				print-str('None')
+
+	length (self Maybe a) -> Int <= Str a
+		case self
+			None
+				return 4
+
+			Just(x)
+				return 5 + length(x) + 1
+
+	chars (self)  # when I forget to constrain it, errors happen in weird places kek. that's because of the total association type thing.
+		case self
+			None
+				chars('None')
+
+			Just(x)
+				chars('Just(\(x))')
+
+inst Str Ptr a
+	print-str (Ptr(self) Ptr a) -> Unit <= Str a
+		print-str('Ptr(\(self))')
+
+	length (Ptr(self) Ptr a) -> Int <= Str a
+		return 4 + length(self) + 1
+
+	chars (Ptr(self))
+		chars('Ptr(\(self))')
+
+
+inst Str Tuple l r
+	print-str (Tuple(l, r)) -> Unit
+		print-str('(\(l), \(r))')
+		return
+
+	length (Tuple(l, r)) -> Int
+		return 1 + length(l) + 2 + length(r) + 1
+
+	chars (Tuple(l, r))
+		return chars('Tuple(\(l), \(r))')
+
+
+CharStrIterator
+	char Cnile.Char
+	iterated Bool
+
+inst IntoIter CharStrIterator
+	into-iter (csi): csi
+
+inst Iter CharStrIterator
+	next (self)
+		if self&.iterated
+			return None
+
+		self <&.iterated= True
+		return Just(self&.char)
+
+inst Str Cnile.Char
+	print-str (c Cnile.Char) -> Unit
+		Cnile.printf('%c', c)
+		return
+
+	length (_): 1
+
+	chars (c): CharStrIterator { char: c, iterated: False }

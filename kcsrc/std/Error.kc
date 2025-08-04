@@ -1,8 +1,34 @@
 use Cnile
-use Str
+use Mem
+use StrClass
 	Str(print-str)
 
 critical (errmsg Str) -> Unit
 	print-str('CRITICAL: \(errmsg)\n')
 	Cnile.exit(1)
 	return
+
+
+class Failable
+	or-fail (x _, errmsg s) -> item
+
+
+inst Failable Maybe a
+	or-fail (x, errmsg)
+		case x
+			None
+				critical(errmsg)
+				return Mem.undefined()
+
+			Just(xx)
+				return xx
+
+inst Failable Either e a
+	or-fail (x, errmsg)
+		case x
+			Left(_)
+				critical(errmsg)
+				return Mem.undefined()
+
+			Right(x)
+				return x

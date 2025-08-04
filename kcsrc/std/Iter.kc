@@ -97,9 +97,23 @@ reduce (iterable it, base a, fn (item, a) -> a) -> a <= IntoIter it
 			Just(res)
 				x <= fn(res, x)
 
+count (iterable):
+	reduce(iterable, 0, (item, x): x + 1)
 
 sum (iterable it) <= IntoIter it
 	return reduce(iterable, 0, (x, y): x + y)
+
+multiply (iterable): reduce(iterable, 1, (x, y): x * y)
+
+all (iterable, fn)
+	it = into-iter(iterable)
+	while True
+		case next(&it)
+			None
+				return True
+			Just(res)
+				if not fn(res)
+					return False
 
 
 for-each (iterable it, fn item -> Unit) <= IntoIter it

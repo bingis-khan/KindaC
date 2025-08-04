@@ -14,6 +14,9 @@ Void
 #[cfunname 'printf', cstdinclude 'stdio.h']
 external printf (format ConstStr, x a) -> Void
 
+#[cfunname 'printf', cstdinclude 'stdio.h']
+external printf2 (format ConstStr, x a, y b) -> Void
+
 #[cstdinclude 'string.h']
 external strlen (s ConstStr) -> Int
 
@@ -29,8 +32,61 @@ external free (x Ptr Void) -> Void
 #[cstdinclude 'string.h']
 external memset (dest Ptr Void, byte Int, count Int) -> Ptr Void
 
+#[cstdinclude 'string.h']
+external strcmp (l ConstStr, r ConstStr) -> Int
+
 
 # other shit
 
 #[cstdinclude 'stdlib.h']
 external exit (status Int) -> Void
+
+
+# file shit
+
+#[cstdinclude 'stdio.h', ctype 'FILE']
+FILE
+
+# fake type null. should be cast to appropriate pointer types.
+#[ctype 'NULL_faketype']
+NULL
+	#[clit 'NULL']
+	NULL
+
+#[ctype 'char']
+Char
+
+#[cstdinclude 'stdio.h']
+external fopen (filename ConstStr, fileopts ConstStr) -> Ptr FILE
+
+#[cstdinclude 'stdio.h']
+external fclose (file Ptr FILE) -> Void
+
+
+# that's how we define uppercase constants kekekekek
+#[ctype 'int']
+SEEKSHIT
+	#[clit 'SEEK_SET']
+	SEEKSET
+
+	#[clit 'SEEK_END']
+	SEEKEND
+
+seek-set = SEEKSET
+seek-end = SEEKEND
+
+
+#[ctype 'long int']
+LongInt
+
+#[ctype 'size_t']
+SizeT
+
+#[cstdinclude 'stdio.h']
+external fseek (file Ptr FILE, offset Int, origin Int) -> Void
+
+#[cstdinclude 'stdio.h']
+external ftell (file Ptr FILE) -> Int
+
+#[cstdinclude 'stdio.h']
+external fread (buffer Ptr a, size Int, count Int, stream Ptr FILE) -> SizeT

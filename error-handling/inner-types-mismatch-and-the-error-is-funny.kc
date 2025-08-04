@@ -1,0 +1,38 @@
+use Term
+use File
+	substr
+use Cnile
+	NULL(NULL)  # import because of bugged parsing
+use Retarded
+use Error
+use Alloc
+	Allocator(allocate, free)
+use Slice
+	Slice
+use Mem
+use Str
+	Str(print-str, length)
+use Iter
+
+
+or-fail (x Maybe a, errmsg) -> a
+	case x
+		None
+			Error.critical(errmsg)
+			return Mem.undefined()
+
+		Just(xx)
+			return xx
+
+al = Alloc.get-c-allocator()
+str = File.read-contents(al, 'reminders') or-fail('could not open file')
+	File.lines()
+	Iter.for-each(Term.println)
+Term.println(str)
+Term.println(str substr(5, 10))
+al free(str.content)
+
+
+x = 420
+y = 69
+Term.println('waddup \(x) \(y)')

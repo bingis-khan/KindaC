@@ -126,12 +126,11 @@ sSingleCase = scope id $ do
   pure $ Case decon Nothing
 
 sDeconstruction :: Parser (Decon U)
-sDeconstruction = do
-  (from, sourcePos) <- fromPos
-  decon <- caseVariable <|> caseRecord <|> caseConstructor
-  to <- TM.getOffset
-  pure $ node (Location from to sourcePos) decon
+sDeconstruction = includeLocation $
+  caseIgnore <|> caseVariable <|> caseRecord <|> caseConstructor
  where
+    caseIgnore = symbol "_" $> CaseIgnore
+
     caseVariable = CaseVariable <$> variable
     caseConstructor =  CaseConstructor <$> qualified dataConstructor <*> args
     caseRecord = do
@@ -191,7 +190,7 @@ thatFunnyMutationOperator = lexeme $ do
   pure accesses
 
 sReturn :: Parser (Stmt U)
-sReturn = do
+sReturn = lineFold $ do
   keyword "return"
   expr <- optional expression
   pure $ Return expr
@@ -383,6 +382,7 @@ deconToExpr = cata $ \(N off decon) -> node off $ case decon of
   CaseConstructor con []          -> Con con ()
   CaseConstructor con exprs@(_:_) -> Call (node off $ Con con ()) exprs
   CaseRecord con mems             -> RecCon con mems
+  CaseIgnore                      -> error "definitely not expression (unless we add holes)"
 
 functionHeader :: Parser (FunDec U, Either Location (Expr U))  -- either it's a single expression function OR it's possible that it's a call (so we need to save the position)
 functionHeader = lineFold $ do
@@ -553,8 +553,8 @@ operatorTable =
     , binary' "<"  LessThan
     , binary' ">"  GreaterThan
     ]
-  , [ binary' "or" Or
-    , binary' "and" And
+  , [ binaryS' (keyword "or") Or
+    , binaryS' (keyword "and") And
     ]
   , [ as
     ]
@@ -607,7 +607,7 @@ call = do
 
 postfixCall :: Parser (Expr U -> ExprF U (Expr U))
 postfixCall = do
-  fnName <- notFollowedBy (symbol "as" <|> symbol "or" <|> symbol "and") *> eIdentifier  -- both functions and constructors are allowed to be called like this. 'as' HACK!
+  fnName <- notFollowedBy (keyword "as" <|> keyword "or" <|> keyword "and") *> eIdentifier  -- both functions and constructors are allowed to be called like this. 'as' HACK!
   args <- between (symbol "(") (symbol ")") $ expression `sepBy` symbol ","
   pure $ \firstArg -> Call fnName (firstArg : args)  -- transforms it into a normal call expression. not exact AST representation, but hopefully, location information will make the difference invisible.
 
@@ -746,6 +746,12 @@ withLocation fx = do
   x <- fx
   to <- TM.getOffset
   pure (Location from to spos, x)
+
+-- node :: Location -> nodeF U (Fix (ExprNode U nodeF)) -> Fix (ExprNode U nodeF)
+includeLocation :: Parser (nodeF U (Fix (ExprNode U nodeF))) -> Parser (Fix (ExprNode U nodeF))
+includeLocation px = do
+  (loc, x) <- withLocation px
+  pure $ node loc x
 
 exprWithLocation :: Parser (ExprF U (Expr U)) -> Parser (Expr U)
 exprWithLocation pe = do

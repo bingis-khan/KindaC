@@ -466,7 +466,7 @@ rStmts = traverse -- traverse through the list with Ctx
 
 
         fns <- for rinst.instFuns $ \ifn -> do
-          cfd <- findFunctionInClass (error "todo") ifn.instFunDec.functionId klass
+          cfd <- findFunctionInClass (snd ifn.instFunDec.functionOther) ifn.instFunDec.functionId klass
           vid <- generateVar ifn.instFunDec.functionId
 
           constraints <- rConstraints $ fst ifn.instFunDec.functionOther
@@ -539,6 +539,7 @@ rConstraints constraints = do
 
 rDecon :: Decon U -> Ctx (Decon R)
 rDecon = transverse $ \(N location d) -> fmap (N location) $ case d of
+  CaseIgnore -> pure CaseIgnore
   CaseVariable var -> do
     rvar <- newVar var
     pure $ CaseVariable rvar
@@ -680,7 +681,7 @@ rClassType = transverse $ \case
 rType' :: TypeF U (Ctx a) -> Ctx (TypeF R a)
 rType' = \case
   TCon t tapps () -> do
-    rt <- resolveTypeOrClass (error "location in types!") t
+    rt <- resolveTypeOrClass (error $ pf "location for % in types!" t) t
     rtApps <- sequenceA tapps
     case (rt, rtApps) of
       (Left klass, []) ->
@@ -1192,8 +1193,28 @@ resolveTypeOrClass location (Qualified Nothing name) = do
     Nothing -> do
       err $ UndefinedType location name
       Right <$> placeholderType name
-resolveTypeOrClass location (Qualified (Just _) name) = do
-  error "todo"
+resolveTypeOrClass location (Qualified (Just mq) name) = do
+  tryFindExternalModule location mq >>= \case
+    Just tmod -> do
+      let
+        findType = findInExternalModule tmod Common.datatypes $ \dd ->
+          if dd.ddName.typeName == name
+            then Just $ Right $ ExternalDatatype dd
+            else Nothing
+
+        findClass = findInExternalModule tmod Common.classes $ \cd -> if Def.uniqueClassAsTypeName cd.classID == name
+          then Just $ Left $ ExternalClass cd
+          else Nothing
+
+
+      case findType <|> findClass of
+        Just x ->
+          pure x
+        Nothing -> do
+          err $ ModuleDoesNotExportType location name mq
+          Right <$> placeholderType name
+
+    Nothing -> Right <$> placeholderType name
 
 
 placeholderType :: Def.TCon -> Ctx R.DataType
@@ -1284,38 +1305,38 @@ data ResolveError
 
 instance Error ResolveError where
   toError source = \case
-    UndefinedVariable location vn -> renderError source (pf "Undefined variable %s" (pp vn)) $ ln (location, Just "this guy")
-    UndefinedConstructor location cn -> renderError source (pf "Undefined constructor %s" (pp cn)) $ ln (location, Just "dis")
+    UndefinedVariable location vn -> renderError source (pf "Undefined variable %" (pp vn)) $ ln (location, Just "this guy")
+    UndefinedConstructor location cn -> renderError source (pf "Undefined constructor %" (pp cn)) $ ln (location, Just "dis")
     UndefinedType location tn -> renderError source (pf "Undefined type %s" (pp tn)) $ ln (location, Just "diz")
-    UnboundTypeVariable location utv -> renderError source (pf "Unbound type variable %s" (pp utv)) $ ln (location, Just "miau")
-    FurtherConstrainingExistingTVar (location, tv) (location', uc) -> renderError source (pf "Further constraining existing tvar %s with class %s" (pp tv) (pp uc)) $ lns [(location, Just "this is where the tvar was defined"), (location', Just "that's the constraint")]
+    UnboundTypeVariable location utv -> renderError source (pf "Unbound type variable %" (pp utv)) $ ln (location, Just "miau")
+    FurtherConstrainingExistingTVar (location, tv) (location', uc) -> renderError source (pf "Further constraining existing tvar % with class %" (pp tv) (pp uc)) $ lns [(location, Just "this is where the tvar was defined"), (location', Just "that's the constraint")]
     -- TypeRedeclaration location ty -> renderError source (pf "") $ ln (location, Just "")
     CannotMutateFunctionDeclaration location vn -> renderError source (pf "Cannot mutate a function.") $ ln (location, Just (pf "%s is a function, ya dingus" (pp vn)))
     CannotMutateNonLocalVariable location vn -> renderError source (pf "Currently, we cannot mutate non local variables.") $ ln (location, Just "might change, i dunno")
     CannotMutateImportedVariable location vn -> renderError source (pf "Currently, we cannot mutate imported variables.") $ ln (location, Just "might change, might not i dunno")
 
-    DidNotDefineMember (location, undefinedMem) (recordType, mems) -> renderError source (pf "You forgot to define %s when constructing an instance of %s." (pp undefinedMem) (pp recordType)) $ ln (location, Nothing)
-    MemberNotInDataDef (location, mem) (ty, possibleMems) -> renderError source (pf "Field %s not in type %s." (pp ty) (pp mem)) $ ln (location, Just (pp possibleMems))
-    RedefinedMember location mem -> renderError source (pf "Redefined member %s" (pp mem)) $ ln (location, Nothing)
+    DidNotDefineMember (location, undefinedMem) (recordType, mems) -> renderError source (pf "You forgot to define % when constructing an instance of %s." (pp undefinedMem) (pp recordType)) $ ln (location, Nothing)
+    MemberNotInDataDef (location, mem) (ty, possibleMems) -> renderError source (pf "Field %s not in type %." (pp ty) (pp mem)) $ ln (location, Just (pp possibleMems))
+    RedefinedMember location mem -> renderError source (pf "Redefined member %" (pp mem)) $ ln (location, Nothing)
 
-    NotARecordType location ty -> renderError source (pf "Type %s is not a record type!" (pp ty)) $ ln (location, Nothing)
+    NotARecordType location ty -> renderError source (pf "Type % is not a record type!" (pp ty)) $ ln (location, Nothing)
 
-    UndefinedClass location className -> renderError source (pf "Undefined class %s" (pp className)) $ ln (location, Nothing)
-    ExpectedClassNotDatatype location className ty -> renderError source (pf "Expected class, but %s is a datatype." (pp ty)) $ ln (location, Nothing)
-    UsingClassNameInPlaceOfType location klass -> renderError source (pf "Expected type but %s is actually a type yo." (pp klass)) $ ln (location, Just "this should be a type yo")  -- IDs are only, because I'm currently too lazy to make a Show instance.
+    UndefinedClass location className -> renderError source (pf "Undefined class %" (pp className)) $ ln (location, Nothing)
+    ExpectedClassNotDatatype location className ty -> renderError source (pf "Expected class, but % is a datatype." (pp ty)) $ ln (location, Nothing)
+    UsingClassNameInPlaceOfType location klass -> renderError source (pf "Expected type but % is actually a type yo." (pp klass)) $ ln (location, Just "this should be a type yo")  -- IDs are only, because I'm currently too lazy to make a Show instance.
 
-    UndefinedFunctionOfThisClass location klass vn -> renderError source (pf "Class %s don't have function %s, yo." (pp klass) (pp vn)) $ ln (location, Nothing)
+    UndefinedFunctionOfThisClass location klass vn -> renderError source (pf "Class %s don't have function %, yo." (pp klass) (pp vn)) $ ln (location, Nothing)
 
     AppliedTypesToClassInType location klass -> renderError source (pf "%s is a class and you just applied types to it. Bruh." (pp klass)) $ ln (location, Nothing)
 
     UsingPointerConstructor location -> renderError source (pf "Cannot use Ptr constructor in normal code.") $ ln (location, Just "you just... can't, ok???")
 
-    ModuleDoesNotExist location modul -> renderError source (pf "Could not find module %s." (pp modul)) $ ln (location, Nothing)
-    ModuleDoesNotExportVariable location vn modul -> renderError source (pf "Module %s does not export %s." (pp modul) (pp vn)) $ ln (location, Nothing)
-    ModuleDoesNotExportType location ty modul -> renderError source (pf "Module %s does not export type %s." (pp modul) (pp ty)) $ ln (location, Nothing)
-    ModuleDoesNotExportClass location klass modul -> renderError source (pf "Module %s does not export class %s." (pp modul) (pp klass)) $ ln (location, Nothing)
-    ModuleDoesNotExportTypeOrClass location ty modul -> renderError source (pf "Module %s does not export this class or type %s." (pp modul) (pp ty)) $ ln (location, Nothing)
-    ModuleNotImported location modul -> renderError source (pf "Could not import module %s." (pp modul)) $ ln (location, Nothing)
+    ModuleDoesNotExist location modul -> renderError source (pf "Could not find module %." (pp modul)) $ ln (location, Nothing)
+    ModuleDoesNotExportVariable location vn modul -> renderError source (pf "Module % does not export %." (pp modul) (pp vn)) $ ln (location, Nothing)
+    ModuleDoesNotExportType location ty modul -> renderError source (pf "Module % does not export type %." (pp modul) (pp ty)) $ ln (location, Nothing)
+    ModuleDoesNotExportClass location klass modul -> renderError source (pf "Module % does not export class %." (pp modul) (pp klass)) $ ln (location, Nothing)
+    ModuleDoesNotExportTypeOrClass location ty modul -> renderError source (pf "Module % does not export this class or type %." (pp modul) (pp ty)) $ ln (location, Nothing)
+    ModuleNotImported location modul -> renderError source (pf "module % not imported" (pp modul)) $ ln (location, Nothing)
     TryingToImportConstructorsFromARecordType location ty modul -> renderError source undefined undefined
     TryingToImportNonExistingConstructorOfType location cn ty modul -> renderError source undefined undefined
     TryingToImportNonExistingFunctionOfClass location vn uc modul -> renderError source undefined undefined

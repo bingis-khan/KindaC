@@ -51,7 +51,7 @@ import qualified AST.Prelude as Prelude
 import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, ExprNode (..), DeclaredType (..), XClassFunDec, MutAccess (..), LitType (..), asksNode)
 import AST.Resolved (R)
 import AST.Typed ( TC, Scheme(..), TOTF(..) )
-import AST.Def ((:.)(..), PP (..), Binding (..), BinOp (..), pf, PrintContext, pc)
+import AST.Def ((:.)(..), PP (..), Binding (..), BinOp (..), pf, PrintContext, pc, ppDef)
 import qualified AST.Def as Def
 import Data.String (fromString)
 import Error (Error (..), renderError)
@@ -367,7 +367,7 @@ inferExpr = cata (fmap embed . inferExprType)
 
 
         Var v loc -> do
-          (t, v') <- instantiateVariable location loc =<< inferVariable v
+          (t, v') <- instantiateVariable location loc =<< inferVariable location v
 
           case loc of
             Def.Local -> pure ()
@@ -455,21 +455,20 @@ inferExpr = cata (fmap embed . inferExprType)
 
         Call callee args -> do
           args' <- sequenceA args
-          let argts = askUni <$> args'
-          argfs <- for argts $ const fresh  -- fresh variables for better errors.
+          let argts = askType <$> args'
+          -- argfs <- for argts $ const fresh  -- fresh variables for better errors.
           callee' <- callee
 
           ret <- fresh
           union <- emptyUnion
-          let ft = Fix $ TFun union argfs ret
+          let ft = Fix $ TFun union argts ret
 
           -- pretty bad errors for calls.
           askUni callee' `uni` (Just location, ft)  -- first unify the whole function shape.
 
           -- then, unify specific arguments.
-          case project $ askType callee' of
-            TFun _ funargs _ -> for_ (zip argts ((Nothing,) <$> funargs)) $ uncurry uni
-            _ -> pure ()  -- the type will be mismatched anyway, so don't unify
+          -- WHAT: or I would do it, but it don't work for one test. why???? there's something funny going on with the typechecker again?
+          -- for_ (zip argts ((Nothing,) <$> argfs)) $ uncurry uni
 
           -- TODO: in the future, make a special function for calls, which will signal nice errors.
 
@@ -509,8 +508,8 @@ inferExpr = cata (fmap embed . inferExprType)
 
 
 
-inferVariable :: R.Variable -> Infer T.Variable
-inferVariable = \case
+inferVariable :: Def.Location -> R.Variable -> Infer T.Variable
+inferVariable location = \case
   R.DefinedVariable v -> pure $ T.DefinedVariable v
   R.ExternalVariable v _ -> pure $ T.DefinedVariable v  -- TODO: CURRENTLY BROKEN. THE TYPE SHOULD BE PASSED.
 
@@ -534,7 +533,8 @@ inferVariable = \case
     let insts = Def.defaultEmpty cd snapshot
 
     self <- fresh
-    self `constrain` (cd, insts)
+    let constr = constrain location
+    self `constr` (cd, insts)
 
     pure $ T.DefinedClassFunction cfd snapshot self tempClassInstantiation
 
@@ -545,7 +545,8 @@ inferVariable = \case
     let insts = Def.defaultEmpty cd snapshot
 
     self <- fresh
-    self `constrain` (cd, insts)
+    let constr = constrain location
+    self `constr` (cd, insts)
 
     pure $ T.DefinedClassFunction cfd snapshot self tempClassInstantiation
 
@@ -601,7 +602,8 @@ inferClassType = cata $ (.) (fmap embed) $ \case
     TO (R.TClass rcd) -> do
       cd <- inferClass rcd
       t <- fresh
-      t `constrain` (cd, mempty)  -- NOTE: we MUST ensure that this turns into a TVar. If not, it should be an error...? 
+      let constr = constrain (error "todo (should come from class type)")
+      t `constr` (cd, mempty)  -- NOTE: we MUST ensure that this turns into a TVar. If not, it should be an error...? 
       pure $ error "should not evaluate." <$ project t
 
     TO (R.TVar rtv) -> do
@@ -627,7 +629,8 @@ inferType = cata $ (.) (fmap embed) $ \case
   TO (R.TClass rcd) -> do
     cd <- inferClass rcd
     t <- fresh
-    t `constrain` (cd, mempty)  -- NOTE: we MUST ensure that this turns into a TVar. If not, it should be an error...? 
+    let constr = constrain (error "todo")
+    t `constr` (cd, mempty)  -- NOTE: we MUST ensure that this turns into a TVar. If not, it should be an error...? 
     pure $ project t
 
   TO (R.TVar tv) -> TO . TVar <$> inferTVar tv
@@ -1032,17 +1035,17 @@ substAssociations = do
   let subAssociations = first (subst csu) <$> assocs
   dbgAssociations "before" subAssociations
 
-  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval (foldr (<>) Map.empty) . unzip) $ for subAssociations $ \t@(T.TypeAssociation (fromLocation, from) (toLocation, to) (CFD _ uv _ _ () _) uci baseUFI envsToAddTo, insts) -> do
+  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval (foldr (<>) Map.empty) . unzip) $ for subAssociations $ \t@(T.TypeAssociation (fromLocation, from) (toLocation, to) (CFD cd uv _ _ () _) uci baseUFI envsToAddTo, insts) -> do
     case project from of
-        TCon dd _ _ -> case insts !? dd of
+        TCon dd _ _ -> case insts !? cd >>= (!? dd) of
           Just inst -> do
             -- select instance function to instantiate.
             let instFun = Def.mustOr (pf "[COMPILER ERROR]: Could not select function %s bruh," (pp uv)) $ find (\InstFun { instClassFunDec = CFD _ cuv _ _ () _ } -> cuv == uv) inst.instFuns
 
             -- hope it's correct....
-            let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
+            -- let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
             -- TODO: FromEnvironment locality only here, because it means we won't add anything extra to the instantiations.
-            (instFunType, T.DefinedFunction fn instAssocs _ ufi, env@(T.Env _ _ _ level)) <- instantiateFunction (Just uci) baseFunctionScopeSnapshot $ Function instFun.instFunDec instFun.instFunBody
+            (instFunType, T.DefinedFunction fn instAssocs _ ufi, env@(T.Env _ _ _ level)) <- instantiateFunction (Just uci) insts $ Function instFun.instFunDec instFun.instFunBody
 
             (toLocation, to) `uni` justType instFunType
             pf "ENV ASSOC: %s" $ pp env
@@ -1126,7 +1129,7 @@ reportAssociationErrors = do
   -- first, report errors.
   substitutedAssociations <- fmap filterDesignatedForRemoval $ for subAssociations $ \t@(T.TypeAssociation (fromLocation, from) _ (CFD cd _ _ _ () _) _ _ _, insts) -> do
     case project from of
-        TCon dd _ _ -> case insts !? dd of
+        TCon dd _ _ -> case insts !? cd >>= (!? dd) of
           Just _ -> error "[COMPILER ERROR]: resolvable associated type found. should already be taken care of."
 
           Nothing -> do
@@ -1336,6 +1339,10 @@ getExpectedType location t memname = case project t of
 
 inferDecon :: Decon R -> Infer (Decon TC)
 inferDecon = cata $ \(N location d) -> fmap embed $ case d of
+    CaseIgnore -> do
+      t <- fresh
+      pure $ N (T.ExprNode { T.t = t, T.loc = location }) CaseIgnore
+
     CaseVariable uv -> do
       t <- var uv
       pure $ N (T.ExprNode { T.t = t, T.loc = location }) $ CaseVariable uv
@@ -1412,11 +1419,11 @@ instantiateVariable location loc = \case
 
   T.DefinedClassFunction cfd@(CFD cd funid params ret () _) snapshot self _ -> do
     fnType <- instantiateClassFunction cfd self
-    let insts = Def.defaultEmpty cd snapshot
+    let insts = snapshot
     uci <- newClassInstantiation
     associateType (location, self) (location, fnType) cfd insts uci Nothing
     -- addClassFunctionUse fnUnion cfd self insts
-    pf "INSTANTIATING CLASS FUN %s. INSTS: %s" (pp uci) $ pp $ fmap (\(DD { ddName }) -> ddName) $ Set.toList $ Map.keysSet insts :: Infer ()
+    pf "INSTANTIATING CLASS FUN %(%). INSTS: %" (pp funid) (pp uci) $ fmap (fmap (\(DD { ddName }) -> ddName) . Set.toList . Map.keysSet) $ Map.elems insts :: Infer ()
 
 
     pure (fnType, T.DefinedClassFunction cfd snapshot self uci)
@@ -1483,7 +1490,7 @@ instantiateFunction muci snapshot fn = do
     assocs <- for fundec.functionOther.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(CFD cd _ _ _ () _) uci) -> do
       let from = mapTVs $ Fix $ TO $ TVar tv
       let mto = mapTVs to
-      associateType (fundec.functionOther.functionLocation, from) (fundec.functionOther.functionLocation, mto) cfd (fromMaybe mempty $ snapshot !? cd) uci (Just ufi) -- TEMP
+      associateType (fundec.functionOther.functionLocation, from) (fundec.functionOther.functionLocation, mto) cfd snapshot uci (Just ufi) -- TEMP
       pure mto
 
     fnUnion <- singleEnvUnion muci ufi assocs fundec.functionEnv
@@ -1502,7 +1509,7 @@ instantiateFunction muci snapshot fn = do
     pure (fnType, v, mappedEnv)
 
 
-associateType :: (Def.Location, Type TC) -> (Def.Location, Type TC) -> ClassFunDec TC -> T.PossibleInstances -> Def.UniqueClassInstantiation -> Maybe Def.UniqueFunctionInstantiation -> Infer ()
+associateType :: (Def.Location, Type TC) -> (Def.Location, Type TC) -> ClassFunDec TC -> T.ScopeSnapshot -> Def.UniqueClassInstantiation -> Maybe Def.UniqueFunctionInstantiation -> Infer ()
 associateType (fromLocation, based) (toLocation, result) cfd insts uci ufi = do
     pf "ASSOC: %s %s" (pp uci) (pp ufi)
     estack <- RWS.gets envStack
@@ -1556,7 +1563,8 @@ instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
   for_ (zip tyvs schemeTVars) $ \(t, tv) -> do
     for_ tv.tvClasses $ \klass -> do
       let instmap = fromMaybe mempty $ insts !? klass
-      t `constrain` (klass, instmap)
+      let constr = constrain (error "todo")
+      t `constr` (klass, instmap)
 
   pure (tyvs, unions)
 
@@ -1727,12 +1735,13 @@ uniMany ts1 ts2 =
     let (ts1', ts2') = subst su (ts1, ts2)
     unifyMany ts1' ts2'
 
-constrain :: Type TC -> (ClassDef TC, T.PossibleInstances) -> Infer ()
-constrain t cdi = do
+-- maybe later get the location from the type?
+constrain :: Def.Location -> Type TC -> (ClassDef TC, T.PossibleInstances) -> Infer ()
+constrain location t cdi = do
   substituting $ do
     su <- RWS.gets ctxSubst
     let t' = subst su t
-    addConstraint t' cdi
+    addConstraint location t' cdi
 
 substituting :: SubstCtx a -> Infer a
 substituting subctx = RWST $ \_ s -> do
@@ -1752,13 +1761,13 @@ unify (locl, ttl) (locr, ttr) = do
       let bind' = bind (Left (locl, locr))
       tyv `bind'` tr
       for_ tyv.tyvConstraints $ \klass ->
-        addConstraint tr klass
+        addConstraint locl tr klass
 
     (_, TO (TyVar tyv)) -> do
       let bind' = bind (Right (locr, locl))
       tyv `bind'` tl
       for_ tyv.tyvConstraints $ \klass ->
-        addConstraint tl klass
+        addConstraint locl tl klass
 
     (TFun lenv lps lr, TFun renv rps rr) -> do
       unifyMany (locl, lps) (locr, rps)
@@ -1780,13 +1789,13 @@ unifyMany (ll, tl:ls) (lr, tr:rs) | length ls == length rs = do  -- quick fix - 
 
 unifyMany tl tr = err $ MismatchingNumberOfParameters tl tr
 
-addConstraint :: Type TC -> (ClassDef TC, T.PossibleInstances) -> SubstCtx ()
-addConstraint t (klass, instances) = case project t of
+addConstraint :: Def.Location -> Type TC -> (ClassDef TC, T.PossibleInstances) -> SubstCtx ()
+addConstraint location t (klass, instances) = case project t of
       TCon dd _ _ -> do
         let mSelectedInst = instances !? dd
         case mSelectedInst of
           Nothing -> do
-            err $ DataDefDoesNotImplementClass (error "todo") dd klass
+            err $ DataDefDoesNotImplementClass location dd klass
 
           Just _ -> do
             -- Don't do anything? like, we only have to confirm that the instance gets applied, right?
@@ -1794,17 +1803,17 @@ addConstraint t (klass, instances) = case project t of
 
       TO (TVar tv) -> do
         unless (Set.member klass tv.tvClasses) $ do
-          err $ TVarDoesNotConstrainThisClass (error "todo") tv klass
+          err $ TVarDoesNotConstrainThisClass location tv klass
 
       TO (TyVar tyv) -> do
         -- create new tyvar with both classes merged!
         let cids = (klass, instances) : tyv.tyvConstraints
         newtyv <- freshTyVarInSubst cids
-        let bind' = bind (error "todo?")
+        let bind' = bind (Left (location, Nothing))
         tyv `bind'` Fix (TO (TyVar newtyv))
 
       TFun {} ->
-        err $ FunctionTypeConstrainedByClass (error "todo") t klass
+        err $ FunctionTypeConstrainedByClass location t klass
 
 bind :: Either (Def.Location, Maybe Def.Location) (Maybe Def.Location, Def.Location) -> T.TyVar -> Type TC -> SubstCtx ()
 bind _ tyv (Fix (TO (TyVar tyv'))) | tyv == tyv' = nun
@@ -1960,8 +1969,8 @@ instance Substitutable (Expr TC) where
     e -> e)
 
 instance Substitutable T.ExprNode where
-  ftv = const mempty
-  subst = const id
+  ftv en = ftv en.t
+  subst su en = en { T.t = subst su en.t }
 
 instance Substitutable T.LamDec where
   ftv (T.LamDec _ env) = ftv env
@@ -2256,7 +2265,7 @@ data TypecheckingState = TypecheckingState
 
   , memberAccess :: [(Type TC, Def.MemName, Type TC, Def.Location)]  -- ((a :: t1).mem :: t2)
   , classFunctionUnions :: [(T.EnvUnion, ClassFunDec TC, Type TC, T.PossibleInstances)]  -- TODO: currently unused. remove later.
-  , associations :: [(T.TypeAssociation, Map (DataDef TC) (InstDef TC))]
+  , associations :: [(T.TypeAssociation, T.ScopeSnapshot)]
 
   -- HACK?: track instantiations from environments. 
   --  (two different function instantiations will count as two different "variables")
@@ -2335,14 +2344,14 @@ instance Error TypeError where
       Just loc' -> lns [(loc, Just $ pf "this one has type %" (pp t)), (loc', Just $ pf "this one has type %" (pp t'))]
 
     MismatchingNumberOfParameters ts ts' -> error "MismatchingNumberOfParameters" --printf "Mismatching number of parameters: (%d) %s (%d) %s" (length ts) (sctx $ Def.ppList pp ts) (length ts') (sctx $ Def.ppList pp ts')
-    AmbiguousType _ tyv -> error "AmbiguousType" --printf "Ambiguous type: %s" (sctx $ pp tyv)
+    AmbiguousType _ tyv -> pf "Ambigous type %" tyv --printf "Ambiguous type: %s" (sctx $ pp tyv)
 
-    DataTypeDoesNotHaveMember _ (DD ut _ _ _) memname -> error "DataTypeDoesNotHaveMember" --printf "Record type %s does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
-    DataTypeIsNotARecordType _ (DD ut _ _ _) memname -> error "DataTypeIsNotARecordType" --printf "%s is not a record type and thus does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
+    DataTypeDoesNotHaveMember location dd memname -> renderError source (pf "datatype % does not have member %" (ppDef dd) memname) $ ln (location, Nothing) --printf "Record type %s does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
+    DataTypeIsNotARecordType location dd memname -> renderError source (pf "attempt to subscript % with %, but it's not a record type" (ppDef dd) (pp memname)) $ ln (location, Nothing) --printf "%s is not a record type and thus does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
     FunctionIsNotARecord _ t _ -> error "FunctionIsNotARecord" --printf "Cannot subscript a function (%s)." (pp t)
     TVarIsNotARecord _ tv _ -> error "TVarIsNotARecord" --printf "Cannot subscript a type variable. (%s)" (pp tv)
-    DataDefDoesNotImplementClass _ (DD ut _ _ _) cd -> error "DataDefDoesNotImplementClass" --printf "Type %s does not implement instance of class %s." (sctx $ pp ut) (sctx $ pp cd.classID)
-    TVarDoesNotConstrainThisClass _ tv cd -> error "TVarDoesNotConstrainThisClass" --printf "TVar %s is not constrained by class %s." (pp tv) (pp cd.classID)
+    DataDefDoesNotImplementClass loc dd cd -> renderError source (pf "datatype % does not implement class %" (ppDef dd) (ppDef cd)) $ ln (loc, Nothing) --printf "Type %s does not implement instance of class %s." (sctx $ pp ut) (sctx $ pp cd.classID)
+    TVarDoesNotConstrainThisClass location tv cd -> renderError source (pf "tvar % is not constrained by class %" tv (ppDef cd)) $ ln (location, Nothing) --printf "TVar %s is not constrained by class %s." (pp tv) (pp cd.classID)
     FunctionTypeConstrainedByClass _ t cd -> error "FunctionTypeConstrainedByClass"
     _ -> undefined
 --      printf "Function type %s constrained by class %s (function types cannot implement classes, bruh.)" (pp t) (pp cd.classID)
@@ -2418,6 +2427,6 @@ dbgSubst (Subst unions ts) =
 
 dbgSubst (EnvAddition envAdds) = pf "%" $ Def.ppMap $ fmap (bimap pp pp) $ Map.toList envAdds
 
-dbgAssociations :: String -> [(T.TypeAssociation, Map (DataDef TC) (InstDef TC))] -> Infer ()
+dbgAssociations :: String -> [(T.TypeAssociation, T.ScopeSnapshot)] -> Infer ()
 dbgAssociations title associations = pf "Associations (%): %" title (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation from to _ uci ufi _, _) -> pf "(%) %: %" (pp (uci, ufi)) (pp from) (pp to) :: String)
 

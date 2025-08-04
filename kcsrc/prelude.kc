@@ -56,6 +56,15 @@ Maybe a
 	Just a
 	None
 
+# test prelude function yo
+or-else (mx, late-other-x)
+	case mx
+		Just(x)
+			return Just(x)
+
+		None
+			return late-other-x()
+
 
 Either e a
 	Left e
@@ -64,3 +73,8 @@ Either e a
 
 Tuple a b
 	Tuple a b
+
+# while we still can't deconstruct tuples
+uncurry (fn (a, b) -> c) -> (Tuple a b) -> c
+	unc (Tuple(l, r)): fn(l, r)
+	return unc

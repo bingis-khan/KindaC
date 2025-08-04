@@ -418,6 +418,7 @@ mDecon :: Decon TC -> Context (Decon IM)
 mDecon = cata $ fmap embed . \(N en d) -> do
   mt <- mType en.t
   N mt <$> case d of
+    CaseIgnore -> pure CaseIgnore
     CaseVariable uv -> do
       pure $ CaseVariable uv
 

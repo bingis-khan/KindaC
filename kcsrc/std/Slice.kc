@@ -2,8 +2,6 @@ use Mem
 	offset-ptr
 	undefined
 	ptr-size-of
-use Str
-	Str(print-str, length)
 use Iter
 	IntoIter(into-iter)
 	Iter(next)
@@ -23,7 +21,6 @@ elem-size-of (slice Slice a):
 get (slice Slice a, i Int) -> a
 	if i < 0 or i >= slice.count
 		Error.critical('Access to slice at index \(i). (max: \(slice.count))')
-		return undefined()
 
 	elem = slice.ptr offset-ptr(i)&
 	return elem
@@ -33,6 +30,30 @@ try-get (slice Slice a, i Int) -> Maybe a
 		return None
 	elem = slice.ptr offset-ptr(i)&
 	return Just(elem)
+
+set (slice Slice a, i Int, x a) -> Unit
+	if i < 0 or i >= slice.count
+		Error.critical('Access to slice at index \(i). (max: \(slice.count))')
+
+	elem-ptr = slice.ptr Mem.offset-ptr(i)
+	elem-ptr <&= x
+	return
+	
+
+subslice (slice Slice a, from Int, to Int) -> Slice a
+	if from >= slice.count or to > slice.count
+		Error.critical('tried to sublice [\(from):\(to)], but slice has \(slice.count) elements')
+	
+
+	begin-ptr = slice.ptr Mem.offset-ptr(from)
+	count = to - from
+	if count < 0
+		count <= 0
+
+	return Slice { ptr: begin-ptr, count }
+
+
+# iterators
 
 
 SliceIter a
