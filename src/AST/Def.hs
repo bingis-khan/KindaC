@@ -53,6 +53,7 @@ debugContext = CtxData
   , printIdentifiers = True
   , displayTypeParameters = False
   , displayLocations = False
+  , displayUnification = False
   }
 
 -- disable debug messages for "runtime".
@@ -61,6 +62,7 @@ runtimeContext = CtxData
   , printIdentifiers = False
   , displayTypeParameters = False
   , displayLocations = False
+  , displayUnification = False
   }
 
 -- show types and stuff for the user (display types accurately to their definition, etc.)
@@ -69,6 +71,7 @@ showContext = CtxData
   , printIdentifiers = False
   , displayTypeParameters = True
   , displayLocations = False
+  , displayUnification = False
   }
 
 
@@ -131,6 +134,8 @@ data Ann
   | AUndefinedReturn
   | AGoofyCast
   | AGoofyPtrOffset
+
+  | ADebugUnification  -- explicitly turn on unification info for this one statement. i don't think it should go deeper than calls tho.
   deriving (Show, Eq, Ord)
 
 -- Annotation decorator thing.
@@ -528,6 +533,7 @@ findAnnotation anns fn = listToMaybe $ mapMaybe fn anns
 
 class PrintableContext p where
   printInContext :: Context -> p
+  unsilenceablePrintInContext :: Context -> p
 
 pc :: (PP a, PrintableContext p, p ~ x unit, unit ~ ()) => a -> p
 pc = printInContext . pp
@@ -539,10 +545,16 @@ instance PrintableContext (PrintContext ()) where  -- base instance
     unless ctxData.silent $
       liftIO $ TextIO.putStrLn $ ctx ctxData c
 
+  -- should later be replaced by more granular printing configuration!
+  unsilenceablePrintInContext c = do
+      ctxData <- PrintContext Reader.ask
+      liftIO $ TextIO.putStrLn $ ctx ctxData c
+
 -- m a ~ pc  <- that printable context is actually of structure m a
 -- a ~ ()    <- otherwise we get the ambiguous variable error. we assume a is () 
 instance (PrintableContext pc, m a ~ pc, a ~ (), MonadTrans t, Monad m) => PrintableContext (t m a) where
   printInContext = lift . printInContext
+  unsilenceablePrintInContext = lift . unsilenceablePrintInContext
 
 newtype PrintContext a = PrintContext { fromPrintContext :: ReaderT CtxData IO a  } deriving (Functor, Applicative, Monad, MonadIO, MonadFail, MonadFix)
 
@@ -618,6 +630,7 @@ data CtxData = CtxData  -- basically stuff like printing options or something (e
   , printIdentifiers :: Bool
   , displayTypeParameters :: Bool
   , displayLocations :: Bool
+  , displayUnification :: Bool
   }
 
 phase :: (PrintableContext pctx, x () ~ pctx) => String -> pctx
@@ -626,12 +639,10 @@ phase text =
   in printInContext $ pf $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
 
 
-ctx :: (PP a, IsString s, Monoid s) => CtxData -> a -> s
-ctx c = if c.silent
-  then mempty
-  else fromString . show . flip runReader c . pp
+ctx :: (PP a, IsString s) => CtxData -> a -> s
+ctx c = fromString . show . flip runReader c . pp
 
-sctx :: (PP a, IsString s, Monoid s) => a -> s
+sctx :: (PP a, IsString s) => a -> s
 sctx = ctx showContext
 
 ppBody :: (a -> Context) -> Context -> [a] -> Context
@@ -742,6 +753,7 @@ ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
       AUndefinedReturn -> "goofy-ahh-undefined-return"
       AGoofyCast -> "goofy-ahh-cast"
       AGoofyPtrOffset -> "goofy-ahh-pointer-offset"
+      ADebugUnification -> "debug-unification"
 
     quote = pure . PP.squotes . PP.pretty
 

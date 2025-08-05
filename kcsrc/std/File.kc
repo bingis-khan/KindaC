@@ -1,6 +1,7 @@
 use Term
 use Cnile
 	NULL(NULL)
+	SEEKSHIT(SEEK-SET, SEEK-END)  # we can't seem to parse constructors properly.
 use Retarded
 use StrClass
 	Str(print-str, length)
@@ -30,9 +31,9 @@ try-read-contents (al, filename)
 	if file == null()
 		return None
 
-	Cnile.fseek(file, 0, Cnile.seek-end)
+	Cnile.fseek(file, 0, SEEK-END)
 	file-size = Cnile.ftell(file)
-	Cnile.fseek(file, 0, Cnile.seek-set)
+	Cnile.fseek(file, 0, SEEK-SET)
 
 	file-buf = al allocate(file-size + 1) as Slice Cnile.Char
 

@@ -1,0 +1,27 @@
+#$ Ambiguous variable error caused by double constraints (caused by not unifying before entering addConstraint body) (also kinda crappy - at this time we had repeating constraints. it shan't be like this. bruh.)
+# False
+
+
+use Retarded
+
+class SomeClass
+	do-shit (self _) -> whatever
+
+inst SomeClass Int
+	do-shit (self): self
+
+
+id (x): x
+
+n = Retarded.undefined()
+#[debug-unification]
+do-shit(n)
+do-shit(n)
+
+f = id
+f(n)
+
+#[debug-unification]
+print f == do-shit
+
+n <= 1

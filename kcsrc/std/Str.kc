@@ -6,6 +6,7 @@ use Iter
 	Iter(next)
 	all
 	zip
+	head
 use Slice
 	Slice
 	subslice
@@ -24,10 +25,14 @@ tupeq (Tuple(l, r)): l == r
 # for some reason, uncurry((l, r): l == r) generates an empty union somewhere during monomorphisation.
 eq (l, r): length(l) == length(r) and l chars() zip(r chars()) all(tupeq)
 
+char (s): s chars() head()
 
-#is-whitespace (c): False
-#
-#is-empty (s): True # s chars() all(x: True)
+is-whitespace (c):
+	   c == char(' ')
+	or c == char('\n')
+	or c == char('\t')
+
+is-blank (s): s chars() all(is-whitespace)
 
 
 # dyn str

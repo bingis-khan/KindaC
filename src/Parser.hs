@@ -500,6 +500,8 @@ annotation = do
         "goofy-ahh-cast" -> ann AGoofyCast
         "goofy-ahh-pointer-offset" -> ann AGoofyPtrOffset
 
+        "debug-unification" -> ann ADebugUnification
+
         unknownKey -> do
           registerExpect keyOffset unknownKey ["ctype", "cstdinclude", "clit"]
           pure Nothing

@@ -64,16 +64,13 @@ external fclose (file Ptr FILE) -> Void
 
 
 # that's how we define uppercase constants kekekekek
-#[ctype 'int']
+#[ctype 'int', cstdinclude 'stdio.h']
 SEEKSHIT
 	#[clit 'SEEK_SET']
-	SEEKSET
+	SEEK-SET
 
 	#[clit 'SEEK_END']
-	SEEKEND
-
-seek-set = SEEKSET
-seek-end = SEEKEND
+	SEEK-END
 
 
 #[ctype 'long int']
@@ -83,7 +80,7 @@ LongInt
 SizeT
 
 #[cstdinclude 'stdio.h']
-external fseek (file Ptr FILE, offset Int, origin Int) -> Void
+external fseek (file Ptr FILE, offset Int, origin SEEKSHIT) -> Void
 
 #[cstdinclude 'stdio.h']
 external ftell (file Ptr FILE) -> Int

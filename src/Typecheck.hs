@@ -24,7 +24,7 @@ import Control.Monad.Trans.RWS (RWST (RWST), runRWST)
 import qualified Control.Monad.Trans.RWS as RWS
 import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed, hoist, project, para)
-import Control.Monad (replicateM, zipWithM_, unless)
+import Control.Monad (replicateM, zipWithM_, unless, when)
 import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold, foldlM)
 import Data.Set (Set, (\\))
@@ -57,6 +57,10 @@ import Data.String (fromString)
 import Error (Error (..), renderError)
 import AST.Typed (FunOther(..))
 import qualified Data.List.NonEmpty as NonEmpty
+import Control.Monad.Trans.Class (lift)
+import Text.Megaparsec (sourceColumn)
+import Text.Megaparsec.Pos (unPos)
+import Text.Megaparsec (sourceLine)
 
 
 
@@ -67,7 +71,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 
 typecheck :: Maybe Prelude -> Module R -> PrintContext ([TypeError], Module TC)
 typecheck mprelude rStmts = do
-    let tcContext = Ctx { prelude = mprelude, returnType = Nothing }
+    let tcContext = Ctx { prelude = mprelude, returnType = Nothing, shouldPrintUnification = Nothing }
     let senv = emptySEnv  -- we add typechecking state here, because it might be shared between modules? (especially memoization!)... hol up, is there anything to even share?
 
     -- Step 1: Generate type substitution (typing context) based on the constraints.
@@ -136,8 +140,8 @@ generateSubstitution env senv rModule = do
 
       assocs <- RWS.gets associations
       pf "LAST ASSOCS: %" (pp $ fst <$> assocs) :: Infer ()
-      reportAssociationErrors
       su <- RWS.gets typeSubstitution
+      reportAssociationErrors
       -- addSelectedEnvironmentsFromInst
       -- liftIO $ Def.phase "TOP LEVEL BEFORE"
       -- Def.ctxPrint (Def.ppLines pp) tls
@@ -169,13 +173,17 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
     conStmtScaffolding = cata (fmap embed . inferAnnStmt)
 
     -- go through additional layers (in the future also position information)...
-    inferAnnStmt :: Base (AnnStmt R) (Infer a) -> Infer (Base (AnnStmt TC) a)
-    inferAnnStmt (O (O (Def.Annotated anns (Def.Located location rStmt)))) = do
+    inferAnnStmt :: (PP a, Substitutable a) => Base (AnnStmt R) (Infer a) -> Infer (Base (AnnStmt TC) a)
+    inferAnnStmt (O (O (Def.Annotated anns (Def.Located location rStmt)))) = printUni (unPos location.startPos.sourceLine) anns $ do
         tstmt <- bitraverse inferExpr id rStmt
 
         -- Map expr -> type for unification
         let ttstmt = first (\expr@(Fix (N en _)) -> (expr, en.t)) tstmt
-        O . O . Def.Annotated anns . Def.Located location <$> inferStmt location ttstmt
+        stmt'''@(O (O (Def.Annotated _ (Def.Located _ stmt''''')))) <- O . O . Def.Annotated anns . Def.Located location <$> inferStmt location ttstmt
+        su <- RWS.gets typeSubstitution
+        whenPrintingUni $ pf "STMT: %" stmt'''
+        whenPrintingUni $ pf "STMT: %" (subst su (stmt'''''))
+        pure stmt'''
 
     inferStmt :: Def.Location -> StmtF R (Expr TC, Type TC) a -> Infer (StmtF TC (Expr TC) a)
     inferStmt location stmt = case stmt of
@@ -576,7 +584,7 @@ inferVariableProto = \case
 
 
 inferConstructor :: R.Constructor -> Infer (DataCon TC)
-inferConstructor = \case
+inferConstructor = resetUniPrint . \case
   R.ExternalConstructor c -> pure c
   R.DefinedConstructor (DC rdd uc _ _) -> do
     (DD _ _ cons _) <- inferDataDef rdd
@@ -979,6 +987,9 @@ generalize ifn = do
 
   let generalizedFnWithScheme = generalizedFn { functionDeclaration = generalizedFn.functionDeclaration { functionOther = T.FunOther { T.functionScheme = scheme, T.functionAssociations = assocs, T.functionAnnotations = unsuFn.functionDeclaration.functionOther.functionAnnotations, T.functionLocation = unsuFn.functionDeclaration.functionOther.functionLocation } } }
 
+  pf "Substituted function %:" generalizedFn.functionDeclaration.functionId
+  pc generalizedFn
+
   -- Also, remember the substitution! (tvars might escape the environment)
   --  TODO: not sure if that's the best way. maybe instead of doing this, just add it in the beginning and resubstitute the function.
   substituting $ do
@@ -1050,6 +1061,8 @@ substAssociations = do
             (toLocation, to) `uni` justType instFunType
             pf "ENV ASSOC: %s" $ pp env
             addExtraToEnv envsToAddTo env
+
+            su <- RWS.gets typeSubstitution
 
             pure ((t, True), Map.singleton ((,instFunType) <$> baseUFI, uci) (from, (instAssocs, instFun), level, ufi))
 
@@ -1158,7 +1171,7 @@ rummageThroughAssociations funUV tyvars = do
   assocs <- RWS.gets associations
   let
     -- Then substitute it.
-    asTVar (T.TyV tyname classInstances) = TV tyname (BindByVar funUV) (Set.fromList $ fst <$> classInstances)
+    asTVar (T.TyV _ tyname classInstances) = TV tyname (BindByVar funUV) (Set.fromList $ fst <$> classInstances)
     su = Subst mempty $ Map.fromSet (Fix . TO . TVar . asTVar) tyvars
   let subAssociations = first (subst su) <$> assocs
 
@@ -1385,7 +1398,7 @@ inferDecon = cata $ \(N location d) -> fmap embed $ case d of
 
 -- TODO: merge it with 'inferVariable'.
 instantiateVariable :: Def.Location -> Def.Locality -> T.Variable -> Infer (Type TC, T.Variable)
-instantiateVariable location loc = \case
+instantiateVariable location loc = resetUniPrint . \case
   T.DefinedVariable v -> var v <&> (,T.DefinedVariable v)
   T.DefinedFunction fn _ snapshot _ -> do
     (t, v, env) <- instantiateFunction Nothing snapshot fn -- notice that we use the UFI from here (inferVariable just creates a temp error type to not use it)
@@ -1522,7 +1535,7 @@ associateType (fromLocation, based) (toLocation, result) cfd insts uci ufi = do
 -- addClassFunctionUse eu cfd self insts = RWS.modify $ \s -> s { classFunctionUnions = (eu, cfd, self, insts) : s.classFunctionUnions }
 
 instantiateConstructor :: Def.EnvID -> DataCon TC -> Infer (Type TC)
-instantiateConstructor envID = \case
+instantiateConstructor envID = resetUniPrint . \case
   DC dd@(DD _ scheme _ _) _ [] _ -> do
     (tvs, unions) <- instantiateScheme mempty scheme
     pure $ Fix $ TCon dd tvs unions
@@ -1736,17 +1749,32 @@ mkPtr insidePtr = do
 
 uni :: (Def.Location, Type TC)-> (Maybe Def.Location, Type TC) -> Infer ()
 uni (l1, t1) (l2, t2) = do
+  whenPrintingUni $ pf "% `uni` %" t1 t2
+  su <- RWS.gets typeSubstitution
+  whenPrintingUni $ pf "% `subst uni` %" (subst su t1) (subst su t2)
+  -- whenPrintingUni $ pf "%" (dbgSubst su)
   substituting $ do
     su <- RWS.gets ctxSubst
     let (t1', t2') = subst su (t1, t2)
     (l1, t1') `unify` (l2, t2')
 
+  su' <- RWS.gets typeSubstitution
+  whenPrintingUni $ pf "% `subst AFTER uni` %" (subst su' t1) (subst su' t2)
+
 uniMany :: (Def.Location, [Type TC]) -> (Maybe Def.Location, [Type TC]) -> Infer ()
-uniMany ts1 ts2 =
+uniMany ts1 ts2 = do
+  whenPrintingUni $ pf "uni many!"
   substituting $ do
     su <- RWS.gets ctxSubst
     let (ts1', ts2') = subst su (ts1, ts2)
     unifyMany ts1' ts2'
+
+whenPrintingUni :: Def.Context -> Infer ()
+whenPrintingUni x = do
+  shouldPrint <- RWS.asks shouldPrintUnification
+  case shouldPrint of 
+    Nothing -> pure ()
+    Just line -> Def.unsilenceablePrintInContext $ pf "%: %" line x
 
 -- maybe later get the location from the type?
 constrain :: Def.Location -> Type TC -> (ClassDef TC, T.PossibleInstances) -> Infer ()
@@ -1803,7 +1831,10 @@ unifyMany (ll, tl:ls) (lr, tr:rs) | length ls == length rs = do  -- quick fix - 
 unifyMany tl tr = err $ MismatchingNumberOfParameters tl tr
 
 addConstraint :: Def.Location -> Type TC -> (ClassDef TC, T.PossibleInstances) -> SubstCtx ()
-addConstraint location t (klass, instances) = case project t of
+addConstraint location t (klass, instances) = do
+  su <- RWS.gets ctxSubst
+  let t' = subst su t
+  case project t' of
       TCon dd _ _ -> do
         let mSelectedInst = instances !? dd
         case mSelectedInst of
@@ -1822,11 +1853,12 @@ addConstraint location t (klass, instances) = case project t of
         -- create new tyvar with both classes merged!
         let cids = (klass, instances) : tyv.tyvConstraints
         newtyv <- freshTyVarInSubst cids
+        pf "TVAR MAKER: New tyvar %. In %." newtyv tyv
         let bind' = bind (Left (location, Nothing))
         tyv `bind'` Fix (TO (TyVar newtyv))
 
       TFun {} ->
-        err $ FunctionTypeConstrainedByClass location t klass
+        err $ FunctionTypeConstrainedByClass location t' klass
 
 bind :: Either (Def.Location, Maybe Def.Location) (Maybe Def.Location, Def.Location) -> T.TyVar -> Type TC -> SubstCtx ()
 bind _ tyv (Fix (TO (TyVar tyv'))) | tyv == tyv' = nun
@@ -1933,14 +1965,17 @@ instance Substitutable (Exports TC) where
   subst su e = e { functions = subst su e.functions }
 
 instance Substitutable (AnnStmt TC) where
-  ftv = cata $ \(O (O (Def.Annotated _ (Def.Located _ stmt)))) -> case first ftv stmt of
+  ftv = cata $ \(O (O (Def.Annotated _ (Def.Located _ stmt)))) -> bifold $ first ftv stmt
+  subst su = cata $ embed . (\(O (O (Def.Annotated ann (Def.Located location stmt)))) -> (O . O . Def.Annotated ann . Def.Located location) (subst su stmt))
+
+  
+instance Substitutable a => Substitutable (StmtF TC (Expr TC) a) where
+  ftv stmt = case bimap ftv ftv stmt of
     Return ret -> ftv ret
     Mutation _ _ _ accesses e -> ftv accesses <> e
     s -> bifold s
 
-  subst su = cata $ embed . sub
-    where
-      sub (O (O (Def.Annotated ann (Def.Located location stmt)))) = O . O . Def.Annotated ann . Def.Located location $ case stmt of
+  subst su stmt = case stmt of
         Switch cond cases ->
           let cond' = subst su cond
               cases' = subst su cases
@@ -2207,15 +2242,17 @@ fresh = Fix . TO . T.TyVar <$> freshTyVar
 -- Supplies the underlying tyvar without the structure. (I had to do it, it's used in one place, where I need a deconstructed tyvar)
 freshTyVar :: Infer T.TyVar
 freshTyVar = do
+  uniq <- liftIO newUnique
   TVG nextVar <- RWS.gets tvargen
   RWS.modify $ \s -> s { tvargen = TVG (nextVar + 1) }
-  pure $ T.TyV (letters !! nextVar) mempty
+  pure $ T.TyV uniq (letters !! nextVar) mempty
 
 freshTyVarInSubst :: [(ClassDef TC, T.PossibleInstances)] -> SubstCtx T.TyVar
 freshTyVarInSubst cdis = do
+  uniq <- liftIO newUnique
   TVG nextVar <- RWS.gets ctxTvargen
   RWS.modify $ \s -> s { ctxTvargen = TVG (nextVar + 1) }
-  pure $ T.TyV (letters !! nextVar) cdis
+  pure $ T.TyV uniq (letters !! nextVar) cdis
 
 letters :: [Text]
 letters = map (Text.pack . ('\'':)) $ [1..] >>= flip replicateM ['a'..'z']
@@ -2257,6 +2294,7 @@ type SubstCtx = RWST () [TypeError] SubstState PrintContext     -- substitution
 data Context = Ctx
   { prelude :: Maybe Prelude
   , returnType :: Maybe (Type TC)
+  , shouldPrintUnification :: Maybe Int  -- should be in PrintContext, but we cannot modify the inner monad. we require a redesign!
   }
 
 data SubstState = SubstState
@@ -2358,7 +2396,12 @@ instance Error TypeError where
       Nothing -> ln (loc, Just $ pf "this one has type %" (pp t))
       Just loc' -> lns [(loc, Just $ pf "this one has type %" (pp t)), (loc', Just $ pf "this one has type %" (pp t'))]
 
-    MismatchingNumberOfParameters ts ts' -> error "MismatchingNumberOfParameters" --printf "Mismatching number of parameters: (%d) %s (%d) %s" (length ts) (sctx $ Def.ppList pp ts) (length ts') (sctx $ Def.ppList pp ts')
+    MismatchingNumberOfParameters (loc, ts) (mloc, ts') ->
+      let additionalLocation = case mloc of
+            Nothing -> mempty
+            Just l -> [(l, Nothing)]
+
+      in renderError source (pf "mismatching number of parameters: % vs %" ts ts') $ ln $ (loc, Nothing)  -- right now the right location is bogus,so there is no need to show it.
     AmbiguousType _ tyv -> pf "Ambigous type %" tyv --printf "Ambiguous type: %s" (sctx $ pp tyv)
 
     DataTypeDoesNotHaveMember location dd memname -> renderError source (pf "datatype % does not have member %" (ppDef dd) memname) $ ln (location, Nothing) --printf "Record type %s does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
@@ -2433,6 +2476,22 @@ justType = (Nothing,)
 -----
 -- DEBUG
 ----
+
+
+printUni :: Int -> [Def.Ann] -> Infer a -> Infer a
+printUni line anns ix = if Def.ADebugUnification `elem` anns
+  then do
+    oldAssocLength <- RWS.gets $ length . associations
+    x <- RWS.local (\r -> r { shouldPrintUnification = Just line }) ix
+    -- also other shit
+    assocs <- RWS.gets associations
+    let newAssocs = take (length assocs - oldAssocLength) assocs
+    Def.unsilenceablePrintInContext $ pf "Assocs generated right now: %" $ fst <$> newAssocs
+    pure x
+  else ix
+
+resetUniPrint :: Infer a -> Infer a
+resetUniPrint ix = RWS.local (\r -> r { shouldPrintUnification = Nothing }) ix
 
 dbgSubst :: Subst -> String
 dbgSubst (Subst unions ts) =

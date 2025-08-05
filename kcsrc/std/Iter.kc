@@ -116,7 +116,7 @@ all (iterable, fn)
 					return False
 
 
-for-each (iterable it, fn item -> Unit) <= IntoIter it
+for-each (iterable it, fn item -> whatever) <= IntoIter it
 	it = into-iter(iterable)
 	while True
 		case next(&it)
@@ -124,6 +124,19 @@ for-each (iterable it, fn item -> Unit) <= IntoIter it
 				return
 			Just(x)
 				fn(x)
+
+head (iterable it) <= IntoIter it
+	it = into-iter(iterable)
+	case next(&it)
+		None
+			# error, but im too scared
+			use Cnile
+			Cnile.printf('%s', 'head on empty iterable!')
+			Cnile.exit(1)
+
+		Just(x)
+			return x
+
 
 
 Range
@@ -175,3 +188,11 @@ inst Iter FromIter
 
 from (x Int):
 	FromIter { current: x }
+
+
+
+drop (iterable, amount Int)
+	pit =& into-iter(iterable)
+	0 to (amount) for-each(ignore: next(pit))  # this is not very good, if it had side effects, we would see them prematurely. but, we don't have to create an additional iterator because of it.
+	return pit&
+

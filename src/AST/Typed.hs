@@ -24,6 +24,7 @@ import Data.Functor ((<&>))
 import Data.String (fromString)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import Data.Unique (Unique)
 
 
 -- data Typed
@@ -114,7 +115,7 @@ data TOTF
   | TyVar TyVar
   deriving (Eq, Ord)
 
-data TyVar = TyV { fromTyV :: Text, tyvConstraints :: [(ClassDef TC, PossibleInstances)] }
+data TyVar = TyV { actualUnique :: Unique, fromTyV :: Text, tyvConstraints :: [(ClassDef TC, PossibleInstances)] }
 
 type PossibleInstances = Map (DataDef TC) (InstDef TC)
 type ScopeSnapshot = Map (ClassDef TC) PossibleInstances
@@ -278,7 +279,7 @@ instance Ord1 EnvF where
 
 
 instance Eq TyVar where
-  tyv == tyv' = tyv.fromTyV == tyv'.fromTyV
+  tyv == tyv' = tyv.actualUnique == tyv'.actualUnique
 
 instance Ord TyVar where
   tyv `compare` tyv' = tyv.fromTyV `compare` tyv'.fromTyV
@@ -318,8 +319,8 @@ instance PP EnvUnion where
 
 instance PP a => PP (EnvF a) where
   pp = \case
-    Env eid vs _ lev -> pp eid <> fromString (Def.printf "(%s)" (show lev)) <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
-    RecursiveEnv eid isEmpty -> fromString $ Def.printf "%s[REC%s]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+    Env eid vs _ lev -> pp eid <> fromString (Def.printf "(%)" (show lev)) <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
+    RecursiveEnv eid isEmpty -> fromString $ Def.printf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 instance PP TOTF where
   pp = \case
@@ -327,23 +328,28 @@ instance PP TOTF where
     TyVar tyv -> pp tyv
 
 instance PP TyVar where
-  pp (TyV t _) = "#" <> pp t
+  pp (TyV _ t constraints) =
+    let
+      tvarClasses = if null constraints
+        then ""
+        else Def.ppDef $ constraints <&> \(cd, insts) -> pf "(%, %)" (Def.ppDef cd) ((fmap Def.ppDef . Set.toList . Map.keysSet) insts) :: Def.Context
+    in "#" <> pp t <> tvarClasses
 
 instance PP ExprNode where
   pp en = pp en.t <+> pp en.loc
 
 instance PP FunctionTypeAssociation where
-  pp (FunctionTypeAssociation tv t _ _) = fromString $ Def.printf "(%s => %s)" (pp tv) (pp t)
+  pp (FunctionTypeAssociation tv t _ _) = fromString $ Def.printf "(% => %)" (pp tv) (pp t)
 
 instance PP TypeAssociation where
-  pp (TypeAssociation from to _ _ _ _) = fromString $ Def.printf "(%s => %s)" (pp (snd from)) (pp (snd to))
+  pp (TypeAssociation from to _ _ _ _) = fromString $ Def.printf "(% => %)" (pp (snd from)) (pp (snd to))
 
 instance PP a => PP (VariableF a) where
   pp = \case
     DefinedVariable v -> pp v
     DefinedFunction f assocs _ ufi -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv _ _ uci) -> pp (tv, uci)) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet pp assocs <> ")"
     DefinedClassFunction (CFD cd uv _ _ _ _) insts self uci ->
-      fromString $ Def.printf "%s&%s&C<%s>[%s]" (pp uv) (pp uci) (pp self) (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts)))
+      fromString $ Def.printf "%&%&C<%>[%]" (pp uv) (pp uci) (pp self) (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts)))
 
 instance PP LamDec where
   pp (LamDec uv env) = pp env <> pp uv
@@ -352,4 +358,4 @@ instance PP Scheme where
   pp (Scheme tvars unions) = Def.ppSet pp tvars <+> Def.ppSet pp unions
 
 instance {-# OVERLAPPING #-} PP ClassInstantiationAssocs where
-  pp classInstantiationAssocs = fromString $ Def.printf "CIA: %s" (Def.ppMap $ fmap (bimap pp (Def.ppTup . bimap pp (Def.ppTup . bimap (Def.encloseSepBy "[" "]" ", " . fmap pp) (\ifn -> pp ifn.instFunDec.functionId)))) $ fmap (\(ufiuci, (l, r, _, _)) -> (ufiuci, (l, r))) $ Map.toList classInstantiationAssocs)
+  pp classInstantiationAssocs = fromString $ Def.printf "CIA: %" (Def.ppMap $ fmap (bimap pp (Def.ppTup . bimap pp (Def.ppTup . bimap (Def.encloseSepBy "[" "]" ", " . fmap pp) (\ifn -> pp ifn.instFunDec.functionId)))) $ fmap (\(ufiuci, (l, r, _, _)) -> (ufiuci, (l, r))) $ Map.toList classInstantiationAssocs)

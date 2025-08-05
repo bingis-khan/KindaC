@@ -19,6 +19,7 @@ main = do
           else show thisTestId
   let testName = show groupId <> "_t" <> leftPaddedTestId <> "_" <> newName <> ".kc"
   saveTest filename testName
+  putStrLn testName
 
 saveTest :: FilePath -> FilePath -> IO ()
 saveTest fileToCopy testName = do

@@ -501,6 +501,7 @@ instance
     CaseConstructor uc [] -> pp uc
     CaseConstructor uc args@(_:_) -> pp uc <> Def.encloseSepBy "(" ")" ", " (pp <$> args)
     CaseRecord recordDD args -> pp recordDD <+> ppRecordMems  (Def.fmap2 pp args)
+    CaseIgnore -> "_"
 
 instance (PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (Type phase) where
   pp = para $ \case

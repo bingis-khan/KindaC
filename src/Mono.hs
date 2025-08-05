@@ -118,7 +118,7 @@ mAnnStmt = cata (fmap embed . f) where
         let currentEnvUses = fromMaybe mempty $ envInsts !? envID
         let envUses = Set.toList currentEnvUses <&> \(IM.EnvUse (Just fn) env) -> (fn, env)
 
-        pf "ENCOUNTERED FUN %s" (pp fn.functionDeclaration.functionId)
+        pf "ENCOUNTERED FUN %" (pp fn.functionDeclaration.functionId)
         envDefs <- orderEnvironments $ fst <$> envUses
         noann $ case envDefs of
           [] -> Pass
@@ -181,12 +181,12 @@ orderEnvironments fns = do
         completedEnvs <- State.gets completedEnvs
 
         let currentEnvsWithIncompleteEnvs = Def.fmap2 (filter ((\e -> e `Set.notMember` completedEnvs && not (isFromOuterEnv e)) . functionEnv . functionDeclaration)) currentEnvs
-        -- pf "CANDIDATES: %s" $ pp $ currentEnvsWithIncompleteEnvs <&> \(fn, deps) -> pp fn.functionDeclaration.functionId <+> pp (IM.envLevel fn.functionDeclaration.functionEnv) <+> (pp $ IM.envLevel . functionEnv . functionDeclaration <$> deps)
-        -- pf "CANDIDATES (filtered outer): %s" $ pp $ currentEnvsWithIncompleteEnvs <&> \(fn, deps) -> pp fn.functionDeclaration.functionId <+> pp (IM.envLevel fn.functionDeclaration.functionEnv) <+> (pp $ IM.envLevel . functionEnv . functionDeclaration <$> filterOuterEnvs deps)
+        -- pf "CANDIDATES: %" $ pp $ currentEnvsWithIncompleteEnvs <&> \(fn, deps) -> pp fn.functionDeclaration.functionId <+> pp (IM.envLevel fn.functionDeclaration.functionEnv) <+> (pp $ IM.envLevel . functionEnv . functionDeclaration <$> deps)
+        -- pf "CANDIDATES (filtered outer): %" $ pp $ currentEnvsWithIncompleteEnvs <&> \(fn, deps) -> pp fn.functionDeclaration.functionId <+> pp (IM.envLevel fn.functionDeclaration.functionEnv) <+> (pp $ IM.envLevel . functionEnv . functionDeclaration <$> filterOuterEnvs deps)
         let areAllDependentEnvsDefinedInThisScope = null . snd . fmap filterOtherEnvs
         let (complete, incomplete) = partition areAllDependentEnvsDefinedInThisScope currentEnvsWithIncompleteEnvs
-        -- pf "COMPLETE: %s" (pp $ functionId . functionDeclaration . fst <$> complete)
-        -- pf "INCOMPLETE: %s" (pp $ bimap (functionId . functionDeclaration) (fmap $ functionId . functionDeclaration) <$> incomplete)
+        -- pf "COMPLETE: %" (pp $ functionId . functionDeclaration . fst <$> complete)
+        -- pf "INCOMPLETE: %" (pp $ bimap (functionId . functionDeclaration) (fmap $ functionId . functionDeclaration) <$> incomplete)
         if null complete
           then do
             setIncomplete $ first (functionEnv . functionDeclaration) <$> incomplete  -- there could be some incomplete envs, so we must add them here.
@@ -200,7 +200,7 @@ orderEnvironments fns = do
     completeEnvironments :: Context [IM.EnvMod]
     completeEnvironments = do
         envsAndDependencies <- Map.toList <$> State.gets environmentsLeft
-        pf "ENVS AND DEPS: %s" (pp $ fmap (bimap pp (fmap (\fn -> fromString $ Def.printf "%s %s(%s)" (pp fn.functionDeclaration.functionId) (pp $ IM.envID fn.functionDeclaration.functionEnv) (pp $ IM.envLevel fn.functionDeclaration.functionEnv) :: Def.Context))) envsAndDependencies)
+        pf "ENVS AND DEPS: %" (pp $ fmap (bimap pp (fmap (\fn -> fromString $ Def.printf "% %(%)" (pp fn.functionDeclaration.functionId) (pp $ IM.envID fn.functionDeclaration.functionEnv) (pp $ IM.envLevel fn.functionDeclaration.functionEnv) :: Def.Context))) envsAndDependencies)
         completedEnvs <- State.gets completedEnvs
         vars <- State.gets lastEnvironment
         let
@@ -234,7 +234,7 @@ orderEnvironments fns = do
           else do
             let incompleteEnvsAndDeps = Def.fmap2 (filter ((`Set.notMember` completedEnvs) . functionEnv . functionDeclaration) . filterOuterEnvs . filterOtherEnvs) envsAndDependencies
             let newCompletedEnvs = fst <$> filter (null . snd) incompleteEnvsAndDeps
-            pf "COMPLETE ENVS: %s\nCOMPLETE INCOMPLETE ENVS: %s" (pp newCompletedEnvs) (pp $ Def.fmap3 (functionId . functionDeclaration) incompleteEnvsAndDeps)
+            pf "COMPLETE ENVS: %\nCOMPLETE INCOMPLETE ENVS: %" (pp newCompletedEnvs) (pp $ Def.fmap3 (functionId . functionDeclaration) incompleteEnvsAndDeps)
             setComplete newCompletedEnvs
             setIncomplete incompleteEnvsAndDeps
 
@@ -365,8 +365,8 @@ withEnv mfn env cx = do
 
   -- NOTE: recursively add environments all environments. (is not yet ready for recursiveness)
   let doEnvIncompletes (IM.Env _ envContent _) = concatMap ((\case { IM.DefinedFunction fn -> fn.functionDeclaration.functionEnv : doEnvIncompletes fn.functionDeclaration.functionEnv; _ -> [] }) . (\(v, _, _) -> v)) envContent
-  pf "WITH ENV INCOMPLETE: %s" $ pp $ doEnvIncompletes menv <&> \e -> (e, functionId . functionDeclaration <$> getEnvDependencies e)
-  pf "used envs: %s" (pp usedEnvs)
+  pf "WITH ENV INCOMPLETE: %" $ pp $ doEnvIncompletes menv <&> \e -> (e, functionId . functionDeclaration <$> getEnvDependencies e)
+  pf "used envs: %" (pp usedEnvs)
 
   setIncomplete $ (\e -> (e, filter ((== length curlev) . IM.envLevel . functionEnv . functionDeclaration) $ getEnvDependencies e)) <$> doEnvIncompletes menv
   x <- cx
@@ -383,7 +383,7 @@ withEnv mfn env cx = do
     }
 
 
-  pf "%sM: %s =WITH ENV%s=> %s" (pp $ T.envID env) (pp env) (case mfn of { Nothing -> "" :: Def.Context; Just fn -> fromString $ Def.printf " (%s)" $ pp fn.functionDeclaration.functionId }) (pp menv)
+  pf "%M: % =WITH ENV%=> %" (pp $ T.envID env) (pp env) (case mfn of { Nothing -> "" :: Def.Context; Just fn -> fromString $ Def.printf " (%)" $ pp fn.functionDeclaration.functionId }) (pp menv)
 
   pure (x, menv)
 
@@ -397,7 +397,7 @@ reLocality envStack ogLocality = \case
     let vfn = Common.instanceToFunction ivfn
     let (T.Env _ _ _ instEnvStack) = vfn.functionDeclaration.functionEnv
     let newLoc = if envStack == instEnvStack then Local else FromEnvironment (Def.envStackToLevel instEnvStack)
-    pf "NEW LOCALITY %s (%s =?= %s) OF VAR %s" (pp newLoc) (pp instEnvStack) (pp envStack) (pp v)
+    pf "NEW LOCALITY % (% =?= %) OF VAR %" (pp newLoc) (pp instEnvStack) (pp envStack) (pp v)
     pure newLoc
 
 
@@ -426,7 +426,7 @@ mDecon = cata $ fmap embed . \(N en d) -> do
       -- fun unsafe shit.
       let dd = case project mt of
             TCon mdd _ _ -> mdd
-            mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %s)" (pp (embed mpt))
+            mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
 
       margs <- for args $ \(mem, decon) -> do
         mdecon <- decon
@@ -449,8 +449,8 @@ variable (T.DefinedFunction vfn _ _ ufi) et = do
   pure $ IM.DefinedFunction mfn
 
 variable v@(T.DefinedClassFunction cfd snapshot self uci) et = do
-  pf "VARIABLE: %s" (pp v)
-  pf "SNAPSHOT WHEN CLASS: %s" $ T.dbgSnapshot snapshot
+  pf "VARIABLE: %" (pp v)
+  pf "SNAPSHOT WHEN CLASS: %" $ T.dbgSnapshot snapshot
 
   ivfn <- selectInstance snapshot self uci cfd
   let vfn = Common.instanceToFunction ivfn
@@ -469,12 +469,12 @@ mFunction uciOrUfi et vfn = do
   let (tts, tret, appliedAssocs, tenv) = forceFunctionType uciOrUfi et
 
   -- DEBUG: print a non-memoized type. This was used to check memoization errors.
-  pf "Decl (nomemo): %s -> %s" (Def.encloseSepBy "(" ")" ", " $ pp <$> tts) (pp tret)
+  pf "Decl (nomemo): % -> %" (Def.encloseSepBy "(" ")" ", " $ pp <$> tts) (pp tret)
 
   let tassocs = vfn.functionDeclaration.functionOther.functionAssociations <&> \(T.FunctionTypeAssociation _ t _ _) -> t
-  pf "t assocs: %s" $ Def.sepBy ", " $ pp <$> appliedAssocs
+  pf "t assocs: %" $ Def.sepBy ", " $ pp <$> appliedAssocs
   massocs <- traverse mType appliedAssocs
-  pf "m assocs: %s" (Def.sepBy ", " $ pp <$> massocs)
+  pf "m assocs: %" (Def.sepBy ", " $ pp <$> massocs)
 
   -- creates a type mapping for this function.
   let typemap
@@ -485,20 +485,20 @@ mFunction uciOrUfi et vfn = do
   withClassInstanceAssociations tenv $ withTypeMap typemap $ do
     -- NOTE: Env must be properly monomorphised with the type map, because it can also call other functions, so each env might have different types though albeit
     menv <- mEnvTypes vfn.functionDeclaration.functionEnv
-    pf "IM Env Types: %s" (pp menv)
+    pf "IM Env Types: %" (pp menv)
 
     -- see definition of Context for exact purpose of these parameters.
     fn <- flip (memo memoFunction (\mem s -> s { memoFunction = mem })) (vfn, tts, tret, menv) $ \(tfn, ts, ret, _) addMemo -> mdo
       uv <- newUniqueVar tfn.functionDeclaration.functionId
-      pf "VARIABLE OF MEMO: %s" (pp uv)
+      pf "VARIABLE OF MEMO: %" (pp uv)
 
       params <- flip zip ts <$> traverse (mDecon . fst) tfn.functionDeclaration.functionParameters
       let fundec = FD env uv params ret (IM.FunOther { IM.envInstantiations = envInsts, IM.functionAnnotations = vfn.functionDeclaration.functionOther.functionAnnotations }) :: FunDec IM
 
 
       -- DEBUG: when in the process of memoization, show dis.
-      pf "Decl: %s -> %s" (Def.encloseSepBy "(" ")" ", " $ pp <$> ts) (pp ret)
-      pf "M %s: %s" dbgFunctionTypeName (pp fundec.functionId)
+      pf "Decl: % -> %" (Def.encloseSepBy "(" ")" ", " $ pp <$> ts) (pp ret)
+      pf "M %: %" dbgFunctionTypeName (pp fundec.functionId)
 
 
       -- add memo, THEN traverse body.
@@ -521,7 +521,7 @@ mFunction uciOrUfi et vfn = do
     -- NOTE: moved outside of memoization, because we depend on these "registrations" to tell us which environments need to actually be memoized.
     --       this is bad btw, but that's how it currently works. see [doc/compiler/new-expansion-scheme]
     registerEnvMono (Just fn) (T.envID vfn.functionDeclaration.functionEnv) fn.functionDeclaration.functionEnv mempty
-    pf "REGISTERED FUNCTION %s (env: %s) with ENV INSTANTIATIONS: %s" (pp fn.functionDeclaration.functionId) (pp $ IM.envID fn.functionDeclaration.functionEnv) (pp fn.functionDeclaration.functionOther)
+    pf "REGISTERED FUNCTION % (env: %) with ENV INSTANTIATIONS: %" (pp fn.functionDeclaration.functionId) (pp $ IM.envID fn.functionDeclaration.functionEnv) (pp fn.functionDeclaration.functionOther)
     pure fn
 
 
@@ -543,7 +543,7 @@ selectInstance :: T.ScopeSnapshot -> Type TC -> Def.UniqueClassInstantiation -> 
 selectInstance snapshot self uci cfd@(CFD cd cfdId _ _ _ _) = do
   mself <- mType self
   ucis <- State.gets classInstantiationAssociations
-  pf "SNAPSHOT UCIS: %s" (ppDef $ Map.keysSet <$> ucis)
+  pf "SNAPSHOT UCIS: %" (ppDef $ Map.keysSet <$> ucis)
   case ucis !? uci of
     Just insts -> do
       let inst = mustSelectInstance mself insts
@@ -563,7 +563,7 @@ selectInstance snapshot self uci cfd@(CFD cd cfdId _ _ _ _) = do
           let selfTVar = case project self of
                 TO (T.TVar tv) -> Just tv
                 _ -> Nothing
-          error $ Def.printf "SNAPSHOT %s\nSNAPSHOT UCIS %s\nLOOKING FOR %s\nCOULD NOT FIND INSTANCE (tvar: %s, uci: %s, mt: %s) in %s (could get: (%s))" (T.dbgSnapshot snapshot) (ppDef $ Map.keysSet <$> ucis) (pp dd.ddName) (pp selfTVar) (pp uci) ("<type>" :: Def.Context) (pp cfdId) (Def.ppSet pp $ Set.toList $ Map.keysSet ucis)
+          error $ Def.printf "SNAPSHOT %\nSNAPSHOT UCIS %\nLOOKING FOR %\nCOULD NOT FIND INSTANCE (tvar: %, uci: %, mt: %) in % (could get: (%))" (T.dbgSnapshot snapshot) (ppDef $ Map.keysSet <$> ucis) (pp dd.ddName) (pp selfTVar) (pp uci) ("<type>" :: Def.Context) (pp cfdId) (Def.ppSet pp $ Set.toList $ Map.keysSet ucis)
 
 
 
@@ -574,11 +574,11 @@ mBody dbgName body = do
   -- This way we know how many environments we should create when we get to Inst or Fun.
   let usedVarsInCurrentScope = findUsedVarsInFunction body
 
-  pf "%s level vars: %s" dbgName $ Def.ppSet (\(v, _) -> pp v) $ Set.toList usedVarsInCurrentScope
+  pf "% level vars: %" dbgName $ Def.ppSet (\(v, _) -> pp v) $ Set.toList usedVarsInCurrentScope
   for_ (Set.toList usedVarsInCurrentScope) $ \(v, t) -> do
-    pf "%s level TYPE: %s" dbgName (pp t)
+    pf "% level TYPE: %" dbgName (pp t)
     mt <- mType t
-    pf "%s level VAR: %s" dbgName (pp v)
+    pf "% level VAR: %" dbgName (pp v)
     _ <- variable v mt
     pure ()
 
@@ -613,7 +613,7 @@ constructor tdc@(DC dd@(DD ut _ _ _) _ _ _) et = do
         TFun _ _ (Fix (TCon _ tts unions)) -> (tts, unions)
 
         -- COMPILER ERROR
-        _ -> error $ Def.printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%s)." (pp et)
+        _ -> error $ Def.printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%)." (pp et)
 
   mtypes <- traverse mType ttypes
 
@@ -626,7 +626,7 @@ constructor tdc@(DC dd@(DD ut _ _ _) _ _ _) et = do
   (_, dcQuery) <- mDataDef (dd, tm)
   let mdc = case dcQuery !? tdc of
         Just m -> m
-        Nothing -> error $ Def.printf "[COMPILER ERROR]: Failed to query an existing constructor for type %s.\n TypeMap: %s\n(applied TVs: %s, applied unions: %s) -> (applied TVs: %s, applied unions: %s)" (pp ut) (ppTypeMap tm) (Def.ppSet pp ttypes) (Def.ppSet pp tunions) (Def.ppSet pp mtypes) (Def.ppSet (maybe "?" (\u -> pp u.unionID <> (Def.ppSet (pp . T.envID) . NonEmpty.toList) u.union)) munions)
+        Nothing -> error $ Def.printf "[COMPILER ERROR]: Failed to query an existing constructor for type %.\n TypeMap: %\n(applied TVs: %, applied unions: %) -> (applied TVs: %, applied unions: %)" (pp ut) (ppTypeMap tm) (Def.ppSet pp ttypes) (Def.ppSet pp tunions) (Def.ppSet pp mtypes) (Def.ppSet (maybe "?" (\u -> pp u.unionID <> (Def.ppSet (pp . T.envID) . NonEmpty.toList) u.union)) munions)
 
   pure mdc
 
@@ -660,7 +660,7 @@ mType = cata $ \case
 
     TO (T.TVar tv) -> retrieveTV tv
 
-    TO (T.TyVar tv) -> error $ Def.printf "[COMPILER ERROR]: Encountered TyVar %s." (pp tv)
+    TO (T.TyVar tv) -> error $ Def.printf "[COMPILER ERROR]: Encountered TyVar %." (pp tv)
 
 
 -- ISSUE(unused-constructor-elimination): yeah, this is bad. we also need to remember to map the empty unions (through type map.)
@@ -718,7 +718,7 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(tdd@(DD ut
 
 
   -- DEBUG: how datatypes are transformed.
-  pf "Mono: %s" (Def.ppTypeInfo ut)
+  pf "Mono: %" (Def.ppTypeInfo ut)
   pf "======"
   pc tdcs
   pf "------"
@@ -726,7 +726,7 @@ mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(tdd@(DD ut
   pf ",,,,,,"
   pc $ either (const "n/a (it's a record.)") (Def.ppLines . fmap (\(DC _ uc _ _) -> Def.ppCon uc)) mdcs
   pf "======"
-  pf "Mono'd: %s" (pp nut)
+  pf "Mono'd: %" (pp nut)
 
   -- used only by non-record types!
   let dcQuery = Map.fromList $ case (strippedDCs, mdcs) of
@@ -784,10 +784,10 @@ withClassInstanceAssociations ci a = do
 
         _ -> undefined
 
-  pf "WITH CLASS INSTANCE ASSOCIATIONS:\n\tOLD: %s\n\tNEW: %s\n\tWHAT: %s" (ppDef $ Map.keysSet <$> ogTM) (ppDef $ Map.keysSet <$> classFuns) (ppDef $ Def.fmap2 Map.keysSet what <&> \(uci, dds) -> fromString (Def.printf "%s: %s" (ppDef uci) (ppDef dds)) :: Def.Context)
+  pf "WITH CLASS INSTANCE ASSOCIATIONS:\n\tOLD: %\n\tNEW: %\n\tWHAT: %" (ppDef $ Map.keysSet <$> ogTM) (ppDef $ Map.keysSet <$> classFuns) (ppDef $ Def.fmap2 Map.keysSet what <&> \(uci, dds) -> fromString (Def.printf "%: %" (ppDef uci) (ppDef dds)) :: Def.Context)
 
   -- this should probably be a reader thing.
-  -- pf "WITH CLASS INSTANTIATIONS (env %s): %s" (pp (T.envID ci)) $ ppDef $ Map.keysSet <$> classFuns
+  -- pf "WITH CLASS INSTANTIATIONS (env %): %" (pp (T.envID ci)) $ ppDef $ Map.keysSet <$> classFuns
   x <- State.withStateT (\s -> s { classInstantiationAssociations = classFuns }) a
   State.modify $ \s -> s { classInstantiationAssociations = ogTM }
 
@@ -827,7 +827,7 @@ mUnion tunion = do
                 let menvs = tunion'.union <&> \(_, _, _, env) -> env
                 case menvs of
                   -- literally impossible as there would be no FTVs otherwise...
-                  [] -> error $ Def.printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
+                  [] -> error $ Def.printf "[COMPILER ERROR]: Encountered an empty union (ID: %) - should not happen." (show tunion.unionID)
 
                   (e:es) -> do
                     -- preserve ID!!!!
@@ -841,7 +841,7 @@ mUnion tunion = do
               memo' memoUnion (\mem mctx -> mctx { memoUnion = mem }) tunion' $ \tunion'' _ -> do
                 let menvs = tunion''.union <&> \(_, _, _, env) -> env
                 case menvs of
-                  [] -> error $ Def.printf "[COMPILER ERROR]: Encountered an empty union (ID: %s) - should not happen." (show tunion.unionID)
+                  [] -> error $ Def.printf "[COMPILER ERROR]: Encountered an empty union (ID: %) - should not happen." (show tunion.unionID)
 
                   (e:es) -> do
                     nuid <- newUnionID
@@ -1064,7 +1064,7 @@ mfDecon = cata $ \(N t e) -> do
       -- fun unsafe shit.
       let dd = case project mt of
             TCon mdd _ _ -> mdd
-            mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %s)" (pp (embed mpt))
+            mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
 
       decons' <- for decons $ \(um, decon) -> do
         mdecon <- decon
@@ -1171,7 +1171,7 @@ mfType = para $ fmap embed . \case
     mret <- ret
     pure $ TFun munion margs mret
 
-  TO (IM.TVar tv) -> error $ pf "[COMPILER ERROR]: TVar %s not matched - types not appied correctly?" (pp tv)
+  TO (IM.TVar tv) -> error $ pf "[COMPILER ERROR]: TVar % not matched - types not appied correctly?" (pp tv)
 
 
 
@@ -1181,9 +1181,9 @@ mfUnion = memo memoIUnion (\mem s -> s { memoIUnion = mem }) $ \union _ -> do
   mappedEnvs <- case cuckedUnions !? union of
       -- here should be no ftvs.
       Nothing -> fmap concat $ for (NonEmpty.toList union.union) $ \env -> do
-          pf "???: %s ?? %s" (pp env) (show $ null (foldMap ftvButIgnoreUnions env))
+          pf "???: % ?? %" (pp env) (show $ null (foldMap ftvButIgnoreUnions env))
           menv <- mfEnv env
-          pf "NOFTV: %s => %s" (pp env) (maybe "???" pp menv)
+          pf "NOFTV: % => %" (pp env) (maybe "???" pp menv)
           pure $ maybeToList menv
 
       -- here should also be no ftvs in the NEW UNION
@@ -1194,7 +1194,7 @@ mfUnion = memo memoIUnion (\mem s -> s { memoIUnion = mem }) $ \union _ -> do
         pure menvs
 
   -- NOTE: I HATE THIS FUCKING ERROR LIKE YOU WOULDN'T BELIEVE.
-  pf "mfUnion: %s => %s" (pp union) (Def.encloseSepBy "{" "}" ", " $ pp <$> mappedEnvs)
+  pf "mfUnion: % => %" (pp union) (Def.encloseSepBy "{" "}" ", " $ pp <$> mappedEnvs)
   let mUsedEnvs = case mappedEnvs of
         [] -> error $ "[COMPILER ERROR] Empty union (" <> show union.unionID <> ") encountered... wut!??!??!?!? Woah.1>!>!>!>!>>!"
         (x:xs) -> x :| xs
@@ -1228,7 +1228,7 @@ mfDataDef = memo memoIDatatype (\mem s -> s { memoIDatatype = mem }) $ \(idd, _)
 
 mfFunction :: Function IM -> EnvContext (Function M)
 mfFunction = memo memoIFunction (\mem s -> s { memoIFunction = mem }) $ \fun _ -> do  -- maybe we should addMemo earlier?
-  pf "MF function %s" (pp fun.functionDeclaration.functionId)
+  pf "MF function %" (pp fun.functionDeclaration.functionId)
   pc fun
   -- 
   -- just map everything.
@@ -1260,7 +1260,7 @@ mfConstructor dc@(DC dd _ _ _) imt = do
         TFun _ _ (Fix (TCon _ _ unions)) -> unions
 
         -- COMPILER ERROR
-        _ -> error $ Def.printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%s)." (pp imt)
+        _ -> error $ Def.printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%)." (pp imt)
 
   -- mtypes <- traverse mfType ttypes
   munions <- traverse mfUnion imunions
@@ -1285,12 +1285,12 @@ ftvButIgnoreUnions = cata $ \case
 expectIDataDef :: Type IM -> DataDef IM
 expectIDataDef mt = case project mt of
     TCon mdd _ _ -> mdd
-    mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %s)" (pp (embed mpt))
+    mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
 
 expectDataDef :: Type M -> DataDef M
 expectDataDef mt = case project mt of
     TCon mdd _ _ -> mdd
-    mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %s)" (pp (embed mpt))
+    mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
 
 
 
@@ -1333,5 +1333,5 @@ mustSelectInstance :: Type IM -> T.PossibleInstances -> InstDef TC
 mustSelectInstance (Fix (TCon mdd _ _)) insts =
   case insts !? mdd.ddScheme.ogDataDef of
     Just instdef -> instdef
-    Nothing -> error $ Def.printf "INSTANCE FOR %s DOES NOT EXIST." (ppDef mdd)
+    Nothing -> error $ Def.printf "INSTANCE FOR % DOES NOT EXIST." (ppDef mdd)
 mustSelectInstance _ _ = error "TRYING TO SELECT AN INSTANCE FOR A FUNCTION."
