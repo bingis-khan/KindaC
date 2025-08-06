@@ -1,0 +1,24 @@
+class Whattf
+	dafuq (self _) -> Unit
+
+inst Whattf Int
+	dafuq (self): Unit
+
+MyThing a
+	x a
+
+myget (mt MyThing a) -> a
+	return mt.x
+
+furech (iterable MyThing a, fn a -> whatever)
+	iterable myget() fn()
+	return
+
+my-thing (self MyThing a) <= Whattf a
+	self furech(elem: dafuq(elem))
+	return
+
+slice = MyThing { x: 69 }  # Slice.empty() as Slice Int
+my-thing(slice)
+my-thing(slice)
+

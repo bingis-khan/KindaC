@@ -193,6 +193,6 @@ from (x Int):
 
 drop (iterable, amount Int)
 	pit =& into-iter(iterable)
-	0 to (amount) for-each(ignore: next(pit))  # this is not very good, if it had side effects, we would see them prematurely. but, we don't have to create an additional iterator because of it.
+	0 to (amount - 1) for-each(ignore: next(pit))  # this is not very good, if it had side effects, we would see them prematurely. but, we don't have to create an additional iterator because of it.
 	return pit&
 

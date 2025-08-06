@@ -1,0 +1,12 @@
+(new errors as in errors that appeared after compiler became fairly complete)
+
+
+Should functions with the same union have the same type? I'm not sure.
+	But, different types are likely with associated types. Like that error I had.
+	Solution: also store the function parameters and return type alongside union. Do it with cucked unions too, as it's also possible. (todo: make a test for this, would be interesting.)
+	If we were to more liberally generate unions (like, with each USE, also no need to backtrack), then this might become unneeded (maybe?????)???????
+
+	ALSO, should we modify Scheme to also have function types? (i think so, as they can be instantiated to whatever... kinda. like, they can go through a datatype too) (todo: add a test for this!)
+		So it seems like we should just turn functions into parameters!
+
+Also, it turns out env expansion is busted. If we put it in a function and return the function, incorrect code will be generated (incorrect monomorphization). How do I solve this?

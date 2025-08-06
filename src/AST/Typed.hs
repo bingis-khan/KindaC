@@ -90,7 +90,7 @@ type instance XDClass TC = Def.UniqueClass
 type instance XDCon TC = Def.UniqueCon
 type instance XDTCon TC = Def.UniqueType
 type instance Rec TC a = a
-type instance XTConOther TC = [EnvUnion]
+type instance XTConOther TC = [(EnvUnion, [Type TC], Type TC)]  -- IT SEEMS LIKE WE SHOULD JUST MAKE FUNCTIONS IMPLICIT PARAMETERS!
 type instance XTOther TC = TOTF
 type instance XClass TC = ClassDef TC
 type instance XClassFunDec TC = ClassFunDec TC
@@ -125,11 +125,12 @@ data VariableF t
   -- scope snapshots might not be needed!
   -- Here, we need to store the instances. They must also be up for substitution. How would I represent it?
   -- TODO: Right now, we are substituting UCIs at the end of a function. What we can do right now, is we can also substitute this map. I can do this better probably - maybe we can associate function instantiations with a specific TVar?
-  | DefinedFunction (Function TC) [t] ScopeSnapshot Def.UniqueFunctionInstantiation
+  | DefinedFunction (Function TC) [t] ScopeSnapshot Def.UniqueFunctionInstantiation IsFromExternalModule
   | DefinedClassFunction (ClassFunDec TC) ScopeSnapshot t Def.UniqueClassInstantiation  -- which class function and which instances are visible at this point. 
   -- deriving (Eq, Ord)
   deriving (Functor, Foldable, Traversable)
 type Variable = VariableF (Type TC)
+type IsFromExternalModule = Bool  -- FOR OPTIMIZATION, SO WE WON'T POINTLESSLY TRY TO SUBSTITUTE FOREIGN FUNCTIONS!
 
 data VariableProto
   = PDefinedVariable Def.UniqueVar
@@ -161,7 +162,7 @@ data FunOther = FunOther
   , functionLocation :: Def.Location
   }
 
-data Scheme = Scheme [TVar TC] [EnvUnion]
+data Scheme = Scheme [TVar TC] [(EnvUnion, [Type TC], Type TC)]  -- type are stored with scheme ONLY FOR CONVENIENCE, SO WE WON'T HAVE TO RE-SEARCH FOR THEM.
 
 data FunctionTypeAssociation = FunctionTypeAssociation (TVar TC) (Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation
 
@@ -216,7 +217,7 @@ envID = \case
 asProto :: Variable -> VariableProto
 asProto = \case
   DefinedVariable v -> PDefinedVariable v
-  DefinedFunction fn _ _ _ -> PDefinedFunction fn
+  DefinedFunction fn _ _ _ _ -> PDefinedFunction fn
   DefinedClassFunction cd _ _ _ -> PDefinedClassFunction cd
 
 ---------
@@ -225,18 +226,18 @@ asProto = \case
 -- This is currently how we extract unions from types.
 -- This needs to be done, because custom types need to track which unions were used.
 -- TODO: this should probably be made better. Maybe store those unions in DataDef?
-extractUnionsFromDataType :: DataDef TC -> [EnvUnion]
+extractUnionsFromDataType :: DataDef TC -> [(EnvUnion, [Type TC], Type TC)]
 extractUnionsFromDataType (DD _ _ (Right dcs) _) =
   concatMap extractUnionsFromConstructor dcs
 
 extractUnionsFromDataType dd@(DD ut _ (Left drs) _) =
   flip concatMap drs $ \(Def.Annotated _ (_, t)) -> mapUnion ut t
 
-extractUnionsFromConstructor :: DataCon TC -> [EnvUnion]
+extractUnionsFromConstructor :: DataCon TC -> [(EnvUnion, [Type TC], Type TC)]
 extractUnionsFromConstructor (DC (DD ut _ _ _) _ ts _) = concatMap (mapUnion ut) ts
 
 -- TODO: clean up all the mapUnion shit. think about proper structure.
-mapUnion :: Def.UniqueType -> Type TC -> [EnvUnion]
+mapUnion :: Def.UniqueType -> Type TC -> [(EnvUnion, [Type TC], Type TC)]
 mapUnion ut (Fix t) = case t of
   -- TODO: explain what I'm doing - somehow verify if it's correct (with the unions - should types like `Proxy (Int -> Int)` store its union in conUnions? or `Ptr (Int -> Int)`?).
   TCon (DD tut _ _ _) paramts conUnions
@@ -244,7 +245,7 @@ mapUnion ut (Fix t) = case t of
     | tut == ut -> concatMap (mapUnion ut) paramts
     | otherwise -> conUnions <> concatMap (mapUnion ut) paramts
 
-  TFun u args ret -> [u] <> concatMap (mapUnion ut) args <> mapUnion ut ret
+  TFun u args ret -> [(u, args, ret)] <> concatMap (mapUnion ut) args <> mapUnion ut ret
   TO _ -> []
 
 isUnionEmpty :: EnvUnionF t -> Bool
@@ -288,14 +289,14 @@ instance Ord TyVar where
 instance Eq Variable where
   l == r = case (l, r) of
     (DefinedVariable uv, DefinedVariable uv') -> uv == uv'
-    (DefinedFunction fn ts _ ufi, DefinedFunction fn' ts' _ ufi') -> (fn, ts, ufi) == (fn', ts', ufi')
+    (DefinedFunction fn ts _ ufi _, DefinedFunction fn' ts' _ ufi' _) -> (fn, ts, ufi) == (fn', ts', ufi')
     (DefinedClassFunction cfd _ t uci, DefinedClassFunction cfd' _ t' uci') -> (cfd, t, uci) == (cfd', t', uci')
     _ -> False
 
 instance Ord Variable where
   l `compare` r = case (l, r) of
     (DefinedVariable uv, DefinedVariable uv') -> uv `compare` uv'
-    (DefinedFunction fn ts _ ufi, DefinedFunction fn' ts' _ ufi') -> (fn, ts, ufi') `compare` (fn', ts', ufi')
+    (DefinedFunction fn ts _ ufi _, DefinedFunction fn' ts' _ ufi' _) -> (fn, ts, ufi') `compare` (fn', ts', ufi')
     (DefinedClassFunction cfd _ t uci, DefinedClassFunction cfd' _ t' uci') -> (cfd, t, uci) `compare` (cfd', t', uci')
 
     (DefinedVariable {}, _) -> LT
@@ -308,13 +309,13 @@ instance Ord Variable where
 
 --------
 
-instance (PP (XLVar phase), PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XTOther phase), PP (XTFun phase), PP (XExprNode phase), Def.PPDef (XTCon phase), PP (XLamVar phase), PP (XMutAccess phase), PP (XStringInterpolation phase)) => PP (Mod phase) where
+instance (PP (XLVar phase), PP (XTVar phase), PP (XVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XTOther phase), PP (XTFun phase), PP (XExprNode phase), Def.PPDef (XTCon phase), PP (XLamVar phase), PP (XMutAccess phase), PP (XStringInterpolation phase), PP (XTConOther phase)) => PP (Mod phase) where
   pp m = Def.ppLines m.topLevelStatements
 
 instance PP FunOther where
   pp fo = pp fo.functionScheme
 
-instance PP EnvUnion where
+instance PP t => PP (EnvUnionF t) where
   pp EnvUnion { unionID = uid, union = us } = pp uid <> Def.encloseSepBy "{" "}" ", " (pp <$> us)
 
 instance PP a => PP (EnvF a) where
@@ -347,7 +348,7 @@ instance PP TypeAssociation where
 instance PP a => PP (VariableF a) where
   pp = \case
     DefinedVariable v -> pp v
-    DefinedFunction f assocs _ ufi -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv _ _ uci) -> pp (tv, uci)) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet pp assocs <> ")"
+    DefinedFunction f assocs _ ufi _ -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv _ _ uci) -> pp (tv, uci)) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet pp assocs <> ")"
     DefinedClassFunction (CFD cd uv _ _ _ _) insts self uci ->
       fromString $ Def.printf "%&%&C<%>[%]" (pp uv) (pp uci) (pp self) (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts)))
 
@@ -355,7 +356,7 @@ instance PP LamDec where
   pp (LamDec uv env) = pp env <> pp uv
 
 instance PP Scheme where
-  pp (Scheme tvars unions) = Def.ppSet pp tvars <+> Def.ppSet pp unions
+  pp (Scheme tvars unions) = Def.ppSet pp tvars <+> Def.ppSet pp (unions <&> \(u, params, ret) -> pf "%% -> %" u params ret :: Def.Context)
 
 instance {-# OVERLAPPING #-} PP ClassInstantiationAssocs where
   pp classInstantiationAssocs = fromString $ Def.printf "CIA: %" (Def.ppMap $ fmap (bimap pp (Def.ppTup . bimap pp (Def.ppTup . bimap (Def.encloseSepBy "[" "]" ", " . fmap pp) (\ifn -> pp ifn.instFunDec.functionId)))) $ fmap (\(ufiuci, (l, r, _, _)) -> (ufiuci, (l, r))) $ Map.toList classInstantiationAssocs)

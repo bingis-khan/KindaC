@@ -1,0 +1,34 @@
+#$ Returning an env-expanded function (i should make more tests like this when I get the chance to work on this problem)
+# 123
+
+
+return-expanded ()
+	uni (l a, r a) -> Unit
+		return
+
+	f = :123
+
+	ff (x) -> Unit
+		gg (y) -> Unit
+			sumtin ()
+				print x
+				print y
+				return 123
+
+			uni(f, sumtin)
+			return
+
+		gg(True)
+		gg(Unit)
+
+		return
+
+	ff(123)
+	ff(True)
+	ff(Unit)
+
+	print f()
+	return f
+
+fff = return-expanded()
+fff()

@@ -431,11 +431,14 @@ instance PPDef ModuleName where
 instance PP UniqueVar where
   pp uv = pp uv.varName <> "@" <> pp uv.varID
 
+instance PPDef UniqueVar where
+  ppDef uv = pp uv.varName <> "@" <> pp uv.varID
+
 instance PP UniqueCon where
   pp = ppCon
 
 instance PP UniqueType where
-  pp ut = pp ut.typeName
+  pp = ppTypeInfo
 
 instance PP UniqueClass where
   pp ucl = pp ucl.className
@@ -560,6 +563,9 @@ newtype PrintContext a = PrintContext { fromPrintContext :: ReaderT CtxData IO a
 
 inPrintContext :: CtxData -> PrintContext a -> IO a
 inPrintContext ctxData pcx = Reader.runReaderT (fromPrintContext pcx) ctxData
+
+localPrintContext :: CtxData -> PrintContext a -> PrintContext a
+localPrintContext c p = PrintContext $ Reader.local (const c) $ fromPrintContext p
 
 
 ------------

@@ -52,7 +52,7 @@ type instance XStringInterpolation M = Text
 newtype EnvDefs = EnvDefs [Either EnvMod EnvDef]
 
 data EnvDef = EnvDef
-  { envDef :: Function M
+  { envDef :: Function M  -- multiple functions can use the same environment! so put multiple functions here later for documentation!
 
   -- this tells us which functions are not yet instantiated and should be excluded.
   , notYetInstantiated :: [Function M]
@@ -140,7 +140,7 @@ instance PP EnvDefs where
 
 instance PP EnvDef where
   pp (EnvDef { envDef, notYetInstantiated = [] }) = pp envDef
-  pp (EnvDef { envDef, notYetInstantiated }) = Def.ppBody' pp (fromString $ Def.printf "%s \\\\ %s" (pp envDef.functionDeclaration) (Def.encloseSepBy "{" "}" ", " $ pp . functionDeclaration <$> notYetInstantiated)) envDef.functionBody -- Def.ppBody' pp (pp envDef.functionDeclaration <+>  "|" <+> Def.encloseSepBy "" "" ", " (notYetInstantiated <&> \fn -> pp fn.functionDeclaration.functionId)) envDef.functionBody
+  pp (EnvDef { envDef, notYetInstantiated }) = Def.ppBody' pp (fromString $ Def.printf "% \\\\ %" (pp envDef.functionDeclaration) (Def.encloseSepBy "{" "}" ", " $ pp . functionDeclaration <$> notYetInstantiated)) envDef.functionBody -- Def.ppBody' pp (pp envDef.functionDeclaration <+>  "|" <+> Def.encloseSepBy "" "" ", " (notYetInstantiated <&> \fn -> pp fn.functionDeclaration.functionId)) envDef.functionBody
 
 instance PP EnvMod where
   pp em =
@@ -161,7 +161,7 @@ instance PP EnvUnion where
 instance PP Env where
   pp = \case
     Env eid vs -> pp eid <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
-    RecursiveEnv eid isEmpty -> fromString $ Def.printf "%s[REC%s]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+    RecursiveEnv eid isEmpty -> fromString $ Def.printf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 
 instance PP Variable where

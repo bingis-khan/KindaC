@@ -25,7 +25,7 @@ import AST.Typed (TC, Mod (topLevelStatements))
 import AST.Def (Result(..), phase, PrintContext, pc, pf)
 import Mono (mono)
 import CPrinter (cModule)
-import CompilerContext (CompilerContext)
+import CompilerContext (CompilerContext (..))
 import qualified CompilerContext as Compiler
 import Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.Trans.RWS as RWST
@@ -45,11 +45,11 @@ stdPath = "/home/bob/prj/KindaC/kcsrc/std/"
 -- Loads and typechecks a module.
 --   TODO: WRT errors: I should probably make a type aggregating all the different types of errors and put it in AST.hs.
 --   However, right now, I can just turn them into strings. THIS IS TEMPORARY.
-loadModule :: FilePath -> CompilerContext (Maybe (Module TC))
-loadModule filename = do
+loadModule :: Bool -> FilePath -> CompilerContext (Maybe (Module TC))
+loadModule debugPrintFirstModule filename = (if not debugPrintFirstModule then Compiler.silentContext else id) $ do
   let moduleName = Text.pack $ FilePath.takeFileName filename
   source <- liftIO $ TextIO.readFile filename
-  prelude <- RWST.asks Compiler.prelude
+  prelude <- CompilerContext $ RWST.asks Compiler.prelude
 
   phase "Parsing"
   case parse filename source of
@@ -66,7 +66,7 @@ loadModule filename = do
 
       
       phase "Typechecking"
-      (terrs, tmod) <- lift $ typecheck (Just prelude) rmod
+      (terrs, tmod) <- Compiler.asPrintContext $ typecheck (Just prelude) rmod
 
       Compiler.addErrors moduleName $ map (" " <>) $ s2t source rerrs ++ s2t source terrs
       pure $ Just tmod
@@ -74,7 +74,7 @@ loadModule filename = do
 
 moduleLoader :: Text -> Compiler.ModuleLoader
 moduleLoader compilingModule mq = do
-  mtmod <- RWST.gets Compiler.loadedModules
+  mtmod <- CompilerContext $ RWST.gets Compiler.loadedModules
   case mtmod !? mq of
     Nothing -> do
       filepath <- Compiler.mkModulePath mq
@@ -83,7 +83,7 @@ moduleLoader compilingModule mq = do
       projectModuleExists <- liftIO $ Directory.doesFileExist filepath
       if projectModuleExists
         then do
-          lmtmod <- Compiler.relativeTo filepath $ loadModule filepath
+          lmtmod <- Compiler.relativeTo filepath $ loadModule False filepath
           Compiler.storeModule mq lmtmod
           pure lmtmod
 
@@ -92,7 +92,7 @@ moduleLoader compilingModule mq = do
           stdModuleExists <- liftIO $ Directory.doesFileExist stdpath
           if stdModuleExists
             then do
-              lmtmod <- Compiler.relativeTo stdpath $ loadModule stdpath
+              lmtmod <- Compiler.relativeTo stdpath $ loadModule False stdpath
               Compiler.storeModule mq lmtmod
               pure lmtmod
             else do

@@ -523,12 +523,12 @@ inferVariable location = \case
 
   R.ExternalFunction fn rsnapshot -> do
     snapshot <- inferSnapshot rsnapshot
-    pure $ T.DefinedFunction fn mempty snapshot tempFunctionInstantiation
+    pure $ T.DefinedFunction fn mempty snapshot tempFunctionInstantiation True
 
   R.DefinedFunction fn rsnapshot -> do
     tfn <- inferFunction fn
     snapshot <- inferSnapshot rsnapshot
-    pure $ T.DefinedFunction tfn mempty snapshot tempFunctionInstantiation
+    pure $ T.DefinedFunction tfn mempty snapshot tempFunctionInstantiation False
 
   R.ExternalClassFunction cfd@(CFD cd _ _ _ () _) rsnapshot -> do
     -- insts <- fmap Map.fromList $ for (Map.toList (rinsts ! )) $ \(rdd, rinst) -> do
@@ -626,12 +626,17 @@ inferType = cata $ (.) (fmap embed) $ \case
   TCon (R.DefinedDatatype rdd) rparams () -> do
     dd <- inferDataDef rdd
     params <- sequenceA rparams
-    let unions = T.extractUnionsFromDataType dd  -- TODO: shouldn't this be cloned???
+    (newParams, unions) <- instantiateScheme mempty dd.ddScheme
+
+    (error "todo", newParams) `uniMany` (Nothing, params) -- just in case unify em
+    
     pure $ TCon dd params unions
 
   TCon (R.ExternalDatatype dd) rparams () -> do
     params <- sequenceA rparams
-    let unions = T.extractUnionsFromDataType dd  -- TODO: same here...
+    (newParams, unions) <- instantiateScheme mempty dd.ddScheme
+
+    (error "todo", newParams) `uniMany` (Nothing, params) -- just in case unify em
     pure $ TCon dd params unions
 
   TO (R.TClass rcd) -> do
@@ -658,7 +663,7 @@ mkTypeFromClassType :: Type TC -> ClassType TC -> Type TC
 mkTypeFromClassType self = cata $ fmap embed $ \case
   Self -> project self
   NormalType nt -> case nt of
-    TCon dd params _ -> TCon dd params (T.extractUnionsFromDataType dd)
+    TCon dd params _ -> TCon dd params $ T.extractUnionsFromDataType dd  -- i think it's safe here to extractUnions, since it'll get instantiated anyway?
     TO tv -> TO tv
     TFun emptyFunUnion params ret -> TFun emptyFunUnion params ret
 
@@ -1056,7 +1061,8 @@ substAssociations = do
             -- hope it's correct....
             -- let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
             -- TODO: FromEnvironment locality only here, because it means we won't add anything extra to the instantiations.
-            (instFunType, T.DefinedFunction fn instAssocs _ ufi, env@(T.Env _ _ _ level)) <- instantiateFunction (Just uci) insts $ Function instFun.instFunDec instFun.instFunBody
+            let notExternalBecauseWeDontKnow = False
+            (instFunType, T.DefinedFunction fn instAssocs _ ufi _, env@(T.Env _ _ _ level)) <- instantiateFunction notExternalBecauseWeDontKnow fromLocation (Just uci) insts $ Function instFun.instFunDec instFun.instFunBody
 
             (toLocation, to) `uni` justType instFunType
             pf "ENV ASSOC: %s" $ pp env
@@ -1251,14 +1257,14 @@ constructSchemeForFunctionDeclaration dec = do
       -- IMPORTANT: We only extract types from non-instantiated! The instantiated type might/will contain types from our function and we don't won't that. We only want to know which types are from outside.
       -- So, for a function, use its own type.
       -- For a variable, use the actual type as nothing is instantiated!
-  let digOutTyVarsAndUnionsFromEnv :: T.Env -> (Set T.TyVar, Set T.EnvUnion)
+  let digOutTyVarsAndUnionsFromEnv :: T.Env -> (Set T.TyVar, Map T.EnvUnion ([Type TC], Type TC))
       digOutTyVarsAndUnionsFromEnv (T.RecursiveEnv _ _) = mempty
       digOutTyVarsAndUnionsFromEnv (T.Env _ env _ _) = foldMap (\(v, _ ,t) -> digThroughVar t v) env
         where
-          digThroughVar :: Type TC -> T.Variable -> (Set T.TyVar, Set T.EnvUnion)
+          digThroughVar :: Type TC -> T.Variable -> (Set T.TyVar, Map T.EnvUnion ([Type TC], Type TC))
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
-            T.DefinedFunction f _ _ _ -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType
+            T.DefinedFunction f _ _ _ _ -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType  -- should we dig through external functions?
             T.DefinedClassFunction (CFD cd _ _ _ () _) snapshot _ _   -- TODO: I think we don't need to dig through instances?
               -> mempty
 
@@ -1267,7 +1273,7 @@ constructSchemeForFunctionDeclaration dec = do
 
       -- TypesDefinedHere = FnType \\ Environment
       tyVarsOnlyFromHere = tyVarsDeclaration \\ tyVarsOutside
-      unionsOnlyFromHere = unionsDeclaration \\ unionsOutside
+      unionsOnlyFromHere = unionsDeclaration Map.\\ unionsOutside
 
       -- ALGO: ASSOCIATIONS
 
@@ -1277,7 +1283,7 @@ constructSchemeForFunctionDeclaration dec = do
       tvarsDefinedForThisFunction = foldMap (definedTVars . snd) dec.functionParameters <> definedTVars dec.functionReturnType
 
   pf "FunDec for %s: %s" (pp dec.functionId) (pp dec)
-  pf "UNIONS for %s: %s = %s \\\\ %s" (pp dec.functionId) (pp unionsOnlyFromHere) (pp unionsDeclaration) (pp unionsOutside)
+  pf "UNIONS for %s: %s = %s \\\\ %s" (pp dec.functionId) (pp $ Map.keysSet unionsOnlyFromHere) (pp $ Map.keysSet unionsDeclaration) (pp $ Map.keysSet unionsOutside)
 
   -- add associations.
   (assocs, tvmap) <- rummageThroughAssociations dec.functionId tyVarsOnlyFromHere -- remember to use the new Subst, which generalizes the associations.
@@ -1286,20 +1292,20 @@ constructSchemeForFunctionDeclaration dec = do
   let
       su = Subst mempty $ Fix . TO . TVar <$> tvmap
       substAssocs = subst su assocs  -- TODO: should be done in rummageThroughAssociations, but whatever.
-      unionsOnlyFromHereWithTVars = Set.map (subst su) unionsOnlyFromHere  -- NOTE: Unions might also contain our TyVars, so we must substitute it also.
+      unionsOnlyFromHereWithTVars = Map.mapKeys (subst su) $ Map.map (subst su) unionsOnlyFromHere  -- NOTE: Unions might also contain our TyVars, so we must substitute it also.
 
-      Scheme tvars _ = Scheme (Set.toList $ Set.fromList (Map.elems tvmap) <> tvarsDefinedForThisFunction) (Set.toList unionsOnlyFromHereWithTVars)
+      Scheme tvars _ = Scheme (Set.toList $ Set.fromList (Map.elems tvmap) <> tvarsDefinedForThisFunction) (fmap (\(u, (ts, t)) -> (u, ts, t)) $ Map.toList unionsOnlyFromHereWithTVars)
 
   let (_, assocUnions) = foldMap (\(T.FunctionTypeAssociation _ t _ _) -> digOutTyVarsAndUnionsFromType t) substAssocs
-  let assocScheme = Scheme tvars (Set.toList $ unionsOnlyFromHereWithTVars <> assocUnions)
+  let assocScheme = Scheme tvars (fmap (\(u, (params, ret)) -> (u, params, ret)) $ Map.toList $ unionsOnlyFromHereWithTVars <> assocUnions)
 
   pure (su, assocScheme, substAssocs)
 
-digOutTyVarsAndUnionsFromType :: Type TC -> (Set T.TyVar, Set T.EnvUnion)
+digOutTyVarsAndUnionsFromType :: Type TC -> (Set T.TyVar, Map T.EnvUnion ([Type TC], Type TC))
 digOutTyVarsAndUnionsFromType = para $ \case
     TO (TyVar tyv) -> (Set.singleton tyv, mempty)
-    TFun union ts t -> (mempty, Set.singleton union) <> foldMap snd ts <> snd t
-    TCon _ ts unis -> foldMap snd ts <> foldMap ((mempty,) . Set.singleton) unis
+    TFun union ts t -> (mempty, Map.singleton union (fst <$> ts, fst t)) <> foldMap snd ts <> snd t
+    TCon _ ts unis -> foldMap snd ts <> foldMap ((mempty,) . (\(u, params, ret) -> Map.singleton u (params, ret))) unis
     t -> foldMap snd t
 
 
@@ -1325,7 +1331,7 @@ getExpectedType location t memname = case project t of
   TCon dd@(DD _ (Scheme ogTVs ogUnions) (Left recs) _) tvs unions ->
     case find (\(Def.Annotated _ (name, _)) -> name == memname) recs of
       Just (Def.Annotated _ (_, recType)) -> do
-        let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
+        let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID . (\(u, _, _) -> u) <$> ogUnions) $ fmap (\(u, _, _) -> u) unions)
         let recType' = mapTVs recType
         pure (Just recType', True)
 
@@ -1382,7 +1388,7 @@ inferDecon = cata $ \(N location d) -> fmap embed $ case d of
       -- Custom instantiation for a deconstruction.
       -- Create a parameter list to this constructor
       (tvs, unions) <- instantiateScheme mempty scheme
-      let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
+      let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID . (\(u, _, _) -> u) <$> ogUnions) $ fmap (\(u, _, _) -> u) unions)
       let ts = mapTVs <$> usts
 
       let args = askType <$> decons
@@ -1400,8 +1406,8 @@ inferDecon = cata $ \(N location d) -> fmap embed $ case d of
 instantiateVariable :: Def.Location -> Def.Locality -> T.Variable -> Infer (Type TC, T.Variable)
 instantiateVariable location loc = resetUniPrint . \case
   T.DefinedVariable v -> var v <&> (,T.DefinedVariable v)
-  T.DefinedFunction fn _ snapshot _ -> do
-    (t, v, env) <- instantiateFunction Nothing snapshot fn -- notice that we use the UFI from here (inferVariable just creates a temp error type to not use it)
+  T.DefinedFunction fn _ snapshot _ _ -> do
+    (t, v, env) <- instantiateFunction False location Nothing snapshot fn -- notice that we use the UFI from here (inferVariable just creates a temp error type to not use it)
 
     associations <- RWS.gets associations
     pf "Associations (instantiation): %" (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation (fromLocation, from) to _ uci ufi _, _) -> pf "(%) %: %" (pp (uci, ufi)) (pp from) (pp to) :: String)
@@ -1412,7 +1418,7 @@ instantiateVariable location loc = resetUniPrint . \case
         gatherInstsFromEnvironment = \case
             T.RecursiveEnv _ _ -> mempty
             T.Env _ vars _ _ -> flip foldMap vars $ \case
-              (envVar@(T.DefinedFunction fn _ _ ufi), Def.Local, t) ->
+              (envVar@(T.DefinedFunction fn _ _ ufi _), Def.Local, t) ->
                 -- NOTE: we need mapped envs, so we have to dig through the type. but, are we too permissive? should we only choose this current env? or all of them? how do we distinguish the "current" one?
                 let currentEnvID = T.envID fn.functionDeclaration.functionEnv
                     envs = case project t of
@@ -1451,10 +1457,10 @@ instantiateClassFunction (CFD _ funid params ret () _) self = do
 
     -- dig out unions from class type (instantiate class type)
     -- all these unions should come from datatypes. so...
-    let extractUnions :: ClassType TC -> Set (T.EnvUnion)
+    let extractUnions :: ClassType TC -> Map T.EnvUnion ([Type TC], Type TC)
         extractUnions = cata $ \case
           NormalType (TCon dd params _) ->
-            let ddUnions = Set.fromList $ T.extractUnionsFromDataType dd
+            let ddUnions = Map.fromList $ fmap (\(u, ts, t) -> (u, (ts, t))) $ T.extractUnionsFromDataType dd
                 paramUnions = fold params
             in ddUnions <> paramUnions
           ct -> fold ct
@@ -1462,12 +1468,12 @@ instantiateClassFunction (CFD _ funid params ret () _) self = do
     let thisFunctionsUnions = foldMap extractUnions allTypes
 
     let schemeTVars = Set.toList thisFunctionsTVars
-    let schemeUnions = Set.toList thisFunctionsUnions
+    let schemeUnions = Map.toList thisFunctionsUnions <&> \(u, (params, ret)) -> (u, params, ret)
     let scheme = Scheme schemeTVars schemeUnions
 
     (itvs, iunions) <- instantiateScheme mempty scheme
     let tvmap = Map.fromList $ zip schemeTVars itvs
-    let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions) iunions
+    let unionmap = Map.fromList $ zip (T.unionID . (\(u, _, _) -> u) <$> schemeUnions) $ iunions <&> \(u, _, _) -> u
     let mapTVs = mapTVsWithMap tvmap unionmap . mkTypeFromClassType self
     fnUnion <- emptyUnion
 
@@ -1476,8 +1482,8 @@ instantiateClassFunction (CFD _ funid params ret () _) self = do
 
 
 -- NOTE: these last two parameters are basically a hack. I don't yet know what to do when we're dealing with an instance function, so we're only doing it here for now. (we should probably do the same thing there, but it's not local, so modifying the state then would be bad. I'll have to think about it.)
-instantiateFunction :: Maybe Def.UniqueClassInstantiation -> T.ScopeSnapshot -> Function TC -> Infer (Type TC, T.Variable, T.Env)
-instantiateFunction muci snapshot fn = do
+instantiateFunction :: T.IsFromExternalModule -> Def.Location -> Maybe Def.UniqueClassInstantiation -> T.ScopeSnapshot -> Function TC -> Infer (Type TC, T.Variable, T.Env)
+instantiateFunction isExternal assocLocation muci snapshot fn = do
     let fundec = fn.functionDeclaration
     let (Scheme schemeTVars schemeUnions) = fundec.functionOther.functionScheme
 
@@ -1485,7 +1491,7 @@ instantiateFunction muci snapshot fn = do
 
     -- Prepare a mapping for the scheme!
     let tvmap = Map.fromList $ zip schemeTVars tvs
-    let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions) unions
+    let unionmap = Map.fromList $ zip (T.unionID . (\(u, _, _) -> u) <$> schemeUnions) $ unions <&> \(u, _, _) -> u
     let mapTVs = mapTVsWithMap tvmap unionmap . mapClassSnapshot (Set.fromList schemeTVars) snapshot
 
     pf "Instantiation of %s" (pp fundec.functionId) :: Infer ()
@@ -1503,7 +1509,7 @@ instantiateFunction muci snapshot fn = do
     assocs <- for fundec.functionOther.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(CFD cd _ _ _ () _) uci) -> do
       let from = mapTVs $ Fix $ TO $ TVar tv
       let mto = mapTVs to
-      associateType (fundec.functionOther.functionLocation, from) (fundec.functionOther.functionLocation, mto) cfd snapshot uci (Just ufi) -- TEMP
+      associateType (assocLocation, from) (assocLocation, mto) cfd snapshot uci (Just ufi) -- TEMP
       pure mto
 
     fnUnion <- singleEnvUnion muci ufi assocs fundec.functionEnv
@@ -1512,7 +1518,7 @@ instantiateFunction muci snapshot fn = do
           TFun (T.EnvUnion { T.union = [(_, _, _, env)] }) _ _ -> env
           _ -> error "MUST NOT HAPPEN."
 
-    let v = T.DefinedFunction fn assocs snapshot ufi
+    let v = T.DefinedFunction fn assocs snapshot ufi isExternal
 
     pf "For function %:\n\tType %.\n\tAfter instantiation: %"
       (pp fundec.functionId)
@@ -1542,7 +1548,7 @@ instantiateConstructor envID = resetUniPrint . \case
 
   (DC dd@(DD _ scheme@(Scheme ogTVs ogUnions) _ _) _ usts@(_:_) _) -> do
     (tvs, unions) <- instantiateScheme mempty scheme
-    let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions) unions)
+    let mapTVs = mapTVsWithMap (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID . (\(u, _, _) -> u) <$> ogUnions) $ fmap (\(u, _, _) -> u) unions)
     let ts = mapTVs <$> usts
 
     let ret = Fix $ TCon dd tvs unions
@@ -1562,7 +1568,7 @@ instantiateRecord dd@(DD _ scheme (Left _) _) = do
 instantiateRecord (DD ut scheme (Right _) _) = error $ pf "Attempted to instantiate ADT (%s) as a Record!" (pp ut)
 
 
-instantiateScheme :: T.ScopeSnapshot -> Scheme -> Infer ([Type TC], [T.EnvUnion])
+instantiateScheme :: T.ScopeSnapshot -> Scheme -> Infer ([Type TC], [(T.EnvUnion, [Type TC], Type TC)])
 instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
   -- Prepare a mapping for the scheme!
   tyvs <- traverse (const fresh) schemeTVars  -- scheme
@@ -1570,13 +1576,13 @@ instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
 
   -- Unions themselves also need to be mapped with the instantiated tvars!
   let mapOnlyTVsForUnions = mapTVsWithMap tvmap mempty . mapClassSnapshot (Set.fromList schemeTVars) insts
-  unions <- traverse (\union -> cloneUnion (mapOnlyTVsForUnions <$> union)) schemeUnions
+  unions <- traverse (\(union, params, ret) -> cloneUnion (mapOnlyTVsForUnions <$> union) <&> (,mapOnlyTVsForUnions <$> params, mapOnlyTVsForUnions ret)) schemeUnions
 
   -- funny FIX (it should be done better.)
   -- since we might need to substitute inside the new unions, and there might be chain dependency, just resubstitute until nothing changes in the type
   let resubstitute unions =
         let
-          unionMap = Map.fromList $ zip (T.unionID <$> schemeUnions) unions
+          unionMap = Map.fromList $ zip (T.unionID . (\(u, _, _) -> u) <$> schemeUnions) (unions <&> \(u, _, _) -> u)
           unionSubst = Subst unionMap mempty
           subUnions = subst unionSubst unions
         in if unions /= subUnions
@@ -1596,14 +1602,14 @@ instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
 
 
 -- Should recursively map all the TVars in the type. (including in the unions.)
-mapTVsWithMap :: Map (TVar TC) (Type TC) -> Map Def.UnionID T.EnvUnion -> Type TC -> Type TC
+mapTVsWithMap :: Map (TVar TC) (Type TC) -> Map Def.UnionID (T.EnvUnion) -> Type TC -> Type TC
 mapTVsWithMap tvmap unionmap =
   let
     mapTVs :: Type TC -> Type TC
     mapTVs = cata $ (.) embed $ \case
       t@(TO (TVar tv)) -> maybe t project (tvmap !? tv)
       TFun union ts tret -> TFun (fromMaybe (mapUnion union) (unionmap !? union.unionID)) ts tret
-      TCon dd ts unions -> TCon dd ts $ unions <&> \union -> fromMaybe (mapUnion union) (unionmap !? union.unionID)
+      TCon dd ts unions -> TCon dd ts $ unions <&> \(union, params, ret) -> (,mapTVs <$> params, mapTVs ret) $ fromMaybe (mapUnion union) (unionmap !? union.unionID)
       t -> t
 
     mapUnion :: T.EnvUnion -> T.EnvUnion
@@ -1621,7 +1627,7 @@ mapEnv tvmap unionmap = \case
     mapVar = \case
       T.DefinedClassFunction cfd snap self uci ->
         T.DefinedClassFunction cfd snap (mapTVsWithMap tvmap unionmap self) uci
-      T.DefinedFunction fn assocs snap ufi -> T.DefinedFunction fn (mapTVsWithMap tvmap unionmap <$> assocs) snap ufi
+      T.DefinedFunction fn assocs snap ufi isExternal -> T.DefinedFunction fn (mapTVsWithMap tvmap unionmap <$> assocs) snap ufi isExternal
       v -> v
 
 
@@ -1632,7 +1638,7 @@ mapClassSnapshot tvs snapshot = mapType
     mapType :: Type TC -> Type TC
     mapType = cata $ (.) embed $ \case
       TFun union args ret -> TFun (mapUnion union) args ret
-      TCon dd ts unions -> TCon dd ts (mapUnion <$> unions)
+      TCon dd ts unions -> TCon dd ts ((\(u, params, ret) -> (mapUnion u, params, ret)) <$> unions)
       t -> t
 
     mapUnion :: T.EnvUnion -> T.EnvUnion
@@ -1817,7 +1823,7 @@ unify (locl, ttl) (locr, ttr) = do
 
     (TCon t ta unions, TCon t' ta' unions') | t == t' -> do
       unifyMany (locl, ta) (locr, ta')
-      zipWithM_ unifyFunEnv unions unions'
+      zipWithM_ unifyFunEnv (unions <&> \(u, _, _) -> u) (unions' <&> \(u, _, _) -> u)  -- i don't think we need to unify the types associated with EnvUnion, right???
 
     (_, _) -> do
       err $ TypeMismatch (locl, tl) (locr, tr)
@@ -2028,7 +2034,8 @@ instance Substitutable T.LamDec where
 
 instance Substitutable T.Variable where
   ftv _ = mempty
-  subst su (T.DefinedFunction fn assocs ss ufi) = T.DefinedFunction (subst su fn) (subst su assocs) ss ufi  -- note the bad resubstituting.
+  subst su (T.DefinedFunction fn assocs ss ufi False) = T.DefinedFunction (subst su fn) (subst su assocs) ss ufi False  -- note the bad resubstituting.
+  subst su (T.DefinedFunction fn assocs ss ufi True) = T.DefinedFunction fn (subst su assocs) ss ufi True  -- we won't substitute external functions!
   subst su (T.DefinedClassFunction cfd insts self uci) = T.DefinedClassFunction cfd (Def.fmap2 (subst su) insts) (subst su self) uci
   subst _ x = x
 

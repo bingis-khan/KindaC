@@ -1,0 +1,36 @@
+#$ Associated types cause an inner function parameter to be of a different type, but the union is unchanged.
+# ()
+# ()
+
+
+class Whattf
+	dafuq (self _) -> aaaa
+
+inst Whattf Int
+	dafuq (self): Unit
+
+inst Whattf Bool
+	dafuq (self): 420
+
+MyThing a
+	x a
+
+myget (mt MyThing a) -> a
+	return mt.x
+
+whatever = Unit
+furech (iterable MyThing a, fn a -> whatever)  # the error is that the union for this will be the same for functions with different parameter types.
+	iterable.x fn()
+	print whatever  # including something inside will cause the union to be generated at compile time for furech.
+	return
+
+my-thing (self MyThing a) <= Whattf a
+	self furech(dafuq)  # lambda or function somehow needed for this.
+	return
+
+slice = MyThing { x: 69 }
+my-thing(slice)
+
+slice' = MyThing { x: True }
+my-thing(slice')
+

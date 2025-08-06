@@ -8,7 +8,7 @@
 module AST.IncompleteMono (module AST.IncompleteMono, Def.EnvID) where
 import AST.Common (Function, Type, XLVar, XReturn, XExprNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation)
 import qualified AST.Def as Def
-import AST.Def (Locality, PP (..), (<+>), PPDef)
+import AST.Def (Locality, PP (..), (<+>), PPDef, fmap2, pf)
 import Data.List.NonEmpty (NonEmpty)
 import AST.Typed (TC)
 import qualified AST.Typed as T
@@ -18,6 +18,8 @@ import Data.Text (Text)
 import Data.Functor ((<&>))
 import Data.Map (Map)
 import Data.Set (Set)
+import qualified Data.Map as Map
+import qualified Data.Set as Set
 
 data IMono
 type IM = IMono
@@ -175,8 +177,8 @@ instance PP EnvUnion where
 
 instance PP Env where
   pp = \case
-    Env eid vs level -> fromString $ Def.printf "%s(%s)%s" (pp eid) (pp level) $ Def.encloseSepBy "[" "]" ", " (fmap (\(v, l, t) -> pp l <> pp v <+> pp t) vs)
-    RecursiveEnv eid isEmpty -> fromString $ Def.printf "%s[REC%s]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+    Env eid vs level -> fromString $ Def.printf "%(%)%" (pp eid) (pp level) $ Def.encloseSepBy "[" "]" ", " (fmap (\(v, l, t) -> pp l <> pp v <+> pp t) vs)
+    RecursiveEnv eid isEmpty -> fromString $ Def.printf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 instance PPDef Env where
   ppDef = pp . envID
@@ -213,16 +215,22 @@ data FunOther = FunOther
   { envInstantiations :: EnvInstantiations
   , functionAnnotations :: [Def.Ann]
   }
-type EnvInstantiations = Map Def.EnvID (Set EnvUse)
-data EnvUse = EnvUse (Maybe (Function IM)) Env
+type EnvInstantiations = Map Def.EnvID EnvUses
 
-instance Eq EnvUse where
-  EnvUse _ le == EnvUse _ re = le == re
+-- same function with different parameters can have the same environment!!!
+newtype EnvUses = EnvUses { fromEnvUses :: Map Env (Set (Function IM)) }
 
-instance Ord EnvUse where
-  EnvUse _ le `compare` EnvUse _ re = le `compare` re
+-- instance Eq EnvUse where
+--   EnvUse _ le == EnvUse _ re = le == re
 
-instance PP EnvUse where
-  pp (EnvUse Nothing e) = pp e
-  pp (EnvUse (Just fn) e) = pp fn.functionDeclaration.functionId <+> "=>" <+> pp e
+-- instance Ord EnvUse where
+--   EnvUse _ le `compare` EnvUse _ re = le `compare` re
 
+instance PP EnvUses where
+  pp (EnvUses efns) = pp $ fmap (\(e, fns) -> pf "% => %" e fns :: Def.Context) $ fmap2 (Def.ppDef . Set.toList) $ Map.toList efns
+
+instance Semigroup EnvUses where
+  EnvUses l <> EnvUses r = EnvUses $ Map.unionWith (<>) l r
+
+instance Monoid EnvUses where
+  mempty = EnvUses mempty

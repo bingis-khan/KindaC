@@ -10,6 +10,10 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 --
 
+REALLY BAD PERFORMANCE AND MEMORY USE. WHY?
+I GUESS I NEED SOME PROFILING AFTER I'M FINISHED WITH THE GRIND.
+
+
 I didn't add tests for: line folding, modules, type classes, external functions!
 
 (note: currently, instance generalization and instantiation is scuffed, but in a weird way: it's actually more powerful, so I'm able to write all the classes and instances I want. but it's also super weird. after I implement modules and errors, I want to redo it, so that it matches Rust or similar.... or maybe I'll use this somehow?)
@@ -45,11 +49,16 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
     - i have a basic version of this, but the rules are not very finalized... like, force tvars for parameters, but allow nested types for the return type?
   - moved this down, because... it's stupid, but currently we 
 - associated types
+- extremely bad perf and memory usage (especially when using class functions)
+- generating too many types (probably because unions that are equivalent are treated as distinct types)
 
 
 ## todo
 
+- VERY BAD TYPECHECKING, BECAUSE WE ACTUALLY HAVE TO INCLUDE FUNCTION TYPE INFORMATION INTO UNIONS. I GUESS I SHOULD JUST DITCH THE EXTRA UNION PARAMETER AND SILENTLY ADD THEM.
+  - although, I might just make a second field in TypeF, which won't be displayed in error messages!
 - [V] printing context that does not rely on a global variable / special printing context for errors (it solves the problem of types disappearing when not printing IRs)
+- remember, that type associations create new unions and create extra mono functions even though they are instantiated with the same instances. somehow fix that / unify them? (check lingering/)
 - better arch for errors and less ugly errors. lots of redundand work, kind of icky algorithms. abstract it more, so I can make better looking errors.
 - figure out HOW should the errors look like (including spacing n shi) and then make it look like so.
 - add proper end offset without trailing whitespace.
@@ -90,6 +99,8 @@ Not sure about ALGO tho. Maybe I'll reannotate code with this. Most of the docs 
   - (or just check the datatypes!)
   - not sure which is better
 - add more line folding logic where appropriate
+- decide if we should replace `while` with `loop` and `break`s.
+  - also decide if im adding a for-loop (the one which works on iterables)
 
 
 ### todo misc

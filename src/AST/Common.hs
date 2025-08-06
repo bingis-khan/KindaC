@@ -505,8 +505,8 @@ instance
 
 instance (PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (Type phase) where
   pp = para $ \case
-    TCon tcon params _ ->
-      foldl' (<+>) (ppDef tcon) (ppEnclosable <$> params)
+    TCon tcon params unions ->
+      foldl' (<+>) (ppDef tcon) (ppEnclosable <$> params) -- <+> pp unions
     TO x -> pp x
     TFun tfOther args ret -> pp tfOther <> Def.encloseSepBy "(" ")" ", " (snd <$> args) <+> "->" <+> snd ret
     where
@@ -598,10 +598,13 @@ instance (PP (XLVar phase), PP (XFunVar phase), PP (XMem phase), PP (XCon phase)
 instance (PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XVar phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XEnv phase), PP (XFunVar phase), PP (Type phase), PP (XExprNode phase), PP (XFunType phase), PP (XLamVar phase), PPDef (XTCon phase), PP (XMutAccess phase), PP (XFunOther phase), PP (XStringInterpolation phase)) => PP (Function phase) where
   pp fn = Def.ppBody' pp (pp fn.functionDeclaration) fn.functionBody
 
+instance (PPDef (XFunVar phase)) => PPDef (Function phase) where
+  ppDef fn = ppDef fn.functionDeclaration.functionId
+
 instance (PP (XMem phase), PP (XLVar phase), PP (XCon phase), PP (XTCon phase)) => PP (Fix (DeconF phase)) where
   pp = cata pp
 
-instance (PP (XTOther phase), PP (XTFun phase), PPDef (XTCon phase)) => PP (DeclaredType phase) where
+instance (PP (XTOther phase), PP (XTFun phase), PPDef (XTCon phase), PP (XTConOther phase)) => PP (DeclaredType phase) where
   pp = \case
     TypeNotDeclared -> ""
     DeclaredType t -> " " <> pp t  -- HACK: we know the context it's used in, so we add a space whenever there is a type.

@@ -109,7 +109,7 @@ compileAndOutputFile :: Prelude -> FilePath -> FilePath -> IO (Either Error File
 compileAndOutputFile prelude filepath outdirpath = do
   let compile = Def.inPrintContext Def.runtimeContext $ do
         let basePath = "."  -- maybe make a special testing "module" directory for testing module imports?
-        etmod <- compilerContext basePath prelude $ loadModule filepath
+        etmod <- compilerContext basePath prelude $ loadModule False filepath
         case etmod of
           Left err -> pure $ Left $ Text.unlines $ NonEmpty.toList err
           Right tmods -> do

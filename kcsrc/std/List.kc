@@ -1,0 +1,120 @@
+use Slice
+	Slice
+use Alloc
+	Allocator(allocate, free)
+use Cnile
+	NULL(NULL)  # for dat null ptr
+use Mem
+use Error
+use Term
+use StrClass
+	Str(print-str)
+use Iter
+	IntoIter(into-iter)
+	Iter(next)
+	for-each
+	from
+	zip
+	drop
+	to
+
+# dynamic list module
+
+
+List alloc a
+	al alloc
+	elements Slice a  # elements.count ~ capacity
+	count Int
+
+
+ListIter alloc a
+	list List alloc a
+	current Int
+
+
+get (list Ptr (List alloc a), i Int) -> a
+	if i < 0 or i >= list&.count
+		Error.critical('Access to list at index \(i) (count: \(list&.count))')
+
+	return Slice.get(list&.elements, i)
+
+set (list Ptr (List alloc a), i Int, elem a) -> Unit
+	if i < 0 or i >= list&.count
+		Error.critical('Tried setting a list element at index \(i) (count: \(list&.count))')
+
+	Slice.set(list&.elements, i, elem)
+	return  # i guess i can also return the old value here.
+	
+
+
+inst IntoIter List
+	into-iter (self): self.elements Slice.subslice(0, self.count) into-iter()
+
+
+# kek, should be `new`, but I'm trying out a new convention.
+mk (al alloc) -> List alloc a
+	elements = Slice.empty()
+	return List { al, elements, count: 0 }
+
+
+starting-size = 8
+growth-factor = 2
+shrink-factor = 8
+
+add (list Ptr (List alloc a), elem a) -> Unit <= Allocator alloc
+	# check if the list is empty
+	if list&.count == 0
+		list <&.elements= list&.al allocate(starting-size)
+
+	# resize it
+	elif list&.count == list&.elements.count
+		new-slice = list&.al allocate(list&.count * growth-factor)
+
+		# NOTE: a lot of this stuff would be better with memmove/memcpy and realloc, but i want to minimize external dependencies as much as possible
+		# still, the external interface and usage needs some contemplation
+		# copy to old slice
+		list&.elements zip(from(0)) for-each(uncurry((x, i): Slice.set(new-slice, i, x)))
+		list&.al free(list&.elements)
+		list <&.elements= new-slice
+
+	Slice.set(list&.elements, list&.count, elem)
+	list <&.count= list&.count + 1
+	return
+
+remove (list Ptr (List alloc a), i Int) -> Unit <= Allocator alloc
+	if i < 0 or i >= list&.count
+		Error.critical('Removal at list index \(i) (count: \(list&.count))')
+
+	# move elements back
+	list&
+		zip(from(0))
+		drop(i + 1)
+		for-each(uncurry((elem, n): set(list, n - 1, elem)))  # pointlessly complex to stress-test the compiler.
+
+	list <&.count= list&.count - 1
+
+	# optionally shrink it
+	capacity = list&.elements.count
+	if list&.count * shrink-factor < capacity
+		if list&.count == 0
+			list&.al free(list&.elements)
+			list <&.elements= Slice.empty()
+			return
+
+		new-size = (list&.count / shrink-factor + 1) * shrink-factor  # a multiple of shrink factor yo
+		new-slice = list&.al allocate(new-size)
+		list&.elements
+			Slice.subslice(0, list&.count)
+			Slice.copy-to(new-slice)
+
+		list&.al free(list&.elements)
+		list <&.elements= new-slice
+
+	return
+
+pop (list): remove(list, list&.count - 1)
+
+inst Str List
+	print-str (self)
+		self.elements Slice.subslice(0, self.count) print-str()
+

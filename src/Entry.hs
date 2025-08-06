@@ -16,16 +16,16 @@ import qualified AST.Def as Def
 
 compilerMain :: IO ()
 compilerMain = do
-  (filename, outputC, dbg) <- parseArgs
+  (filename, outputC, dbg, dbgModule) <- parseArgs
 
   let basePath = FilePath.takeDirectory filename
-  let ctx = if dbg then Def.debugContext else Def.runtimeContext
+  let ctx = if dbg || dbgModule then Def.debugContext else Def.runtimeContext
 
   Def.inPrintContext ctx $ do  -- debug printing 
     prelude <- loadPrelude
 
     -- first, get dat prelude
-    errOrModules <- compilerContext basePath prelude $ loadModule filename
+    errOrModules <- compilerContext basePath prelude $ loadModule dbgModule filename
 
     case errOrModules of
       Left errs -> liftIO $ do
@@ -34,7 +34,7 @@ compilerMain = do
 
       Right modules -> do
         -- TEMP: i wanna check the typechecked module.
-        cmod <- finalizeModule modules
+        cmod <- Def.localPrintContext (if dbgModule then Def.debugContext else Def.runtimeContext) $ finalizeModule modules
 
         if outputC 
           then
@@ -43,15 +43,21 @@ compilerMain = do
             liftIO $ TextIO.putStrLn cmod
 
 
-parseArgs :: IO (Filename, ShouldOutputC, DebugPrinting)
+parseArgs :: IO (Filename, ShouldOutputC, DebugPrinting, DebugPrintOnlyFirstModule)
 parseArgs = do
   args <- getArgs
-  let (mFilename, outputC, debugPrinting) = foldr (\case { "--output-c" -> \(fn, _, dbgp) -> (fn, True, dbgp); "--debug" -> \(fn, oc, _) -> (fn, oc, True); fn -> \(_, oc, dbgp) -> (Just fn, oc, dbgp) }) (Nothing, False, False) args
+  let findArg = \case
+        "--output-c" -> \(fn, _, dbgp, dbgm) -> (fn, True, dbgp, dbgm)
+        "--debug" -> \(fn, oc, _, dbgm) -> (fn, oc, True, dbgm)
+        "--print-current" -> \(fn, oc, dbgp, _) -> (fn, oc, dbgp, True)
+        filename -> \(_, oc, dbgp, dbgm) -> (Just filename, oc, dbgp, dbgm)
+  let (mFilename, outputC, debugPrinting, debugPrintFirstModule) = foldr findArg (Nothing, False, False, False) args
   pure $ case mFilename of
-    Just name -> (name, outputC, debugPrinting)
+    Just name -> (name, outputC, debugPrinting, debugPrintFirstModule)
     Nothing -> error "No filename provided."
 
 
 type Filename = String
 type ShouldOutputC = Bool
 type DebugPrinting = Bool
+type DebugPrintOnlyFirstModule = Bool
