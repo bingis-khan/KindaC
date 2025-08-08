@@ -1,0 +1,100 @@
+use Term
+use File
+use Cnile
+use Retarded
+use Error
+	Failable(or-fail)
+use Alloc
+	Allocator(allocate, free)
+use Slice
+	Slice
+use Mem
+use Str
+	substr
+	is-blank
+use StrClass
+	Str(chars)
+use Iter
+	from
+	count
+	for-each
+	zip
+	all
+	filter
+	map
+	head
+	drop
+use Args
+use StrBuilder
+	writeln
+	as-str
+
+
+al = Alloc.get-c-allocator()
+filename = 'reminders'
+
+
+reminders =
+	File.read-contents(al, filename)
+	Str.lines()
+	filter(s: not s Str.is-blank())
+	zip(from(1))
+
+
+# program control (if there are no arguments, display the whole thing.)
+args = Args.get()
+
+if args.count == 0
+	reminders
+		for-each(uncurry((r, i): Term.println('\(i). \(r)')))
+
+else
+	option = args Slice.get(0)
+
+	# normally, there should be case desonstruction!
+	if option Str.eq ('add')
+		if args.count /= 2
+			Error.critical('Must have two arguments to add a reminder: add [your reminder]')
+
+		content = args Slice.get(1)
+
+		if content is-blank()
+			Error.critical('blank reminder provided...')
+
+		builder =& StrBuilder.mk(al)
+		reminders map(uncurry((r, i): r)) for-each(r: builder writeln(r))
+		builder writeln(content)
+		File.write-contents(filename, builder as-str())
+		#Term.println(content)
+
+	#elif option Str.eq ('remove') or option Str.eq ('rm')
+	#	if args.count /= 2
+	#		Error.critical('Must have two arguments to remove a reminder: remove [reminder id]')
+
+	#	case Str.parse-int(args Slice.get(1))
+	#		None
+	#			Error.critical('Not a number!!!')
+	#		Just(i)
+	#			len = reminders count()
+	#			if i < 1 or i > len
+	#				Error.critical('No reminder with this ID!')
+
+	#			builder =& StrBuilder.mk(al)
+
+	#			# demonstrating the use of closures!
+	#			try-writeln (Tuple(elem, elem-i))
+	#				if elem-i /= i
+	#					builder writeln(elem)
+	#				return
+
+	#			reminders
+	#				for-each(try-writeln)
+
+	#			File.write-contents(filename, builder as-str())
+
+	#			removed-reminder = reminders drop(i - 1) head()
+	#			#Term.println('REMOVED (\(i)): \(removed-reminder)')
+	else
+		Term.println('unknown option "\(option)!"')
+		Cnile.exit(1)
+
