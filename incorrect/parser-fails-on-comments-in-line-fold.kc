@@ -1,0 +1,2 @@
+empty ():
+	Unit  # assuming null pointer is 0

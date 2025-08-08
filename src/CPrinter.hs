@@ -16,8 +16,8 @@ import qualified AST.Common as Common
 import qualified AST.Mono as M
 import Data.Maybe (listToMaybe, mapMaybe, fromJust)
 import Control.Monad (when, unless, join)
-import Control.Monad.Trans.RWS (RWS)
-import qualified Control.Monad.Trans.RWS as RWS
+import Control.Monad.Trans.RWS.Strict (RWS)
+import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Fix (Fix (..))
@@ -38,7 +38,7 @@ import Data.Unique (hashUnique)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Traversable (for)
 import Data.Either (lefts)
-import qualified Data.Map as Map
+import qualified Data.Map.Strict as Map
 import AST.Common (Module, AnnStmt, StmtF (..), Decon, DeconF (..), DataCon (..), DataDef (..), Type, Expr, ExprNode (..), ExprF (..), TypeF (..), Function, IfStmt (..), MutAccess (..), LitType (..), askNode)
 import AST.Mono (M, EnvMod (assignee, assigned))
 import AST.Def ((:.)(..), Annotated (..), CtxData (..), Locality, pp, fmap2, BinOp (..), UnOp (..), Located (..))
@@ -52,7 +52,7 @@ import qualified AST.Def as Def
 
 
 cModule :: Module M -> Text
-cModule M.Mod { M.topLevelStatements = stmts } =
+cModule M.Mod { M.topLevelStatements = stmts } = {-# SCC cModule #-}
   let tlBlocks = runPP $ cMain stmts
    in Text.unlines tlBlocks
 

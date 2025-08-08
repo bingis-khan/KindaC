@@ -4,7 +4,7 @@ packages:
 
 build:
   # I don't seem to need that?
-  # library-profiling: true
+  #library-profiling: true
 
   # This one triggers recompilation tho.
   executable-profiling: true

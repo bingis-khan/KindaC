@@ -12,6 +12,7 @@ extra-source-files:
 - README.md
 
 
+
 dependencies:
   - base >= 4.7 && < 5
   - recursion-schemes
@@ -24,6 +25,7 @@ dependencies:
   - bifunctors
   - process
   - text
+  - deepseq
   - prettyprinter  # I wanted to throw out pretty printer, but it simplifies nesting. Since CPrinter does not use that pretty printer, I might be able to generalize that one to be used for printing (they are pretty similar, so... yknow).
                    # but then I might as well download a dependency kek
 
@@ -47,6 +49,13 @@ ghc-options:
 - -Wmissing-home-modules
 - -Wpartial-fields
 - -Wredundant-constraints
+#- -fforce-recomp
+- -O2
+
+ghc-prof-options:
+#- -prof
+#- -fprof-cafs
+- -fprof-late
 
 library:
   source-dirs: src
@@ -57,12 +66,11 @@ library:
 executables:
   kc:
     source-dirs:      app
-    ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
-    - -O2
     main:             Main.hs
+    ghc-options:
+    - -O2
+    ghc-prof-options:
+    - -rtsopts
     dependencies:
     - KindaC
 

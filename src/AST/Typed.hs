@@ -14,7 +14,7 @@ module AST.Typed (module AST.Typed) where
 
 import AST.Common (Type, Function, DataDef (..), InstDef, ClassDef (..), ClassFunDec (..), XFunVar, XEnvUnion, XEnv, XVar, TVar, InstFun, Exports, AnnStmt, Module, XExprNode, XLVar, XTCon, Expr, XReturn, XFunDef, XInstDef, XOther, XTFun, XLamOther, XDClass, Rec, DataCon (..), XDCon, XTConOther, XTOther, TypeF (..), XDTCon, XClass, XFunOther, XVarOther, XConOther, XCon, XMem, XDataScheme, XFunType, XTVar, functionDeclaration, functionId, instType, XClassConstraints, XClassFunDec, XLamVar, instFunDec, functionOther, MutAccess, XMutAccess, XInstExport, XStringInterpolation, XExportType, asksNode)
 import qualified AST.Def as Def
-import Data.Map (Map)
+import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Data.Fix (Fix (..))
 import AST.Def (PP (..), (<+>), pf)
@@ -22,7 +22,7 @@ import Data.Biapplicative (bimap, first)
 import Data.Functor.Classes (Ord1 (..), Eq1 (..))
 import Data.Functor ((<&>))
 import Data.String (fromString)
-import qualified Data.Map as Map
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Unique (Unique)
 

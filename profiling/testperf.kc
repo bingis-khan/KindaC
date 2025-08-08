@@ -1,0 +1,19 @@
+use Term
+use Str
+use StrBuilder
+	writeln
+	as-str
+use Alloc
+
+Term.println(Str.parse-int('429120'))
+Term.println(Str.parse-int('miauuu'))
+Term.println(Str.parse-int('42dupsko'))
+
+#al = Alloc.get-c-allocator()
+#builder =& StrBuilder.mk(al)
+#
+#i = 'miau!'
+#builder writeln('dupsko \(i)')
+#builder writeln('siuranie!')
+#
+#Term.println(builder as-str())

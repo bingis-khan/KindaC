@@ -7,6 +7,8 @@ use Iter
 	all
 	zip
 	head
+	reduce
+	map
 use Slice
 	Slice
 	subslice
@@ -48,6 +50,49 @@ code2char (code Int) -> Cnile.Char
 
 char2code (char Cnile.Char) -> Int
 	return Retarded.cast(char)
+
+# kekkekekekekkekekek
+digit-to-int (c)
+	if c == char('0')
+		return Just(0)
+	elif c == char('1')
+		return Just(1)
+	elif c == char('2')
+		return Just(2)
+	elif c == char('3')
+		return Just(3)
+	elif c == char('4')
+		return Just(4)
+	elif c == char('5')
+		return Just(5)
+	elif c == char('6')
+		return Just(6)
+	elif c == char('7')
+		return Just(7)
+	elif c == char('8')
+		return Just(8)
+	elif c == char('9')
+		return Just(9)
+	else
+		return None
+
+# geg
+maybe-reduce-char (mc, mb)
+	case mb
+		None
+			return None
+		Just(b)
+			case mc
+				None
+					return None
+				Just(c)
+					return Just(b*10 + c)
+
+parse-int (s): s
+	chars()
+	map(digit-to-int)
+	reduce(Just(0), maybe-reduce-char)
+
 
 
 LineIter

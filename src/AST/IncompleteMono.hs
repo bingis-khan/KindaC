@@ -16,9 +16,9 @@ import qualified Data.List.NonEmpty as NonEmpty
 import Data.String (fromString)
 import Data.Text (Text)
 import Data.Functor ((<&>))
-import Data.Map (Map)
+import Data.Map.Strict (Map)
 import Data.Set (Set)
-import qualified Data.Map as Map
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
 data IMono

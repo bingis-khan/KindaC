@@ -4,16 +4,16 @@
 module CompilerContext (CompilerContext(..), CompilerState(..), BasePath, storeModule, ModuleLoader, compilerContext, addErrors, preludeHackContext, mkModulePath, relativeTo, prelude, asPrintContext, silentContext) where
 
 import Data.Text (Text)
-import Data.Map (Map)
+import Data.Map.Strict (Map)
 import qualified AST.Untyped as U
 import AST.Common (Module)
 import AST.Typed (TC)
-import Control.Monad.Trans.RWS (RWST)
-import qualified Control.Monad.Trans.RWS as RWST
+import Control.Monad.Trans.RWS.Strict (RWST)
+import qualified Control.Monad.Trans.RWS.Strict as RWST
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import AST.Prelude (Prelude (..))
 import qualified Data.List.NonEmpty as NonEmpty
-import qualified Data.Map as Map
+import qualified Data.Map.Strict as Map
 import System.FilePath ((<.>), (</>))
 import qualified System.FilePath as FilePath
 import qualified AST.Def as Def

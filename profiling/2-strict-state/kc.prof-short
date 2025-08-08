@@ -1,0 +1,32 @@
+	Fri Aug  8 12:05 2025 Time and Allocation Profiling Report  (Final)
+
+	   kc +RTS -sstderr -hc -L1500 -p -RTS ../testperf.kc
+
+	total time  =        4.46 secs   (4465 ticks @ 1000 us, 1 processor)
+	total alloc = 4,496,794,776 bytes  (excludes profiling overheads)
+
+COST CENTRE                                     MODULE                SRC                                     %time %alloc
+
+cata.c                                          Data.Functor.Foldable src/Data/Functor/Foldable.hs:210:20-43   22.4   23.3
+fmap                                            AST.Common            src/AST/Common.hs:54:13-19                3.7    5.5
+memo                                            Misc.Memo             src/Misc/Memo.hs:(21,1)-(37,12)           3.6    2.2
+subst                                           Typecheck             src/Typecheck.hs:2233:3-74                3.4    4.4
+subst                                           Typecheck             src/Typecheck.hs:2217:3-28                3.2    7.3
+$fMonadParser_$s$fMonadReaderT_$c>>=            Parser                <no location info>                        3.0    0.6
+$fMonadPrintContext_$s$fMonadReaderT_$c>>=      AST.Def               <no location info>                        2.6    0.0
+subst                                           Typecheck             src/Typecheck.hs:(2047,3)-(2050,15)       2.5   10.0
+traverse                                        AST.Typed             src/AST/Typed.hs:151:43-53                2.3    2.7
+subst.newEnvVars                                Typecheck             src/Typecheck.hs:2143:7-106               1.9    3.8
+$fApplicativeParser_$s$fApplicativeReaderT_$c<* Parser                <no location info>                        1.9    0.1
+subst                                           Typecheck             src/Typecheck.hs:(2141,3)-(2212,33)       1.7    4.8
+compare                                         AST.Common            src/AST/Common.hs:64:1-131                1.5    0.0
+cata                                            Data.Functor.Foldable src/Data/Functor/Foldable.hs:210:3-43     1.3    1.5
+$fFunctorPrintContext_$s$fFunctorReaderT_$cfmap AST.Def               <no location info>                        1.2    1.4
+subst.\                                         Typecheck             src/Typecheck.hs:2122:28-57               1.2    0.0
+go49                                            Mono                  <no location info>                        1.1    1.6
+$fAlternativeParser_$spPlus                     Parser                <no location info>                        1.1    0.6
+subst                                           Typecheck             src/Typecheck.hs:(2128,3)-(2133,65)       1.1    2.2
+subst.tryExpandEnvironmentOfClass.\.mvars       Typecheck             src/Typecheck.hs:(2158,15)-(2167,62)      1.0    0.2
+printInContext                                  AST.Def               src/AST/Def.hs:562:3-40                   0.9    1.1
+mUnion                                          Mono                  src/Mono.hs:(820,1)-(870,102)             0.8    1.0
+traverse                                        AST.Typed             src/AST/Typed.hs:145:32-42                0.8    1.1

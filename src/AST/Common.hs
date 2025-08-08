@@ -26,7 +26,7 @@ import Data.Bifunctor (first)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
 import Data.Set (Set)
-import Data.Map (Map, (!?))
+import Data.Map.Strict (Map, (!?))
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Functor.Classes (Eq1 (..), Ord1 (..))
 import qualified Data.Set as Set

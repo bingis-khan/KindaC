@@ -9,7 +9,7 @@ module AST.Resolved (module AST.Resolved) where
 
 import AST.Common
 import qualified AST.Def as Def
-import Data.Map (Map)
+import Data.Map.Strict (Map)
 import Data.Set (Set)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Functor ((<&>))

@@ -31,6 +31,9 @@ renderError source errorTitle errors =
 
 
 errorItem :: Text -> Def.Location -> Maybe Def.Context -> Text
+errorItem _ Def.TmpNoLocation mcomment = case mcomment of
+  Nothing -> mempty
+  Just x -> fromString $ Def.sctx x
 errorItem source location comment = Text.unlines
   [ padding <> "|"
   , " " <> Text.pack (show lineNum) <> " | " <> Text.strip line
@@ -58,5 +61,6 @@ errorItem source location comment = Text.unlines
 
 -- NOTE: i uglified this function to try to get padding n stuff
 wholeLineAtLocation :: Text -> Def.Location -> Text
+wholeLineAtLocation _ Def.TmpNoLocation = "<no location provided>"
 wholeLineAtLocation source loc =
   fmap (snd . Text.breakOnEnd "\n" . fst) (Text.breakOnAll "\n" source) !! (TM.unPos loc.startPos.sourceLine - 1)

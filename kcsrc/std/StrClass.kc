@@ -150,7 +150,7 @@ inst Str Maybe a
 
 inst Str Ptr a
 	print-str (Ptr(self) Ptr a) -> Unit <= Str a
-		print-str('Ptr(\(self))')
+		print-str('Ptr(\(self))')  # we might just print what's inside! i think that's what i should do when finally programming this language.
 
 	length (Ptr(self) Ptr a) -> Int <= Str a
 		return 4 + length(self) + 1

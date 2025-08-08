@@ -17,6 +17,13 @@ external printf (format ConstStr, x a) -> Void
 #[cfunname 'printf', cstdinclude 'stdio.h']
 external printf2 (format ConstStr, x a, y b) -> Void
 
+#[cfunname 'fprintf', cstdinclude 'stdio.h']
+external fprintf (handle handle, format ConstStr, x a) -> Int
+
+#[cfunname 'fprintf', cstdinclude 'stdio.h']
+# right now, i don't want to replicate the type, so i just made it polymorphic
+external fprintf2 (handle handle, format ConstStr, x a, y b) -> Int
+
 #[cstdinclude 'string.h']
 external strlen (s ConstStr) -> Int
 

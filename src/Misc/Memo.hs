@@ -1,13 +1,15 @@
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Misc.Memo (memo, memo', emptyMemo, isMemoed, Memo(..), Memoizable) where
 
-import Data.Map (Map, (!?))
-import qualified Data.Map as Map
-import Control.Monad.Trans.RWS (RWST)
-import qualified Control.Monad.Trans.RWS as RWS
+import Data.Map.Strict (Map, (!?))
+import qualified Data.Map.Strict as Map
+import Control.Monad.Trans.RWS.Strict (RWST)
+import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Kind (Type)
-import Control.Monad.Trans.State (StateT)
-import qualified Control.Monad.Trans.State as StateT
+import Control.Monad.Trans.State.Strict (StateT)
+import qualified Control.Monad.Trans.State.Strict as StateT
 
 
 -- Bad memoization thing I found useful. May be too general?

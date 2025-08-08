@@ -4,7 +4,7 @@ use Cnile
 	SEEKSHIT(SEEK-SET, SEEK-END)  # we can't seem to parse constructors properly.
 use Retarded
 use StrClass
-	Str(print-str, length)
+	Str(print-str, length, chars)
 use Str
 	DynStr
 use Slice
@@ -50,4 +50,30 @@ read-contents (al, filename):
 
 read-lines (filename)  # Str -> List Str
 	Term.println('todo: reading \(filename)')
+	return
+
+
+try-write-contents (filename, contents) -> Bool
+	file = Cnile.fopen(filename, 'w')
+	if file == null()
+		return False
+
+	# oh no, this is soooo bad.
+	it = contents chars()
+	while True
+		case next(&it)
+			None
+				# ughh.... write the file char-by-char............
+				return True
+			Just(c)
+				chars-written = Cnile.fprintf(file, '%c', c)
+				if chars-written < 0
+					return False
+
+
+
+write-contents (filename, contents)
+	if not try-write-contents(filename, contents)
+		Error.critical('could not write to file \(filename)')
+
 	return

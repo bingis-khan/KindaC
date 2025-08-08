@@ -18,10 +18,10 @@ module Typecheck (typecheck, TypeError(..)) where
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Biapplicative (first)
-import Data.Map (Map, (!?))
-import qualified Data.Map as Map
-import Control.Monad.Trans.RWS (RWST (RWST), runRWST)
-import qualified Control.Monad.Trans.RWS as RWS
+import Data.Map.Strict (Map, (!?))
+import qualified Data.Map.Strict as Map
+import Control.Monad.Trans.RWS.Strict (RWST (RWST), runRWST)
+import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed, hoist, project, para)
 import Control.Monad (replicateM, zipWithM_, unless, when)
@@ -70,7 +70,7 @@ import Text.Megaparsec (sourceLine)
 --   - Use comments even if something is obvious. (but not too obvious?)
 
 typecheck :: Maybe Prelude -> Module R -> PrintContext ([TypeError], Module TC)
-typecheck mprelude rStmts = do
+typecheck mprelude rStmts = {-# SCC typecheck #-} do
     let tcContext = Ctx { prelude = mprelude, returnType = Nothing, shouldPrintUnification = Nothing }
     let senv = emptySEnv  -- we add typechecking state here, because it might be shared between modules? (especially memoization!)... hol up, is there anything to even share?
 
@@ -628,15 +628,15 @@ inferType = cata $ (.) (fmap embed) $ \case
     params <- sequenceA rparams
     (newParams, unions) <- instantiateScheme mempty dd.ddScheme
 
-    (error "todo", newParams) `uniMany` (Nothing, params) -- just in case unify em
-    
+    (Def.TmpNoLocation, newParams) `uniMany` (Nothing, params) -- just in case unify em
+
     pure $ TCon dd params unions
 
   TCon (R.ExternalDatatype dd) rparams () -> do
     params <- sequenceA rparams
     (newParams, unions) <- instantiateScheme mempty dd.ddScheme
 
-    (error "todo", newParams) `uniMany` (Nothing, params) -- just in case unify em
+    (Def.TmpNoLocation, newParams) `uniMany` (Nothing, params) -- just in case unify em
     pure $ TCon dd params unions
 
   TO (R.TClass rcd) -> do
@@ -1778,7 +1778,7 @@ uniMany ts1 ts2 = do
 whenPrintingUni :: Def.Context -> Infer ()
 whenPrintingUni x = do
   shouldPrint <- RWS.asks shouldPrintUnification
-  case shouldPrint of 
+  case shouldPrint of
     Nothing -> pure ()
     Just line -> Def.unsilenceablePrintInContext $ pf "%: %" line x
 
@@ -1918,6 +1918,13 @@ nun = pure ()
 -- Substitutable --
 -------------------
 
+-- data SubstCache = SubstCache
+--   { functions :: ()
+--   , instances :: ()
+--   , classes :: ()
+--   , unions :: ()
+--   }
+
 class Substitutable a where
   ftv :: a -> Set T.TyVar
   subst :: Subst -> a -> a
@@ -1951,15 +1958,17 @@ instance Substitutable Int where
 
 instance Substitutable (ClassDef TC) where
   ftv = mempty  -- no FTVs in declarations. will need to get ftvs from associated types and default functions when they'll be implemented.
-  subst su cd = cd  -- TODO: not sure if there is anything to sueid bstitute.
+  subst = subst  -- function declaration might be inside a polymorphic function, so we *should* substitute.
 
 instance Substitutable (InstDef TC) where
+  -- TODO: substitute ALL
   ftv inst = foldMap ftv inst.instFuns
   subst su inst = inst
     { instFuns = subst su inst.instFuns
     }
 
 instance Substitutable (InstFun TC) where
+  -- PERF: substitute ALL
   ftv ifn = ftv ifn.instFunDec <> ftv ifn.instFunBody
   subst su ifn = ifn
     { instFunDec = subst su ifn.instFunDec
@@ -1967,6 +1976,7 @@ instance Substitutable (InstFun TC) where
     }
 
 instance Substitutable (Exports TC) where
+  -- PERF: substitute ALL
   ftv e = ftv e.functions
   subst su e = e { functions = subst su e.functions }
 
@@ -1974,7 +1984,7 @@ instance Substitutable (AnnStmt TC) where
   ftv = cata $ \(O (O (Def.Annotated _ (Def.Located _ stmt)))) -> bifold $ first ftv stmt
   subst su = cata $ embed . (\(O (O (Def.Annotated ann (Def.Located location stmt)))) -> (O . O . Def.Annotated ann . Def.Located location) (subst su stmt))
 
-  
+
 instance Substitutable a => Substitutable (StmtF TC (Expr TC) a) where
   ftv stmt = case bimap ftv ftv stmt of
     Return ret -> ftv ret
@@ -1986,7 +1996,7 @@ instance Substitutable a => Substitutable (StmtF TC (Expr TC) a) where
           let cond' = subst su cond
               cases' = subst su cases
           in Switch cond' cases'
-        Fun env -> Fun $ subst su env
+        Fun env -> Fun $ subst su env  -- PERF: hmmmm...
         Inst inst -> Inst $ subst su inst
         Return ret -> Return  $ subst su ret
         Mutation v varLocation other accesses e -> Mutation v varLocation other (subst su accesses) (subst su e)
@@ -2305,7 +2315,7 @@ data Context = Ctx
   }
 
 data SubstState = SubstState
-  { ctxSubst :: Subst
+  { ctxSubst :: !Subst
   , ctxTvargen :: TVarGen
   }
 
@@ -2314,7 +2324,7 @@ data TypecheckingState = TypecheckingState
   { tvargen :: TVarGen
 
   -- current state of substitution.
-  , typeSubstitution :: Subst
+  , typeSubstitution :: !Subst
 
   , memoFunction :: Memo (Function R) (Function TC)
   , memoDataDefinition :: Memo (DataDef R) (DataDef TC)
@@ -2367,7 +2377,7 @@ newTVarGen = TVG 0
 
 data Subst
   -- normal subst
-  = Subst (Map Def.UnionID T.EnvUnion) (Map T.TyVar (Type TC))
+  = Subst !(Map Def.UnionID T.EnvUnion) !(Map T.TyVar (Type TC))
 
   -- later used to append extra stuff to environments.
   | EnvAddition EnvAdditions
@@ -2420,7 +2430,7 @@ instance Error TypeError where
     FunctionTypeConstrainedByClass _ t cd -> error "FunctionTypeConstrainedByClass"
     _ -> undefined
 --      printf "Function type %s constrained by class %s (function types cannot implement classes, bruh.)" (pp t) (pp cd.classID)
-  
+
 -- copied verbatim from Resolver. I mean, the error interface should change anyway, so whatever.
 ln :: a -> NonEmpty a
 ln = NonEmpty.singleton

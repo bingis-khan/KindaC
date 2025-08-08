@@ -15,10 +15,10 @@ import Data.Functor.Foldable (embed, cata, para, project)
 import Data.Bitraversable (bitraverse)
 import Data.Biapplicative (first, bimap)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
-import Data.Map (Map, (!?), (!))
-import Control.Monad.Trans.State (StateT)
-import qualified Control.Monad.Trans.State as State
-import qualified Data.Map as Map
+import Data.Map.Strict (Map, (!?), (!))
+import Control.Monad.Trans.State.Strict (StateT)
+import qualified Control.Monad.Trans.State.Strict as State
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Unique (newUnique)
 import Control.Monad.IO.Class (liftIO)
@@ -31,8 +31,8 @@ import Data.Set (Set)
 import Misc.Memo (Memo (..), emptyMemo, memo, memo', isMemoed)
 import qualified Misc.Memo as Memo
 import Data.Monoid (Any (Any, getAny))
-import Control.Monad.Trans.RWS (RWST)
-import qualified Control.Monad.Trans.RWS as RWS
+import Control.Monad.Trans.RWS.Strict (RWST)
+import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Bifoldable (bifold)
 import Control.Monad (void)
 import Data.String (fromString)
@@ -55,7 +55,7 @@ import Control.Applicative (liftA3)
 --  Step 2: Replace escaped TVars with each instantiation of them. (maybe it can be eliminated like doing env defs by first collecting the variables)
 
 mono :: [AnnStmt TC] -> PrintContext (Module M)
-mono tmod = do
+mono tmod = {-# SCC mono #-} do
   -- Step 1: Just do monomorphization with a few quirks*.
   (mistmts, monoCtx) <- flip State.runStateT startingContext $ do
     mBody "[top level]" tmod

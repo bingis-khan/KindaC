@@ -1,0 +1,44 @@
+use List
+	List
+use Cnile
+	Char
+use Alloc
+	Allocator
+use StrClass
+	Str(print-str, length, chars)
+use Iter
+	for-each
+use Term
+use Str
+	DynStr
+use Slice
+	Slice
+	subslice
+
+
+StrBuilder alloc
+	chars List alloc Char
+
+write (builder Ptr (StrBuilder alloc), s str) -> Unit <= Str str, Allocator alloc
+	s chars() for-each(c: List.add(&builder&.chars, c))
+
+writeln (builder, s):
+	builder write('\(s)\n')
+
+mk (al alloc) -> StrBuilder alloc <= Allocator alloc
+	return StrBuilder { chars: List.mk(al) }
+
+# DOES NOT REALLOCATE!
+as-str (builder Ptr (StrBuilder alloc)):
+	DynStr { content: builder&.chars.elements subslice(0, builder&.chars.count) }
+
+free-builder (builder Ptr (StrBuilder alloc)) <= Allocator alloc
+	List.free-list(&builder&.chars)
+
+
+inst Str StrBuilder alloc
+	print-str (s)
+		len = s.chars.count
+		ptr = s.chars.elements.ptr
+		Cnile.printf2('%.*s', len, ptr)
+		return

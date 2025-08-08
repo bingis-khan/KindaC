@@ -56,6 +56,10 @@ mk (al alloc) -> List alloc a
 	elements = Slice.empty()
 	return List { al, elements, count: 0 }
 
+free-list (list Ptr (List alloc a)) -> Unit <= Allocator alloc
+	list&.al free(list&.elements)
+	return
+
 
 starting-size = 8
 growth-factor = 2

@@ -28,13 +28,17 @@ import CPrinter (cModule)
 import CompilerContext (CompilerContext (..))
 import qualified CompilerContext as Compiler
 import Control.Monad.IO.Class (liftIO)
-import qualified Control.Monad.Trans.RWS as RWST
-import Data.Map ((!?))
+import qualified Control.Monad.Trans.RWS.Strict as RWST
+import Data.Map.Strict ((!?))
 import qualified System.Directory as Directory
 import Error (Error (..))
 import qualified System.FilePath as FilePath
 import Control.Monad.Trans.Class (lift)
 
+
+-- temporary redef
+force :: a -> a
+force = id
 
 
 preludePath, stdPath :: FilePath
@@ -61,12 +65,12 @@ loadModule debugPrintFirstModule filename = (if not debugPrintFirstModule then C
       pc ast
 
       phase "Resolving"
-      (rerrs, rmod) <- resolve (Just prelude) (moduleLoader moduleName) ast
+      (rerrs, rmod) <- force <$> resolve (Just prelude) (moduleLoader moduleName) ast
       pc rmod
 
       
       phase "Typechecking"
-      (terrs, tmod) <- Compiler.asPrintContext $ typecheck (Just prelude) rmod
+      (terrs, tmod) <- Compiler.asPrintContext $ force <$> typecheck (Just prelude) rmod
 
       Compiler.addErrors moduleName $ map (" " <>) $ s2t source rerrs ++ s2t source terrs
       pure $ Just tmod
@@ -83,7 +87,7 @@ moduleLoader compilingModule mq = do
       projectModuleExists <- liftIO $ Directory.doesFileExist filepath
       if projectModuleExists
         then do
-          lmtmod <- Compiler.relativeTo filepath $ loadModule False filepath
+          lmtmod <- Compiler.relativeTo filepath $ force <$> loadModule False filepath
           Compiler.storeModule mq lmtmod
           pure lmtmod
 
@@ -105,16 +109,16 @@ moduleLoader compilingModule mq = do
 finalizeModule :: NonEmpty (Module TC) -> PrintContext Text
 finalizeModule modules = do
   -- join both modules
-  let joinedStatements = concatMap topLevelStatements modules
+  let joinedStatements = force $ concatMap topLevelStatements modules
 
   phase "Monomorphizing"
-  mmod <- mono joinedStatements
+  mmod <- force <$> mono joinedStatements
 
   phase "Monomorphized statements"
   pc mmod
 
   -- phase "C-ing"
-  let cmod = cModule mmod
+  let cmod = force $ cModule mmod
   pure cmod
 
 

@@ -24,8 +24,8 @@ import Data.Char (toUpper)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Set (Set)
-import Data.Map (Map, (!?))
-import qualified Data.Map as Map
+import Data.Map.Strict (Map, (!?))
+import qualified Data.Map.Strict as Map
 import Data.Bitraversable (bitraverse)
 import qualified Data.Set as Set
 import Data.Foldable1 (foldl1', Foldable1)
@@ -277,13 +277,16 @@ es `isHigherOrSameLevel` es' = and $ zipWith (==) (reverse es) (reverse es')
 
 
 -- Megaparsec location information.
-data Location = Location
+data Location
+  = Location
   { offsetFrom :: Int
   , offsetTo :: Int
   , startPos :: TM.SourcePos
   -- do I need anything more?
   -- filename/module will be appended when printing errors, as I want to group them by module.
-  } deriving (Eq, Ord)
+  }
+  | TmpNoLocation
+  deriving (Eq, Ord)
 
 data Located a = Located
   { location :: Location
@@ -819,6 +822,7 @@ firstJust :: (a -> Maybe b) -> [a] -> Maybe b
 firstJust f = listToMaybe . mapMaybe f
 
 fmap2 :: (Functor f1, Functor f2) => (a -> b) -> f1 (f2 a) -> f1 (f2 b)
+{-# INLINE fmap2 #-}
 fmap2 = fmap . fmap
 
 fmap3 :: (Functor f1, Functor f2, Functor f3) => (a -> b) -> f1 (f2 (f3 a)) -> f1 (f2 (f3 b))

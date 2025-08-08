@@ -7,16 +7,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 module Resolver (resolve, ResolveError) where
 
 import Data.Unique (newUnique)
 import Control.Monad.IO.Class (liftIO)
 import Data.Functor.Foldable (transverse, cata, embed, project)
 import Data.Foldable (fold, for_)
-import Control.Monad.Trans.RWS (RWST)
-import Data.Map (Map, (!?))
-import qualified Control.Monad.Trans.RWS as RWST
-import qualified Data.Map as Map
+import Control.Monad.Trans.RWS.Strict (RWST)
+import Data.Map.Strict (Map, (!?))
+import qualified Control.Monad.Trans.RWS.Strict as RWST
+import qualified Data.Map.Strict as Map
 
 import Data.List.NonEmpty (NonEmpty ((:|)), (<|))
 import qualified Data.List.NonEmpty as NonEmpty
@@ -40,7 +42,7 @@ import qualified Data.Text as Text
 import Data.Maybe (mapMaybe)
 import Data.Semigroup (sconcat)
 import Data.Traversable (for)
-import qualified Control.Monad.Trans.RWS as RWS
+import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Either (rights, lefts)
 import Data.List (find)
 import AST.Def (type (:.)(O), Annotated (..), Binding (..), Located (..), pp, pf)
@@ -55,12 +57,14 @@ import Control.Monad.Trans.Class (lift)
 import Error (Error (..), renderError)
 import Data.String (fromString)
 import Data.Text (Text)
+import Control.DeepSeq (NFData)
+import GHC.Generics (Generic)
 
 
 
 -- Resolves variables, constructors and types and replaces them with unique IDs.
 resolve :: Maybe Prelude -> Compiler.ModuleLoader -> Module U -> CompilerContext ([ResolveError], Module R)
-resolve mPrelude moduleLoader (U.Mod ustmts) = do
+resolve mPrelude moduleLoader (U.Mod ustmts) = {-# SCC resolve #-} do
   let newState = maybe emptyState (mkState moduleLoader) mPrelude
   (rstmts, state, errs) <- RWST.runRWST (rStmts ustmts) mPrelude newState
 
