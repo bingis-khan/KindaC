@@ -523,12 +523,12 @@ inferVariable location = \case
 
   R.ExternalFunction fn rsnapshot -> do
     snapshot <- inferSnapshot rsnapshot
-    pure $ T.DefinedFunction fn mempty snapshot tempFunctionInstantiation True
+    pure $ T.DefinedFunction fn mempty snapshot tempFunctionInstantiation
 
   R.DefinedFunction fn rsnapshot -> do
     tfn <- inferFunction fn
     snapshot <- inferSnapshot rsnapshot
-    pure $ T.DefinedFunction tfn mempty snapshot tempFunctionInstantiation False
+    pure $ T.DefinedFunction tfn mempty snapshot tempFunctionInstantiation
 
   R.ExternalClassFunction cfd@(CFD cd _ _ _ () _) rsnapshot -> do
     -- insts <- fmap Map.fromList $ for (Map.toList (rinsts ! )) $ \(rdd, rinst) -> do
@@ -1062,7 +1062,7 @@ substAssociations = do
             -- let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
             -- TODO: FromEnvironment locality only here, because it means we won't add anything extra to the instantiations.
             let notExternalBecauseWeDontKnow = False
-            (instFunType, T.DefinedFunction fn instAssocs _ ufi _, env@(T.Env _ _ _ level)) <- instantiateFunction notExternalBecauseWeDontKnow fromLocation (Just uci) insts $ Function instFun.instFunDec instFun.instFunBody
+            (instFunType, T.DefinedFunction fn instAssocs _ ufi, env@(T.Env _ _ _ level)) <- instantiateFunction notExternalBecauseWeDontKnow fromLocation (Just uci) insts $ Function instFun.instFunDec instFun.instFunBody
 
             (toLocation, to) `uni` justType instFunType
             pf "ENV ASSOC: %s" $ pp env
@@ -1264,7 +1264,7 @@ constructSchemeForFunctionDeclaration dec = do
           digThroughVar :: Type TC -> T.Variable -> (Set T.TyVar, Map T.EnvUnion ([Type TC], Type TC))
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
-            T.DefinedFunction f _ _ _ _ -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType  -- should we dig through external functions?
+            T.DefinedFunction f _ _ _ -> foldMap (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters <> digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType  -- should we dig through external functions?
             T.DefinedClassFunction (CFD cd _ _ _ () _) snapshot _ _   -- TODO: I think we don't need to dig through instances?
               -> mempty
 
@@ -1406,7 +1406,7 @@ inferDecon = cata $ \(N location d) -> fmap embed $ case d of
 instantiateVariable :: Def.Location -> Def.Locality -> T.Variable -> Infer (Type TC, T.Variable)
 instantiateVariable location loc = resetUniPrint . \case
   T.DefinedVariable v -> var v <&> (,T.DefinedVariable v)
-  T.DefinedFunction fn _ snapshot _ _ -> do
+  T.DefinedFunction fn _ snapshot _ -> do
     (t, v, env) <- instantiateFunction False location Nothing snapshot fn -- notice that we use the UFI from here (inferVariable just creates a temp error type to not use it)
 
     associations <- RWS.gets associations
@@ -1418,7 +1418,7 @@ instantiateVariable location loc = resetUniPrint . \case
         gatherInstsFromEnvironment = \case
             T.RecursiveEnv _ _ -> mempty
             T.Env _ vars _ _ -> flip foldMap vars $ \case
-              (envVar@(T.DefinedFunction fn _ _ ufi _), Def.Local, t) ->
+              (envVar@(T.DefinedFunction fn _ _ ufi), Def.Local, t) ->
                 -- NOTE: we need mapped envs, so we have to dig through the type. but, are we too permissive? should we only choose this current env? or all of them? how do we distinguish the "current" one?
                 let currentEnvID = T.envID fn.functionDeclaration.functionEnv
                     envs = case project t of
@@ -1518,7 +1518,7 @@ instantiateFunction isExternal assocLocation muci snapshot fn = do
           TFun (T.EnvUnion { T.union = [(_, _, _, env)] }) _ _ -> env
           _ -> error "MUST NOT HAPPEN."
 
-    let v = T.DefinedFunction fn assocs snapshot ufi isExternal
+    let v = T.DefinedFunction fn assocs snapshot ufi
 
     pf "For function %:\n\tType %.\n\tAfter instantiation: %"
       (pp fundec.functionId)
@@ -1627,7 +1627,7 @@ mapEnv tvmap unionmap = \case
     mapVar = \case
       T.DefinedClassFunction cfd snap self uci ->
         T.DefinedClassFunction cfd snap (mapTVsWithMap tvmap unionmap self) uci
-      T.DefinedFunction fn assocs snap ufi isExternal -> T.DefinedFunction fn (mapTVsWithMap tvmap unionmap <$> assocs) snap ufi isExternal
+      T.DefinedFunction fn assocs snap ufi -> T.DefinedFunction fn (mapTVsWithMap tvmap unionmap <$> assocs) snap ufi
       v -> v
 
 
@@ -2044,8 +2044,7 @@ instance Substitutable T.LamDec where
 
 instance Substitutable T.Variable where
   ftv _ = mempty
-  subst su (T.DefinedFunction fn assocs ss ufi False) = T.DefinedFunction (subst su fn) (subst su assocs) ss ufi False  -- note the bad resubstituting.
-  subst su (T.DefinedFunction fn assocs ss ufi True) = T.DefinedFunction fn (subst su assocs) ss ufi True  -- we won't substitute external functions!
+  subst su (T.DefinedFunction fn assocs ss ufi) = T.DefinedFunction (subst su fn) (subst su assocs) ss ufi  -- note the bad resubstituting.
   subst su (T.DefinedClassFunction cfd insts self uci) = T.DefinedClassFunction cfd (Def.fmap2 (subst su) insts) (subst su self) uci
   subst _ x = x
 

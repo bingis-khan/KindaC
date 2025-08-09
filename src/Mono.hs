@@ -447,7 +447,7 @@ mDecon = cata $ fmap embed . \(N en d) -> do
 
 variable :: T.Variable -> Type IM -> Context IM.Variable  -- NOTE: we're taking in both types, because we need to know which TVars were mapped to types and which to other tvars.
 variable (T.DefinedVariable uv) _ = pure $ IM.DefinedVariable uv
-variable (T.DefinedFunction vfn _ _ ufi _) et = do
+variable (T.DefinedFunction vfn _ _ ufi) et = do
   mfn <- mFunction (Right ufi) et vfn
   pure $ IM.DefinedFunction mfn
 

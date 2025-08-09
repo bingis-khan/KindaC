@@ -125,7 +125,7 @@ data VariableF t
   -- scope snapshots might not be needed!
   -- Here, we need to store the instances. They must also be up for substitution. How would I represent it?
   -- TODO: Right now, we are substituting UCIs at the end of a function. What we can do right now, is we can also substitute this map. I can do this better probably - maybe we can associate function instantiations with a specific TVar?
-  | DefinedFunction (Function TC) [t] ScopeSnapshot Def.UniqueFunctionInstantiation IsFromExternalModule
+  | DefinedFunction (Function TC) [t] ScopeSnapshot Def.UniqueFunctionInstantiation
   | DefinedClassFunction (ClassFunDec TC) ScopeSnapshot t Def.UniqueClassInstantiation  -- which class function and which instances are visible at this point. 
   -- deriving (Eq, Ord)
   deriving (Functor, Foldable, Traversable)
@@ -217,7 +217,7 @@ envID = \case
 asProto :: Variable -> VariableProto
 asProto = \case
   DefinedVariable v -> PDefinedVariable v
-  DefinedFunction fn _ _ _ _ -> PDefinedFunction fn
+  DefinedFunction fn _ _ _ -> PDefinedFunction fn
   DefinedClassFunction cd _ _ _ -> PDefinedClassFunction cd
 
 ---------
@@ -289,14 +289,14 @@ instance Ord TyVar where
 instance Eq Variable where
   l == r = case (l, r) of
     (DefinedVariable uv, DefinedVariable uv') -> uv == uv'
-    (DefinedFunction fn ts _ ufi _, DefinedFunction fn' ts' _ ufi' _) -> (fn, ts, ufi) == (fn', ts', ufi')
+    (DefinedFunction fn ts _ ufi, DefinedFunction fn' ts' _ ufi') -> (fn, ts, ufi) == (fn', ts', ufi')
     (DefinedClassFunction cfd _ t uci, DefinedClassFunction cfd' _ t' uci') -> (cfd, t, uci) == (cfd', t', uci')
     _ -> False
 
 instance Ord Variable where
   l `compare` r = case (l, r) of
     (DefinedVariable uv, DefinedVariable uv') -> uv `compare` uv'
-    (DefinedFunction fn ts _ ufi _, DefinedFunction fn' ts' _ ufi' _) -> (fn, ts, ufi') `compare` (fn', ts', ufi')
+    (DefinedFunction fn ts _ ufi, DefinedFunction fn' ts' _ ufi') -> (fn, ts, ufi') `compare` (fn', ts', ufi')
     (DefinedClassFunction cfd _ t uci, DefinedClassFunction cfd' _ t' uci') -> (cfd, t, uci) `compare` (cfd', t', uci')
 
     (DefinedVariable {}, _) -> LT
@@ -348,7 +348,7 @@ instance PP TypeAssociation where
 instance PP a => PP (VariableF a) where
   pp = \case
     DefinedVariable v -> pp v
-    DefinedFunction f assocs _ ufi _ -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv _ _ uci) -> pp (tv, uci)) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet pp assocs <> ")"
+    DefinedFunction f assocs _ ufi -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv _ _ uci) -> pp (tv, uci)) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet pp assocs <> ")"
     DefinedClassFunction (CFD cd uv _ _ _ _) insts self uci ->
       fromString $ Def.printf "%&%&C<%>[%]" (pp uv) (pp uci) (pp self) (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts)))
 
