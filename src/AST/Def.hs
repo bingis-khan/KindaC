@@ -351,7 +351,7 @@ instance (PPDef v) => PPDef (Set v) where
   ppDef = encloseSepBy "{" "}" "," . fmap ppDef . Set.toList
 
 instance (PPDef k, PP v) => PP (Map k v) where
-  pp = encloseSepBy "{" "}" "," . fmap (\(k, v) -> ppDef k <> ":" <+> pp v) . Map.toList
+  pp = encloseSepBy "{" "}" ", " . fmap (\(k, v) -> ppDef k <> ":" <+> pp v) . Map.toList
 
 instance (PPDef k, PPDef v) => PPDef (Map k v) where
   ppDef = encloseSepBy "{" "}" "," . fmap (\(k, v) -> ppDef k <> ":" <+> ppDef v) . Map.toList
@@ -443,8 +443,15 @@ instance PP UniqueCon where
 instance PP UniqueType where
   pp = ppTypeInfo
 
+instance PPDef UniqueType where
+  ppDef = ppTypeInfo
+
 instance PP UniqueClass where
   pp ucl = pp ucl.className
+
+instance PPDef UniqueClass where
+  ppDef ucl = pp ucl.className
+
 
 instance PP UniqueMem where
   pp ucl = pp ucl.memName
@@ -830,6 +837,10 @@ fmap3 = fmap . fmap . fmap
 
 traverse2 :: (Applicative f, Traversable t1, Traversable t2) => (a -> f b) -> t1 (t2 a) -> f (t1 (t2 b))
 traverse2 = traverse . traverse
+
+traverse3 :: (Applicative f, Traversable t1, Traversable t2, Traversable t3) => (a -> f b) -> t1 (t2 (t3 a)) -> f (t1 (t2 (t3 b)))
+traverse3 = traverse . traverse . traverse
+
 
 for2 :: (Applicative f, Traversable t1, Traversable t2) => t1 (t2 a) -> (a -> f b) -> f (t1 (t2 b))
 for2 = flip traverse2

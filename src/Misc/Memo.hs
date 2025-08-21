@@ -1,7 +1,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Misc.Memo (memo, memo', emptyMemo, isMemoed, Memo(..), Memoizable) where
+module Misc.Memo (memo, memo', qmemo, emptyMemo, isMemoed, Memo(..), Memoizable) where
 
 import Data.Map.Strict (Map, (!?))
 import qualified Data.Map.Strict as Map
@@ -35,6 +35,9 @@ memo toMemo fromMemo transform r = do
       addMemo x  -- i'll try - i'll see what happens
 
       pure x
+
+qmemo :: (Monad ctx, Memoizable ctx, Ord r) => (OverallState ctx -> Memo r t) -> (Memo r t -> OverallState ctx -> OverallState ctx) -> (r -> ctx t) -> r -> ctx t
+qmemo toMemo fromMemo transform r = memo toMemo fromMemo (\x _ -> transform x) r
 
 memo' :: (Monad ctx, Memoizable ctx, Ord r) => (OverallState ctx -> Memo r t) -> (Memo r t -> OverallState ctx -> OverallState ctx) -> r -> (r -> (t -> ctx ()) -> ctx t) -> ctx t
 memo' toMemo fromMemo r transform = memo toMemo fromMemo transform r

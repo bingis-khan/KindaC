@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.37.0.
+-- This file has been generated from package.yaml by hpack version 0.38.1.
 --
 -- see: https://github.com/sol/hpack
 
@@ -37,12 +37,12 @@ library
       Pipeline
       Resolver
       Typecheck
+      TypeFix
   other-modules:
       Paths_KindaC
   hs-source-dirs:
       src
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -O2
-  ghc-prof-options: -fprof-late
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -finfo-table-map -fdistinct-constructor-tables -g -threaded
   build-depends:
       HUnit
     , base >=4.7 && <5
@@ -53,6 +53,8 @@ library
     , deriving-compat
     , directory
     , filepath
+    , ghc-debug-stub
+    , ghc-experimental
     , hspec
     , megaparsec
     , parser-combinators
@@ -70,8 +72,7 @@ executable kc
       Paths_KindaC
   hs-source-dirs:
       app
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -O2 -O2
-  ghc-prof-options: -fprof-late -rtsopts
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -finfo-table-map -fdistinct-constructor-tables -g -threaded -rtsopts
   build-depends:
       HUnit
     , KindaC
@@ -83,6 +84,8 @@ executable kc
     , deriving-compat
     , directory
     , filepath
+    , ghc-debug-stub
+    , ghc-experimental
     , hspec
     , megaparsec
     , parser-combinators
@@ -102,8 +105,7 @@ test-suite all
       Paths_KindaC
   hs-source-dirs:
       test/src
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -O2 -threaded -rtsopts -with-rtsopts=-N
-  ghc-prof-options: -fprof-late
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -finfo-table-map -fdistinct-constructor-tables -g -threaded -threaded -rtsopts
   build-depends:
       HUnit
     , KindaC
@@ -115,6 +117,8 @@ test-suite all
     , deriving-compat
     , directory
     , filepath
+    , ghc-debug-stub
+    , ghc-experimental
     , hspec
     , megaparsec
     , parser-combinators

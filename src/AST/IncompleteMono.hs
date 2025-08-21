@@ -6,11 +6,10 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE UndecidableInstances #-}
 module AST.IncompleteMono (module AST.IncompleteMono, Def.EnvID) where
-import AST.Common (Function, Type, XLVar, XReturn, XExprNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation)
+import AST.Common (Function, Type, XLVar, XReturn, XExprNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation, TypeF)
 import qualified AST.Def as Def
 import AST.Def (Locality, PP (..), (<+>), PPDef, fmap2, pf)
 import Data.List.NonEmpty (NonEmpty)
-import AST.Typed (TC)
 import qualified AST.Typed as T
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.String (fromString)
@@ -20,10 +19,13 @@ import Data.Map.Strict (Map)
 import Data.Set (Set)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+import Data.Fix (Fix)
+import AST.Typed (T)
 
 data IMono
 type IM = IMono
 
+type instance Type IM = Fix (TypeF IM)
 type instance Rec IM a = a
 type instance XLVar IM = Def.UniqueVar
 type instance XReturn IM = Expr IM
@@ -89,7 +91,7 @@ data TVar = TV
 
 data OtherDD = OtherDD
   { appliedTypes :: [Type IM]
-  , ogDataDef :: DataDef TC
+  , ogDataDef :: DataDef T
   }
 
 data Variable
@@ -119,8 +121,8 @@ envLevel = \case
 
 data EnvUnion = EnvUnion
   { unionID :: Def.UnionID
-  , union :: NonEmpty (T.EnvF (Type IM))  -- TODO: maybe having a typechecked version here is already passe (due to RemoveUnused effectively happening in Typecheck). I don't want to touch this before finishing class functions, because there were no real problems with it yet and I don't want to introduce any subtle bugs (eg. creating too many env defs, too large unions)
-  , oldUnion :: T.EnvUnion
+  , union :: NonEmpty (T.EnvF T (Type IM))  -- TODO: maybe having a typechecked version here is already passe (due to RemoveUnused effectively happening in Typecheck). I don't want to touch this before finishing class functions, because there were no real problems with it yet and I don't want to introduce any subtle bugs (eg. creating too many env defs, too large unions)
+  , oldUnion :: T.EnvUnionF T (Type T)
   }
 
 
@@ -209,6 +211,9 @@ instance PPDef Variable where
   ppDef = \case
     DefinedVariable uv -> pp uv
     DefinedFunction fn -> pp fn.functionDeclaration.functionId
+
+instance PPDef EnvUnion where
+  ppDef = pp . unionID
 
 
 data FunOther = FunOther

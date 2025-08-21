@@ -5,20 +5,22 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE UndecidableInstances #-}
 module AST.Mono (module AST.Mono) where
-import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XExprNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation)
+import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XExprNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation, TypeF)
 import qualified AST.Def as Def
 import AST.Def (Locality, PP (..), (<+>))
 import Data.List.NonEmpty (NonEmpty)
-import AST.Typed (TC)
+import AST.Typed (T)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.String (fromString)
 import Data.Functor ((<&>))
 import Data.Text (Text)
+import Data.Fix (Fix)
 
 
 data Mono
 type M = Mono
 
+type instance Type M = Fix (TypeF M)
 type instance Rec M a = a
 type instance Module M = Mod
 type instance XFunDef M = EnvDefs
@@ -84,7 +86,7 @@ data Env
 
 data OtherDD = OtherDD
   { appliedTypes :: [Type M]
-  , ogDataDef :: DataDef TC
+  , ogDataDef :: DataDef T
   }
 
 envID :: Env -> Def.EnvID

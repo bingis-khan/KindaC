@@ -17,11 +17,13 @@ import AST.Def (PP (..), PPDef, ppDef)
 import AST.Typed (TC)
 import Data.String (fromString)
 import Data.Text (Text)
+import Data.Fix (Fix)
 
 data Resolved
 type R = Resolved
 
 
+type instance Type Resolved = Fix (TypeF R)
 type instance XVar Resolved = Variable
 type instance XVarOther Resolved = Def.Locality
 type instance XLVar Resolved = Def.UniqueVar

@@ -13,11 +13,13 @@ import Data.List.NonEmpty (NonEmpty)
 import AST.Def (PP (..), (<+>), PPDef (..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
+import Data.Fix (Fix)
 
 
 data Untyped
 type U = Untyped
 
+type instance Type Untyped = Fix (TypeF U)
 type instance XTCon Untyped = Qualified Def.TCon
 type instance XDTCon Untyped = Def.TCon
 type instance XMem Untyped = Def.MemName

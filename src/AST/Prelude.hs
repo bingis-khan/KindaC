@@ -3,7 +3,7 @@ module AST.Prelude (module AST.Prelude) where
 
 import qualified AST.Def as Def
 import AST.Typed (TC)
-import AST.Common (Module, DataCon, Expr, Type)
+import AST.Common (Module, DataCon, Expr, Type, TypeF)
 
 
 -- the funny anti-cyclic (cucklic) module dependency
@@ -23,7 +23,7 @@ data Prelude = Prelude
   , intType        :: Type TC
   , floatType      :: Type TC
   , constStrType   :: Type TC
-  , mkPtr          :: Type TC -> Type TC
+  , mkPtr          :: Type TC -> TypeF TC (Type TC)
 
   , unitValue      :: DataCon TC
   , strConcatValue :: DataCon TC
@@ -55,9 +55,6 @@ boolFind = PF boolTypeName boolType
 intFind = PF intTypeName intType
 floatFind = PF floatTypeName floatType
 constStrFind = PF constStrTypeName constStrType
-
-ptrFind :: Type TC -> PreludeFind
-ptrFind t = PF ptrTypeName (`mkPtr` t)
 
 
 --- CLASSES

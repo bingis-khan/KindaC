@@ -20,7 +20,7 @@ import qualified Control.Exception as E
 import Test.HUnit.Lang (HUnitFailure(HUnitFailure), FailureReason (ExpectedButGot))
 import Control.Exception (catch)
 import GHC.Exception (SomeException)
-import CompilerContext (compilerContext)
+import CompilerContext (compileInContext, CompilerState, preludeHackContext)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified AST.Def as Def
 import Control.Monad.IO.Class (liftIO)
@@ -33,7 +33,7 @@ testdir = "test/data/expect"
 expect :: IO ()
 expect = do
   tests <- sort <$> listDirectory testdir
-  prelude <- Def.inPrintContext Def.runtimeContext loadPrelude
+  preludeAndState <- Def.inPrintContext Def.runtimeContext $ preludeHackContext loadPrelude
 
   withTempDirectory "." "intermediate-test-outputs" $ \dir ->
     hspec $ parallel $ do
@@ -42,7 +42,7 @@ expect = do
         runIO $ putStrLn filename
         header <- runIO $ readHeader path
         describe (filename <?> (": " <>) <$> header.name) $ do
-            errorOrFilepath <- runIO $ compileAndOutputFile prelude path dir
+            errorOrFilepath <- runIO $ compileAndOutputFile preludeAndState path dir
 
             it "should compile" $ do
               expectNoError errorOrFilepath
@@ -105,11 +105,11 @@ expectNoError (Left err) = expectationFailure $ "Compiling error:\n" <> Text.unp
 
 
 type Error = Text
-compileAndOutputFile :: Prelude -> FilePath -> FilePath -> IO (Either Error FilePath)
-compileAndOutputFile prelude filepath outdirpath = do
+compileAndOutputFile :: (Prelude, CompilerState) -> FilePath -> FilePath -> IO (Either Error FilePath)
+compileAndOutputFile preludeAndState filepath outdirpath = do
   let compile = Def.inPrintContext Def.runtimeContext $ do
         let basePath = "."  -- maybe make a special testing "module" directory for testing module imports?
-        etmod <- compilerContext basePath prelude $ loadModule False filepath
+        etmod <- compileInContext basePath preludeAndState $ loadModule False filepath
         case etmod of
           Left err -> pure $ Left $ Text.unlines $ NonEmpty.toList err
           Right tmods -> do

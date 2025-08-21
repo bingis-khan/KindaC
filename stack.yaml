@@ -1,6 +1,10 @@
-resolver: lts-22.33
+resolver: lts-24.4
 packages:
 - .
+
+extra-deps:
+  - ghc-debug-stub-0.7.0.0
+  - ghc-debug-convention-0.7.0.0
 
 build:
   # I don't seem to need that?

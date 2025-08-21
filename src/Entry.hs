@@ -5,13 +5,14 @@ module Entry (compilerMain) where
 import qualified Data.Text.IO as TextIO
 import System.Environment (getArgs)
 import Pipeline (loadPrelude, loadModule, finalizeModule)
-import CompilerContext (compilerContext)
+import CompilerContext (compileInContext, preludeHackContext)
 import Control.Monad.IO.Class (liftIO)
 import qualified System.FilePath as FilePath
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
 import System.Exit (exitFailure)
 import qualified AST.Def as Def
+import GHC.Debug.Stub (withGhcDebug)
 
 
 compilerMain :: IO ()
@@ -22,10 +23,9 @@ compilerMain = do
   let ctx = if dbg || dbgModule then Def.debugContext else Def.runtimeContext
 
   Def.inPrintContext ctx $ do  -- debug printing 
-    prelude <- loadPrelude
-
     -- first, get dat prelude
-    errOrModules <- compilerContext basePath prelude $ loadModule dbgModule filename
+    preludeAndState <- preludeHackContext loadPrelude
+    errOrModules <- compileInContext basePath preludeAndState $ loadModule (dbg || dbgModule) filename
 
     case errOrModules of
       Left errs -> liftIO $ do
@@ -34,7 +34,7 @@ compilerMain = do
 
       Right modules -> do
         -- TEMP: i wanna check the typechecked module.
-        cmod <- Def.localPrintContext (if dbgModule then Def.debugContext else Def.runtimeContext) $ finalizeModule modules
+        cmod <- Def.localPrintContext (if dbg then Def.debugContext else Def.runtimeContext) $ finalizeModule modules
 
         if outputC 
           then

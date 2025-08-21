@@ -21,7 +21,7 @@ import AST.Prelude (Prelude (..))
 import qualified AST.Prelude as Prelude
 import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), ExprNode (..), datatypes, LitType (..))
 import qualified AST.Def as Def
-import AST.Typed (TC, Mod (topLevelStatements))
+import AST.Typed (TC, Mod (topLevelStatements), T)
 import AST.Def (Result(..), phase, PrintContext, pc, pf)
 import Mono (mono)
 import CPrinter (cModule)
@@ -34,6 +34,7 @@ import qualified System.Directory as Directory
 import Error (Error (..))
 import qualified System.FilePath as FilePath
 import Control.Monad.Trans.Class (lift)
+import qualified Data.Map.Strict as Map
 
 
 -- temporary redef
@@ -70,7 +71,7 @@ loadModule debugPrintFirstModule filename = (if not debugPrintFirstModule then C
 
       
       phase "Typechecking"
-      (terrs, tmod) <- Compiler.asPrintContext $ force <$> typecheck (Just prelude) rmod
+      (terrs, tmod) <- force <$> typecheck (Just prelude) rmod
 
       Compiler.addErrors moduleName $ map (" " <>) $ s2t source rerrs ++ s2t source terrs
       pure $ Just tmod
@@ -106,13 +107,10 @@ moduleLoader compilingModule mq = do
     Just lmtmod -> pure lmtmod
 
 
-finalizeModule :: NonEmpty (Module TC) -> PrintContext Text
-finalizeModule modules = do
-  -- join both modules
-  let joinedStatements = force $ concatMap topLevelStatements modules
-
+finalizeModule :: Module T -> PrintContext Text
+finalizeModule joinedModules = do
   phase "Monomorphizing"
-  mmod <- force <$> mono joinedStatements
+  mmod <- force <$> mono joinedModules
 
   phase "Monomorphized statements"
   pc mmod
@@ -123,7 +121,7 @@ finalizeModule modules = do
 
 
 
-loadPrelude :: PrintContext Prelude
+loadPrelude :: CompilerContext Prelude
 loadPrelude = do
   epmod <- do
     source <- liftIO $ TextIO.readFile preludePath
@@ -137,7 +135,7 @@ loadPrelude = do
         pc ast
 
         phase "Resolving"
-        (rerrs, rmod) <- Compiler.preludeHackContext $ resolve Nothing (error "no module loader for prelude") ast
+        (rerrs, rmod) <- resolve Nothing (error "no module loader for prelude") ast
         pc rmod
 
       
@@ -160,7 +158,7 @@ loadPrelude = do
         ne :: String -> NonEmpty Text
         ne = NonEmpty.singleton . Text.pack
 
-        findBasicType :: Def.TCon -> PreludeErr (Type TC)
+        findBasicType :: Def.TCon -> CompilerContext (PreludeErr (Type TC))
         findBasicType typename = 
             let isCorrectType :: DataDef TC -> Bool
                 isCorrectType (DD ut (T.Scheme [] []) _ _) = ut.typeName == typename
@@ -169,10 +167,13 @@ loadPrelude = do
                 mdd  = find isCorrectType pmod.exports.datatypes
                 name = pf "%" typename :: Def.Context
             in case mdd of
-              Just dd -> 
-                let bt = Fix $ TCon dd [] []
-                in pure bt
-              Nothing -> Failure $ ne $ pf "[Prelude: %s] Could not find suitable %s type (%s type name + no tvars)" name name name
+              Just dd -> do
+                let bt = TCon dd [] []
+                basicTypeID <- Compiler.nextTypeID
+                Compiler.modifyTypeUni $ Map.insert basicTypeID $ Right bt
+                pure $ Success $ basicTypeID
+
+              Nothing -> pure $ Failure $ ne $ pf "[Prelude: %s] Could not find suitable %s type (%s type name + no tvars)" name name name
 
       let findUnit :: PreludeErr (DataCon TC)
           findUnit = 
@@ -204,7 +205,7 @@ loadPrelude = do
             in Fix $ N (T.ExprNode t loc) lit
 
       let
-        findPtrType :: PreludeErr (Type TC -> Type TC)
+        findPtrType :: PreludeErr (Type TC -> TypeF TC (Type TC))
         findPtrType =
             let
               fitsPtrType :: DataDef TC -> Bool
@@ -213,17 +214,21 @@ loadPrelude = do
                 _ -> False
               mdd = find fitsPtrType pmod.exports.datatypes
             in case mdd of
-              Just dd -> Success $ \t -> Fix $ TCon dd [t] []
+              Just dd -> Success $ \t -> TCon dd [t] []
               Nothing -> Failure $ ne $ printf "[Prelude: Ptr] Could not find suitable Ptr type (Ptr type name + one tvar)" 
 
+      ebool <- findBasicType Prelude.boolTypeName
+      eint  <- findBasicType Prelude.intTypeName
+      efloat <- findBasicType Prelude.floatTypeName
+      econstStr <- findBasicType Prelude.constStrTypeName
       let eprelude = do  -- should compile to applicative do! TODO: test it somehow.
+            bool <- ebool
+            int <- eint
+            float <- efloat
+            constStr <- econstStr
             unit <- findUnit
             strConcat <- findStrConcat
-            bool <- findBasicType Prelude.boolTypeName
-            int  <- findBasicType Prelude.intTypeName
-            float <- findBasicType Prelude.floatTypeName
             ptr <- findPtrType
-            constStr <- findBasicType Prelude.constStrTypeName
             pure $ Prelude { tpModule = pmod, unitValue = unit, boolType = bool, intType = int, floatType = float, toplevelReturn = mkTopLevelReturn int, mkPtr = ptr, constStrType = constStr, strConcatValue = strConcat }
 
       case eprelude of
