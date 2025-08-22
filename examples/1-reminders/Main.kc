@@ -65,35 +65,35 @@ else
 		reminders map(uncurry((r, i): r)) for-each(r: builder writeln(r))
 		builder writeln(content)
 		File.write-contents(filename, builder as-str())
-		#Term.println(content)
+		Term.println(content)
 
-	#elif option Str.eq ('remove') or option Str.eq ('rm')
-	#	if args.count /= 2
-	#		Error.critical('Must have two arguments to remove a reminder: remove [reminder id]')
+	elif option Str.eq ('remove') or option Str.eq ('rm')
+		if args.count /= 2
+			Error.critical('Must have two arguments to remove a reminder: remove [reminder id]')
 
-	#	case Str.parse-int(args Slice.get(1))
-	#		None
-	#			Error.critical('Not a number!!!')
-	#		Just(i)
-	#			len = reminders count()
-	#			if i < 1 or i > len
-	#				Error.critical('No reminder with this ID!')
+		case Str.parse-int(args Slice.get(1))
+			None
+				Error.critical('Not a number!!!')
+			Just(i)
+				len = reminders count()
+				if i < 1 or i > len
+					Error.critical('No reminder with this ID!')
 
-	#			builder =& StrBuilder.mk(al)
+				builder =& StrBuilder.mk(al)
 
-	#			# demonstrating the use of closures!
-	#			try-writeln (Tuple(elem, elem-i))
-	#				if elem-i /= i
-	#					builder writeln(elem)
-	#				return
+				# demonstrating the use of closures!
+				try-writeln (Tuple(elem, elem-i))
+					if elem-i /= i
+						builder writeln(elem)
+					return
 
-	#			reminders
-	#				for-each(try-writeln)
+				reminders
+					for-each(try-writeln)
 
-	#			File.write-contents(filename, builder as-str())
+				File.write-contents(filename, builder as-str())
 
-	#			removed-reminder = reminders drop(i - 1) head()
-	#			#Term.println('REMOVED (\(i)): \(removed-reminder)')
+				removed-reminder = reminders drop(i - 1) head()
+				Term.println('REMOVED (\(i)): \(removed-reminder)')
 	else
 		Term.println('unknown option "\(option)!"')
 		Cnile.exit(1)
