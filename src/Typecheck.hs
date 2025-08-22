@@ -67,6 +67,8 @@ import qualified CompilerContext
 import Control.Monad.Trans.Reader (Reader)
 import qualified Control.Monad.Trans.Reader as Reader
 import CompilerContext (CompilerState(..))
+import Control.Monad.Trans.State (StateT)
+import qualified Control.Monad.Trans.State as State
 
 
 
@@ -1384,7 +1386,7 @@ getExpectedType location t memname = getType t >>= \case
       Just (Def.Annotated _ (_, recType)) -> do
         ogUnions' <- for ogUnions $ \(uid, _, _) -> getUnion uid
         let mapTVs = mapTVsWithMap mempty mempty (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions') $ fmap (\(u, _, _) -> u) unions)
-        recType' <- mapTVs recType
+        recType' <- ump $ mapTVs recType
         pure (Just recType', True)
 
       Nothing -> do
@@ -1442,7 +1444,7 @@ inferDecon = cata $ \(N location d) -> fmap embed $ case d of
       (tvs, unions) <- instantiateScheme mempty scheme
       ogUnions' <- for ogUnions $ \(uid, _, _) -> getUnion uid
       let mapTVs = mapTVsWithMap mempty mempty (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions') $ fmap (\(u, _, _) -> u) unions)
-      ts <- traverse mapTVs usts
+      ts <- ump $ traverse mapTVs usts
 
       let args = askType <$> decons
       (location, args) `uniMany` (Just (error "todo: add location information to datatype declaration"), ts)
@@ -1528,9 +1530,9 @@ instantiateClassFunction (CFD _ funid params ret () _) self = do
     let tvmap = Map.fromList $ zip schemeTVars itvs
     ogUnions' <- for schemeUnions $ \(u, _, _) -> getUnion u
     let unionmap = Map.fromList $ zip (T.unionID <$> ogUnions') $ iunions <&> \(u, _, _) -> u
-    let mapTVs = mapTVsWithMap mempty mempty tvmap unionmap <=< mkTypeFromClassType self
+    let mapTVs = mapTVsWithMap mempty mempty tvmap unionmap <=< lift . mkTypeFromClassType self
 
-    fnType <- mkType =<< liftA3 TFun emptyUnion (traverse (mapTVs . snd) params) (mapTVs ret)
+    fnType <- mkType =<< ump (liftA3 TFun (lift emptyUnion) (traverse (mapTVs . snd) params) (mapTVs ret))
     pure fnType
 
 
@@ -1544,6 +1546,7 @@ instantiateFunction isExternal assocLocation muci snapshot fn = do
     pf "Before schemin: %" =<< presentFunctionType fn
     (tvs, unions) <- instantiateScheme snapshot fundec.functionOther.functionScheme
     punions <- traverse (\(u, _, _) -> getUnion u) unions
+    pf "TypeUni for % after scheme instantiation: %" fundec.functionId =<< lift CompilerContext.getTypeUni
     pf "GOT SCHEME: % %" tvs punions
 
     -- Prepare a mapping for the scheme!
@@ -1552,7 +1555,9 @@ instantiateFunction isExternal assocLocation muci snapshot fn = do
     let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions') $ unions <&> \(u, _, _) -> u
     dontMapThoseTypes <- definedVarTypes fundec.functionEnv
     pf "DONT MAP EM: %" dontMapThoseTypes
-    let mapTVs = mapTVsWithMap mempty dontMapThoseTypes tvmap unionmap <=< mapClassSnapshot mempty dontMapThoseTypes (Set.fromList schemeTVars) snapshot
+    let
+      mapTVs :: Type TC -> UltraMap (Type TC)
+      mapTVs = mapTVsWithMap mempty dontMapThoseTypes tvmap unionmap <=< lift . mapClassSnapshot mempty dontMapThoseTypes (Set.fromList schemeTVars) snapshot
 
     pf "Instantiation of %" (pp fundec.functionId) :: Infer ()
     pf "TVars: %" (pp schemeTVars)  :: Infer ()
@@ -1568,32 +1573,28 @@ instantiateFunction isExternal assocLocation muci snapshot fn = do
     ufi <- newFunctionInstantiation
 
     -- add new associations
-    assocs <- for fundec.functionOther.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(CFD cd _ _ _ () _) uci) -> do
-      let from = fromMaybe (error "couldn't map tvar in function type association") $ tvmap !? tv
-      pf "FROM: %" from
-      mto <- mapTVs to
-      pf "TO: %" =<< presentType mto
-      associateType (assocLocation, from) (assocLocation, mto) cfd snapshot uci (Just ufi) -- TEMP
-      pure mto
+    (fnType, v) <- ultraMapThing $ do
+      assocs <- for fundec.functionOther.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(CFD cd _ _ _ () _) uci) -> do
+        let from = fromMaybe (error "couldn't map tvar in function type association") $ tvmap !? tv
+        lift $ pf "FROM: %" from
+        mto <- mapTVs to
+        lift $ pf "TO: %" =<< presentType mto
+        lift $ associateType (assocLocation, from) (assocLocation, mto) cfd snapshot uci (Just ufi) -- TEMP
+        pure mto
 
-    pf "after assocs: %" =<< presentFunctionType fn
+      lift $ pf "after assocs: %" =<< presentFunctionType fn
 
-    fnUnion <- singleEnvUnion muci ufi assocs fundec.functionEnv
-    pf "after union: %" =<< presentFunctionType fn
-    pf "fnUnion: %: %" fnUnion =<< getUnion fnUnion
-    ttt <- mkType (TFun fnUnion (snd <$> fundec.functionParameters) fundec.functionReturnType)
-    pf "ttt: %" =<< presentType ttt
-    pf "after mkType: %" =<< presentFunctionType fn
-    fnType <- mapTVs ttt
-    pf "after ttt: %" =<< presentType fnType
-    pf "after mapTVs: %" =<< presentFunctionType fn
+      fnUnion <- lift $ singleEnvUnion muci ufi assocs fundec.functionEnv
+      fnType <- mapTVs =<< lift (mkType (TFun fnUnion (snd <$> fundec.functionParameters) fundec.functionReturnType))
+
+      let v = T.DefinedFunction fn assocs snapshot ufi
+      pure (fnType, v)
+
     mappedEnv <- getType fnType >>= \case  -- we're lazy, so we're not writing another function, we're just unsafely deconstructing the result of that function.
           TFun union _ _ -> getUnion union <&> \case
             (T.EnvUnion { T.union = [(_, _, _, env)] }) -> env
             _ -> error "MUST NOT HAPPEN."
           _ -> error "MUST NOT HAPPEN."
-
-    let v = T.DefinedFunction fn assocs snapshot ufi
 
     pc =<< lift CompilerContext.getTypeUni
     gfn <- presentFunctionType fn
@@ -1650,7 +1651,7 @@ instantiateConstructor envID = resetUniPrint . \case
     (tvs, unions) <- instantiateScheme mempty scheme
     ogUnions' <- for ogUnions $ \(u, _, _) -> T.unionID <$> getUnion u
     let mapTVs = mapTVsWithMap mempty mempty (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip ogUnions' $ fmap (\(u, _, _) -> u) unions)
-    ts <- traverse mapTVs usts
+    ts <- ump $ traverse mapTVs usts
 
     ret <- mkType $ TCon dd tvs unions
 
@@ -1680,9 +1681,9 @@ instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
   normalizedIDs <- traverse (\(u, _, _) -> fst <$> getUnion' u) schemeUnions 
   let premade = Map.fromList $ zip normalizedIDs newUnionIDs
   pf "PREMADE: %" premade
-  let mapOnlyTVsForUnions = mapTVsWithMap premade mempty tvmap mempty <=< mapClassSnapshot (Map.keysSet premade) mempty (Set.fromList schemeTVars) insts
-  unions <- for (zip newUnionIDs schemeUnions) $ \(newUID, (union, params, ret)) -> do
-    let union' = cloneUnion newUID =<< traverse mapOnlyTVsForUnions =<< getUnion union
+  let mapOnlyTVsForUnions = mapTVsWithMap premade mempty tvmap mempty <=< lift . mapClassSnapshot (Map.keysSet premade) mempty (Set.fromList schemeTVars) insts
+  unions <- ump $ for (zip newUnionIDs schemeUnions) $ \(newUID, (union, params, ret)) -> do
+    let union' = lift . cloneUnion newUID =<< traverse mapOnlyTVsForUnions =<< lift (getUnion union)
     liftA3 (,,) union' (traverse mapOnlyTVsForUnions params) (mapOnlyTVsForUnions ret)
 
   -- NOTE not needed now?
@@ -1708,44 +1709,82 @@ instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
   pure (tyvs, unions)
 
 
+-- very bad... memo for mapping types.
+type UltraMap a = StateT (Map (Type TC) (Type TC), Map T.EnvUnion T.EnvUnion) Infer a
+ultraMapThing :: UltraMap a -> Infer a
+ultraMapThing umx = State.evalStateT umx mempty
+
+ump = ultraMapThing
+
+
 -- Should recursively map all the TVars in the type. (including in the unions.)
 -- TODO: this function became retarded
 --   premade - premap unions when unions depend on each other during instantiation.
 --   exclude - for cucked unions, we must not instantiate types. it works i guess. maybe i should do something better.
-mapTVsWithMap :: Map T.EnvUnion T.EnvUnion -> Set (Type TC) -> Map (TVar TC) (Type TC) -> Map Def.UnionID (T.EnvUnion) -> Type TC -> Infer (Type TC)
+mapTVsWithMap :: Map T.EnvUnion T.EnvUnion -> Set (Type TC) -> Map (TVar TC) (Type TC) -> Map Def.UnionID (T.EnvUnion) -> Type TC -> UltraMap (Type TC)
 mapTVsWithMap premade exclude tvmap unionmap =
   let
-    mapTVs :: Type TC -> Infer (Type TC)
-    mapTVs = getType' >=> \(baseTid, ttt) -> if baseTid `Set.member` exclude
-      then pure baseTid
-      else traverse mapTVs ttt >>= \case
-        TO (TVar tv) -> pure $ fromMaybe baseTid (tvmap !? tv)
+    mapTVs :: Type TC -> UltraMap (Type TC)
+    mapTVs = tryMemoType $ \baseTid ttt -> traverse mapTVs ttt >>= \case
+        TO (TVar tv) -> error "bruh"  -- lift $ getType $ fromMaybe baseTid (tvmap !? tv)
         TFun union ts tret -> do
-          uid <- T.unionID <$> getUnion union
-          union' <- maybe (mapUnion union) pure (unionmap !? uid)
-          mkType $ TFun union' ts tret
+          uid <- T.unionID <$> lift (getUnion union)
+          union' <- maybe (mapUnion union) pure (unionmap !? uid)  -- TODO: put this in tryMemoUnion...
+          pure $ TFun union' ts tret
         TCon dd ts unions -> do
           unions' <- for unions $ \(union, params, ret) -> do
-            uid <- T.unionID <$> getUnion union
+            uid <- T.unionID <$> lift (getUnion union)
             liftA3 (,,) (maybe (mapUnion union) pure (unionmap !? uid)) (traverse mapTVs params) (mapTVs ret)
-          mkType $ TCon dd ts unions'
-        TO _ -> pure baseTid
+          pure $ TCon dd ts unions'
+        TO tt -> pure $ TO tt
 
-    mapUnion :: T.EnvUnion -> Infer T.EnvUnion
-    mapUnion uid = do
-      (baseUid, u) <- getUnion' uid
-      case premade !? baseUid of
-        Just premadeUnion -> pure premadeUnion
-        Nothing -> do
-          newUnion <- for u.union $ \(muci, ufi, ts, env) -> do
-                ts' <- traverse mapTVs ts
-                env' <- mapEnv premade exclude tvmap unionmap env
-                pure (muci, ufi, ts', env')
-          nextUnion baseUid $ u { T.union = newUnion }
+    mapUnion :: T.EnvUnion -> UltraMap T.EnvUnion
+    mapUnion = tryMemoUnion $ \_ u -> do
+        newUnion <- for u.union $ \(muci, ufi, ts, env) -> do
+              ts' <- traverse mapTVs ts
+              env' <- mapEnv premade exclude tvmap unionmap env
+              pure (muci, ufi, ts', env')
+        pure $ u { T.union = newUnion }
+
+    tryMemoType :: (Type TC -> TypeF TC T.TypeID -> UltraMap (TypeF TC T.TypeID)) -> Type TC -> UltraMap (Type TC)
+    tryMemoType fux tid = lift (getType' tid) >>= \(baseTid, t) -> if baseTid `Set.member` exclude
+      then pure tid
+      else do
+        State.gets fst >>= \tvs -> case tvs !? baseTid of
+          Just newU -> pure newU
+          Nothing -> do
+                t' <- case t of
+                  TO (TVar tv) -> pure $ fromMaybe baseTid (tvmap !? tv)  -- HACK! to not duplicate changed tvars accidentally
+                  _ -> do
+                    evaldType <- fux baseTid t
+                    if t == evaldType
+                      then pure tid
+                      else do
+                            newT <- lift $ mkType evaldType
+                            pure newT
+
+                State.modify $ first $ Map.insert baseTid t'
+                pure t'
+
+    tryMemoUnion :: (T.EnvUnion -> T.EnvUnionF TC T.TypeID -> UltraMap (T.EnvUnionF TC T.TypeID)) -> T.EnvUnion -> UltraMap T.EnvUnion
+    tryMemoUnion fux uid = do
+      (baseUid, u) <- lift $ getUnion' uid
+      State.gets snd >>= \us -> case premade !? baseUid of
+          Just premadeUnion -> pure premadeUnion
+          Nothing -> case us !? baseUid of
+            Just newU -> pure newU
+            Nothing -> do
+              evaldUnion <- fux baseUid u
+              if u == evaldUnion
+                then pure uid
+                else do
+                  newU <- lift $ mkUnion evaldUnion
+                  State.modify $ fmap $ Map.insert baseUid newU
+                  pure newU
 
   in mapTVs
 
-mapEnv :: Map T.EnvUnion T.EnvUnion -> Set (Type TC) -> Map (TVar TC) (Type TC) -> Map Def.UnionID T.EnvUnion -> T.Env -> Infer T.Env
+mapEnv :: Map T.EnvUnion T.EnvUnion -> Set (Type TC) -> Map (TVar TC) (Type TC) -> Map Def.UnionID T.EnvUnion -> T.Env -> UltraMap T.Env
 mapEnv premade exclude tvmap unionmap = \case
     T.Env eid vars localities level -> do
       vars' <- for vars $ \(v, loc, t) -> do
@@ -1755,7 +1794,7 @@ mapEnv premade exclude tvmap unionmap = \case
       pure $ T.Env eid vars' localities level
     e -> pure e
   where
-    mapVar :: T.Variable -> Infer T.Variable
+    mapVar :: T.Variable -> UltraMap T.Variable
     mapVar = \case
       T.DefinedClassFunction cfd snap self uci -> do
         mappedSelf <- mapTVsWithMap premade exclude tvmap unionmap self
