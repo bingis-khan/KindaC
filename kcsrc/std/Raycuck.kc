@@ -1,0 +1,112 @@
+use Cnile
+	Void
+# bindings to raylib yo.
+
+#[cfunname 'InitWindow', clocalinclude 'raylib.h']
+external init-window (width Int, height Int, title ConstStr) -> Void
+
+#[cfunname 'SetTargetFPS', clocalinclude 'raylib.h']
+external set-target-fps (fps Int) -> Void
+
+#[cfunname 'WindowShouldClose', clocalinclude 'raylib.h']
+external window-should-close () -> Bool
+
+#[cfunname 'CloseWindow', clocalinclude 'raylib.h']
+external close-window () -> Void
+
+
+#[cfunname 'BeginDrawing', clocalinclude 'raylib.h']
+external begin-drawing () -> Void
+
+#[cfunname 'EndDrawing', clocalinclude 'raylib.h']
+external end-drawing () -> Void
+
+
+#[ctype 'Color']
+Color
+	#[clit 'RAYWHITE']
+	RAYWHITE
+
+	#[clit 'BLUE']
+	BLUE
+
+	#[clit 'BLACK']
+	BLACK
+
+	#[clit 'GREEN']
+	GREEN
+
+	#[clit 'YELLOW']
+	YELLOW
+
+#[ctype 'Rectangle']
+Rectangle
+	#[clit 'x']
+	x Float
+
+	#[clit 'y']
+	y Float
+
+	#[clit 'width']
+	width Float
+
+	#[clit 'height']
+	height Float
+
+#[ctype 'Vector2']
+Vector2
+	#[clit 'x']
+	x Float
+
+	#[clit 'y']
+	y Float
+
+	# right now, because of time constraints, don't need to specify fields. I'll cast my own.
+
+
+
+# input
+
+#[cfunname 'GetMousePosition', clocalinclude 'raylib.h']
+external get-mouse-position () -> Vector2
+
+#[cfunname 'GetScreenWidth', clocalinclude 'raylib.h']
+external get-screen-weight () -> Vector2
+
+#[cfunname 'GetScreenHeight', clocalinclude 'raylib.h']
+external get-screen-height () -> Vector2
+
+
+#[ctype 'int']
+MouseButton
+	#[clit 'MOUSE_LEFT_BUTTON']
+	MouseLeftButton
+
+#[cfunname 'IsMouseButtonPressed', clocalinclude 'raylib.h']
+external is-mouse-button-pressed (mouse-button MouseButton) -> Bool
+
+#[cfunname 'IsMouseButtonUp', clocalinclude 'raylib.h']
+external is-mouse-button-up (mouse-button MouseButton) -> Bool
+
+#[cfunname 'CheckCollisionPointRec', clocalinclude 'raylib.h']
+external check-collision-point-rec (p Vector2, rect Rectangle) -> Bool
+
+#[cfunname 'CheckCollisionPointCircle', clocalinclude 'raylib.h']
+external check-collision-point-circle (p Vector2, c Vector2, r Float) -> Bool
+
+
+#[cfunname 'ClearBackground', clocalinclude 'raylib.h']
+external clear-background (color Color) -> Void
+
+#[cfunname 'DrawRectangleRec', clocalinclude 'raylib.h']
+external draw-rectangle-rec (rec Rectangle, color Color) -> Void
+
+#[cfunname 'DrawCircle', clocalinclude 'raylib.h']
+external draw-circle (x Int, y Int, radius Float, color Color) -> Void
+
+#[cfunname 'DrawRectangleLinesEx', clocalinclude 'raylib.h']
+external draw-rectangle-lines-ex (rec Rectangle, line-thick Float, color Color) -> Void
+
+
+#[cfunname 'DrawText', clocalinclude 'raylib.h']
+external draw-text (s ConstStr, pos-x Int, pos-y Int, font-size Int, color Color) -> Void

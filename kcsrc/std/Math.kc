@@ -1,0 +1,12 @@
+
+min (l Int, r Int) -> Int
+	if l < r
+		return l
+	else
+		return r
+
+max (l Int, r Int) -> Int
+	if l > r
+		return l
+	else
+		return r

@@ -1,0 +1,283 @@
+use Term
+use List
+	add
+	pop
+	List
+use Alloc
+	CAllocator
+use Iter
+	for-each
+use Raycuck
+	Color(RAYWHITE, BLUE, BLACK, GREEN, YELLOW)
+	Rectangle
+	Vector2
+	MouseButton(MouseLeftButton)
+use Mem
+use Retarded
+use Math
+use Error
+	Failable(or-fail)
+
+
+
+f2i (x Float): x Retarded.cast() as Int
+i2f (x Int): x Retarded.cast() as Float
+
+Vec2
+	x Int
+	y Int
+
+to-vec2 (Vector2 { x: x, y: y }): Vec2 { x: x f2i(), y: y f2i() }
+from-vec2 (Vec2 { x: x, y: y }): Vector2 { x: x i2f(), y: y i2f() }
+
+vec2-min (Vec2 { x: x1, y: y1 }, Vec2 { x: x2, y: y2 }):
+	Vec2 { x: Math.min(x1, x2), y: Math.min(y1, y2) }
+
+vec2-max (Vec2 { x: x1, y: y1 }, Vec2 { x: x2, y: y2 }):
+	Vec2 { x: Math.max(x1, x2), y: Math.max(y1, y2) }
+
+vec2-sub (Vec2 { x: x1, y: y1 }, Vec2 { x: x2, y: y2 }):
+	Vec2 { x: x1 - x2, y: y1 - y2 }
+
+
+GrabbedCorner
+	UpperLeft
+	UpperRight
+	LowerLeft
+	LowerRight
+
+InputAction
+	MkRect Vec2
+	MoveRect Vec2
+	ResizeRect GrabbedCorner Vec2
+	SelectActionListElem
+	MkArrow Vec2
+
+show-input-action (input-action)
+	case input-action
+		MkRect(_)
+			return 'MkRect'
+		MoveRect(_)
+			return 'MoveRect'
+		ResizeRect(_, _)
+			return 'ResizeRect'
+		SelectActionListElem
+			return 'SelectActionListElem'
+		MkArrow(_)
+			return 'MkArrow'
+
+maybe (mx, replacement, f)
+	case mx
+		Just(x)
+			return f(x)
+		None
+			return replacement
+
+
+Rect
+	x Int
+	y Int
+	width Int
+	height Int
+
+as-rectangle (r Rect): Rectangle {
+	x: r.x i2f(),
+	y: r.y i2f(),
+	width: r.width i2f(),
+	height: r.height i2f()
+}
+
+# creates a rectangle BETWEEN specified vectors
+mk-rect (v1 Vec2, v2 Vec2) -> Rect
+	ul = vec2-min(v1, v2)
+	dr = vec2-max(v1, v2)
+	widths = vec2-sub(dr, ul)
+	return Rect {
+		x: ul.x,
+		y: ul.y,
+		width: widths.x,
+		height: widths.y
+	}
+
+resize-grip-radius = 5
+is-not-too-small (r Rect):
+	Math.min(r.width, r.height) > 2 * resize-grip-radius
+
+get-resizing-corner(r Rect, mp Vec2) -> Maybe GrabbedCorner
+	mpv = mp from-vec2()
+	radius = resize-grip-radius i2f()
+	if Raycuck.check-collision-point-circle(mpv, Vec2 { x: r.x, y: r.y } from-vec2(), radius)
+		return Just(UpperLeft)
+	if Raycuck.check-collision-point-circle(mpv, Vec2 { x: r.x, y: r.y + r.height } from-vec2(), radius)
+		return Just(LowerLeft)
+	if Raycuck.check-collision-point-circle(mpv, Vec2 { x: r.x + r.width, y: r.y } from-vec2(), radius)
+		return Just(UpperRight)
+	if Raycuck.check-collision-point-circle(mpv, Vec2 { x: r.x + r.width, y: r.y + r.height } from-vec2(), radius)
+		return Just(LowerRight)
+
+	return None
+
+
+resize (r Rect, corner GrabbedCorner, md Vec2) -> Rect
+	case corner
+		UpperLeft
+			return r {
+					x: r.x + md.x,
+					y: r.y + md.y,
+					width: r.width - md.x,
+					height: r.height - md.y
+				}
+		UpperRight
+			return r {
+					y: r.y + md.y,
+					width: r.width + md.x,
+					height: r.height - md.y
+				}
+		LowerLeft
+			return r {
+					x: r.x + md.x,
+					width: r.width - md.x,
+					height: r.height + md.y
+				}
+		LowerRight
+			return r {
+					width: r.width + md.x,
+					height: r.height + md.y
+				}
+
+
+Arrow
+	from-x Int
+	from-y Int
+	to-x Int
+	to-y Int
+
+
+State
+	rects List CAllocator Rect
+	arrows List CAllocator Arrow
+
+mk-state (al): State {
+		rects: List.mk(al),
+		arrows: List.mk(al)
+	}
+
+draw-state (state Ptr State) -> Unit
+	state&.rects for-each(r: Raycuck.draw-rectangle-rec(r as-rectangle(), GREEN))
+	return
+
+try-last-rect (state Ptr State) -> Maybe (Ptr Rect)
+	if state&.rects.count == 0
+		return None
+	else
+		return (&state&.rects) List.get-ptr(state&.rects.count - 1) Just()
+
+
+Action
+	redo Ptr State -> Unit
+	undo Ptr State -> Unit
+	icon ConstStr
+
+
+handle-input (input Maybe InputAction, mp Vec2, state Ptr State) -> Maybe InputAction
+	case input
+		# no input - "wait" for action
+		None
+			if Raycuck.is-mouse-button-pressed(MouseLeftButton) and state try-last-rect() maybe(False, r: r& is-not-too-small() and r& get-resizing-corner(mp) /= None)
+				r = state try-last-rect() or-fail('expect rect')&
+				return Just(ResizeRect(r get-resizing-corner(mp) or-fail('last time it wasnt None...'), mp))
+			elif Raycuck.is-mouse-button-pressed(MouseLeftButton) and state try-last-rect() maybe(False, r: Raycuck.check-collision-point-rec(mp from-vec2(), r& as-rectangle()))
+				return Just(MoveRect(mp))
+			elif Raycuck.is-mouse-button-pressed(MouseLeftButton)
+				return Just(MkRect(mp))
+
+			return None
+
+		Just(action)
+			case action
+				MkRect(begin-rect)
+					if Raycuck.is-mouse-button-up(MouseLeftButton)
+						(&state&.rects) List.add(mk-rect(begin-rect, mp))
+						return None
+
+					return Just(MkRect(begin-rect))
+
+				MoveRect(last-pos)
+					if Raycuck.is-mouse-button-up(MouseLeftButton)
+						return None
+
+					md = vec2-sub(mp, last-pos)
+					selected = state try-last-rect() or-fail('attempting to move a rectangle which does not exist.')
+
+					selected <&= (selected&) { x: selected&.x + md.x, y: selected&.y + md.y }
+
+					return Just(MoveRect(mp))
+
+				ResizeRect(resize-point, last-pos)
+					if Raycuck.is-mouse-button-up(MouseLeftButton)
+						return None
+
+					md = vec2-sub(mp, last-pos)
+					selected = state try-last-rect() or-fail('expect rect')
+					selected <&= selected& resize(resize-point, md)
+
+					return Just(ResizeRect(resize-point, mp))
+
+				x
+					return input
+
+
+draw-input-stuff (input Maybe InputAction, mp Vec2) -> Unit
+	case input
+		Just(MkRect(v1))
+			Raycuck.draw-rectangle-rec(mk-rect(v1, mp) as-rectangle(), BLUE)
+
+		_
+			pass
+
+	return
+
+draw-resize-corners (state Ptr State) -> Unit
+	case state try-last-rect()
+		None
+			pass
+
+		Just(r)
+			r = r&
+			if not is-not-too-small(r)
+				return
+
+			Raycuck.draw-circle(r.x, r.y, resize-grip-radius i2f(), YELLOW)
+			Raycuck.draw-circle(r.x, r.y + r.height, resize-grip-radius i2f(), YELLOW)
+			Raycuck.draw-circle(r.x + r.width, r.y, resize-grip-radius i2f(), YELLOW)
+			Raycuck.draw-circle(r.x + r.width, r.y + r.height, resize-grip-radius i2f(), YELLOW)
+
+
+# main program!
+
+Raycuck.init-window(800, 600, 'miau')
+Raycuck.set-target-fps(60)
+
+al = Alloc.get-c-allocator()
+state =& mk-state(al)
+input-action = None
+last-pointer-pos = Mem.zeroed()
+
+while not Raycuck.window-should-close()
+	mp = Raycuck.get-mouse-position() to-vec2()
+	
+	input-action <= handle-input(input-action, mp, state)
+	last-pointer-pos <= mp
+
+
+	Raycuck.begin-drawing()
+	Raycuck.clear-background(RAYWHITE)
+
+
+	draw-state(state)
+	draw-input-stuff(input-action, mp)
+	draw-resize-corners(state)
+	Raycuck.draw-text(input-action maybe('none', show-input-action), 0, 0, 20, BLACK)
+	Raycuck.end-drawing()
+
+Raycuck.close-window()
