@@ -26,6 +26,8 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Unique (Unique)
 import Control.Monad.Trans.Class (lift)
+import Data.IntMap (IntMap)
+import qualified Data.IntMap.Strict as IntMap
 
 
 data Typed
@@ -208,21 +210,22 @@ type EnvAdditions = Map Def.EnvID [(Variable, Def.Locality, Type TC)]
 
 
 getTypeFromUni :: TypeUni -> TypeID -> (TypeID, TypeF TC TypeID)
-getTypeFromUni typeUni = getSomethingFromRefMap typeUni.typeUni
+getTypeFromUni typeUni = getSomethingFromRefMap fromTypeID TypeID typeUni.typeUni
 
 getUnionFromUni :: TypeUni -> UnionUniID -> (UnionUniID, EnvUnionF TC TypeID)
-getUnionFromUni typeUni = getSomethingFromRefMap typeUni.unionUni
+getUnionFromUni typeUni = getSomethingFromRefMap fromUnionUniID UnionUniID typeUni.unionUni
 
-getSomethingFromRefMap :: Ord k => RefMap k a -> k -> (k, a)
-getSomethingFromRefMap refmap = go where
-  go x = case refmap !? x of
+getSomethingFromRefMap :: (k -> Int) -> (Int -> k) -> RefMap k a -> k -> (k, a)
+{-# inline getSomethingFromRefMap #-}
+getSomethingFromRefMap toInt fromInt refmap = first fromInt . go . toInt where
+  go x = case refmap IntMap.!? x of
     Nothing -> error "key not found. should not happen"
     Just (Right a) -> (x, a)
     Just (Left nx) -> go nx
 
 type TypeTypeUni = RefMap TypeID (TypeF TC TypeID)
 type UnionTypeUni = RefMap UnionUniID (EnvUnionF TC TypeID)
-type RefMap k a = Map k (Either k a)  -- TODO: change it later to IntMap and observe an improvement?
+type RefMap k a = IntMap (Either Int a)  -- TODO: change it later to IntMap and observe an improvement?
 
 
 data Mod phase = Mod

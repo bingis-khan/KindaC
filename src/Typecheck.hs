@@ -67,8 +67,9 @@ import qualified CompilerContext
 import Control.Monad.Trans.Reader (Reader)
 import qualified Control.Monad.Trans.Reader as Reader
 import CompilerContext (CompilerState(..))
-import Control.Monad.Trans.State (StateT)
-import qualified Control.Monad.Trans.State as State
+import Control.Monad.Trans.State.Strict (StateT)
+import qualified Control.Monad.Trans.State.Strict as State
+import qualified Data.IntMap.Strict as IntMap
 
 
 
@@ -274,7 +275,8 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
         for_ tdecons $ \(_, dect) ->
           -- ...each deconstruction should be of that type.
-          (asksNode T.loc rswitch, switchType) `uni` (Just (error "todo"), dect)
+          let tempLoc = asksNode T.loc rswitch
+          in (asksNode T.loc rswitch, switchType) `uni` (Just tempLoc, dect)
 
         pure $ Switch rswitch (fst <$> tdecons)
         where
@@ -1195,7 +1197,8 @@ reportAssociationErrors = do
 
         -- I guess we don't signal errors yet! We'll do it on the next pass.
         TFun {} -> do
-          err $ FunctionTypeConstrainedByClass fromLocation from cd
+          from' <- presentType from
+          err $ FunctionTypeConstrainedByClass fromLocation from' cd
           pure (t, True)
 
         TO (TVar tv) -> do
@@ -1402,7 +1405,8 @@ getExpectedType location t memname = getType t >>= \case
     pure (Nothing, True)
 
   TFun {} -> do
-    err $ FunctionIsNotARecord location t memname
+    t' <- presentType t
+    err $ FunctionIsNotARecord location t' memname
     pure (Nothing, True)
 
   TO (TVar tv) -> do
@@ -1938,20 +1942,20 @@ mkPtr insidePtr = do
 mkType :: TypeF TC T.TypeID -> Infer T.TypeID
 mkType t = lift $ do
   tid <- CompilerContext.nextTypeID
-  CompilerContext.modifyTypeUni $ Map.insert tid $ Right t
+  CompilerContext.modifyTypeUni $ IntMap.insert tid.fromTypeID $ Right t
   pure tid
 
 mkUnion :: T.EnvUnionF TC T.TypeID -> Infer T.EnvUnion
 mkUnion u = lift $ do
   uid <- CompilerContext.nextUnionUniID
-  CompilerContext.modifyUniUni $ Map.insert uid $ Right u
+  CompilerContext.modifyUniUni $ IntMap.insert uid.fromUnionUniID $ Right u
   pure uid
 
 mkUnion' :: T.EnvUnionF TC T.TypeID -> Infer T.EnvUnion
 mkUnion' u = lift $ do
   newUid <- newUnionID
   uid <- CompilerContext.nextUnionUniID
-  CompilerContext.modifyUniUni $ Map.insert uid $ Right $ u { T.unionID = newUid }
+  CompilerContext.modifyUniUni $ IntMap.insert uid.fromUnionUniID $ Right $ u { T.unionID = newUid }
   pure uid
 
 -- adds more stuff to the union and adds a reference for the old one to the union.
@@ -1959,8 +1963,8 @@ nextUnion :: T.EnvUnion -> T.EnvUnionF TC T.TypeID -> Infer T.EnvUnion
 nextUnion oldUnionID union = lift $ do
   nextUnionID <- CompilerContext.nextUnionUniID
   CompilerContext.modifyUniUni
-    $ Map.insert oldUnionID (Left nextUnionID)
-    . Map.insert nextUnionID (Right union)
+    $ IntMap.insert oldUnionID.fromUnionUniID (Left nextUnionID.fromUnionUniID)
+    . IntMap.insert nextUnionID.fromUnionUniID (Right union)
   pure nextUnionID
 
 
@@ -2027,7 +2031,9 @@ unify (locl, tttl) (locr, tttr) = do
       zipWithM_ unifyFunEnv (unions <&> \(u, _, _) -> u) (unions' <&> \(u, _, _) -> u)  -- i don't think we need to unify the types associated with EnvUnion, right???
 
     (_, _) -> do
-      err $ TypeMismatch (locl, ttl) (locr, ttr)
+      ttl' <- presentType ttl
+      ttr' <- presentType ttr
+      err $ TypeMismatch (locl, ttl') (locr, ttr')
 
 unifyMany :: (Def.Location, [Type TC]) -> (Maybe Def.Location, [Type TC]) -> Infer ()
 unifyMany (_, []) (_, []) = nun
@@ -2035,7 +2041,10 @@ unifyMany (ll, tl:ls) (lr, tr:rs) | length ls == length rs = do  -- quick fix - 
   unify (ll, tl) (lr, tr)
   unifyMany (ll, ls) (lr, rs)
 
-unifyMany tl tr = err $ MismatchingNumberOfParameters tl tr
+unifyMany tl tr = do
+  tl' <- traverse presentType $ snd tl
+  tr' <- traverse presentType $ snd tr
+  err $ MismatchingNumberOfParameters (fst tl, tl') (fst tr, tr')
 
 addConstraint :: Def.Location -> Type TC -> (ClassDef TC, T.PossibleInstances TC) -> Infer ()
 addConstraint location ttid (klass, instances) = do
@@ -2062,13 +2071,14 @@ addConstraint location ttid (klass, instances) = do
         newtyv <- freshTyVarInSubst cids
         newtyvid <- lift CompilerContext.nextTypeID
         lift $ CompilerContext.modifyTypeUni $
-            Map.insert newtyvid $ Right $ TO $ TyVar newtyv
+            IntMap.insert newtyvid.fromTypeID $ Right $ TO $ TyVar newtyv
         pf "TVAR MAKER: New tyvar %. In %." newtyv tyv
         let bind' = bind (Left (location, Nothing))
         (tid, tyv) `bind'` newtyvid
 
-      TFun {} ->
-        err $ FunctionTypeConstrainedByClass location tid klass
+      TFun {} -> do
+        t <- presentType tid
+        err $ FunctionTypeConstrainedByClass location t klass
 
 bind :: Either (Def.Location, Maybe Def.Location) (Maybe Def.Location, Def.Location) -> (T.TypeID, T.TyVar) -> Type TC -> Infer ()
 bind loc (tyvid, tyv) tid = do
@@ -2077,11 +2087,12 @@ bind loc (tyvid, tyv) tid = do
     TO (TyVar tyv') | tyv == tyv' -> nun  -- TODO: this is just in case, because same fresh variables should have the same TypeIDs.
     _ -> do
       tyVarOccursInRightType <- occursCheck tyv tid
+      tid' <- presentType tid
       if tyVarOccursInRightType
-        then err $ InfiniteType loc tyv tid
+        then err $ InfiniteType loc tyv tid'
         else do
           pf "bind: % -> %" tyvid tid
-          lift $ CompilerContext.modifyTypeUni $ Map.insert tyvid (Left tid)
+          lift $ CompilerContext.modifyTypeUni $ IntMap.insert tyvid.fromTypeID (Left tid.fromTypeID)
 
 unifyFunEnv :: T.EnvUnion -> T.EnvUnion -> Infer ()
 unifyFunEnv lenv renv = do
@@ -2097,9 +2108,9 @@ unifyFunEnv lenv renv = do
 
   let env = T.EnvUnion { T.unionID = unionID, T.union = funEnv }
   lift $ CompilerContext.modifyUniUni
-    $ Map.insert unionUniID (Right env)       -- insert union itself
-    . Map.insert baseLEnv (Left unionUniID)   -- insert ref
-    . Map.insert baseREnv (Left unionUniID)   -- insert ref
+    $ IntMap.insert unionUniID.fromUnionUniID (Right env)       -- insert union itself
+    . IntMap.insert baseLEnv.fromUnionUniID (Left unionUniID.fromUnionUniID)   -- insert ref
+    . IntMap.insert baseREnv.fromUnionUniID (Left unionUniID.fromUnionUniID)   -- insert ref
 
 
 getUnion :: T.EnvUnion -> Infer (T.EnvUnionF TC T.TypeID)
@@ -2429,7 +2440,7 @@ fresh = do
   tyv <- freshTyVar
   pf "fresh: % %" tid tyv
   lift $ CompilerContext.modifyTypeUni $
-    Map.insert tid $ Right $ TO $ TyVar tyv
+    IntMap.insert tid.fromTypeID $ Right $ TO $ TyVar tyv
   pure tid
 
 -- Supplies the underlying tyvar without the structure. (I had to do it, it's used in one place, where I need a deconstructed tyvar)
@@ -2459,7 +2470,7 @@ singleEnvUnion uci ufi tassocs env = do
 cloneUnion :: T.EnvUnion -> T.EnvUnionF TC (Type TC) -> Infer T.EnvUnion
 cloneUnion uuid union = do
   uid <- newUnionID
-  lift $ CompilerContext.modifyUniUni $ Map.insert uuid $ Right $ union { T.unionID = uid }
+  lift $ CompilerContext.modifyUniUni $ IntMap.insert uuid.fromUnionUniID $ Right $ union { T.unionID = uid }
   pure uuid
 
 -- Creates an empty union.
@@ -2553,21 +2564,22 @@ newUnionIDGen = UUIDG 0
 
 
 
+type PType = Def.Context
 data TypeError
-  = InfiniteType (Either (Def.Location, Maybe Def.Location) (Maybe Def.Location, Def.Location)) T.TyVar (Type TC)
-  | TypeMismatch (Def.Location, Type TC) (Maybe Def.Location, Type TC)
-  | MismatchingNumberOfParameters (Def.Location, [Type TC]) (Maybe Def.Location, [Type TC])
+  = InfiniteType (Either (Def.Location, Maybe Def.Location) (Maybe Def.Location, Def.Location)) T.TyVar (PType)
+  | TypeMismatch (Def.Location, PType) (Maybe Def.Location, PType)
+  | MismatchingNumberOfParameters (Def.Location, [PType]) (Maybe Def.Location, [PType])
   | AmbiguousType Def.Location T.TyVar
 
   | DataTypeDoesNotHaveMember Def.Location (DataDef TC) Def.MemName
   | DataTypeIsNotARecordType Def.Location (DataDef TC) Def.MemName
-  | FunctionIsNotARecord Def.Location (Type TC) Def.MemName
+  | FunctionIsNotARecord Def.Location (PType) Def.MemName
   | TVarIsNotARecord Def.Location (TVar TC) Def.MemName
 
   | DataDefDoesNotImplementClass Def.Location (DataDef TC) (ClassDef TC)
   | TVarDoesNotConstrainThisClass Def.Location (TVar TC) (ClassDef TC)
-  | FunctionTypeConstrainedByClass Def.Location (Type TC) (ClassDef TC)
-  | InstanceFunctionTypeNotMatchingClass (Def.Location, ClassFunDec TC) (Def.Location, Function TC) [(ClassType TC, Type TC)]
+  | FunctionTypeConstrainedByClass Def.Location (PType) (ClassDef TC)
+  | InstanceFunctionTypeNotMatchingClass (Def.Location, ClassFunDec TC) (Def.Location, Function TC) [(ClassType TC, PType)]
 
 
 instance Error TypeError where

@@ -488,6 +488,9 @@ annotation = do
         "cstdinclude" -> do
           value <- stringLiteral
           ann $ ACStdInclude value
+        "clocalinclude" -> do
+          value <- stringLiteral
+          ann $ ACLocalInclude value
         "clit" -> do
           value <- stringLiteral
           ann $ ACLit value

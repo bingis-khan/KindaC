@@ -1342,7 +1342,7 @@ instance Error ResolveError where
     ModuleDoesNotExportTypeOrClass location ty modul -> renderError source (pf "Module % does not export this class or type %." (pp modul) (pp ty)) $ ln (location, Nothing)
     ModuleNotImported location modul -> renderError source (pf "module % not imported" (pp modul)) $ ln (location, Nothing)
     TryingToImportConstructorsFromARecordType location ty modul -> renderError source undefined undefined
-    TryingToImportNonExistingConstructorOfType location cn ty modul -> renderError source undefined undefined
+    TryingToImportNonExistingConstructorOfType location cn ty modul -> renderError source (pf "trying to import non existing constructor % from type %" cn ty) $ ln (location, Nothing)
     TryingToImportNonExistingFunctionOfClass location vn uc modul -> renderError source undefined undefined
 
     OnlyVariablesAreAllowedInStringInterpolation fullLocation location vn -> renderError source (pf "Only variables are allowed in string interpolation.") $ lns [(fullLocation, Nothing), (location, Just "it's a function, you dingus")]

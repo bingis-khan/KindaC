@@ -38,6 +38,8 @@ import Control.Monad.Fix (MonadFix)
 import qualified Data.Text.IO as TextIO
 import Control.Monad.Trans.Class (lift, MonadTrans)
 import Control.Monad (when, unless)
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IntMap
 
 
 -- set printing config
@@ -126,6 +128,7 @@ data Ann
   = ACType Text
   | ACLit Text
   | ACStdInclude Text
+  | ACLocalInclude Text
   | ACFunName Text
 
   | AActualPointerType
@@ -353,6 +356,9 @@ instance (PPDef v) => PPDef (Set v) where
 instance (PPDef k, PP v) => PP (Map k v) where
   pp = encloseSepBy "{" "}" ", " . fmap (\(k, v) -> ppDef k <> ":" <+> pp v) . Map.toList
 
+instance (PP v) => PP (IntMap v) where
+  pp = encloseSepBy "{" "}" ", " . fmap (\(k, v) -> ppDef k <> ":" <+> pp v) . IntMap.toList
+
 instance (PPDef k, PPDef v) => PPDef (Map k v) where
   ppDef = encloseSepBy "{" "}" "," . fmap (\(k, v) -> ppDef k <> ":" <+> ppDef v) . Map.toList
 
@@ -361,6 +367,7 @@ instance PP () where
   pp = const mempty
 
 instance PP Int
+instance PPDef Int
 
 instance PP Rational
 
@@ -762,6 +769,7 @@ ppAnn anns = "#[" <> sepBy ", " (map ann anns) <> "]"
     ann = \case
       ACType s -> "ctype" <+> quote s
       ACStdInclude s -> "cstdinclude" <+> quote s
+      ACLocalInclude s -> "clocalinclude" <+> quote s
       ACLit s -> "clit" <+> quote s
       AActualPointerType -> "actual-pointer-type"
       ACFunName s -> "cfunname" <+> quote s

@@ -14,7 +14,7 @@ import Misc.Memo (Memo, Memoizable)
 import qualified Misc.Memo as Memo
 import qualified AST.Common as Common
 import qualified AST.Mono as M
-import Data.Maybe (listToMaybe, mapMaybe, fromJust)
+import Data.Maybe (listToMaybe, mapMaybe, fromJust, fromMaybe)
 import Control.Monad (when, unless, join)
 import Control.Monad.Trans.RWS.Strict (RWS)
 import qualified Control.Monad.Trans.RWS.Strict as RWS
@@ -193,10 +193,10 @@ cMutAccesses og accs = foldr f og (reverse accs)
 
 cDeconCondition :: PL -> Decon M -> PL
 cDeconCondition basevar mdecon =
-  let conjunction = fmap (\fn -> fn basevar) $ flip cata mdecon $ \(N _ d) -> case d of
+  let conjunction = fmap (\fn -> fn basevar) $ flip cata mdecon $ \(N t d) -> case d of
         CaseIgnore -> []
         CaseVariable _ -> []
-        CaseRecord _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) -> fmap (\fnc x -> fnc (x & "." & cRecMember um)) rec
+        CaseRecord _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) -> fmap (\fnc x -> fnc (x & "." & realRecName um t)) rec
         CaseConstructor (DC dd _ _ _) [innerDecons] | isPointer dd -> innerDecons <&> \fnarg x -> fnarg $ "(*" & x & ")"
         CaseConstructor (DC dd _ _ _) _ | isPointer dd -> error "Incorrect shape of pointer type."
 
@@ -220,7 +220,7 @@ cDeconAccess basevar mdecon = fmap2 (\fn -> fn basevar) $ flip cata mdecon $ \(N
   CaseIgnore -> []
   CaseVariable uv -> [(uv, t, id)]
   CaseRecord _ recs -> flip foldMap (NonEmpty.toList recs) $ \(um, rec) ->
-    flip fmap2 rec $ \accfn x -> accfn $ x & "." & cRecMember um
+    flip fmap2 rec $ \accfn x -> accfn $ x & "." & realRecName um t
 
   CaseConstructor (DC dd _ _ _) [innerDecons] | isPointer dd -> flip fmap2 innerDecons $ \fnarg x -> fnarg $ "(*" & x & ")"
   CaseConstructor (DC dd _ _ _) _ | isPointer dd -> error "Incorrect shape of pointer type."
@@ -305,6 +305,9 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
     newVar <- createIntermediateVariable (askNode oge) e
     cRef newVar
 
+  MemAccess (et, ee) mem ->
+    ee & "." & realRecName mem (askNode et)
+
   -- branch without the need for added types.
   pe -> case fmap snd pe of
     Lit (LInt x) -> pls x
@@ -317,13 +320,31 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
     UnOp Negation x -> enclose "(" ")" $ "-" & x
     UnOp Not x -> enclose "(" ")" $ "!" & x
     Lam env params body -> cLambda env params t body
-    MemAccess ee mem -> ee & "." & cRecMember mem
     RecCon dd insts ->
       cRecordInit dd (error "record types do not need these") insts
     UnOp Deref ee -> cDeref ee
 
     -- NOTE: interesting, we still have "As", although it's not needed after typechecking. another reason to modify the Common AST
     _ -> undefined
+
+-- crappy bruh
+-- members can also be marked "literal".
+-- NOTE SHOULD NOT FAIL!!
+realRecName :: Def.UniqueMem -> Type M -> PL
+realRecName mem t =
+  let (Fix (TCon dd _ _)) = t
+  in realRecNameDD mem dd
+
+realRecNameDD :: Def.UniqueMem -> DataDef M -> PL
+realRecNameDD mem dd =
+  let (DD _ _ (Left mems) _) = dd
+      anns = fromJust $ find (\(Annotated anns (fmem, _)) -> if fmem == mem then Just anns else Nothing) $ NonEmpty.toList mems
+      mLiteralName = Def.findAnnotation anns $ \case
+        Def.ACLit name -> Just name
+        _ -> Nothing
+      actualName = maybe (cRecMember mem) verbatim mLiteralName
+  in actualName
+
 
 -- show automatically escapes the string gegegegege
 escapeStringLiteral :: Text -> PL
@@ -352,7 +373,7 @@ isLValue = maybe False (<= 0) . go where
 cRecordInit :: DataDef M -> [Type M] -> NonEmpty (Def.UniqueMem, PL) -> PL
 cRecordInit dd ts insts =
   enclose "(" ")" (cDataType dd ts) § Def.encloseSepBy "{" "}" ", " [
-      "." & cRecMember um § "=" § e | (um, e) <- NonEmpty.toList insts
+      "." & realRecNameDD um dd § "=" § e | (um, e) <- NonEmpty.toList insts
     ]
 
 
@@ -586,15 +607,21 @@ addTopLevel tl = do
 
 
 addIncludeIfPresent :: [Def.Ann] -> PL
-addIncludeIfPresent anns =
+addIncludeIfPresent anns = do
   for_ includes $ \lib ->
     include lib
+  for_ localIncludes $ \lib ->
+    includeLocal lib
   where
     includes = mapMaybe (\case { Def.ACStdInclude inclname -> Just inclname; _ -> Nothing }) anns
+    localIncludes = mapMaybe (\case { Def.ACLocalInclude inclname -> Just inclname; _ -> Nothing }) anns
 
 
 include :: Text -> PL
 include lib = addHeading $ "#include <" <> lib <> ">"
+
+includeLocal :: Text -> PL
+includeLocal lib = addHeading $ "#include \"" <> lib <> "\""
 
 
 addHeading :: Text -> PL
@@ -729,7 +756,10 @@ cStruct (DC _ uc ts@(_:_) _) = "struct" <§ cBlock
 
 cRecordStruct :: NonEmpty (Annotated (Def.UniqueMem, Type M)) -> PP
 cRecordStruct recs = "struct" <§ cBlock
-  [ statement $ cDefinition t (cRecMember um) | Annotated _ (um, t) <- NonEmpty.toList recs ]
+  [ case Def.findAnnotation anns (\case { Def.ACLit memname -> Just memname; _ -> Nothing }) of
+    { Just litName -> statement $ cDefinition t (verbatim litName)
+    ; Nothing -> statement $ cDefinition t (cRecMember um)
+    } | Annotated anns (um, t) <- NonEmpty.toList recs ]
 
 
 cVar :: Type M -> Locality -> M.Variable -> PL
@@ -746,8 +776,7 @@ cVar t _ (M.DefinedFunction fn) | Def.AGoofyCast `elem` fn.functionDeclaration.f
 --  NOTE: (for some reason its not being added to the environment. THAT'S GOOD! but i don't know why....... TODO i guess)
 cVar _ _ (M.DefinedFunction fn) | Def.AExternal `elem` fn.functionDeclaration.functionOther = do
   let mfunname = listToMaybe $ mapMaybe (\case { Def.ACFunName name -> Just name; _ -> Nothing }) fn.functionDeclaration.functionOther
-  let includes  = mapMaybe (\case { Def.ACStdInclude name -> Just name; _ -> Nothing }) fn.functionDeclaration.functionOther
-  for_ includes include
+  addIncludeIfPresent fn.functionDeclaration.functionOther
   case mfunname of
     Just name -> plt name
     Nothing -> plt fn.functionDeclaration.functionId.varName.fromVN

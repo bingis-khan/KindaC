@@ -5,7 +5,7 @@
   - implement all the basic data structures!
   - file reading - i can make my own buffers
 
-2. basic text editor / paining program
+2. basic text editor / painting program
   - has undo/redo functionality
   - the datatype, instead of making them separate datatypes like it should be, is something like:
     ```
@@ -18,6 +18,14 @@
     ```
   - this is impossible to do in C++/Rust without allocation and dyn shit.
   - also pretty cool - NO allocations! we can just pop off the elements off the list!
+
+  - okay, im making a graphics editor. a diagram drawer. what kind of actions?
+    - draw a rectangle
+    - move rectangle
+    - resize rectangle
+    - set background color
+    - connect with an arrow
+  - also, would be cool to show the action list on the bottom with icons (another field in Action)
 
 3. HTTP server (icon server?)
   - when I implement a real web server, I'll use list deconstruction for matching paths

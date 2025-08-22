@@ -35,6 +35,7 @@ import Error (Error (..))
 import qualified System.FilePath as FilePath
 import Control.Monad.Trans.Class (lift)
 import qualified Data.Map.Strict as Map
+import qualified Data.IntMap.Strict as IntMap
 
 
 -- temporary redef
@@ -170,7 +171,7 @@ loadPrelude = do
               Just dd -> do
                 let bt = TCon dd [] []
                 basicTypeID <- Compiler.nextTypeID
-                Compiler.modifyTypeUni $ Map.insert basicTypeID $ Right bt
+                Compiler.modifyTypeUni $ IntMap.insert basicTypeID.fromTypeID $ Right bt
                 pure $ Success $ basicTypeID
 
               Nothing -> pure $ Failure $ ne $ pf "[Prelude: %s] Could not find suitable %s type (%s type name + no tvars)" name name name

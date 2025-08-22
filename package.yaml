@@ -51,13 +51,11 @@ ghc-options:
 - -Wmissing-home-modules
 - -Wpartial-fields
 - -Wredundant-constraints
-# - -O2
-- -finfo-table-map
-- -fdistinct-constructor-tables
-- -g
-- -threaded
-#- -debug
-#- -fexternal-interpreter
+- -O2
+#- -finfo-table-map
+#- -fdistinct-constructor-tables
+#- -g
+#- -threaded
 
 
 library:

@@ -38,6 +38,12 @@ get (list Ptr (List alloc a), i Int) -> a
 
 	return Slice.get(list&.elements, i)
 
+get-ptr (list Ptr (List alloc a), i Int) -> Ptr a
+	if i < 0 or i >= list&.count
+		Error.critical('Access to list at index \(i) (count: \(list&.count))')
+
+	return Slice.get-ptr(list&.elements, i)
+
 set (list Ptr (List alloc a), i Int, elem a) -> Unit
 	if i < 0 or i >= list&.count
 		Error.critical('Tried setting a list element at index \(i) (count: \(list&.count))')
@@ -117,6 +123,12 @@ remove (list Ptr (List alloc a), i Int) -> Unit <= Allocator alloc
 	return
 
 pop (list): remove(list, list&.count - 1)
+
+head (list)
+	if list&.count == 0
+		return None
+	else
+		return Just(list get(list&.count - 1))
 
 inst Str List
 	print-str (self)
