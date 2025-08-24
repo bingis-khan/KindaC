@@ -12,6 +12,7 @@ use Mem
 use Str
 	substr
 	is-blank
+	allocate-str
 use StrClass
 	Str(chars)
 use Iter
@@ -28,10 +29,14 @@ use Args
 use StrBuilder
 	writeln
 	as-str
+use Env
 
 
 al = Alloc.get-c-allocator()
-filename = 'reminders'
+home = Env.get('HOME') or-just('.')
+sb = StrBuilder.mk(al)
+filename = '\(home)/reminders' allocate-str(al)
+Term.println('[looking for reminders in \(filename)]')
 
 
 reminders =

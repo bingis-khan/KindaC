@@ -1,0 +1,20 @@
+# late initialization shit
+
+Late a
+	Uninit (() -> a)
+	Init a
+
+
+late (f): Uninit(f)
+mk (f): Uninit(f)
+
+
+get (lx)
+	case lx&
+		Init(x)
+			return x
+
+		Uninit(f)
+			x = f()
+			lx <&= Init(x)
+			return x

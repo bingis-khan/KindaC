@@ -1,9 +1,8 @@
 
-remind: # *.kc
-	stack run -- "Main.kc" --output-c && cc "test.c" -Wunused -o "Main.out"
-	mv Main.out reminda
+reminda: Main.kc
+	stack run -- "Main.kc" --output-c && cc "test.c" -Wunused -o "reminda"
 
-run: remind
+run: reminda
 	./reminda
 
 deploy: reminda

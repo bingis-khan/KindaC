@@ -227,6 +227,9 @@ type TypeTypeUni = RefMap TypeID (TypeF TC TypeID)
 type UnionTypeUni = RefMap UnionUniID (EnvUnionF TC TypeID)
 type RefMap k a = IntMap (Either Int a)  -- TODO: change it later to IntMap and observe an improvement?
 
+insertToRefMap :: k -> a -> RefMap k a -> RefMap k a
+insertToRefMap = undefined
+
 
 data Mod phase = Mod
   { topLevelStatements :: [AnnStmt phase]

@@ -1,0 +1,54 @@
+use Slice
+	Slice
+use Iter
+	IntoIter(into-iter)
+	take
+use Error
+
+
+BoundedList a
+	count Int
+	slice Slice a
+
+
+mk (slice Slice a):
+	BoundedList { count: 0, slice: slice }
+
+add (list Ptr (BoundedList a), x a) -> Unit
+	Slice.set(list&.slice, list&.count, x)
+	list <&.count= list&.count + 1
+	return
+
+get (list Ptr (BoundedList a), i)
+	if i < 0 or i >= list&.count
+		Error.critical('Access to bounded list at index \(i). (max: \(list&.count))')
+
+	return list&.slice Slice.get(i)
+
+get-ptr (list Ptr (BoundedList a), i)
+	if i < 0 or i >= list&.count
+		Error.critical('Access to bounded list at index \(i). (max: \(list&.count))')
+
+	return list&.slice Slice.get-ptr(i)
+
+set (list Ptr (BoundedList a), i Int, x a) -> Unit
+	if i < 0 or i >= list&.count
+		Error.critical('Access to bounded list at index \(i). (count: \(list&.count))')
+
+	Slice.set(list&.slice, i, x)
+	return
+
+pop (list Ptr (BoundedList a)) -> a
+	list <&.count= list&.count - 1
+	return Slice.get(list&.slice, list&.count)
+
+try-pop (list Ptr (BoundedList a)) -> Maybe a
+	if list&.count == 0
+		return None
+	return list pop() Just()
+
+
+inst IntoIter BoundedList
+	into-iter (self):
+		self.slice take(self.count)
+

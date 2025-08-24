@@ -23,6 +23,8 @@ inst Allocator CAllocator
 	allocate (CAllocator CAllocator, count Int) -> Slice a
 		size = (get-typesize() as TypeSize a).size
 		ptr = Cnile.malloc(size * count) cast-ptr()
+
+		# TODO: right now we don't care about allocation failures.
 		return Slice { ptr, count }
 
 	free (CAllocator, slice Slice a) -> Unit

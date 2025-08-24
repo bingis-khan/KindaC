@@ -1,22 +1,27 @@
 use Term
-use List
-	add
-	pop
-	List
+use BoundedList
+	BoundedList
 use Alloc
 	CAllocator
+	Allocator(allocate)
 use Iter
 	for-each
+	to
 use Raycuck
-	Color(RAYWHITE, BLUE, BLACK, GREEN, YELLOW)
+	Color(RAYWHITE, WHITE, BLUE, BLACK, GREEN, YELLOW, ORANGE, GRAY, DARKGRAY)
 	Rectangle
 	Vector2
-	MouseButton(MouseLeftButton)
+	MouseButton(MouseLeftButton, MouseRightButton)
+	Key(KeyZ, KeyR)
+	Texture2D
 use Mem
 use Retarded
 use Math
 use Error
 	Failable(or-fail)
+use Late
+	Late
+	late
 
 
 
@@ -46,20 +51,27 @@ GrabbedCorner
 	LowerLeft
 	LowerRight
 
+Rect
+	x Int
+	y Int
+	width Int
+	height Int
+
+
 InputAction
 	MkRect Vec2
-	MoveRect Vec2
-	ResizeRect GrabbedCorner Vec2
-	SelectActionListElem
+	MoveRect Rect Vec2
+	ResizeRect Rect GrabbedCorner Vec2
+	SelectActionListElem  # currently unused!
 	MkArrow Vec2
 
 show-input-action (input-action)
 	case input-action
 		MkRect(_)
 			return 'MkRect'
-		MoveRect(_)
+		MoveRect(_, _)
 			return 'MoveRect'
-		ResizeRect(_, _)
+		ResizeRect(_, _, _)
 			return 'ResizeRect'
 		SelectActionListElem
 			return 'SelectActionListElem'
@@ -73,12 +85,6 @@ maybe (mx, replacement, f)
 		None
 			return replacement
 
-
-Rect
-	x Int
-	y Int
-	width Int
-	height Int
 
 as-rectangle (r Rect): Rectangle {
 	x: r.x i2f(),
@@ -152,44 +158,213 @@ Arrow
 	to-x Int
 	to-y Int
 
+mk-arrow (v1 Vec2, v2 Vec2):
+	Arrow { from-x: v1.x, from-y: v1.y, to-x: v2.x, to-y: v2.y }
+
 
 State
-	rects List CAllocator Rect
-	arrows List CAllocator Arrow
+	rects BoundedList Rect
+	arrows BoundedList Arrow
 
-mk-state (al): State {
-		rects: List.mk(al),
-		arrows: List.mk(al)
+
+ActionIcon
+	MkRectIcon
+	MoveRectIcon
+	ResizeRectIcon
+	MkArrowIcon
+
+
+Action
+	undo Ptr State -> Unit
+	redo Ptr State -> Unit
+	# icon Ptr (Late Texture2D)  # i wish it was this, but there's an empty union hidden somewhere. i don't feel like diagnosing it now.
+	icon ActionIcon
+
+# had to divide it, because we don't yet have circular datatype references.
+FullState
+	state State
+
+	actions BoundedList Action
+	current-action Int
+
+mk-state (al): FullState {
+		state: State { rects: BoundedList.mk(al allocate(100)), arrows: BoundedList.mk(al allocate(100)) },
+		actions: BoundedList.mk(al allocate(100)),
+		current-action: -1
 	}
 
-draw-state (state Ptr State) -> Unit
-	state&.rects for-each(r: Raycuck.draw-rectangle-rec(r as-rectangle(), GREEN))
+
+draw-arrow (ar Arrow) -> Unit
+	if ar.to-x - ar.from-x > ar.to-y - ar.from-y
+		Raycuck.draw-line(ar.from-x, ar.from-y, ar.to-x, ar.from-y, BLACK)
+		Raycuck.draw-line(ar.to-x, ar.from-y, ar.to-x, ar.to-y, BLACK)
+	else
+		Raycuck.draw-line(ar.from-x, ar.from-y, ar.from-x, ar.to-y, BLACK)
+		Raycuck.draw-line(ar.from-x, ar.to-y, ar.to-x, ar.to-y, BLACK)
+
 	return
+
+
+draw-state (state Ptr FullState) -> Unit
+	state&.state.rects for-each(r: Raycuck.draw-rectangle-rec(r as-rectangle(), GREEN))
+	state&.state.arrows for-each(draw-arrow)
+	return
+
+
 
 try-last-rect (state Ptr State) -> Maybe (Ptr Rect)
 	if state&.rects.count == 0
 		return None
 	else
-		return (&state&.rects) List.get-ptr(state&.rects.count - 1) Just()
+		return (&state&.rects) BoundedList.get-ptr(state&.rects.count - 1) Just()
+
+last-rect (state Ptr State):
+	state try-last-rect() or-fail('expect a rectangle to be here.')
+
+add-action (fs Ptr FullState, action Action) -> Unit
+	actions =& fs&.actions
+	fs <&.current-action= fs&.current-action + 1
+
+	if fs&.current-action > actions&.count
+		Error.critical('For some reason, current action is \(fs&.current-action) and num of actions is \(actions&.count)')
+	if fs&.current-action == actions&.count
+		actions BoundedList.add(action)
+	else
+		actions BoundedList.set(fs&.current-action, action)
+
+	actions <&.count= fs&.current-action + 1
+	return
+
+set-last-rect (state Ptr State, new-rect Rect) -> Unit
+	r = state last-rect()
+	r <&= new-rect
+	return
+
+max-undo-actions = 14  # a ui thing, so that the bar at the bottom won't be too big.
+undo (full Ptr FullState) -> Unit
+	if full&.current-action < 0
+		return
+
+	actions =& full&.actions
+	cur = full&.current-action
+	full <&.current-action= cur - 1
+	x = BoundedList.get(actions, cur)
+	x.undo(&full&.state)
+
+	# trim undo list
+	if full&.actions.count > cur + max-undo-actions - 1
+		# if the list was smaller than max, keep the size.
+		if actions&.count > max-undo-actions
+			actions <&.count= Math.max(cur + max-undo-actions - 1, max-undo-actions)
+			
+	
+	return
+
+redo (full Ptr FullState) -> Unit
+	if full&.current-action >= full&.actions.count - 1
+		return
+
+	actions =& full&.actions
+	cur = full&.current-action
+	full <&.current-action= cur + 1
+	x = BoundedList.get(actions, cur + 1)
+	x.redo(&full&.state)
+	return
 
 
-Action
-	redo Ptr State -> Unit
-	undo Ptr State -> Unit
-	icon ConstStr
+# either undo or redo stuff.
+#  (we assume new-current-action is already checked for bounds)
+actions-to (full Ptr FullState, new-current-action Int) -> Unit
+	cur = full&.current-action
+
+	# dont do shit
+	if new-current-action == cur
+		return
+
+	# undo a lot
+	if new-current-action < cur
+		new-current-action to (cur - 1) for-each(i: undo(full))
+		return
+
+	# redo a lot
+	cur to (new-current-action - 1) for-each(i: redo(full))
 
 
-handle-input (input Maybe InputAction, mp Vec2, state Ptr State) -> Maybe InputAction
+block-size = 40
+mouse-on-bar-elem (fs Ptr FullState) -> Maybe Int
+	action-list-size = Math.min(max-undo-actions, fs&.actions.count)
+	bar-size = action-list-size * block-size
+	sw = Raycuck.get-screen-width()
+	sh = Raycuck.get-screen-height()
+	begin-x = (sw - bar-size) / 2
+	mp = Raycuck.get-mouse-position() to-vec2()
+
+	# return if mouse height won't allow it to be even clicked.
+	if mp.y <= sh - block-size or mp.y >= sh
+		return None
+
+	# try calculate the position.
+	try-elem = (mp.x - begin-x) / block-size
+	if try-elem < 0 or try-elem >= action-list-size
+		return None
+	return Just(try-elem)
+
+
+texture (s ConstStr) -> Late Texture2D
+	load-tex ()
+		image = Raycuck.load-image(s)
+		Raycuck.image-resize(&image, block-size, block-size)
+		return Raycuck.load-texture-from-image(image)
+
+	return late(load-tex)
+
+
+create-block-tex =& texture('img/create_block.png')
+move-rect-tex    =& texture('img/move_block.png')
+resize-rect-tex  =& texture('img/resize_block.png')
+create-arrow-tex =& texture('img/create_arrow.png')
+
+get-icon (ai)
+	case ai
+		MkRectIcon
+			return Late.get(create-block-tex)
+		MoveRectIcon
+			return Late.get(move-rect-tex)
+		ResizeRectIcon
+			return Late.get(resize-rect-tex)
+		MkArrowIcon
+			return Late.get(create-arrow-tex)
+
+
+
+handle-input (input Maybe InputAction, mp Vec2, full Ptr FullState) -> Maybe InputAction
+	state =& full&.state
 	case input
 		# no input - "wait" for action
 		None
-			if Raycuck.is-mouse-button-pressed(MouseLeftButton) and state try-last-rect() maybe(False, r: r& is-not-too-small() and r& get-resizing-corner(mp) /= None)
+			action-list-elem = mouse-on-bar-elem(full)
+			if action-list-elem /= None and Raycuck.is-mouse-button-down(MouseLeftButton)
+				actions-to(full, action-list-elem or-fail('expected selected action list elem') + full&.actions.count - Math.min(max-undo-actions, full&.actions.count))
+				return None
+
+			elif Raycuck.is-key-pressed(KeyZ)
+				undo(full)
+
+			elif Raycuck.is-key-pressed(KeyR)
+				redo(full)
+
+			elif Raycuck.is-mouse-button-pressed(MouseLeftButton) and state try-last-rect() maybe(False, r: r& is-not-too-small() and r& get-resizing-corner(mp) /= None)
 				r = state try-last-rect() or-fail('expect rect')&
-				return Just(ResizeRect(r get-resizing-corner(mp) or-fail('last time it wasnt None...'), mp))
+				return Just(ResizeRect(state last-rect()&, r get-resizing-corner(mp) or-fail('last time it wasnt None...'), mp))
+
 			elif Raycuck.is-mouse-button-pressed(MouseLeftButton) and state try-last-rect() maybe(False, r: Raycuck.check-collision-point-rec(mp from-vec2(), r& as-rectangle()))
-				return Just(MoveRect(mp))
+				return Just(MoveRect(state last-rect()&, mp))
+
 			elif Raycuck.is-mouse-button-pressed(MouseLeftButton)
 				return Just(MkRect(mp))
+
+			elif Raycuck.is-mouse-button-pressed(MouseRightButton)
+				return Just(MkArrow(mp))
 
 			return None
 
@@ -197,13 +372,26 @@ handle-input (input Maybe InputAction, mp Vec2, state Ptr State) -> Maybe InputA
 			case action
 				MkRect(begin-rect)
 					if Raycuck.is-mouse-button-up(MouseLeftButton)
-						(&state&.rects) List.add(mk-rect(begin-rect, mp))
+						r = mk-rect(begin-rect, mp)
+						(&state&.rects) BoundedList.add(r)
+						full add-action(Action { undo: s: BoundedList.pop(&s&.rects) void(), redo: s: BoundedList.add(&s&.rects, r), icon: MkRectIcon })
 						return None
 
 					return Just(MkRect(begin-rect))
 
-				MoveRect(last-pos)
+				MkArrow(begin-arrow)
+					if Raycuck.is-mouse-button-up(MouseRightButton)
+						arr = Arrow { from-x: begin-arrow.x, from-y: begin-arrow.y, to-x: mp.x, to-y: mp.y }
+						(&state&.arrows) BoundedList.add(arr)
+						full add-action(Action { undo: s: BoundedList.pop(&s&.arrows) void(), redo: s: BoundedList.add(&s&.arrows, arr), icon: MkArrowIcon })
+						return None
+
+					return Just(MkArrow(begin-arrow))
+
+				MoveRect(init-rect, last-pos)
 					if Raycuck.is-mouse-button-up(MouseLeftButton)
+						current-rect = state last-rect()&
+						full add-action(Action { undo: s: s set-last-rect(init-rect), redo: s: s set-last-rect(current-rect), icon: MoveRectIcon })
 						return None
 
 					md = vec2-sub(mp, last-pos)
@@ -211,20 +399,23 @@ handle-input (input Maybe InputAction, mp Vec2, state Ptr State) -> Maybe InputA
 
 					selected <&= (selected&) { x: selected&.x + md.x, y: selected&.y + md.y }
 
-					return Just(MoveRect(mp))
+					return Just(MoveRect(init-rect, mp))
 
-				ResizeRect(resize-point, last-pos)
+				ResizeRect(init-rect, resize-point, last-pos)
 					if Raycuck.is-mouse-button-up(MouseLeftButton)
+						current-rect = state last-rect()&
+						full add-action(Action { undo: s: s set-last-rect(init-rect), redo: s: s set-last-rect(current-rect), icon: ResizeRectIcon })
 						return None
 
 					md = vec2-sub(mp, last-pos)
 					selected = state try-last-rect() or-fail('expect rect')
 					selected <&= selected& resize(resize-point, md)
 
-					return Just(ResizeRect(resize-point, mp))
+					return Just(ResizeRect(init-rect, resize-point, mp))
 
-				x
+				_
 					return input
+
 
 
 draw-input-stuff (input Maybe InputAction, mp Vec2) -> Unit
@@ -232,12 +423,16 @@ draw-input-stuff (input Maybe InputAction, mp Vec2) -> Unit
 		Just(MkRect(v1))
 			Raycuck.draw-rectangle-rec(mk-rect(v1, mp) as-rectangle(), BLUE)
 
+		Just(MkArrow(v1))
+			draw-arrow(mk-arrow(v1, mp))
+
 		_
 			pass
 
 	return
 
-draw-resize-corners (state Ptr State) -> Unit
+draw-resize-corners (state Ptr FullState) -> Unit
+	state =& state&.state
 	case state try-last-rect()
 		None
 			pass
@@ -253,6 +448,41 @@ draw-resize-corners (state Ptr State) -> Unit
 			Raycuck.draw-circle(r.x + r.width, r.y + r.height, resize-grip-radius i2f(), YELLOW)
 
 
+
+draw-action-list (fs Ptr FullState) -> Unit
+	sw = Raycuck.get-screen-width()
+	sh = Raycuck.get-screen-height()
+	action-list-size = Math.min(max-undo-actions, fs&.actions.count)
+	bar-size = action-list-size * block-size
+	line-thickness = 5 i2f()
+
+	current-action = fs&.current-action
+	begin-x = (sw - bar-size) / 2
+	draw-action-block (i)
+		rx = begin-x + i * block-size
+		ry = sh - block-size
+		block = Rect { x: rx, y: ry, width: block-size, height: block-size }
+
+		list-i = fs&.actions.count - action-list-size + i  # corresponds to action index.
+		if list-i < current-action
+			Raycuck.draw-rectangle-rec(block as-rectangle(), RAYWHITE)
+			Raycuck.draw-rectangle-lines-ex(block as-rectangle(), line-thickness, BLACK)
+		elif list-i == current-action
+			Raycuck.draw-rectangle-rec(block as-rectangle(), YELLOW)
+			Raycuck.draw-rectangle-lines-ex(block as-rectangle(), line-thickness, ORANGE)
+		else
+			Raycuck.draw-rectangle-rec(block as-rectangle(), GRAY)
+			Raycuck.draw-rectangle-lines-ex(block as-rectangle(), line-thickness, DARKGRAY)
+
+		cur-action = (&fs&.actions) BoundedList.get(list-i)
+		Raycuck.draw-texture(get-icon(cur-action.icon), rx, ry, WHITE)
+		return
+
+	0 to (action-list-size - 1) for-each(draw-action-block)
+
+	return
+
+
 # main program!
 
 Raycuck.init-window(800, 600, 'miau')
@@ -261,23 +491,21 @@ Raycuck.set-target-fps(60)
 al = Alloc.get-c-allocator()
 state =& mk-state(al)
 input-action = None
-last-pointer-pos = Mem.zeroed()
 
 while not Raycuck.window-should-close()
 	mp = Raycuck.get-mouse-position() to-vec2()
 	
 	input-action <= handle-input(input-action, mp, state)
-	last-pointer-pos <= mp
-
 
 	Raycuck.begin-drawing()
 	Raycuck.clear-background(RAYWHITE)
-
 
 	draw-state(state)
 	draw-input-stuff(input-action, mp)
 	draw-resize-corners(state)
 	Raycuck.draw-text(input-action maybe('none', show-input-action), 0, 0, 20, BLACK)
+	draw-action-list(state)
+	
 	Raycuck.end-drawing()
 
 Raycuck.close-window()

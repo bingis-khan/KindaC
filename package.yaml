@@ -26,6 +26,7 @@ dependencies:
   - process
   - text
   - deepseq
+  - vector
   - ghc-experimental
   - ghc-debug-stub
   - prettyprinter  # I wanted to throw out pretty printer, but it simplifies nesting. Since CPrinter does not use that pretty printer, I might be able to generalize that one to be used for printing (they are pretty similar, so... yknow).
@@ -51,11 +52,11 @@ ghc-options:
 - -Wmissing-home-modules
 - -Wpartial-fields
 - -Wredundant-constraints
-- -O2
-#- -finfo-table-map
-#- -fdistinct-constructor-tables
-#- -g
-#- -threaded
+#- -O2
+- -finfo-table-map
+- -fdistinct-constructor-tables
+- -g
+- -threaded
 
 
 library:

@@ -1,4 +1,5 @@
 use Cnile
+	NULL(NULL)
 use StrClass
 	Str(print-str, length, chars)
 use Iter
@@ -9,10 +10,14 @@ use Iter
 	head
 	reduce
 	map
+	for-each
+	from
 use Slice
 	Slice
 	subslice
 use Retarded
+use Alloc
+	Allocator(allocate)
 
 # in the future, this should re-export Str class
 
@@ -35,6 +40,13 @@ is-whitespace (c):
 	or c == char('\t')
 
 is-blank (s): s chars() all(is-whitespace)
+
+# shitty check to interact with pure libc functions
+from-nullable-c-str (s ConstStr) -> Maybe ConstStr
+	if s == Retarded.cast(NULL)
+		return None
+	else
+		return Just(s)
 
 
 # dyn str
@@ -154,3 +166,14 @@ inst Str DynStr
 	chars (self):
 		DynStrIter { og: self.content into-iter() }
 
+
+
+allocate-str (s, al) -> ConstStr
+	len = s length()
+	str = al allocate(len + 1)
+	s chars()
+		zip(from(0))
+		for-each(uncurry((c, i): str Slice.set(i, c)))
+
+	str Slice.set(len, nullchar)
+	return str.ptr Retarded.cast()

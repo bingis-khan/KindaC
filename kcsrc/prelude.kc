@@ -57,6 +57,13 @@ Maybe a
 	Just a
 	None
 
+or-just (mx, other-x)
+	case mx
+		Just(x)
+			return x
+		None
+			return other-x
+
 # test prelude function yo
 or-else (mx, late-other-x)
 	case mx
@@ -79,3 +86,6 @@ Tuple a b
 uncurry (fn (a, b) -> c) -> (Tuple a b) -> c
 	unc (Tuple(l, r)): fn(l, r)
 	return unc
+
+void (x)
+	return

@@ -46,6 +46,7 @@ import qualified AST.IncompleteMono as IM
 import qualified AST.Def as Def
 import Data.List (nubBy)
 import Control.Applicative (liftA3)
+import Data.List (nub)
 
 
 
@@ -1206,7 +1207,7 @@ mfUnion = memo memoIUnion (\mem s -> s { memoIUnion = mem }) $ \union _ -> do
   cuckedUnions <- RWS.asks cuckedUnionInsts
   mappedEnvs <- case cuckedUnions !? union of
       -- here should be no ftvs.
-      Nothing -> fmap concat $ for (NonEmpty.toList union.union) $ \env -> do
+      Nothing -> fmap (nub . concat) $ for (NonEmpty.toList union.union) $ \env -> do  -- NOTE: `nub` added, because at some point it seems like i removed duplicate removal.
           pf "???: % ?? %" (pp env) (show $ null (foldMap ftvButIgnoreUnions env))
           menv <- mfEnv env
           pf "NOFTV: % => %" (pp env) (maybe "???" pp menv)

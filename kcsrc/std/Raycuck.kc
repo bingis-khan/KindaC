@@ -27,6 +27,9 @@ Color
 	#[clit 'RAYWHITE']
 	RAYWHITE
 
+	#[clit 'WHITE']
+	WHITE
+
 	#[clit 'BLUE']
 	BLUE
 
@@ -38,6 +41,15 @@ Color
 
 	#[clit 'YELLOW']
 	YELLOW
+
+	#[clit 'ORANGE']
+	ORANGE
+
+	#[clit 'GRAY']
+	GRAY
+
+	#[clit 'DARKGRAY']
+	DARKGRAY
 
 #[ctype 'Rectangle']
 Rectangle
@@ -71,10 +83,10 @@ Vector2
 external get-mouse-position () -> Vector2
 
 #[cfunname 'GetScreenWidth', clocalinclude 'raylib.h']
-external get-screen-weight () -> Vector2
+external get-screen-width () -> Int
 
 #[cfunname 'GetScreenHeight', clocalinclude 'raylib.h']
-external get-screen-height () -> Vector2
+external get-screen-height () -> Int
 
 
 #[ctype 'int']
@@ -82,11 +94,32 @@ MouseButton
 	#[clit 'MOUSE_LEFT_BUTTON']
 	MouseLeftButton
 
+	#[clit 'MOUSE_RIGHT_BUTTON']
+	MouseRightButton
+
+#[ctype 'int']
+Key
+	#[clit 'KEY_Z']
+	KeyZ
+
+	#[clit 'KEY_R']
+	KeyR
+
 #[cfunname 'IsMouseButtonPressed', clocalinclude 'raylib.h']
 external is-mouse-button-pressed (mouse-button MouseButton) -> Bool
 
+#[cfunname 'IsMouseButtonDown', clocalinclude 'raylib.h']
+external is-mouse-button-down (mouse-button MouseButton) -> Bool
+
 #[cfunname 'IsMouseButtonUp', clocalinclude 'raylib.h']
 external is-mouse-button-up (mouse-button MouseButton) -> Bool
+
+#[cfunname 'IsKeyDown', clocalinclude 'raylib.h']
+external is-key-down (key Key) -> Bool
+
+#[cfunname 'IsKeyPressed', clocalinclude 'raylib.h']
+external is-key-pressed (key Key) -> Bool
+
 
 #[cfunname 'CheckCollisionPointRec', clocalinclude 'raylib.h']
 external check-collision-point-rec (p Vector2, rect Rectangle) -> Bool
@@ -107,6 +140,29 @@ external draw-circle (x Int, y Int, radius Float, color Color) -> Void
 #[cfunname 'DrawRectangleLinesEx', clocalinclude 'raylib.h']
 external draw-rectangle-lines-ex (rec Rectangle, line-thick Float, color Color) -> Void
 
-
 #[cfunname 'DrawText', clocalinclude 'raylib.h']
 external draw-text (s ConstStr, pos-x Int, pos-y Int, font-size Int, color Color) -> Void
+
+#[cfunname 'DrawLine', clocalinclude 'raylib.h']
+external draw-line (pos-x Int, pos-y Int, width Int, height Int, color Color) -> Void
+
+
+# textures
+
+#[ctype 'Image']
+Image
+
+#[ctype 'Texture2D']
+Texture2D
+
+#[cfunname 'LoadImage', clocalinclude 'raylib.h']
+external load-image (s ConstStr) -> Image
+
+#[cfunname 'LoadTextureFromImage', clocalinclude 'raylib.h']
+external load-texture-from-image (img Image) -> Texture2D
+
+#[cfunname 'ImageResize', clocalinclude 'raylib.h']
+external image-resize (img Ptr Image, width Int, height Int) -> Void
+
+#[cfunname 'DrawTexture', clocalinclude 'raylib.h']
+external draw-texture (img Texture2D, pos-x Int, pos-y Int, color Color) -> Void

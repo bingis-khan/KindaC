@@ -3,17 +3,21 @@ use List
 use Cnile
 	Char
 use Alloc
-	Allocator
+	Allocator(allocate)
 use StrClass
 	Str(print-str, length, chars)
 use Iter
 	for-each
+	zip
+	from
 use Term
 use Str
 	DynStr
 use Slice
 	Slice
 	subslice
+use Retarded
+
 
 
 StrBuilder alloc
@@ -42,3 +46,6 @@ inst Str StrBuilder alloc
 		ptr = s.chars.elements.ptr
 		Cnile.printf2('%.*s', len, ptr)
 		return
+
+	length (s): s.chars.count
+

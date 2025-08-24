@@ -46,6 +46,9 @@ external strcmp (l ConstStr, r ConstStr) -> Int
 # other shit
 
 #[cstdinclude 'stdlib.h']
+external getenv (s ConstStr) -> ConstStr
+
+#[cstdinclude 'stdlib.h']
 external exit (status Int) -> Void
 
 

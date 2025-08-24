@@ -42,7 +42,7 @@ library
       Paths_KindaC
   hs-source-dirs:
       src
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -O2
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -finfo-table-map -fdistinct-constructor-tables -g -threaded
   build-depends:
       HUnit
     , base >=4.7 && <5
@@ -64,6 +64,7 @@ library
     , temporary
     , text
     , transformers
+    , vector
   default-language: Haskell2010
 
 executable kc
@@ -72,7 +73,7 @@ executable kc
       Paths_KindaC
   hs-source-dirs:
       app
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -O2 -rtsopts
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -finfo-table-map -fdistinct-constructor-tables -g -threaded -rtsopts
   build-depends:
       HUnit
     , KindaC
@@ -95,6 +96,7 @@ executable kc
     , temporary
     , text
     , transformers
+    , vector
   default-language: Haskell2010
 
 test-suite all
@@ -105,7 +107,7 @@ test-suite all
       Paths_KindaC
   hs-source-dirs:
       test/src
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -O2 -threaded -rtsopts
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -finfo-table-map -fdistinct-constructor-tables -g -threaded -threaded -rtsopts
   build-depends:
       HUnit
     , KindaC
@@ -128,4 +130,5 @@ test-suite all
     , temporary
     , text
     , transformers
+    , vector
   default-language: Haskell2010

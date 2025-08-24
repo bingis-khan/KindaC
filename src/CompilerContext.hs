@@ -14,6 +14,7 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import AST.Prelude (Prelude (..))
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Strict as Map
+import qualified Data.IntMap.Strict as IntMap
 import System.FilePath ((<.>), (</>))
 import qualified System.FilePath as FilePath
 import qualified AST.Def as Def
@@ -64,6 +65,7 @@ compileInContext bejspaf (prilud, ps) fn = do
               let tcmods = NonEmpty.reverse $ tmod <| mods
               tm <- CompilerContext.asPrintContext $ typefix typeUni envAdds tcmods
               pc $ ppLines tm
+              Def.unsilenceablePrintInContext $ Def.pf "Number of different type nodes: %\nNumber of different union nodes: %" (IntMap.size typeUni.typeUni) (IntMap.size typeUni.unionUni)
               pure $ Right tm
 
             e:es -> pure $ Left $ e :| es

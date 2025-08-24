@@ -425,8 +425,8 @@ inferExpr = cata (fmap embed . inferExprType)
           t <- instantiateRecord dd'
 
           for_ insts' $ \(name, me) -> do
-            mt <- addMember (error "add location to member") t name
-            askUni me `uni` (Just (error "add location to member"), mt)
+            mt <- addMember location t name
+            askUni me `uni` (Nothing, mt)
 
           pure (RecCon dd' insts', t)
 
