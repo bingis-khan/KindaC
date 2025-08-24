@@ -134,6 +134,15 @@ external clear-background (color Color) -> Void
 #[cfunname 'DrawRectangleRec', clocalinclude 'raylib.h']
 external draw-rectangle-rec (rec Rectangle, color Color) -> Void
 
+#[cfunname 'DrawRectangleLinesEx', clocalinclude 'raylib.h']
+external draw-rectangle-lines-ex (rec Rectangle, line-thick Float, color Color) -> Void
+
+#[cfunname 'DrawRectangleRounded', clocalinclude 'raylib.h']
+external draw-rectangle-rounded (rec Rectangle, roundness Float, segments Int, color Color) -> Void
+
+#[cfunname 'DrawRectangleRoundedLinesEx', clocalinclude 'raylib.h']
+external draw-rectangle-rounded-lines-ex (rec Rectangle, roundness Float, segments Int, line-thick Float, color Color) -> Void
+
 #[cfunname 'DrawCircle', clocalinclude 'raylib.h']
 external draw-circle (x Int, y Int, radius Float, color Color) -> Void
 

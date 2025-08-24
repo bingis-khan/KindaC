@@ -204,9 +204,14 @@ draw-arrow (ar Arrow) -> Unit
 
 	return
 
+draw-rect (r Rect) -> Unit
+	thickness = 5 i2f()
+	Raycuck.draw-rectangle-rec(r as-rectangle(), RAYWHITE)
+	Raycuck.draw-rectangle-lines-ex(r as-rectangle(), thickness, BLACK)
+	return
 
 draw-state (state Ptr FullState) -> Unit
-	state&.state.rects for-each(r: Raycuck.draw-rectangle-rec(r as-rectangle(), GREEN))
+	state&.state.rects for-each(draw-rect)
 	state&.state.arrows for-each(draw-arrow)
 	return
 
@@ -310,10 +315,12 @@ mouse-on-bar-elem (fs Ptr FullState) -> Maybe Int
 	return Just(try-elem)
 
 
+
+line-thickness = 5
 texture (s ConstStr) -> Late Texture2D
 	load-tex ()
 		image = Raycuck.load-image(s)
-		Raycuck.image-resize(&image, block-size, block-size)
+		Raycuck.image-resize(&image, block-size - 2*line-thickness, block-size - 2*line-thickness)
 		return Raycuck.load-texture-from-image(image)
 
 	return late(load-tex)
@@ -454,7 +461,6 @@ draw-action-list (fs Ptr FullState) -> Unit
 	sh = Raycuck.get-screen-height()
 	action-list-size = Math.min(max-undo-actions, fs&.actions.count)
 	bar-size = action-list-size * block-size
-	line-thickness = 5 i2f()
 
 	current-action = fs&.current-action
 	begin-x = (sw - bar-size) / 2
@@ -466,16 +472,16 @@ draw-action-list (fs Ptr FullState) -> Unit
 		list-i = fs&.actions.count - action-list-size + i  # corresponds to action index.
 		if list-i < current-action
 			Raycuck.draw-rectangle-rec(block as-rectangle(), RAYWHITE)
-			Raycuck.draw-rectangle-lines-ex(block as-rectangle(), line-thickness, BLACK)
+			Raycuck.draw-rectangle-lines-ex(block as-rectangle(), line-thickness i2f(), BLACK)
 		elif list-i == current-action
 			Raycuck.draw-rectangle-rec(block as-rectangle(), YELLOW)
-			Raycuck.draw-rectangle-lines-ex(block as-rectangle(), line-thickness, ORANGE)
+			Raycuck.draw-rectangle-lines-ex(block as-rectangle(), line-thickness i2f(), ORANGE)
 		else
 			Raycuck.draw-rectangle-rec(block as-rectangle(), GRAY)
-			Raycuck.draw-rectangle-lines-ex(block as-rectangle(), line-thickness, DARKGRAY)
+			Raycuck.draw-rectangle-lines-ex(block as-rectangle(), line-thickness i2f(), DARKGRAY)
 
 		cur-action = (&fs&.actions) BoundedList.get(list-i)
-		Raycuck.draw-texture(get-icon(cur-action.icon), rx, ry, WHITE)
+		Raycuck.draw-texture(get-icon(cur-action.icon), rx + line-thickness, ry + line-thickness, WHITE)
 		return
 
 	0 to (action-list-size - 1) for-each(draw-action-block)
