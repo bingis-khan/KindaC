@@ -39,9 +39,9 @@ import Data.String (fromString)
 import Data.List (find, partition)
 import AST.Typed (T)
 import AST.Common (AnnStmt, Module, StmtF (..), Expr, ExprNode (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), XMutAccess, LitType (..), askNode)
-import AST.Mono (M)
+import AST.Mono (M, MonoStats (MonoStats))
 import AST.IncompleteMono (IM)
-import AST.Def ((:.) (..), Annotated (..), Locality (..), phase, PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>), Located (..), PrintContext, pf, pc)
+import AST.Def ((:.) (..), Annotated (..), Locality (..), phase, PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>), Located (..), PrintContext, pf, pc, Counter)
 import qualified AST.IncompleteMono as IM
 import qualified AST.Def as Def
 import Data.List (nubBy)
@@ -55,7 +55,7 @@ import Data.List (nub)
 --  Step 1: Perform normal monomorphization (however, you won't be able to compile escaped TVars).
 --  Step 2: Replace escaped TVars with each instantiation of them. (maybe it can be eliminated like doing env defs by first collecting the variables)
 
-mono :: [AnnStmt T] -> PrintContext (Module M)
+mono :: [AnnStmt T] -> PrintContext (Module M, MonoStats)
 mono tmod = {-# SCC mono #-} do
   -- Step 1: Just do monomorphization with a few quirks*.
   (mistmts, monoCtx) <- flip State.runStateT startingContext $ do
@@ -79,11 +79,18 @@ mono tmod = {-# SCC mono #-} do
   -- Step 2 consists of:
   -- 1. substitute environments
 
-  mmod <- withEnvContext imEnvs monoCtx.envInstantiations monoCtx.cuckedUnionInstantiation $ do
+  (mmod, mfts, mfus) <- withEnvContext imEnvs monoCtx.envInstantiations monoCtx.cuckedUnionInstantiation $ do
     mstmts <- mfAnnStmts mistmts
     pure $ M.Mod { M.topLevelStatements = mstmts }
 
-  pure mmod
+  let stats = MonoStats
+        { typeNodesVisited = monoCtx.typeNodesVisited
+        , unionsVisited = monoCtx.unionsVisited
+        , mfTypeNodesVisited = mfts
+        , mfUnionsVisited = mfus
+        }
+
+  pure (mmod, stats)
 
 
 
@@ -651,7 +658,7 @@ member = memo memoMember (\mem s -> s { memoMember = mem }) $ \(_, memname) _ ->
 
 
 mType :: Type T -> Context (Type IM)
-mType = cata $ \case
+mType = cata $ thisAnd (State.modify $ \s -> s { typeNodesVisited = s.typeNodesVisited + 1 }) . \case
     TCon dd pts tunions -> do
       params <- sequenceA pts
 
@@ -821,7 +828,7 @@ withClassInstanceAssociations ci a = do
 
 
 mUnion :: (T.EnvUnionF T (Type T), [Type IM], Type IM) -> Context IM.EnvUnion
-mUnion (tunion, params, ret) = do
+mUnion (tunion, params, ret) = thisAnd (State.modify $ \s -> s { unionsVisited = s.unionsVisited + 1 }) $ do
 
   -- NOTE: check `TypeMap` definition as to why its needed *and* retarded.
   TypeMap _ envMap <- State.gets tvarMap
@@ -916,6 +923,10 @@ data Context' = Context
 
   , completedEnvs :: Set IM.Env
   , environmentsLeft :: Map IM.Env [Function IM]
+
+  -- stats
+  , typeNodesVisited :: Word
+  , unionsVisited :: Word
   }
 type Context = StateT Context' PrintContext
 
@@ -939,6 +950,9 @@ startingContext = Context
 
   , completedEnvs = mempty
   , environmentsLeft = mempty
+
+  , typeNodesVisited = 0
+  , unionsVisited = 0
   }
 
 
@@ -1026,8 +1040,10 @@ newUnionID = do
 --------------------------------------------------------
 
 
-withEnvContext :: Map (T.EnvF T (Type IM)) IM.Env -> IM.EnvInstantiations -> Map IM.EnvUnion (Set (T.EnvF T (Type IM))) -> EnvContext a -> PrintContext a
-withEnvContext menvs allInstantiations cuckedUnionInstantiations x = fst <$> RWS.evalRWST x envUse envMemo
+withEnvContext :: Map (T.EnvF T (Type IM)) IM.Env -> IM.EnvInstantiations -> Map IM.EnvUnion (Set (T.EnvF T (Type IM))) -> EnvContext a -> PrintContext (a, Counter, Counter)
+withEnvContext menvs allInstantiations cuckedUnionInstantiations x = do
+  (m, mem, ()) <- RWS.runRWST x envUse envMemo
+  pure (m, mem.mfTypeNodesVisited, mem.mfUnionsVisited)
   where
     envUse = EnvContextUse
       { allInsts = allInstantiations
@@ -1039,6 +1055,9 @@ withEnvContext menvs allInstantiations cuckedUnionInstantiations x = fst <$> RWS
       { memoIDatatype = emptyMemo
       , memoIFunction = emptyMemo
       , memoIUnion = emptyMemo
+
+      , mfTypeNodesVisited = 0
+      , mfUnionsVisited = 0
       }
 
 
@@ -1185,7 +1204,7 @@ mfEnv env = do
 
 
 mfType :: Type IM -> EnvContext (Type M)
-mfType = para $ fmap embed . \case
+mfType = para $ fmap embed . thisAnd (RWS.modify $ \s -> s { mfTypeNodesVisited = s.mfTypeNodesVisited + 1 }) .  \case
   TCon dd ts unions -> do
     munions <- traverse mfUnion unions
     mts <- traverse snd ts
@@ -1203,7 +1222,7 @@ mfType = para $ fmap embed . \case
 
 
 mfUnion :: IM.EnvUnion -> EnvContext M.EnvUnion
-mfUnion = memo memoIUnion (\mem s -> s { memoIUnion = mem }) $ \union _ -> do
+mfUnion = memo memoIUnion (\mem s -> s { memoIUnion = mem }) $ \union _ -> thisAnd (RWS.modify $ \s -> s { mfUnionsVisited = s.mfUnionsVisited + 1 }) $ do
   cuckedUnions <- RWS.asks cuckedUnionInsts
   mappedEnvs <- case cuckedUnions !? union of
       -- here should be no ftvs.
@@ -1341,6 +1360,10 @@ data EnvMemo = EnvMemo
   { memoIDatatype :: Memo (DataDef IM, [M.EnvUnion]) (DataDef M, Map (DataCon IM) (DataCon M))
   , memoIFunction :: Memo (Function IM) (Function M)
   , memoIUnion    :: Memo IM.EnvUnion M.EnvUnion
+
+  -- statz
+  , mfTypeNodesVisited :: Word
+  , mfUnionsVisited :: Word
   }
 
 
@@ -1363,3 +1386,12 @@ mustSelectInstance (Fix (TCon mdd _ _)) insts =
     Just instdef -> instdef
     Nothing -> error $ Def.printf "INSTANCE FOR % DOES NOT EXIST." (ppDef mdd)
 mustSelectInstance _ _ = error "TRYING TO SELECT AN INSTANCE FOR A FUNCTION."
+
+
+-- I think there was an actual function that did this kek.
+{-# inline thisAnd #-}
+thisAnd :: Monad m => m () -> m a -> m a
+thisAnd f g = do
+  x <- g
+  f
+  pure x

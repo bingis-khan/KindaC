@@ -36,6 +36,7 @@ import qualified System.FilePath as FilePath
 import Control.Monad.Trans.Class (lift)
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IntMap
+import AST.Mono (MonoStats(..))
 
 
 -- temporary redef
@@ -111,10 +112,13 @@ moduleLoader compilingModule mq = do
 finalizeModule :: Module T -> PrintContext Text
 finalizeModule joinedModules = do
   phase "Monomorphizing"
-  mmod <- force <$> mono joinedModules
+  (mmod, stats) <- force <$> mono joinedModules
 
   phase "Monomorphized statements"
   pc mmod
+
+  -- TODO: stats shouldn't really be here, but whatever.
+  Def.unsilenceablePrintInContext (Def.pf "M type nodes: %\nM unions: %\nMF type nodes: %\nM unions %\n" stats.typeNodesVisited stats.unionsVisited stats.mfTypeNodesVisited stats.mfUnionsVisited) :: PrintContext ()
 
   -- phase "C-ing"
   let cmod = force $ cModule mmod

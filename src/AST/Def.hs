@@ -49,6 +49,10 @@ defaultContext = dc
 dc = debugContext
 rc = runtimeContext
 
+-- for stats.
+type Counter = Word
+
+
 -- context for debugging with all messages enabled.
 debugContext = CtxData
   { silent = False
@@ -367,6 +371,7 @@ instance PP () where
   pp = const mempty
 
 instance PP Int
+instance PP Word
 instance PPDef Int
 
 instance PP Rational

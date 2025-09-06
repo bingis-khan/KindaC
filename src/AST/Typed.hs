@@ -17,7 +17,7 @@ import qualified AST.Def as Def
 import Data.Map.Strict (Map, (!?))
 import Data.Text (Text)
 import Data.Fix (Fix (..))
-import AST.Def (PP (..), (<+>), pf, PPDef)
+import AST.Def (PP (..), (<+>), pf, PPDef, Counter)
 import Data.Biapplicative (bimap, first)
 import Data.Functor.Classes (Ord1 (..), Eq1 (..))
 import Data.Functor ((<&>))
@@ -28,6 +28,23 @@ import Data.Unique (Unique)
 import Control.Monad.Trans.Class (lift)
 import Data.IntMap (IntMap)
 import qualified Data.IntMap.Strict as IntMap
+
+
+data FunInstTrack = FunInstTrack
+  { name :: Text
+  , newTypes :: Int
+  , newUnions :: Int
+  } deriving Eq
+
+instance Ord FunInstTrack where
+  x `compare` x' = x.newTypes `compare` x'.newTypes
+
+
+data TypeFixStats = TypeFixStats
+  { tfTypeNodesVisited :: Counter
+  , tfUnionsVisited :: Counter
+  }
+
 
 
 data Typed
@@ -411,6 +428,10 @@ instance PP TypeUni where
 
 instance PPDef TypeID where
   ppDef = pp
+
+
+instance PP FunInstTrack where
+  pp fit = pf "%: % | %" fit.name fit.newTypes fit.newUnions
 
 -- instance {-# OVERLAPPING #-} PP ClassInstantiationAssocs where
 --   pp classInstantiationAssocs = fromString $ Def.printf "CIA: %" (Def.ppMap $ fmap (bimap pp (Def.ppTup . bimap pp (Def.ppTup . bimap (Def.encloseSepBy "[" "]" ", " . fmap pp) (\ifn -> pp ifn.instFunDec.functionId)))) $ fmap (\(ufiuci, (l, r, _, _)) -> (ufiuci, (l, r))) $ Map.toList classInstantiationAssocs)

@@ -7,7 +7,7 @@
 module AST.Mono (module AST.Mono) where
 import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XExprNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation, TypeF)
 import qualified AST.Def as Def
-import AST.Def (Locality, PP (..), (<+>))
+import AST.Def (Locality, PP (..), (<+>), Counter)
 import Data.List.NonEmpty (NonEmpty)
 import AST.Typed (T)
 import qualified Data.List.NonEmpty as NonEmpty
@@ -15,6 +15,14 @@ import Data.String (fromString)
 import Data.Functor ((<&>))
 import Data.Text (Text)
 import Data.Fix (Fix)
+
+
+data MonoStats = MonoStats
+  { typeNodesVisited :: Counter
+  , unionsVisited :: Counter
+  , mfTypeNodesVisited :: Counter
+  , mfUnionsVisited :: Counter
+  }
 
 
 data Mono

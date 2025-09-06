@@ -2,13 +2,14 @@
 {-# LANGUAGE ExplicitNamespaces #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RecursiveDo #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 module TypeFix (typefix) where
 
 import qualified AST.Typed as T
 import Data.List.NonEmpty (NonEmpty)
 import AST.Common (Module, AnnStmt, Function (..), DataDef (..), ClassDef (..), InstDef (..), StmtF (..), Expr, XMutAccess, IfStmt (..), CaseF (..), Type, TypeF (..), TVar (..), XEnvUnion, XEnv, ClassFunDec (..), InstFun (..), Decon, DeconF (..), ExprNode (N), XExprNode, DataCon (..), ExprF (..), LitType (..), XMem, XLamOther, ClassType, FunDec (..), ClassTypeF (..), MutAccess (..))
-import AST.Typed (TC, T, topLevelStatements, TOTF (..), EnvUnionF, ScopeSnapshot, Scheme (..), FunOther (..), EnvUnion, FunctionTypeAssociation (..), ExprNode (ExprNode), LamDec (..))
-import AST.Def (PrintContext, type (:.) (O), sequenceA2, traverse2, traverseSet, traverse3, pf)
+import AST.Typed (TC, T, topLevelStatements, TOTF (..), EnvUnionF, ScopeSnapshot, Scheme (..), FunOther (..), EnvUnion, FunctionTypeAssociation (..), ExprNode (ExprNode), LamDec (..), TypeFixStats (..))
+import AST.Def (PrintContext, type (:.) (O), sequenceA2, traverse2, traverseSet, traverse3, pf, Counter)
 import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad.Trans.RWS.Strict (RWST)
 import qualified Control.Monad.Trans.RWS.Strict as RWST
@@ -29,10 +30,11 @@ import Data.Either (fromRight)
 import Data.Biapplicative (first)
 
 
-typefix :: T.TypeUni -> T.EnvAdditions -> NonEmpty (Module TC) -> PrintContext (Module T)
-typefix typeUni envAdds mods =
+typefix :: T.TypeUni -> T.EnvAdditions -> NonEmpty (Module TC) -> PrintContext (Module T, TypeFixStats)
+typefix typeUni envAdds mods = do
   let stmts = concatMap topLevelStatements mods
-  in fmap fst $ RWST.evalRWST (fixStmts stmts) (typeUni, envAdds) emptyMemoShit
+  (modt, mem, ()) <- RWST.runRWST (fixStmts stmts) (typeUni, envAdds) emptyMemoShit
+  pure (modt, TypeFixStats { tfTypeNodesVisited = mem.typeNodesVisited, tfUnionsVisited = mem.unionsVisited })
 
 fixStmts :: [AnnStmt TC] -> TypeFix (Module T)
 fixStmts = traverse fixStmt
@@ -134,7 +136,7 @@ fixLitType = \case
   LString s -> LString s
 
 fixType :: Type TC -> TypeFix (Type T)
-fixType = qmemo memoType (\mem s -> s { memoType = mem }) $ getType >=> traverse fixType >=> \xxx -> do
+fixType = qmemo memoType (\mem s -> s { memoType = mem }) $ getType >=> traverse fixType >=> thisAnd (RWST.modify $ \s -> s { typeNodesVisited = s.typeNodesVisited + 1 }) >=> \xxx -> do
  case xxx of
     TFun union params ret -> do
       tunion <- fixUnion union
@@ -174,6 +176,8 @@ fixTVar tv = do
 
 fixUnion :: XEnvUnion TC -> TypeFix (XEnvUnion T)
 fixUnion = memo memoUnion (\mem s -> s { memoUnion = mem }) $ \uid addMemo -> mdo
+  RWST.modify $ \s -> s { unionsVisited = s.unionsVisited + 1 }
+
   u <- getUnion uid
   let tu = T.EnvUnion { T.unionID = u.unionID, T.union = union }
   addMemo tu
@@ -404,6 +408,10 @@ data MemoShit = MemoShit
   , memoInstance :: Memo (InstDef TC) (InstDef T)
   , memoType :: Memo (Type TC) (Type T)
   , memoUnion :: Memo (XEnvUnion TC) (XEnvUnion T)
+
+  -- stats
+  , typeNodesVisited :: Counter
+  , unionsVisited :: Counter
   }
 
 emptyMemoShit :: MemoShit
@@ -414,4 +422,12 @@ emptyMemoShit = MemoShit
   , memoInstance = emptyMemo
   , memoType = emptyMemo
   , memoUnion = emptyMemo
+
+  , typeNodesVisited = 0
+  , unionsVisited = 0
   }
+
+thisAnd :: Monad m => m () -> a -> m a
+thisAnd f x = do
+  f
+  pure x

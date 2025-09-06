@@ -1,12 +1,12 @@
 {-# LANGUAGE OverloadedRecordDot, OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeOperators #-}
-module CompilerContext (CompilerContext(..), CompilerState(..), BasePath, storeModule, ModuleLoader, compileInContext, addErrors, preludeHackContext, mkModulePath, relativeTo, prelude, asPrintContext, silentContext, nextTypeID, modifyTypeUni, modifyUniUni, nextUnionUniID, getTypeUni) where
+module CompilerContext (CompilerContext(..), CompilerState(..), BasePath, storeModule, ModuleLoader, compileInContext, addErrors, preludeHackContext, mkModulePath, relativeTo, prelude, asPrintContext, silentContext, nextTypeID, modifyTypeUni, modifyUniUni, nextUnionUniID, getTypeUni, numTypesAndUnionsDefined, trackInstantiation) where
 
 import Data.Text (Text)
 import Data.Map.Strict (Map)
 import qualified AST.Untyped as U
-import AST.Common (Module)
+import AST.Common (Module, Function(..), FunDec(..))
 import AST.Typed (TC, T)
 import Control.Monad.Trans.RWS.Strict (RWST)
 import qualified Control.Monad.Trans.RWS.Strict as RWST
@@ -27,6 +27,7 @@ import qualified Data.Text.IO as TextIO
 import Control.Monad.Fix (MonadFix)
 import qualified AST.Typed as T
 import TypeFix (typefix)
+import Data.List (sort)
 
 
 
@@ -48,6 +49,8 @@ compileInContext bejspaf (prilud, ps) fn = do
 
     , loadedModules = mempty
     , orderedModules = NonEmpty.singleton prilud.tpModule
+
+    , instantiationsByNumTypes = ps.instantiationsByNumTypes
     }
     where
 
@@ -63,9 +66,18 @@ compileInContext bejspaf (prilud, ps) fn = do
               typeUni <- CompilerContext $ RWST.gets globalTypeUni
               envAdds <- CompilerContext $ RWST.gets globalEnvAddition
               let tcmods = NonEmpty.reverse $ tmod <| mods
-              tm <- CompilerContext.asPrintContext $ typefix typeUni envAdds tcmods
+              (tm, tfStats) <- CompilerContext.asPrintContext $ typefix typeUni envAdds tcmods
               pc $ ppLines tm
+
+              -- display stats
               Def.unsilenceablePrintInContext $ Def.pf "Number of different type nodes: %\nNumber of different union nodes: %" (IntMap.size typeUni.typeUni) (IntMap.size typeUni.unionUni)
+              Def.unsilenceablePrintInContext $ Def.pf "TF type nodes: %\nTF unions: %\n" tfStats.tfTypeNodesVisited tfStats.tfUnionsVisited
+
+              trackedInsts <- CompilerContext $ RWST.gets instantiationsByNumTypes
+              let top10costliest = take 10 $ reverse $ sort trackedInsts
+              Def.unsilenceablePrintInContext $ Def.indent ("Top 10 costliest instantiations:") (Def.ppLines top10costliest)
+
+              
               pure $ Right tm
 
             e:es -> pure $ Left $ e :| es
@@ -97,6 +109,7 @@ preludeHackContext fn = do
       , globalEnvAddition = mempty
       , loadedModules = mempty
       , orderedModules = NonEmpty.singleton (error "module")
+      , instantiationsByNumTypes = mempty
       }
     pure (pmod, s)
 
@@ -142,6 +155,9 @@ data CompilerState = CompilerState
 
   , loadedModules :: ModuleStore
   , orderedModules :: NonEmpty (Module TC)  -- at the end must have at least one element.
+
+  -- stats
+  , instantiationsByNumTypes :: [T.FunInstTrack]
   }
 
 type ModuleStore = Map U.ModuleQualifier (Maybe (Module TC))
@@ -173,6 +189,17 @@ nextUnionUniID = do
 getTypeUni :: CompilerContext T.TypeUni
 getTypeUni = CompilerContext $ RWST.gets globalTypeUni
 
+numTypesAndUnionsDefined :: CompilerContext (Int, Int)
+numTypesAndUnionsDefined = do
+  tu <- CompilerContext $ RWST.gets globalTypeUni
+  pure (IntMap.size tu.typeUni, IntMap.size tu.unionUni)
+
+trackInstantiation :: (Int, Int) -> Function TC -> CompilerContext ()
+trackInstantiation (beforeTypes, beforeUnions) fn = do
+  (afterTypes, afterUnions) <- numTypesAndUnionsDefined
+
+  let inst = T.FunInstTrack fn.functionDeclaration.functionId.varName.fromVN (afterTypes - beforeTypes) (afterUnions - beforeUnions)
+  CompilerContext $ RWST.modify $ \s -> s { instantiationsByNumTypes = inst : s.instantiationsByNumTypes }
 
 -- modify type unions
 modifyTypeUni :: (T.TypeTypeUni -> T.TypeTypeUni) -> CompilerContext ()

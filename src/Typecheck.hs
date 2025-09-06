@@ -1546,6 +1546,8 @@ instantiateFunction isExternal assocLocation muci snapshot fn = do
     let fundec = fn.functionDeclaration
     let (Scheme schemeTVars schemeUnions) = fundec.functionOther.functionScheme
 
+    definesBeforeInst <- lift CompilerContext.numTypesAndUnionsDefined
+
     pf "Before schemin: %" fundec.functionId
     pf "Before schemin: %" =<< presentFunctionType fn
     (tvs, unions) <- instantiateScheme snapshot fundec.functionOther.functionScheme
@@ -1609,6 +1611,7 @@ instantiateFunction isExternal assocLocation muci snapshot fn = do
       gfn
       =<< presentType fnType
 
+    lift $ CompilerContext.trackInstantiation definesBeforeInst fn
     pure (fnType, v, mappedEnv)
 
 
@@ -2725,6 +2728,8 @@ trafold f = fmap fold . traverse f
 
 seqfold :: (Monoid b, Traversable t, Applicative f) => t (f b) -> f b
 seqfold  = fmap fold . sequenceA
+
+
 
 
 -- the COCK operator
