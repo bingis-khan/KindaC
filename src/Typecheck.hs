@@ -2087,9 +2087,10 @@ bind loc (tyvid, tyv) tid = do
     TO (TyVar tyv') | tyv == tyv' -> nun  -- TODO: this is just in case, because same fresh variables should have the same TypeIDs.
     _ -> do
       tyVarOccursInRightType <- occursCheck tyv tid
-      tid' <- presentType tid
       if tyVarOccursInRightType
-        then err $ InfiniteType loc tyv tid'
+        then do
+          tid' <- presentType tid
+          err $ InfiniteType loc tyv tid'
         else do
           pf "bind: % -> %" tyvid tid
           lift $ CompilerContext.modifyTypeUni $ IntMap.insert tyvid.fromTypeID (Left tid.fromTypeID)
