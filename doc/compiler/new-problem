@@ -1,0 +1,105 @@
+It's SLOW AS SHIT.
+
+
+long-lambda.kc:
+
+Number of different type nodes: 655
+Number of different union nodes: 580
+TF type nodes: 446
+TF unions: 194
+
+Top 10 costliest instantiations:
+  fib: 4 | 2
+  fib: 4 | 2
+  unc: 3 | 2
+
+
+M type nodes: 137448
+M unions: 35530
+MF type nodes: 36853
+MF unions 187
+
+Time: 1.271639805000s
+
+
+Miau.kc (two list additions and stuff):
+
+Number of different type nodes: 262431
+Number of different union nodes: 47579
+TF type nodes: 8654
+TF unions: 1407
+
+Top 10 costliest instantiations:
+  pop: 37645 | 6569
+  pop: 37308 | 6560
+  remove: 37244 | 6549
+  adda: 25142 | 4438
+  adda: 25142 | 4438
+  print-str: 9032 | 1600
+  add: 8378 | 1479
+  add: 8194 | 1452
+  add: 8194 | 1452
+  add: 8194 | 1452
+
+
+M type nodes: 11167879
+M unions: 2295448
+MF type nodes: 7195
+MF unions 198
+
+Time: 67.314984412000s
+
+
+example 1:
+Number of different type nodes: 332366
+Number of different union nodes: 62593
+TF type nodes: 13182
+TF unions: 2386
+
+Top 10 costliest instantiations:
+  remove: 37244 | 6549
+  parse-int: 24624 | 5460
+  try-writeln: 17788 | 3183
+  writeln: 17330 | 3051
+  writeln: 17330 | 3051
+  writeln: 17330 | 3051
+  write: 16606 | 2917
+  add: 8194 | 1452
+  copy-to: 8134 | 1437
+  allocate-str: 8021 | 1439
+
+
+M type nodes: 4155679
+M unions: 861639
+MF type nodes: 21216
+MF unions 587
+
+Time: 35.121568971000s
+
+
+example 2:
+
+Number of different type nodes: 2229744
+Number of different union nodes: 396674
+TF type nodes: 10343
+TF unions: 1976
+
+Top 10 costliest instantiations:
+  handle-input: 2062309 | 364865
+  actions-to: 12453 | 2267
+  draw-action-list: 6533 | 1222
+  add-action: 5533 | 1009
+  add-action: 5533 | 1009
+  add-action: 5533 | 1009
+  add-action: 5533 | 1009
+  draw-state: 3264 | 530
+  draw-action-block: 3220 | 603
+  set-last-rect: 3193 | 566
+
+
+M type nodes: 5005603
+M unions: 1039903
+MF type nodes: 14920
+MF unions 474
+
+Time: 87.567815678000s

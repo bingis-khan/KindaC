@@ -1,0 +1,38 @@
+use Alloc
+	CAllocator
+use Term
+use List
+	List
+use Iter
+	for-each
+
+State
+	counter List CAllocator Int
+
+Action
+	do Ptr State -> Unit
+
+al = Alloc.get-c-allocator()
+actions =& List.mk(al) as List CAllocator Action
+
+add (s Ptr State, x Int)
+	List.add(&s&.counter, x)
+	return
+
+one = 1
+pop (s Ptr State)
+	List.pop(&s&.counter)
+	return
+
+adda (x Int): Action { do: s: add(s, x) }
+popa (): Action { do: pop }
+actions List.add(adda(420))
+actions List.add(adda(69))
+#actions List.add(popa())
+#actions List.add(adda(1337))
+
+
+s =& State { counter: List.mk(al) }
+actions& for-each(a: a.do(s))
+Term.println(s&.counter)
+
