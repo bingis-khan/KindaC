@@ -79,15 +79,20 @@ mono tmod = {-# SCC mono #-} do
   -- Step 2 consists of:
   -- 1. substitute environments
 
-  (mmod, mfts, mfus) <- withEnvContext imEnvs monoCtx.envInstantiations monoCtx.cuckedUnionInstantiation $ do
+  (mmod, mf) <- withEnvContext imEnvs monoCtx.envInstantiations monoCtx.cuckedUnionInstantiation $ do
     mstmts <- mfAnnStmts mistmts
     pure $ M.Mod { M.topLevelStatements = mstmts }
 
   let stats = MonoStats
-        { typeNodesVisited = monoCtx.typeNodesVisited
+        { exprVisited = monoCtx.exprVisited
+        , stmtVisited = monoCtx.stmtVisited
+        , typeNodesVisited = monoCtx.typeNodesVisited
         , unionsVisited = monoCtx.unionsVisited
-        , mfTypeNodesVisited = mfts
-        , mfUnionsVisited = mfus
+
+        , mfExprVisited = mf.mfExprVisited
+        , mfStmtVisited = mf.mfStmtVisited
+        , mfTypeNodesVisited = mf.mfTypeNodesVisited
+        , mfUnionsVisited = mf.mfUnionsVisited
         }
 
   pure (mmod, stats)
@@ -95,7 +100,7 @@ mono tmod = {-# SCC mono #-} do
 
 
 mAnnStmt :: AnnStmt T -> Context (AnnStmt IM)
-mAnnStmt = cata (fmap embed . f) where
+mAnnStmt = cata (fmap embed . thisAnd (State.modify $ \s -> s { stmtVisited = s.stmtVisited + 1 }) .  f) where
   f :: (:.) ((:.) Annotated Located) (StmtF T (Expr T)) (Context (AnnStmt IM)) -> Context ((:.) ((:.) Annotated Located) ((StmtF IM (Expr IM))) (AnnStmt IM))
   f (O (O (Annotated ann (Located location stmt)))) = do
     stmt' <- bitraverse mExpr id stmt
@@ -275,7 +280,7 @@ getEnvDependencies _ = error "RECURSIVE ENV WHAT."
 
 
 mExpr :: Expr T -> Context (Expr IM)
-mExpr = cata $ fmap embed . \(N en expr) -> do
+mExpr = cata $ thisAnd (State.modify $ \s -> s { exprVisited = s.exprVisited + 1}) . fmap embed . \(N en expr) -> do
   mt <- mType en.t
   mexpr <- case expr of
     Lam (T.LamDec _ env) args ret -> do
@@ -925,8 +930,10 @@ data Context' = Context
   , environmentsLeft :: Map IM.Env [Function IM]
 
   -- stats
-  , typeNodesVisited :: Word
-  , unionsVisited :: Word
+  , exprVisited :: Counter
+  , stmtVisited :: Counter
+  , typeNodesVisited :: Counter
+  , unionsVisited :: Counter
   }
 type Context = StateT Context' PrintContext
 
@@ -951,6 +958,8 @@ startingContext = Context
   , completedEnvs = mempty
   , environmentsLeft = mempty
 
+  , exprVisited = 0
+  , stmtVisited = 0
   , typeNodesVisited = 0
   , unionsVisited = 0
   }
@@ -1040,10 +1049,10 @@ newUnionID = do
 --------------------------------------------------------
 
 
-withEnvContext :: Map (T.EnvF T (Type IM)) IM.Env -> IM.EnvInstantiations -> Map IM.EnvUnion (Set (T.EnvF T (Type IM))) -> EnvContext a -> PrintContext (a, Counter, Counter)
+withEnvContext :: Map (T.EnvF T (Type IM)) IM.Env -> IM.EnvInstantiations -> Map IM.EnvUnion (Set (T.EnvF T (Type IM))) -> EnvContext a -> PrintContext (a, EnvMemo)
 withEnvContext menvs allInstantiations cuckedUnionInstantiations x = do
   (m, mem, ()) <- RWS.runRWST x envUse envMemo
-  pure (m, mem.mfTypeNodesVisited, mem.mfUnionsVisited)
+  pure (m, mem)
   where
     envUse = EnvContextUse
       { allInsts = allInstantiations
@@ -1056,6 +1065,8 @@ withEnvContext menvs allInstantiations cuckedUnionInstantiations x = do
       , memoIFunction = emptyMemo
       , memoIUnion = emptyMemo
 
+      , mfExprVisited = 0
+      , mfStmtVisited = 0
       , mfTypeNodesVisited = 0
       , mfUnionsVisited = 0
       }
@@ -1063,6 +1074,7 @@ withEnvContext menvs allInstantiations cuckedUnionInstantiations x = do
 
 mfAnnStmts :: [AnnStmt IM] -> EnvContext [AnnStmt M]
 mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (O (Annotated anns (Located location stmt)))) -> do
+  RWS.modify $ \s -> s { mfStmtVisited = s.mfStmtVisited + 1 }
   stmt' <- bitraverse mfExpr id stmt
   let s = pure . Just
   let
@@ -1124,7 +1136,7 @@ mfDecon = cata $ \(N t e) -> do
 
 
 mfExpr :: Expr IM -> EnvContext (Expr M)
-mfExpr = cata $ \(N imt imexpr) -> do
+mfExpr = cata $ \(N imt imexpr) -> thisAnd (RWS.modify $ \s -> s { mfExprVisited = s.mfExprVisited + 1 }) $ do
   mt <- mfType imt
   fmap (embed . N mt) $ case imexpr of
     Var v loc -> do
@@ -1362,8 +1374,10 @@ data EnvMemo = EnvMemo
   , memoIUnion    :: Memo IM.EnvUnion M.EnvUnion
 
   -- statz
-  , mfTypeNodesVisited :: Word
-  , mfUnionsVisited :: Word
+  , mfExprVisited :: Counter
+  , mfStmtVisited :: Counter
+  , mfTypeNodesVisited :: Counter
+  , mfUnionsVisited :: Counter
   }
 
 

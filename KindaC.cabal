@@ -63,6 +63,7 @@ library
     , recursion-schemes
     , temporary
     , text
+    , time
     , transformers
     , vector
   default-language: Haskell2010
@@ -95,6 +96,7 @@ executable kc
     , recursion-schemes
     , temporary
     , text
+    , time
     , transformers
     , vector
   default-language: Haskell2010
@@ -129,6 +131,7 @@ test-suite all
     , recursion-schemes
     , temporary
     , text
+    , time
     , transformers
     , vector
   default-language: Haskell2010

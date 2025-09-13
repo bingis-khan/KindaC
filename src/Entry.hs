@@ -13,10 +13,13 @@ import qualified Data.List.NonEmpty as NonEmpty
 import System.Exit (exitFailure)
 import qualified AST.Def as Def
 import GHC.Debug.Stub (withGhcDebug)
+import Data.Time (getCurrentTime, diffUTCTime, nominalDiffTimeToSeconds)
+import Data.Fixed (showFixed)
 
 
 compilerMain :: IO ()
 compilerMain = do
+  startT <- liftIO getCurrentTime
   (filename, outputC, dbg, dbgModule) <- parseArgs
 
   let basePath = FilePath.takeDirectory filename
@@ -41,6 +44,10 @@ compilerMain = do
             liftIO $ TextIO.writeFile "test.c" cmod
           else
             liftIO $ TextIO.putStrLn cmod
+
+        endT <- liftIO getCurrentTime
+        let diff = nominalDiffTimeToSeconds $ diffUTCTime endT startT
+        Def.unsilenceablePrintInContext $ Def.pf "Time: %s" $ showFixed False diff
 
 
 parseArgs :: IO (Filename, ShouldOutputC, DebugPrinting, DebugPrintOnlyFirstModule)

@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedRecordDot, OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeOperators #-}
-module CompilerContext (CompilerContext(..), CompilerState(..), BasePath, storeModule, ModuleLoader, compileInContext, addErrors, preludeHackContext, mkModulePath, relativeTo, prelude, asPrintContext, silentContext, nextTypeID, modifyTypeUni, modifyUniUni, nextUnionUniID, getTypeUni, numTypesAndUnionsDefined, trackInstantiation) where
+module CompilerContext (CompilerContext(..), CompilerState(..), BasePath, storeModule, ModuleLoader, compileInContext, addErrors, preludeHackContext, mkModulePath, relativeTo, prelude, asPrintContext, silentContext, nextTypeID, modifyTypeUni, modifyUniUni, nextUnionUniID, getTypeUni, numTypesAndUnionsDefined, trackInstantiation, Stats (..)) where
 
 import Data.Text (Text)
 import Data.Map.Strict (Map)
@@ -19,7 +19,7 @@ import System.FilePath ((<.>), (</>))
 import qualified System.FilePath as FilePath
 import qualified AST.Def as Def
 import qualified Data.Text as Text
-import AST.Def (PrintContext (..), pc, vsep, pp, ppLines)
+import AST.Def (PrintContext (..), pc, vsep, pp, ppLines, Counter, PP)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import qualified Control.Monad.Trans.Reader as Reader
 import Control.Monad (unless)
@@ -36,8 +36,6 @@ import Data.List (sort)
 
 compileInContext :: BasePath -> (Prelude, CompilerState) -> CompilerContext (Maybe (Module TC)) -> PrintContext (Either (NonEmpty Text) (Module T))
 compileInContext bejspaf (prilud, ps) fn = do
-
-  
   ctxdata <- PrintContext Reader.ask
   fmap fst $ liftIO $ RWST.evalRWST (fromCompilerContext go) (CCC { basepath = bejspaf, prelude = prilud, printContext = ctxdata }) $ CompilerState
     { errors = mempty
@@ -51,6 +49,7 @@ compileInContext bejspaf (prilud, ps) fn = do
     , orderedModules = NonEmpty.singleton prilud.tpModule
 
     , instantiationsByNumTypes = ps.instantiationsByNumTypes
+    , stats = ps.stats
     }
     where
 
@@ -70,6 +69,8 @@ compileInContext bejspaf (prilud, ps) fn = do
               pc $ ppLines tm
 
               -- display stats
+              statz <- CompilerContext $ RWST.gets stats
+              Def.unsilenceablePrintInContext $ Def.pp statz
               Def.unsilenceablePrintInContext $ Def.pf "Number of different type nodes: %\nNumber of different union nodes: %" (IntMap.size typeUni.typeUni) (IntMap.size typeUni.unionUni)
               Def.unsilenceablePrintInContext $ Def.pf "TF type nodes: %\nTF unions: %\n" tfStats.tfTypeNodesVisited tfStats.tfUnionsVisited
 
@@ -110,6 +111,7 @@ preludeHackContext fn = do
       , loadedModules = mempty
       , orderedModules = NonEmpty.singleton (error "module")
       , instantiationsByNumTypes = mempty
+      , stats = emptyStats
       }
     pure (pmod, s)
 
@@ -158,6 +160,7 @@ data CompilerState = CompilerState
 
   -- stats
   , instantiationsByNumTypes :: [T.FunInstTrack]
+  , stats :: Stats
   }
 
 type ModuleStore = Map U.ModuleQualifier (Maybe (Module TC))
@@ -231,3 +234,28 @@ mkModulePath (U.ModuleQualifier modules) = do
   let moduleFileNames = Text.unpack . Def.fromModName <$> NonEmpty.toList modules
   let fullpath = basePath </> FilePath.joinPath moduleFileNames <.> "kc"
   pure fullpath
+
+
+
+-- stats
+-- global stat tracking thing.
+--  (it was easier to put it in an "encompassing" context, so i wouldn't have to pass it around.)
+data Stats = Stats
+  { rExpr :: Counter
+  , rStmt :: Counter
+
+  , tcExpr :: Counter
+  , tcStmt :: Counter
+  }
+
+emptyStats :: Stats
+emptyStats = Stats
+  { rExpr = 0
+  , rStmt = 0
+  , tcExpr = 0
+  , tcStmt = 0
+  }
+
+
+instance PP Stats where
+  pp s = Def.pf "R expr: %\nR stmt: %\nTC expr: %\nTC stmt: %\n" s.rExpr s.rStmt s.tcExpr s.tcStmt

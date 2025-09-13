@@ -193,6 +193,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
     -- go through additional layers (in the future also position information)...
     inferAnnStmt :: (PP a, Substitutable a) => Base (AnnStmt R) (Infer a) -> Infer (Base (AnnStmt TC) a)
     inferAnnStmt (O (O (Def.Annotated anns (Def.Located location rStmt)))) = printUni (unPos location.startPos.sourceLine) anns $ do
+        upStmt
         tstmt <- bitraverse inferExpr id rStmt
 
         -- Map expr -> type for unification
@@ -340,6 +341,7 @@ inferExpr = cata (fmap embed . inferExprType)
   where
     inferExprType :: Base (Expr R) (Infer (Expr TC)) -> Infer (Base (Expr TC) (Expr TC))
     inferExprType (N location e) = do
+      upExpr
       pf "before layer"
       (e', t) <- inferLayer
       pf "after layer"
@@ -2730,6 +2732,11 @@ seqfold :: (Monoid b, Traversable t, Applicative f) => t (f b) -> f b
 seqfold  = fmap fold . sequenceA
 
 
+upExpr :: Infer ()
+upExpr = lift $ CompilerContext $ RWS.modify $ \cc -> cc { stats = cc.stats { CompilerContext.tcExpr = cc.stats.tcExpr + 1} }
+
+upStmt :: Infer ()
+upStmt = lift $ CompilerContext $ RWS.modify $ \cc -> cc { stats = cc.stats { CompilerContext.tcStmt = cc.stats.tcStmt + 1} }
 
 
 -- the COCK operator

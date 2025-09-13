@@ -18,8 +18,13 @@ import Data.Fix (Fix)
 
 
 data MonoStats = MonoStats
-  { typeNodesVisited :: Counter
+  { exprVisited :: Counter
+  , stmtVisited :: Counter
+  , typeNodesVisited :: Counter
   , unionsVisited :: Counter
+
+  , mfExprVisited :: Counter
+  , mfStmtVisited :: Counter
   , mfTypeNodesVisited :: Counter
   , mfUnionsVisited :: Counter
   }

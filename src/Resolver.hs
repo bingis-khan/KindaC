@@ -51,7 +51,7 @@ import qualified AST.Common as Common
 import AST.Prelude (Prelude (..))
 import Control.Monad ( when, foldM, void )
 import AST.Typed (TC, functionAnnotations)
-import CompilerContext (CompilerContext)
+import CompilerContext (CompilerContext (CompilerContext), CompilerState (stats))
 import qualified CompilerContext as Compiler
 import Control.Monad.Trans.Class (lift)
 import Error (Error (..), renderError)
@@ -86,7 +86,7 @@ rStmts = traverse -- traverse through the list with Ctx
     rStmt (Annotated anns (Located location uStmt)) =
       let stmt = pure . Annotated anns . Located location
           pass = pure $ Annotated [] $ Located location Pass
-      in case uStmt of
+      in upStmt >> case uStmt of
       Print e -> do
         re <- rExpr e
         stmt $ Print re
@@ -581,7 +581,7 @@ rDecon = transverse $ \(N location d) -> fmap (N location) $ case d of
     pure $ CaseRecord ty mems
 
 rExpr :: Expr U -> Ctx (Expr R)
-rExpr = cata $ \(N location expr) -> embed . N location <$> case expr of  -- transverse, but unshittified
+rExpr = cata $ \(N location expr) -> fmap (embed . N location) $ upExpr >> case expr of  -- transverse, but unshittified
   Lit cx -> case cx of
     LInt i -> pure $ Lit $ LInt i
     LFloat f -> pure $ Lit $ LFloat f
@@ -1424,3 +1424,12 @@ isPointer con =
         DefinedConstructor dc -> dc.conDataDef.ddAnns
         ExternalConstructor dc -> dc.conDataDef.ddAnns
   in Def.AActualPointerType `elem` anns
+
+
+
+--- stats
+upExpr :: Ctx ()
+upExpr = lift $ CompilerContext $ RWS.modify $ \cc -> cc { stats = cc.stats { Compiler.rExpr = cc.stats.rExpr + 1} }
+
+upStmt :: Ctx ()
+upStmt = lift $ CompilerContext $ RWS.modify $ \cc -> cc { stats = cc.stats { Compiler.rStmt = cc.stats.rStmt + 1} }

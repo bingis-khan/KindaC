@@ -118,7 +118,8 @@ finalizeModule joinedModules = do
   pc mmod
 
   -- TODO: stats shouldn't really be here, but whatever.
-  Def.unsilenceablePrintInContext (Def.pf "M type nodes: %\nM unions: %\nMF type nodes: %\nM unions %\n" stats.typeNodesVisited stats.unionsVisited stats.mfTypeNodesVisited stats.mfUnionsVisited) :: PrintContext ()
+  Def.unsilenceablePrintInContext (Def.pf "M exprs: %\nM stmt: %\nMF expr: %\nMF stmt: %\n" stats.exprVisited stats.stmtVisited stats.mfExprVisited stats.mfStmtVisited) :: PrintContext ()
+  Def.unsilenceablePrintInContext (Def.pf "M type nodes: %\nM unions: %\nMF type nodes: %\nMF unions %\n" stats.typeNodesVisited stats.unionsVisited stats.mfTypeNodesVisited stats.mfUnionsVisited) :: PrintContext ()
 
   -- phase "C-ing"
   let cmod = force $ cModule mmod
