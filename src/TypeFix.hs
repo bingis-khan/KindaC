@@ -9,7 +9,7 @@ import qualified AST.Typed as T
 import Data.List.NonEmpty (NonEmpty)
 import AST.Common (Module, AnnStmt, Function (..), DataDef (..), ClassDef (..), InstDef (..), StmtF (..), Expr, XMutAccess, IfStmt (..), CaseF (..), Type, TypeF (..), TVar (..), XEnvUnion, XEnv, ClassFunDec (..), InstFun (..), Decon, DeconF (..), ExprNode (N), XExprNode, DataCon (..), ExprF (..), LitType (..), XMem, XLamOther, ClassType, FunDec (..), ClassTypeF (..), MutAccess (..))
 import AST.Typed (TC, T, topLevelStatements, TOTF (..), EnvUnionF, ScopeSnapshot, Scheme (..), FunOther (..), EnvUnion, FunctionTypeAssociation (..), ExprNode (ExprNode), LamDec (..), TypeFixStats (..))
-import AST.Def (BaseCtx, type (:.) (O), sequenceA2, traverse2, traverseSet, traverse3)
+import AST.Def (type (:.) (O), sequenceA2, traverse2, traverseSet, traverse3)
 import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad.Trans.RWS.Strict (RWST)
 import qualified Control.Monad.Trans.RWS.Strict as RWST
@@ -30,6 +30,7 @@ import Data.Either (fromRight)
 import Data.Biapplicative (first)
 import qualified TypingContext as TC
 import Stats (Counter)
+import BaseCtx (BaseCtx)
 
 
 typefix :: TC.TypeUni -> TC.EnvAdditions -> NonEmpty (Module TC) -> BaseCtx (Module T)

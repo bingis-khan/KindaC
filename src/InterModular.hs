@@ -7,7 +7,7 @@
 -- should join pipeline and 
 module InterModular (module InterModular) where
 
-import AST.Def (BaseCtx, TypeID, UnionUniID, Log (plog), Context, typingContext, countUp, PrintfType)
+import AST.Def (TypeID, UnionUniID, Log (plog), Context, typingContext, PrintfType)
 import Data.Text (Text)
 import Data.Map (Map, (!?))
 import qualified AST.Untyped as U
@@ -38,6 +38,7 @@ import qualified Data.Text as Text
 import qualified System.FilePath as FilePath
 import qualified System.Directory as Directory
 import qualified Data.Set as Set
+import BaseCtx (BaseCtx, countUp, trackInstantiation)
 
 
 -- handles:
@@ -197,7 +198,7 @@ trackInstantiation (beforeTypes, beforeUnions) fn = do
   (afterTypes, afterUnions) <- numTypesAndUnionsDefined
 
   let inst = FunInstTrack fn.functionDeclaration.functionId.varName.fromVN (afterTypes - beforeTypes) (afterUnions - beforeUnions)
-  IM $ lift $ Def.trackInstantiation inst
+  IM $ lift $ BaseCtx.trackInstantiation inst
 
 
 addEnvAdditions :: TC.EnvAdditions -> InterModular ()

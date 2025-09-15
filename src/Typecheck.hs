@@ -53,7 +53,7 @@ import qualified AST.Prelude as Prelude
 import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, ExprNode (..), DeclaredType (..), XClassFunDec, MutAccess (..), LitType (..), asksNode)
 import AST.Resolved (R)
 import AST.Typed ( TC, Scheme(..), TOTF(..), T )
-import AST.Def ((:.)(..), PP (..), Binding (..), BinOp (..), ppDef, fmap2, traverse2, Log, LogType (T_AST, T_Uni), PrintfType, TypeID, countUp'', countUp)
+import AST.Def ((:.)(..), PP (..), Binding (..), BinOp (..), ppDef, fmap2, traverse2, Log, LogType (T_AST, T_Uni), PrintfType, TypeID)
 import qualified AST.Def as Def
 import Data.String (fromString)
 import Error (Error (..), renderError)
@@ -72,6 +72,7 @@ import qualified Control.Monad.Trans.State.Strict as State
 import qualified Data.IntMap.Strict as IntMap
 import qualified TypingContext as TC
 import Stats (tStmtNum, tExprNum, numSeparateUnifications)
+import BaseCtx (countUp)
 
 pc :: (PP a, Log p, p ~ x unit, unit ~ ()) => a -> p
 pc = Def.pc T_AST

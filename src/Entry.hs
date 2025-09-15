@@ -14,13 +14,14 @@ import qualified AST.Def as Def
 import GHC.Debug.Stub (withGhcDebug)
 import Data.Time (getCurrentTime, diffUTCTime, nominalDiffTimeToSeconds)
 import Data.Fixed (showFixed)
-import AST.Def (Config (..), LogType (Stat, G, PP), withBaseContext, Output (..), pf)
+import AST.Def (LogType (Stat, G, PP), pf)
 import Data.Function ((&))
 import Data.Maybe (fromMaybe)
 import Control.Monad (when)
 import Stats
 import Lens.Micro ((^.))
 import Data.List (sort)
+import BaseCtx (Output(..), Config (..), withBaseContext)
 
 
 compilerMain :: IO ()
@@ -62,6 +63,17 @@ printStats cfg s = do
     pf "T expr: %\nT stmt: %" (s ^. tExprNum) (s ^. tStmtNum)
     pf "T unique types: %\nT unique unions: %" (s ^. numCreatedTypes) (s ^. numCreatedUnions)
     pf "T num unis: %" (s ^. numSeparateUnifications)
+
+  when cfg.statM $ do
+    pf "M expr: %" $ s ^. mExprNum
+    pf "M stmt: %" $ s ^. mStmtNum
+    pf "M type: %" $ s ^. mTypeNum
+    pf "M union: %" $ s ^. mUnionNum
+
+    pf "MF expr: %" $ s ^. mfExprNum
+    pf "MF stmt: %" $ s ^. mfStmtNum
+    pf "MF type: %" $ s ^. mfTypeNum
+    pf "MF union: %" $ s ^. mfUnionNum
 
   when cfg.statG $ do
     pf "Modules loaded: %" (s ^. numLoadedModules)

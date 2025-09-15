@@ -15,20 +15,6 @@ import Data.String (fromString)
 import Data.Functor ((<&>))
 import Data.Text (Text)
 import Data.Fix (Fix)
-import Stats (Counter)
-
-
-data MonoStats = MonoStats
-  { exprVisited :: Counter
-  , stmtVisited :: Counter
-  , typeNodesVisited :: Counter
-  , unionsVisited :: Counter
-
-  , mfExprVisited :: Counter
-  , mfStmtVisited :: Counter
-  , mfTypeNodesVisited :: Counter
-  , mfUnionsVisited :: Counter
-  }
 
 
 data Mono

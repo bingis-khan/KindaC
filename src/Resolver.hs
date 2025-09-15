@@ -45,7 +45,7 @@ import Data.Traversable (for)
 import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Either (rights, lefts)
 import Data.List (find)
-import AST.Def (type (:.)(O), Annotated (..), Binding (..), Located (..), pp, pf, countUp'', countUp', countUp)
+import AST.Def (type (:.)(O), Annotated (..), Binding (..), Located (..), pp, pf)
 import qualified AST.Def as Def
 import qualified AST.Common as Common
 import AST.Prelude (Prelude (..))
@@ -60,6 +60,7 @@ import Data.Text (Text)
 import Control.DeepSeq (NFData)
 import GHC.Generics (Generic)
 import Stats (rExprNum, rStmtNum)
+import BaseCtx (countUp)
 
 
 

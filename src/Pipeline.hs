@@ -22,7 +22,7 @@ import qualified AST.Prelude as Prelude
 import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), ExprNode (..), datatypes, LitType (..))
 import qualified AST.Def as Def
 import AST.Typed (TC, Mod (topLevelStatements), T)
-import AST.Def (Result(..), BaseCtx, phase, pc, LogType (P, R, T_AST, M, F))
+import AST.Def (Result(..), phase, pc, LogType (P, R, T_AST, M, F))
 import Mono (mono)
 import CPrinter (cModule)
 import qualified InterModular
@@ -35,7 +35,6 @@ import qualified System.FilePath as FilePath
 import Control.Monad.Trans.Class (lift)
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IntMap
-import AST.Mono (MonoStats(..))
 import InterModular (InterModular, moduleCtx)
 import qualified InterModular as InterModule
 import qualified Control.Monad.Trans.RST as RST
@@ -43,6 +42,7 @@ import TypeFix (typefix)
 import TypingContext (globalTypeUni, globalEnvAddition)
 import qualified AST.Untyped as U
 import Lens.Micro ((^.))
+import BaseCtx (BaseCtx)
 
 
 -- temporary redef
@@ -108,7 +108,7 @@ moduleLoader mprel = InterModular.moduleLoader stdPath (loadModule mprel)
 codegen :: Module T -> BaseCtx Text
 codegen joinedModules = do
   phase M "Monomorphizing"
-  (mmod, stats) <- force <$> mono joinedModules
+  mmod <- mono joinedModules
 
   phase M "Monomorphized statements"
   pc M mmod

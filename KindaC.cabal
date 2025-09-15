@@ -27,6 +27,7 @@ library
       AST.Resolved
       AST.Typed
       AST.Untyped
+      BaseCtx
       Control.Monad.Trans.RST
       CPrinter
       Entry

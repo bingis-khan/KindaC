@@ -23,11 +23,11 @@ import GHC.Exception (SomeException)
 import qualified Data.List.NonEmpty as NonEmpty
 import Control.Monad.IO.Class (liftIO)
 import InterModular (CompilationState, runModuleCtx, resumeModuleCtx)
-import AST.Def (withBaseContext)
 import Pipeline (loadPrelude, loadModule, codegen)
 import Entry (defaultConfig)
 import TypeFix (typefix)
 import TypingContext (TypingContext(..))
+import BaseCtx (withBaseContext)
 
 -- smol config
 testdir :: FilePath

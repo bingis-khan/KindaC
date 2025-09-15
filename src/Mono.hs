@@ -39,16 +39,16 @@ import Control.Monad (void)
 import Data.String (fromString)
 import Data.List (find, partition)
 import AST.Typed (T)
-import AST.Common (AnnStmt, Module, StmtF (..), Expr, ExprNode (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), XMutAccess, LitType (..), askNode)
-import AST.Mono (M, MonoStats (MonoStats))
+import AST.Common (AnnStmt, Module, StmtF (..), Expr, ExprNode (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), askNode)
+import AST.Mono (M)
 import AST.IncompleteMono (IM)
-import AST.Def ((:.) (..), Annotated (..), Locality (..), PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>), Located (..), BaseCtx, Log, PrintfType)
+import AST.Def ((:.) (..), Annotated (..), Locality (..), PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>), Located (..), Log, PrintfType)
 import qualified AST.IncompleteMono as IM
 import qualified AST.Def as Def
 import Data.List (nubBy)
-import Control.Applicative (liftA3)
 import Data.List (nub)
-import Stats (Counter)
+import Stats (Counter, mStmtNum, mExprNum, mTypeNum, mUnionNum, mfStmtNum, mfExprNum, mfTypeNum, mfUnionNum)
+import BaseCtx (BaseCtx, countUp')
 
 pf :: PrintfType r => String -> r
 pf = Def.printf Def.M
@@ -65,7 +65,7 @@ phase = Def.phase Def.M
 --  Step 1: Perform normal monomorphization (however, you won't be able to compile escaped TVars).
 --  Step 2: Replace escaped TVars with each instantiation of them. (maybe it can be eliminated like doing env defs by first collecting the variables)
 
-mono :: [AnnStmt T] -> BaseCtx (Module M, MonoStats)
+mono :: [AnnStmt T] -> BaseCtx (Module M)
 mono tmod = {-# SCC mono #-} do
   -- Step 1: Just do monomorphization with a few quirks*.
   (mistmts, monoCtx) <- flip State.runStateT startingContext $ do
@@ -89,28 +89,16 @@ mono tmod = {-# SCC mono #-} do
   -- Step 2 consists of:
   -- 1. substitute environments
 
-  (mmod, mf) <- withEnvContext imEnvs monoCtx.envInstantiations monoCtx.cuckedUnionInstantiation $ do
+  (mmod) <- withEnvContext imEnvs monoCtx.envInstantiations monoCtx.cuckedUnionInstantiation $ do
     mstmts <- mfAnnStmts mistmts
     pure $ M.Mod { M.topLevelStatements = mstmts }
 
-  let stats = MonoStats
-        { exprVisited = monoCtx.exprVisited
-        , stmtVisited = monoCtx.stmtVisited
-        , typeNodesVisited = monoCtx.typeNodesVisited
-        , unionsVisited = monoCtx.unionsVisited
-
-        , mfExprVisited = mf.mfExprVisited
-        , mfStmtVisited = mf.mfStmtVisited
-        , mfTypeNodesVisited = mf.mfTypeNodesVisited
-        , mfUnionsVisited = mf.mfUnionsVisited
-        }
-
-  pure (mmod, stats)
+  pure (mmod)
 
 
 
 mAnnStmt :: AnnStmt T -> Context (AnnStmt IM)
-mAnnStmt = cata (fmap embed . thisAnd (State.modify $ \s -> s { stmtVisited = s.stmtVisited + 1 }) .  f) where
+mAnnStmt = cata (fmap embed . thisAnd (countUp' mStmtNum) .  f) where
   f :: (:.) ((:.) Annotated Located) (StmtF T (Expr T)) (Context (AnnStmt IM)) -> Context ((:.) ((:.) Annotated Located) ((StmtF IM (Expr IM))) (AnnStmt IM))
   f (O (O (Annotated ann (Located location stmt)))) = do
     stmt' <- bitraverse mExpr id stmt
@@ -290,7 +278,7 @@ getEnvDependencies _ = error "RECURSIVE ENV WHAT."
 
 
 mExpr :: Expr T -> Context (Expr IM)
-mExpr = cata $ thisAnd (State.modify $ \s -> s { exprVisited = s.exprVisited + 1}) . fmap embed . \(N en expr) -> do
+mExpr = cata $ thisAnd (countUp' mExprNum) . fmap embed . \(N en expr) -> do
   mt <- mType en.t
   mexpr <- case expr of
     Lam (T.LamDec _ env) args ret -> do
@@ -673,7 +661,7 @@ member = memo memoMember (\mem s -> s { memoMember = mem }) $ \(_, memname) _ ->
 
 
 mType :: Type T -> Context (Type IM)
-mType = cata $ thisAnd (State.modify $ \s -> s { typeNodesVisited = s.typeNodesVisited + 1 }) . \case
+mType = cata $ thisAnd (countUp' mTypeNum) . \case
     TCon dd pts tunions -> do
       params <- sequenceA pts
 
@@ -843,7 +831,7 @@ withClassInstanceAssociations ci a = do
 
 
 mUnion :: (T.EnvUnionF T (Type T), [Type IM], Type IM) -> Context IM.EnvUnion
-mUnion (tunion, params, ret) = thisAnd (State.modify $ \s -> s { unionsVisited = s.unionsVisited + 1 }) $ do
+mUnion (tunion, params, ret) = thisAnd (countUp' mUnionNum) $ do
 
   -- NOTE: check `TypeMap` definition as to why its needed *and* retarded.
   TypeMap _ envMap <- State.gets tvarMap
@@ -1059,10 +1047,10 @@ newUnionID = do
 --------------------------------------------------------
 
 
-withEnvContext :: Map (T.EnvF T (Type IM)) IM.Env -> IM.EnvInstantiations -> Map IM.EnvUnion (Set (T.EnvF T (Type IM))) -> EnvContext a -> BaseCtx (a, EnvMemo)
+withEnvContext :: Map (T.EnvF T (Type IM)) IM.Env -> IM.EnvInstantiations -> Map IM.EnvUnion (Set (T.EnvF T (Type IM))) -> EnvContext a -> BaseCtx (a)
 withEnvContext menvs allInstantiations cuckedUnionInstantiations x = do
-  (m, mem, ()) <- RWS.runRWST x envUse envMemo
-  pure (m, mem)
+  (m, _, ()) <- RWS.runRWST x envUse envMemo
+  pure m
   where
     envUse = EnvContextUse
       { allInsts = allInstantiations
@@ -1074,17 +1062,12 @@ withEnvContext menvs allInstantiations cuckedUnionInstantiations x = do
       { memoIDatatype = emptyMemo
       , memoIFunction = emptyMemo
       , memoIUnion = emptyMemo
-
-      , mfExprVisited = 0
-      , mfStmtVisited = 0
-      , mfTypeNodesVisited = 0
-      , mfUnionsVisited = 0
       }
 
 
 mfAnnStmts :: [AnnStmt IM] -> EnvContext [AnnStmt M]
 mfAnnStmts stmts = fmap catMaybes $ for stmts $ cata $ \(O (O (Annotated anns (Located location stmt)))) -> do
-  RWS.modify $ \s -> s { mfStmtVisited = s.mfStmtVisited + 1 }
+  countUp' mfStmtNum
   stmt' <- bitraverse mfExpr id stmt
   let s = pure . Just
   let
@@ -1146,7 +1129,7 @@ mfDecon = cata $ \(N t e) -> do
 
 
 mfExpr :: Expr IM -> EnvContext (Expr M)
-mfExpr = cata $ \(N imt imexpr) -> thisAnd (RWS.modify $ \s -> s { mfExprVisited = s.mfExprVisited + 1 }) $ do
+mfExpr = cata $ \(N imt imexpr) -> thisAnd (countUp' mfExprNum) $ do
   mt <- mfType imt
   fmap (embed . N mt) $ case imexpr of
     Var v loc -> do
@@ -1226,7 +1209,7 @@ mfEnv env = do
 
 
 mfType :: Type IM -> EnvContext (Type M)
-mfType = para $ fmap embed . thisAnd (RWS.modify $ \s -> s { mfTypeNodesVisited = s.mfTypeNodesVisited + 1 }) .  \case
+mfType = para $ fmap embed . thisAnd (countUp' mfTypeNum) .  \case
   TCon dd ts unions -> do
     munions <- traverse mfUnion unions
     mts <- traverse snd ts
@@ -1244,7 +1227,7 @@ mfType = para $ fmap embed . thisAnd (RWS.modify $ \s -> s { mfTypeNodesVisited 
 
 
 mfUnion :: IM.EnvUnion -> EnvContext M.EnvUnion
-mfUnion = memo memoIUnion (\mem s -> s { memoIUnion = mem }) $ \union _ -> thisAnd (RWS.modify $ \s -> s { mfUnionsVisited = s.mfUnionsVisited + 1 }) $ do
+mfUnion = memo memoIUnion (\mem s -> s { memoIUnion = mem }) $ \union _ -> thisAnd (countUp' mfUnionNum) $ do
   cuckedUnions <- RWS.asks cuckedUnionInsts
   mappedEnvs <- case cuckedUnions !? union of
       -- here should be no ftvs.
@@ -1382,12 +1365,6 @@ data EnvMemo = EnvMemo
   { memoIDatatype :: Memo (DataDef IM, [M.EnvUnion]) (DataDef M, Map (DataCon IM) (DataCon M))
   , memoIFunction :: Memo (Function IM) (Function M)
   , memoIUnion    :: Memo IM.EnvUnion M.EnvUnion
-
-  -- statz
-  , mfExprVisited :: Counter
-  , mfStmtVisited :: Counter
-  , mfTypeNodesVisited :: Counter
-  , mfUnionsVisited :: Counter
   }
 
 
@@ -1419,3 +1396,9 @@ thisAnd f g = do
   x <- g
   f
   pure x
+
+mUpExpr, mUpStmt, mUpType, mUpUnion :: Context ()
+mUpExpr = countUp' undefined
+mUpStmt = undefined
+mUpType = undefined
+mUpUnion = undefined
