@@ -13,17 +13,21 @@ import Data.Text (Text)
 import System.Process (readProcessWithExitCode)
 import System.FilePath ((</>), takeBaseName)
 import System.Exit (ExitCode(..))
-import Pipeline (loadPrelude, loadModule, finalizeModule)
+-- import Pipeline (loadPrelude, loadModule, finalizeModule)
 import qualified Data.Text.IO as TextIO
 import qualified Data.Text as Text
 import qualified Control.Exception as E
 import Test.HUnit.Lang (HUnitFailure(HUnitFailure), FailureReason (ExpectedButGot))
 import Control.Exception (catch)
 import GHC.Exception (SomeException)
-import CompilerContext (compileInContext, CompilerState, preludeHackContext)
 import qualified Data.List.NonEmpty as NonEmpty
-import qualified AST.Def as Def
 import Control.Monad.IO.Class (liftIO)
+import InterModular (CompilationState, runModuleCtx, resumeModuleCtx)
+import AST.Def (withBaseContext)
+import Pipeline (loadPrelude, loadModule, codegen)
+import Entry (defaultConfig)
+import TypeFix (typefix)
+import TypingContext (TypingContext(..))
 
 -- smol config
 testdir :: FilePath
@@ -33,7 +37,7 @@ testdir = "test/data/expect"
 expect :: IO ()
 expect = do
   tests <- sort <$> listDirectory testdir
-  preludeAndState <- Def.inPrintContext Def.runtimeContext $ preludeHackContext loadPrelude
+  (preludeAndState, _) <- withBaseContext (defaultConfig "") $ runModuleCtx "" loadPrelude
 
   withTempDirectory "." "intermediate-test-outputs" $ \dir ->
     hspec $ parallel $ do
@@ -105,15 +109,16 @@ expectNoError (Left err) = expectationFailure $ "Compiling error:\n" <> Text.unp
 
 
 type Error = Text
-compileAndOutputFile :: (Prelude, CompilerState) -> FilePath -> FilePath -> IO (Either Error FilePath)
-compileAndOutputFile preludeAndState filepath outdirpath = do
-  let compile = Def.inPrintContext Def.runtimeContext $ do
+compileAndOutputFile :: (Prelude, CompilationState) -> FilePath -> FilePath -> IO (Either Error FilePath)
+compileAndOutputFile (prelude, state) filepath outdirpath = do
+  let compile = fmap fst $ withBaseContext (defaultConfig "") $ do
         let basePath = "."  -- maybe make a special testing "module" directory for testing module imports?
-        etmod <- compileInContext basePath preludeAndState $ loadModule False filepath
+        etmod <- resumeModuleCtx state basePath $ loadModule (Just prelude) filepath
         case etmod of
           Left err -> pure $ Left $ Text.unlines $ NonEmpty.toList err
-          Right tmods -> do
-            cmod <- finalizeModule tmods
+          Right (mods, tc) -> do
+            tfmod <- typefix tc.globalTypeUni tc.globalEnvAddition mods
+            cmod <- codegen tfmod
             let outpath = outdirpath </> takeBaseName filepath <> ".c"
             liftIO $ TextIO.writeFile outpath cmod
             pure $ Right outpath

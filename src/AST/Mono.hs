@@ -7,7 +7,7 @@
 module AST.Mono (module AST.Mono) where
 import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XExprNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataScheme, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation, TypeF)
 import qualified AST.Def as Def
-import AST.Def (Locality, PP (..), (<+>), Counter)
+import AST.Def (Locality, PP (..), (<+>))
 import Data.List.NonEmpty (NonEmpty)
 import AST.Typed (T)
 import qualified Data.List.NonEmpty as NonEmpty
@@ -15,6 +15,7 @@ import Data.String (fromString)
 import Data.Functor ((<&>))
 import Data.Text (Text)
 import Data.Fix (Fix)
+import Stats (Counter)
 
 
 data MonoStats = MonoStats
@@ -155,7 +156,7 @@ instance PP EnvDefs where
 
 instance PP EnvDef where
   pp (EnvDef { envDef, notYetInstantiated = [] }) = pp envDef
-  pp (EnvDef { envDef, notYetInstantiated }) = Def.ppBody' pp (fromString $ Def.printf "% \\\\ %" (pp envDef.functionDeclaration) (Def.encloseSepBy "{" "}" ", " $ pp . functionDeclaration <$> notYetInstantiated)) envDef.functionBody -- Def.ppBody' pp (pp envDef.functionDeclaration <+>  "|" <+> Def.encloseSepBy "" "" ", " (notYetInstantiated <&> \fn -> pp fn.functionDeclaration.functionId)) envDef.functionBody
+  pp (EnvDef { envDef, notYetInstantiated }) = Def.ppBody' pp (fromString $ Def.pf "% \\\\ %" (pp envDef.functionDeclaration) (Def.encloseSepBy "{" "}" ", " $ pp . functionDeclaration <$> notYetInstantiated)) envDef.functionBody -- Def.ppBody' pp (pp envDef.functionDeclaration <+>  "|" <+> Def.encloseSepBy "" "" ", " (notYetInstantiated <&> \fn -> pp fn.functionDeclaration.functionId)) envDef.functionBody
 
 instance PP EnvMod where
   pp em =
@@ -176,7 +177,7 @@ instance PP EnvUnion where
 instance PP Env where
   pp = \case
     Env eid vs -> pp eid <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
-    RecursiveEnv eid isEmpty -> fromString $ Def.printf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+    RecursiveEnv eid isEmpty -> Def.pf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 
 instance PP Variable where

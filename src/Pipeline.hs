@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedRecordDot, ApplicativeDo, OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
-module Pipeline (loadModule, loadPrelude, finalizeModule) where
+module Pipeline (startFromModule, codegen, loadPrelude, loadModule) where
 
 import qualified Data.Text.IO as TextIO
 import Parser (parse)
@@ -11,7 +11,7 @@ import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
 
 import qualified AST.Typed as T
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Fix (Fix(..))
 import Data.Maybe (mapMaybe, listToMaybe)
 import System.Exit (exitFailure)
@@ -22,11 +22,10 @@ import qualified AST.Prelude as Prelude
 import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), ExprNode (..), datatypes, LitType (..))
 import qualified AST.Def as Def
 import AST.Typed (TC, Mod (topLevelStatements), T)
-import AST.Def (Result(..), phase, PrintContext, pc, pf)
+import AST.Def (Result(..), BaseCtx, phase, pc, LogType (P, R, T_AST, M, F))
 import Mono (mono)
 import CPrinter (cModule)
-import CompilerContext (CompilerContext (..))
-import qualified CompilerContext as Compiler
+import qualified InterModular
 import Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.Trans.RWS.Strict as RWST
 import Data.Map.Strict ((!?))
@@ -37,6 +36,13 @@ import Control.Monad.Trans.Class (lift)
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IntMap
 import AST.Mono (MonoStats(..))
+import InterModular (InterModular, moduleCtx)
+import qualified InterModular as InterModule
+import qualified Control.Monad.Trans.RST as RST
+import TypeFix (typefix)
+import TypingContext (globalTypeUni, globalEnvAddition)
+import qualified AST.Untyped as U
+import Lens.Micro ((^.))
 
 
 -- temporary redef
@@ -49,77 +55,67 @@ preludePath = "/home/bob/prj/KindaC/kcsrc/prelude.kc"
 stdPath = "/home/bob/prj/KindaC/kcsrc/std/"
 
 
+startFromModule :: FilePath -> BaseCtx (Either (NonEmpty Text) (Module T))
+startFromModule path = do
+  emod <- moduleCtx path $ do
+    prelude <- loadPrelude
+    loadModule (Just prelude) path
+
+  case emod of
+    Left errs -> pure $ Left errs
+    Right (mods, tc) -> do
+      tfmod <- typefix tc.globalTypeUni tc.globalEnvAddition mods
+
+      phase F "Typechecking (fix)"
+      pc F tfmod
+
+      pure $ Right tfmod
+
+
 -- Loads and typechecks a module.
 --   TODO: WRT errors: I should probably make a type aggregating all the different types of errors and put it in AST.hs.
 --   However, right now, I can just turn them into strings. THIS IS TEMPORARY.
-loadModule :: Bool -> FilePath -> CompilerContext (Maybe (Module TC))
-loadModule debugPrintFirstModule filename = (if not debugPrintFirstModule then Compiler.silentContext else id) $ do
+loadModule :: Maybe Prelude -> FilePath -> InterModular (Maybe (Module TC))
+loadModule mPrelude filename = do
   let moduleName = Text.pack $ FilePath.takeFileName filename
   source <- liftIO $ TextIO.readFile filename
-  prelude <- CompilerContext $ RWST.asks Compiler.prelude
+  -- prelude <- RWST.asks Compiler.prelude
 
-  phase "Parsing"
+  phase P "Parsing"
   case parse filename source of
     Left err -> do
-      Compiler.addErrors moduleName [err]
+      InterModular.addErrors moduleName [err]
       pure Nothing
 
     Right ast -> do
-      pc ast
+      pc P ast
 
-      phase "Resolving"
-      (rerrs, rmod) <- force <$> resolve (Just prelude) (moduleLoader moduleName) ast
-      pc rmod
+      phase R "Resolving"
+      (rerrs, rmod) <- force <$> resolve mPrelude (moduleLoader mPrelude moduleName) ast
+      pc R rmod
 
       
-      phase "Typechecking"
-      (terrs, tmod) <- force <$> typecheck (Just prelude) rmod
+      phase T_AST "Typechecking"
+      (terrs, tmod) <- force <$> typecheck mPrelude rmod
 
-      Compiler.addErrors moduleName $ map (" " <>) $ s2t source rerrs ++ s2t source terrs
+      InterModular.addErrors moduleName $ map (" " <>) $ s2t source rerrs ++ s2t source terrs
       pure $ Just tmod
 
 
-moduleLoader :: Text -> Compiler.ModuleLoader
-moduleLoader compilingModule mq = do
-  mtmod <- CompilerContext $ RWST.gets Compiler.loadedModules
-  case mtmod !? mq of
-    Nothing -> do
-      filepath <- Compiler.mkModulePath mq
+moduleLoader :: Maybe Prelude -> Text -> InterModule.Loader
+moduleLoader mprel = InterModular.moduleLoader stdPath (loadModule mprel)
 
-      -- first, check if a file with that name exists in current project
-      projectModuleExists <- liftIO $ Directory.doesFileExist filepath
-      if projectModuleExists
-        then do
-          lmtmod <- Compiler.relativeTo filepath $ force <$> loadModule False filepath
-          Compiler.storeModule mq lmtmod
-          pure lmtmod
-
-        else do
-          stdpath <- Compiler.relativeTo stdPath $ Compiler.mkModulePath mq  -- TODO: xddddddd very roundabout way to do it
-          stdModuleExists <- liftIO $ Directory.doesFileExist stdpath
-          if stdModuleExists
-            then do
-              lmtmod <- Compiler.relativeTo stdpath $ loadModule False stdpath
-              Compiler.storeModule mq lmtmod
-              pure lmtmod
-            else do
-              Compiler.addErrors compilingModule [Text.pack $ Def.printf "Could not find module %s. (Searched both for '%s' and std '%s')" (show mq) filepath stdpath]
-              pure Nothing
-
-    Just lmtmod -> pure lmtmod
-
-
-finalizeModule :: Module T -> PrintContext Text
-finalizeModule joinedModules = do
-  phase "Monomorphizing"
+codegen :: Module T -> BaseCtx Text
+codegen joinedModules = do
+  phase M "Monomorphizing"
   (mmod, stats) <- force <$> mono joinedModules
 
-  phase "Monomorphized statements"
-  pc mmod
+  phase M "Monomorphized statements"
+  pc M mmod
 
   -- TODO: stats shouldn't really be here, but whatever.
-  Def.unsilenceablePrintInContext (Def.pf "M exprs: %\nM stmt: %\nMF expr: %\nMF stmt: %\n" stats.exprVisited stats.stmtVisited stats.mfExprVisited stats.mfStmtVisited) :: PrintContext ()
-  Def.unsilenceablePrintInContext (Def.pf "M type nodes: %\nM unions: %\nMF type nodes: %\nMF unions %\n" stats.typeNodesVisited stats.unionsVisited stats.mfTypeNodesVisited stats.mfUnionsVisited) :: PrintContext ()
+  -- Def.unsilenceablePrintInContext (Def.pf "M exprs: %\nM stmt: %\nMF expr: %\nMF stmt: %\n" stats.exprVisited stats.stmtVisited stats.mfExprVisited stats.mfStmtVisited) :: BaseCtx ()
+  -- Def.unsilenceablePrintInContext (Def.pf "M type nodes: %\nM unions: %\nMF type nodes: %\nMF unions %\n" stats.typeNodesVisited stats.unionsVisited stats.mfTypeNodesVisited stats.mfUnionsVisited) :: BaseCtx ()
 
   -- phase "C-ing"
   let cmod = force $ cModule mmod
@@ -127,30 +123,32 @@ finalizeModule joinedModules = do
 
 
 
-loadPrelude :: CompilerContext Prelude
+loadPrelude :: InterModular Prelude
 loadPrelude = do
   epmod <- do
     source <- liftIO $ TextIO.readFile preludePath
 
-    phase "Parsing"
+    phase P "Parsing"
     case parse preludePath source of
       Left err -> do
         pure $ Left err
 
       Right ast -> do
-        pc ast
+        pc P ast
 
-        phase "Resolving"
+        phase R "Resolving"
         (rerrs, rmod) <- resolve Nothing (error "no module loader for prelude") ast
-        pc rmod
+        pc R rmod
 
       
-        phase "Typechecking"
+        phase T_AST "Typechecking"
         (terrs, tmod) <- typecheck Nothing rmod
 
         pure $ case s2t source rerrs <> s2t source terrs of
           [] -> Right tmod
           errs@(_:_) -> Left $ Text.unlines errs
+
+  InterModular.storeModule (U.ModuleQualifier $ NonEmpty.singleton $ Def.ModName "prelude") $ Def.eitherToMaybe epmod
 
   case epmod of
     Left errs -> liftIO $ do
@@ -160,26 +158,27 @@ loadPrelude = do
       exitFailure
 
     Right pmod -> do
+
       let 
         ne :: String -> NonEmpty Text
         ne = NonEmpty.singleton . Text.pack
 
-        findBasicType :: Def.TCon -> CompilerContext (PreludeErr (Type TC))
+        findBasicType :: Def.TCon -> InterModular (PreludeErr (Type TC))
         findBasicType typename = 
             let isCorrectType :: DataDef TC -> Bool
                 isCorrectType (DD ut (T.Scheme [] []) _ _) = ut.typeName == typename
                 isCorrectType _ = False
 
                 mdd  = find isCorrectType pmod.exports.datatypes
-                name = pf "%" typename :: Def.Context
+                name = Def.pf "%" typename :: Def.Context
             in case mdd of
               Just dd -> do
                 let bt = TCon dd [] []
-                basicTypeID <- Compiler.nextTypeID
-                Compiler.modifyTypeUni $ IntMap.insert basicTypeID.fromTypeID $ Right bt
+                basicTypeID <- InterModular.nextTypeID
+                InterModular.modifyTypeUni $ IntMap.insert basicTypeID.fromTypeID $ Right bt
                 pure $ Success $ basicTypeID
 
-              Nothing -> pure $ Failure $ ne $ pf "[Prelude: %s] Could not find suitable %s type (%s type name + no tvars)" name name name
+              Nothing -> pure $ Failure $ ne $ Def.pf "[Prelude: %s] Could not find suitable %s type (%s type name + no tvars)" name name name
 
       let findUnit :: PreludeErr (DataCon TC)
           findUnit = 

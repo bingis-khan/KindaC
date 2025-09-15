@@ -1,11 +1,10 @@
 -- This was created, because the Haskell LSP does not seem to work for app/Main.hs
-{-# LANGUAGE LambdaCase #-}
-module Entry (compilerMain) where
+{-# LANGUAGE LambdaCase, OverloadedRecordDot, OverloadedStrings #-}
+module Entry (compilerMain, defaultConfig) where
 
 import qualified Data.Text.IO as TextIO
 import System.Environment (getArgs)
-import Pipeline (loadPrelude, loadModule, finalizeModule)
-import CompilerContext (compileInContext, preludeHackContext)
+import Pipeline (startFromModule, codegen)
 import Control.Monad.IO.Class (liftIO)
 import qualified System.FilePath as FilePath
 import qualified Data.Text as Text
@@ -15,56 +14,152 @@ import qualified AST.Def as Def
 import GHC.Debug.Stub (withGhcDebug)
 import Data.Time (getCurrentTime, diffUTCTime, nominalDiffTimeToSeconds)
 import Data.Fixed (showFixed)
+import AST.Def (Config (..), LogType (Stat, G, PP), withBaseContext, Output (..), pf)
+import Data.Function ((&))
+import Data.Maybe (fromMaybe)
+import Control.Monad (when)
+import Stats
+import Lens.Micro ((^.))
+import Data.List (sort)
 
 
 compilerMain :: IO ()
 compilerMain = do
-  startT <- liftIO getCurrentTime
-  (filename, outputC, dbg, dbgModule) <- parseArgs
+  startT <- getCurrentTime
+  config <- parseArgs
 
-  let basePath = FilePath.takeDirectory filename
-  let ctx = if dbg || dbgModule then Def.debugContext else Def.runtimeContext
+  (_, stats) <- withBaseContext config $ do
+    etfMod <- startFromModule config.filename
 
-  Def.inPrintContext ctx $ do  -- debug printing 
-    -- first, get dat prelude
-    preludeAndState <- preludeHackContext loadPrelude
-    errOrModules <- compileInContext basePath preludeAndState $ loadModule (dbg || dbgModule) filename
-
-    case errOrModules of
+    case etfMod of
       Left errs -> liftIO $ do
         TextIO.putStrLn $ Text.unlines $ NonEmpty.toList errs
         exitFailure
 
-      Right modules -> do
-        -- TEMP: i wanna check the typechecked module.
-        cmod <- Def.localPrintContext (if dbg then Def.debugContext else Def.runtimeContext) $ finalizeModule modules
+      Right tfMod -> do
+        cmod <- codegen tfMod
 
-        if outputC 
-          then
-            liftIO $ TextIO.writeFile "test.c" cmod
-          else
-            liftIO $ TextIO.putStrLn cmod
-
-        endT <- liftIO getCurrentTime
-        let diff = nominalDiffTimeToSeconds $ diffUTCTime endT startT
-        Def.unsilenceablePrintInContext $ Def.pf "Time: %s" $ showFixed False diff
+        case config.output of
+          File name -> liftIO $ TextIO.writeFile name cmod
+          Stdout -> liftIO $ TextIO.putStrLn cmod
+          NoOutput -> pure ()
 
 
-parseArgs :: IO (Filename, ShouldOutputC, DebugPrinting, DebugPrintOnlyFirstModule)
+  printStats config stats
+  when config.statG $ do
+    endT <- liftIO getCurrentTime
+    let diff = nominalDiffTimeToSeconds $ diffUTCTime endT startT
+    Def.pf "Time: %" $ showFixed False diff
+
+
+
+printStats :: Config -> Stats -> IO ()
+printStats cfg s = do
+  when cfg.statR $ do
+    pf "R expr: %\nR stmt: %" (s ^. rExprNum) (s ^. rStmtNum)
+
+  when cfg.statT $ do
+    pf "T expr: %\nT stmt: %" (s ^. tExprNum) (s ^. tStmtNum)
+    pf "T unique types: %\nT unique unions: %" (s ^. numCreatedTypes) (s ^. numCreatedUnions)
+    pf "T num unis: %" (s ^. numSeparateUnifications)
+
+  when cfg.statG $ do
+    pf "Modules loaded: %" (s ^. numLoadedModules)
+
+  when cfg.statT $ do
+    pf "Num instantiations: %" $ s ^. instantiationsByNumTypes & length
+
+    let top10costliest = take 10 $ reverse $ sort $ s ^. instantiationsByNumTypes
+    Def.plog PP $ Def.indent "Top 10 costliest instantiations:" $
+      Def.ppLines top10costliest
+
+
+
+parseArgs :: IO Config
 parseArgs = do
   args <- getArgs
-  let findArg = \case
-        "--output-c" -> \(fn, _, dbgp, dbgm) -> (fn, True, dbgp, dbgm)
-        "--debug" -> \(fn, oc, _, dbgm) -> (fn, oc, True, dbgm)
-        "--print-current" -> \(fn, oc, dbgp, _) -> (fn, oc, dbgp, True)
-        filename -> \(_, oc, dbgp, dbgm) -> (Just filename, oc, dbgp, dbgm)
-  let (mFilename, outputC, debugPrinting, debugPrintFirstModule) = foldr findArg (Nothing, False, False, False) args
+  let (mFilename, fconfig) = foldr understandOpt (Nothing, defaultConfig) $ map parseOpt args
   pure $ case mFilename of
-    Just name -> (name, outputC, debugPrinting, debugPrintFirstModule)
+    Just name -> fconfig name
     Nothing -> error "No filename provided."
 
+-- parses a single --opt=dupsko or --opt
+parseOpt :: String -> (String, Maybe String)
+parseOpt = fmap ((\s -> if null s then Nothing else Just s) . drop 1) . span (/='=')
 
-type Filename = String
-type ShouldOutputC = Bool
-type DebugPrinting = Bool
-type DebugPrintOnlyFirstModule = Bool
+understandOpt :: (String, Maybe String) -> (Maybe String, FilePath -> Config) -> (Maybe String, FilePath -> Config)
+understandOpt ('-':'-':optname, opt) (mfname, fc) = (,) mfname $ (. fc) $ \c -> case optname of
+  "debug" -> maybe
+    -- default case
+    (c
+      { dbgP = True
+      , dbgR = True
+      , dbgT_AST = True
+      , dbgF = True
+      , dbgM = True
+      , dbgG = True
+      })
+
+    -- specific case
+    (\chars -> foldr (\char cc -> case char of
+      'p' -> cc { dbgP = True }
+      'r' -> cc { dbgR = True }
+      'u' -> cc { dbgT_Uni = True }
+      't' -> cc { dbgT_AST = True }
+      'f' -> cc { dbgF = True }
+      'm' -> cc { dbgM = True }
+      'g' -> cc { dbgG = True }
+      _ -> error $ Def.pf "Unknown option %." char
+    ) c chars)
+
+    opt
+
+  "stats" -> maybe
+    -- default case
+    (c { statP = True, statR = True, statT = True, statF = True, statM = True, statG = True })
+
+    -- specific case
+    (\chars -> foldr (\char cc -> case char of
+      'p' -> cc { statP = True }
+      'r' -> cc { statR = True }
+      't' -> cc { statT = True }
+      'f' -> cc { statF = True }
+      'm' -> cc { statM = True }
+      'g' -> cc { statG = True }
+      _ -> error $ Def.pf "Unknown option %." char
+    ) c chars)
+
+    opt
+
+  "only-current" -> c { printOnlyCurrent = True }
+  "print-opts" -> undefined
+  "no-output" -> c { output = NoOutput }
+  "output-c" -> c { output = File $ fromMaybe "test.c" mfname }
+
+  _ -> error $ Def.pf "Unrecorgnized option %." optname
+
+understandOpt (name, Nothing) (_, fc) = (Just name, fc)
+understandOpt (fname, Just _) _ = error $ Def.pf "You've just posted cringe. (filename has '='. i've determined that % is a filename, because it does not start with '--')" fname
+
+
+defaultConfig :: FilePath -> Config
+defaultConfig fn = Config
+  { filename = fn
+  , output = Stdout  -- TODO: when it becomes a real compiler, change it to a File with the name from filepath.
+  , printOnlyCurrent = False
+
+  , dbgP = False
+  , dbgR = False
+  , dbgT_Uni = False
+  , dbgT_AST = False
+  , dbgF = False
+  , dbgM = False
+  , dbgG = False
+
+  , statP = False
+  , statR = False
+  , statT = False
+  , statF = False
+  , statM = False
+  , statG = False
+  }

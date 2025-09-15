@@ -27,17 +27,21 @@ library
       AST.Resolved
       AST.Typed
       AST.Untyped
-      CompilerContext
+      Control.Monad.Trans.RST
       CPrinter
       Entry
       Error
+      Expect
+      InterModular
       Misc.Memo
       Mono
       Parser
       Pipeline
       Resolver
+      Stats
       Typecheck
       TypeFix
+      TypingContext
   other-modules:
       Paths_KindaC
   hs-source-dirs:
@@ -57,6 +61,10 @@ library
     , ghc-experimental
     , hspec
     , megaparsec
+    , microlens
+    , microlens-mtl
+    , microlens-th
+    , mtl
     , parser-combinators
     , prettyprinter
     , process
@@ -90,6 +98,10 @@ executable kc
     , ghc-experimental
     , hspec
     , megaparsec
+    , microlens
+    , microlens-mtl
+    , microlens-th
+    , mtl
     , parser-combinators
     , prettyprinter
     , process
@@ -105,7 +117,6 @@ test-suite all
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      Expect
       Paths_KindaC
   hs-source-dirs:
       test/src
@@ -125,6 +136,10 @@ test-suite all
     , ghc-experimental
     , hspec
     , megaparsec
+    , microlens
+    , microlens-mtl
+    , microlens-th
+    , mtl
     , parser-combinators
     , prettyprinter
     , process

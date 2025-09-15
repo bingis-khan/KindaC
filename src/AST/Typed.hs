@@ -17,7 +17,7 @@ import qualified AST.Def as Def
 import Data.Map.Strict (Map, (!?))
 import Data.Text (Text)
 import Data.Fix (Fix (..))
-import AST.Def (PP (..), (<+>), pf, PPDef, Counter)
+import AST.Def (PP (..), (<+>), pf, PPDef, TypeID, UnionUniID)
 import Data.Biapplicative (bimap, first)
 import Data.Functor.Classes (Ord1 (..), Eq1 (..))
 import Data.Functor ((<&>))
@@ -28,16 +28,9 @@ import Data.Unique (Unique)
 import Control.Monad.Trans.Class (lift)
 import Data.IntMap (IntMap)
 import qualified Data.IntMap.Strict as IntMap
+import Stats (Counter)
 
 
-data FunInstTrack = FunInstTrack
-  { name :: Text
-  , newTypes :: Int
-  , newUnions :: Int
-  } deriving Eq
-
-instance Ord FunInstTrack where
-  x `compare` x' = x.newTypes `compare` x'.newTypes
 
 
 data TypeFixStats = TypeFixStats
@@ -102,16 +95,6 @@ data TypedWithIndexes
 type TC = TypedWithIndexes
 
 -- index to a "subst map"
-newtype TypeID = TypeID { fromTypeID :: Int } deriving (Eq, Ord)
-instance PP TypeID where
-  pp = pp . fromTypeID
-
-newtype UnionUniID = UnionUniID { fromUnionUniID :: Int } deriving (Eq, Ord)
-instance PP UnionUniID where
-  pp = pp . fromUnionUniID
-
-instance PPDef UnionUniID where
-  ppDef = pp . fromUnionUniID
 
 
 type instance Type TC = TypeID
@@ -218,40 +201,9 @@ type ClassInstantiationAssocs = Map (Maybe (Def.UniqueFunctionInstantiation, Typ
 data TypeAssociation = TypeAssociation (Def.Location, Type TC) (Def.Location, Type TC) (ClassFunDec TC) Def.UniqueClassInstantiation (Maybe Def.UniqueFunctionInstantiation) [Def.EnvID]  -- TODO: I think only one location is required. We can't really get location of self?
 
 
-data TypeUni = TypeUni
-  { typeUni :: TypeTypeUni
-  , unionUni :: UnionTypeUni
-  }
-
-type EnvAdditions = Map Def.EnvID [(Variable, Def.Locality, Type TC)]
-
-
-getTypeFromUni :: TypeUni -> TypeID -> (TypeID, TypeF TC TypeID)
-getTypeFromUni typeUni = getSomethingFromRefMap fromTypeID TypeID typeUni.typeUni
-
-getUnionFromUni :: TypeUni -> UnionUniID -> (UnionUniID, EnvUnionF TC TypeID)
-getUnionFromUni typeUni = getSomethingFromRefMap fromUnionUniID UnionUniID typeUni.unionUni
-
-getSomethingFromRefMap :: (k -> Int) -> (Int -> k) -> RefMap k a -> k -> (k, a)
-{-# inline getSomethingFromRefMap #-}
-getSomethingFromRefMap toInt fromInt refmap = first fromInt . go . toInt where
-  go x = case refmap IntMap.!? x of
-    Nothing -> error "key not found. should not happen"
-    Just (Right a) -> (x, a)
-    Just (Left nx) -> go nx
-
-type TypeTypeUni = RefMap TypeID (TypeF TC TypeID)
-type UnionTypeUni = RefMap UnionUniID (EnvUnionF TC TypeID)
-type RefMap k a = IntMap (Either Int a)  -- TODO: change it later to IntMap and observe an improvement?
-
-insertToRefMap :: k -> a -> RefMap k a -> RefMap k a
-insertToRefMap = undefined
-
-
 data Mod phase = Mod
   { topLevelStatements :: [AnnStmt phase]
   , exports :: Exports phase
-  , uni :: TypeUni
   }
 type instance Module TC = Mod TC
 
@@ -374,8 +326,8 @@ instance (PP t, PP (VariableF phase t)) => PP (EnvUnionF phase t) where
 
 instance (PP a, PP (VariableF phase a)) => PP (EnvF phase a) where
   pp = \case
-    Env eid vs _ lev -> pp eid <> fromString (Def.printf "(%)" (show lev)) <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
-    RecursiveEnv eid isEmpty -> fromString $ Def.printf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+    Env eid vs _ lev -> pp eid <> fromString (Def.pf "(%)" (show lev)) <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
+    RecursiveEnv eid isEmpty -> Def.pf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 instance PPDef (XClass phase) => PP (TOTF phase) where
   pp = \case
@@ -394,17 +346,17 @@ instance PP (Type phase) => PP (ExprNode phase) where
   pp en = pp en.t <+> pp en.loc
 
 instance (PP (Type phase), PPDef (XClass phase)) => PP (FunctionTypeAssociation phase) where
-  pp (FunctionTypeAssociation tv t _ _) = fromString $ Def.printf "(% => %)" (pp tv) (pp t)
+  pp (FunctionTypeAssociation tv t _ _) = Def.pf "(% => %)" (pp tv) (pp t)
 
 instance PP TypeAssociation where
-  pp (TypeAssociation from to _ _ _ _) = fromString $ Def.printf "(% => %)" (pp (snd from)) (pp (snd to))
+  pp (TypeAssociation from to _ _ _ _) = Def.pf "(% => %)" (pp (snd from)) (pp (snd to))
 
 instance PP a => PP (VariableF TC a) where
   pp = \case
     DefinedVariable v -> pp v
     DefinedFunction f assocs _ ufi -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv t _ uci) -> pp t) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet pp assocs <> ")"
     DefinedClassFunction (CFD cd uv _ _ _ _) insts self uci ->
-      fromString $ Def.printf "%&%&C<%>[%]" (pp uv) (pp uci) (pp self) (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts)))
+      Def.pf "%&%&C<%>[%]" (pp uv) (pp uci) (pp self) (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts)))
 
 -- bad duplicate instance
 instance PP a => PP (VariableF T a) where
@@ -412,7 +364,7 @@ instance PP a => PP (VariableF T a) where
     DefinedVariable v -> pp v
     DefinedFunction f assocs _ ufi -> pp f.functionDeclaration.functionId <> "&F" <> pp ufi <> "(" <> Def.ppSet (\(FunctionTypeAssociation tv t _ uci) -> pp t) f.functionDeclaration.functionOther.functionAssociations <> "/" <> Def.ppSet pp assocs <> ")"
     DefinedClassFunction (CFD cd uv _ _ _ _) insts self uci ->
-      fromString $ Def.printf "%&%&C<%>[%]" (pp uv) (pp uci) (pp self) (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts)))
+      Def.pf "%&%&C<%>[%]" (pp uv) (pp uci) (pp self) (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts)))
 
 instance (PP (Type phase), PP (VariableF phase (Type phase))) => PP (LamDec phase) where
   pp (LamDec uv env) = pp env <> pp uv
@@ -420,18 +372,6 @@ instance (PP (Type phase), PP (VariableF phase (Type phase))) => PP (LamDec phas
 instance (PP (Type phase), PPDef (XClass phase), PP (VariableF phase (Type phase)), PP (XEnvUnion phase) ) => PP (Scheme phase) where
   pp (Scheme tvars unions) = Def.ppSet pp tvars <+> Def.ppSet pp (unions <&> \(u, params, ret) -> pf "%% -> %" u (pp <$> params) ret :: Def.Context)
 
-instance PP TypeUni where
-  pp tu = Def.ppLines
-    [ pf "Type Uni: %" tu.typeUni :: Def.Context
-    , pf "Union Uni: %" tu.unionUni
-    ]
-
-instance PPDef TypeID where
-  ppDef = pp
-
-
-instance PP FunInstTrack where
-  pp fit = pf "%: % | %" fit.name fit.newTypes fit.newUnions
 
 -- instance {-# OVERLAPPING #-} PP ClassInstantiationAssocs where
 --   pp classInstantiationAssocs = fromString $ Def.printf "CIA: %" (Def.ppMap $ fmap (bimap pp (Def.ppTup . bimap pp (Def.ppTup . bimap (Def.encloseSepBy "[" "]" ", " . fmap pp) (\ifn -> pp ifn.instFunDec.functionId)))) $ fmap (\(ufiuci, (l, r, _, _)) -> (ufiuci, (l, r))) $ Map.toList classInstantiationAssocs)

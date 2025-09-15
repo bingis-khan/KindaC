@@ -8,7 +8,7 @@
 module AST.IncompleteMono (module AST.IncompleteMono, Def.EnvID) where
 import AST.Common (Function, Type, XLVar, XReturn, XExprNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation, TypeF)
 import qualified AST.Def as Def
-import AST.Def (Locality, PP (..), (<+>), PPDef, fmap2, pf)
+import AST.Def (Locality, PP (..), (<+>), PPDef, fmap2)
 import Data.List.NonEmpty (NonEmpty)
 import qualified AST.Typed as T
 import qualified Data.List.NonEmpty as NonEmpty
@@ -179,8 +179,8 @@ instance PP EnvUnion where
 
 instance PP Env where
   pp = \case
-    Env eid vs level -> fromString $ Def.printf "%(%)%" (pp eid) (pp level) $ Def.encloseSepBy "[" "]" ", " (fmap (\(v, l, t) -> pp l <> pp v <+> pp t) vs)
-    RecursiveEnv eid isEmpty -> fromString $ Def.printf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+    Env eid vs level -> Def.pf "%(%)%" (pp eid) (pp level) $ Def.encloseSepBy "[" "]" ", " (fmap (\(v, l, t) -> pp l <> pp v <+> pp t) vs)
+    RecursiveEnv eid isEmpty -> Def.pf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 instance PPDef Env where
   ppDef = pp . envID
@@ -232,7 +232,7 @@ newtype EnvUses = EnvUses { fromEnvUses :: Map Env (Set (Function IM)) }
 --   EnvUse _ le `compare` EnvUse _ re = le `compare` re
 
 instance PP EnvUses where
-  pp (EnvUses efns) = pp $ fmap (\(e, fns) -> pf "% => %" e fns :: Def.Context) $ fmap2 (Def.ppDef . Set.toList) $ Map.toList efns
+  pp (EnvUses efns) = pp $ fmap (\(e, fns) -> Def.pf "% => %" e fns :: Def.Context) $ fmap2 (Def.ppDef . Set.toList) $ Map.toList efns
 
 instance Semigroup EnvUses where
   EnvUses l <> EnvUses r = EnvUses $ Map.unionWith (<>) l r

@@ -1,0 +1,73 @@
+This cleanup is done after I got most of the stuff working and while the compiler has shit optimization.
+
+What I want:
+	- stats - in new BaseCtx (replace PrintContext)
+	- [V] move the current type context to a better place and make it all less interdependent - InterModular module, dedicated TypeUni module
+	- [V] better print debugging - pf LogType ....
+	- [V] configurable print debugging - pf LogType ...
+	- general cleanup, make stuff more unified.  - normal cleanup
+	- [V] add RS/RST type? - what it says. (actually, right now it's just a type synonym. the plan is to later make it based on State when I need that non-algorithmic speed.)
+	- change typeclass Log to a MonadBaseCtx class, which just executes something in BaseCtx? Then plog would be a normal function and it would handle all that? Also, how would I add optional typing context info then?
+	- microlensify stuff - some access patterns seem to be much easier with them, like modifying and accessing state.
+
+-----
+
+eh... actualy, the current setup is natural...
+
+Def (BaseCtx), InterModular
+  Parser, Resolver, Typecheck, ....
+Pipeline, Entry
+
+
+
+What I want also is to have stats. Whatever stats are needed.
+	I think I'll go with global stats. They are less safe (some other function can modify stats not belonging to them), but all of it is easier to write.
+
+
+So:
+
+	config <- parseCmdLine
+	WholeContext args  <- print context + gathering stats?
+		tcfix <- WithModules
+			...
+
+		mono <- tcfix
+		cmod <- mono
+
+	printStats
+	print cmod
+
+
+=====
+(note: all of this is ideas - it may not be fully implemented or be exactly like this)
+
+Config args:
+
+--stats=rtfm
+r - resolver
+t - typechecker
+f - type fix
+m - mono + mono fix
+
+(default when `--stats`: all stats)
+
+
+--debug=rtfm
+[same]
+
+more granular:
+
+--debug=t[uni,ast]
+
+uni - show type unification steps
+ast - show the resulting AST
+
+
+--only-current
+
+only show debug the module we are explicitly loading
+
+
+--print-opts=unioncontent,envinsts,...
+
+useful stuff, like if I should print instances of an env or content of unions, etc. lots of options can be added here.

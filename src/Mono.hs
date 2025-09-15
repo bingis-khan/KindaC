@@ -5,6 +5,7 @@
 {-# HLINT ignore "Use <$>" #-}
 {-# HLINT ignore "Redundant pure" #-}  -- this is retarded. it sometimes increases readability with that extra pure.
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TypeOperators #-}
 module Mono (mono) where
 
 import qualified AST.Typed as T
@@ -41,13 +42,22 @@ import AST.Typed (T)
 import AST.Common (AnnStmt, Module, StmtF (..), Expr, ExprNode (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), XMutAccess, LitType (..), askNode)
 import AST.Mono (M, MonoStats (MonoStats))
 import AST.IncompleteMono (IM)
-import AST.Def ((:.) (..), Annotated (..), Locality (..), phase, PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>), Located (..), PrintContext, pf, pc, Counter)
+import AST.Def ((:.) (..), Annotated (..), Locality (..), PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>), Located (..), BaseCtx, Log, PrintfType)
 import qualified AST.IncompleteMono as IM
 import qualified AST.Def as Def
 import Data.List (nubBy)
 import Control.Applicative (liftA3)
 import Data.List (nub)
+import Stats (Counter)
 
+pf :: PrintfType r => String -> r
+pf = Def.printf Def.M
+
+pc :: (PP a, Log p, p ~ x unit, unit ~ ()) => a -> p
+pc = Def.pc Def.M
+
+phase :: (Log pctx, x () ~ pctx) => String -> pctx
+phase = Def.phase Def.M
 
 
 
@@ -55,7 +65,7 @@ import Data.List (nub)
 --  Step 1: Perform normal monomorphization (however, you won't be able to compile escaped TVars).
 --  Step 2: Replace escaped TVars with each instantiation of them. (maybe it can be eliminated like doing env defs by first collecting the variables)
 
-mono :: [AnnStmt T] -> PrintContext (Module M, MonoStats)
+mono :: [AnnStmt T] -> BaseCtx (Module M, MonoStats)
 mono tmod = {-# SCC mono #-} do
   -- Step 1: Just do monomorphization with a few quirks*.
   (mistmts, monoCtx) <- flip State.runStateT startingContext $ do
@@ -219,7 +229,7 @@ orderEnvironments fns = do
     completeEnvironments :: Context [IM.EnvMod]
     completeEnvironments = do
         envsAndDependencies <- Map.toList <$> State.gets environmentsLeft
-        pf "ENVS AND DEPS: %" (pp $ fmap (bimap pp (fmap (\fn -> fromString $ Def.printf "% %(%)" (pp fn.functionDeclaration.functionId) (pp $ IM.envID fn.functionDeclaration.functionEnv) (pp $ IM.envLevel fn.functionDeclaration.functionEnv) :: Def.Context))) envsAndDependencies)
+        pf "ENVS AND DEPS: %" (pp $ fmap (bimap pp (fmap (\fn -> fromString $ Def.pf "% %(%)" (pp fn.functionDeclaration.functionId) (pp $ IM.envID fn.functionDeclaration.functionEnv) (pp $ IM.envLevel fn.functionDeclaration.functionEnv) :: Def.Context))) envsAndDependencies)
         completedEnvs <- State.gets completedEnvs
         vars <- State.gets lastEnvironment
         let
@@ -402,7 +412,7 @@ withEnv mfn env cx = do
     }
 
 
-  pf "%M: % =WITH ENV%=> %" (pp $ T.envID env) (pp env) (case mfn of { Nothing -> "" :: Def.Context; Just fn -> fromString $ Def.printf " (%)" $ pp fn.functionDeclaration.functionId }) (pp menv)
+  pf "%M: % =WITH ENV%=> %" (pp $ T.envID env) (pp env) (case mfn of { Nothing -> "" :: Def.Context; Just fn -> fromString $ Def.pf " (%)" $ pp fn.functionDeclaration.functionId }) (pp menv)
 
   pure (x, menv)
 
@@ -445,7 +455,7 @@ mDecon = cata $ fmap embed . \(N en d) -> do
       -- fun unsafe shit.
       let dd = case project mt of
             TCon mdd _ _ -> mdd
-            mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
+            mpt -> error $ Def.pf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
 
       margs <- for args $ \(mem, decon) -> do
         mdecon <- decon
@@ -582,7 +592,7 @@ selectInstance snapshot self uci cfd@(CFD cd cfdId _ _ _ _) = do
           let selfTVar = case project self of
                 TO (T.TVar tv) -> Just tv
                 _ -> Nothing
-          error $ Def.printf "SNAPSHOT %\nSNAPSHOT UCIS %\nLOOKING FOR %\nCOULD NOT FIND INSTANCE (tvar: %, uci: %, mt: %) in % (could get: (%))" (T.dbgSnapshot snapshot) (ppDef $ Map.keysSet <$> ucis) (pp dd.ddName) (pp selfTVar) (pp uci) ("<type>" :: Def.Context) (pp cfdId) (Def.ppSet pp $ Set.toList $ Map.keysSet ucis)
+          error $ Def.pf "SNAPSHOT %\nSNAPSHOT UCIS %\nLOOKING FOR %\nCOULD NOT FIND INSTANCE (tvar: %, uci: %, mt: %) in % (could get: (%))" (T.dbgSnapshot snapshot) (ppDef $ Map.keysSet <$> ucis) (pp dd.ddName) (pp selfTVar) (pp uci) ("<type>" :: Def.Context) (pp cfdId) (Def.ppSet pp $ Set.toList $ Map.keysSet ucis)
 
 
 
@@ -633,7 +643,7 @@ constructor tdc@(DC dd@(DD ut _ _ _) _ _ _) et = do
         TFun _ _ (Fix (TCon _ tts unions)) -> (tts, unions)
 
         -- COMPILER ERROR
-        _ -> error $ Def.printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%)." (pp et)
+        _ -> error $ Def.pf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%)." (pp et)
 
   mtypes <- traverse mType ttypes
 
@@ -651,7 +661,7 @@ constructor tdc@(DC dd@(DD ut _ _ _) _ _ _) et = do
   (_, dcQuery) <- mDataDef (dd, tm)
   let mdc = case dcQuery !? tdc of
         Just m -> m
-        Nothing -> error $ Def.printf "[COMPILER ERROR]: Failed to query an existing constructor for type %.\n TypeMap: %\n(applied TVs: %, applied unions: %) -> (applied TVs: %, applied unions: %)" (pp ut) (ppTypeMap tm) (Def.ppSet pp ttypes) (Def.ppSet pp tunions) (Def.ppSet pp mtypes) (Def.ppSet (maybe "?" (\u -> pp u.unionID <> (Def.ppSet (pp . T.envID) . NonEmpty.toList) u.union)) (munions <&> \(u, _, _) -> u))
+        Nothing -> error $ Def.pf "[COMPILER ERROR]: Failed to query an existing constructor for type %.\n TypeMap: %\n(applied TVs: %, applied unions: %) -> (applied TVs: %, applied unions: %)" (pp ut) (ppTypeMap tm) (Def.ppSet pp ttypes) (Def.ppSet pp tunions) (Def.ppSet pp mtypes) (Def.ppSet (maybe "?" (\u -> pp u.unionID <> (Def.ppSet (pp . T.envID) . NonEmpty.toList) u.union)) (munions <&> \(u, _, _) -> u))
 
   pure mdc
 
@@ -691,7 +701,7 @@ mType = cata $ thisAnd (State.modify $ \s -> s { typeNodesVisited = s.typeNodesV
 
     TO (T.TVar tv) -> retrieveTV tv
 
-    TO (T.TyVar tv) -> error $ Def.printf "[COMPILER ERROR]: Encountered TyVar %." (pp tv)
+    TO (T.TyVar tv) -> error $ Def.pf "[COMPILER ERROR]: Encountered TyVar %." (pp tv)
 
 
 -- ISSUE(unused-constructor-elimination): yeah, this is bad. we also need to remember to map the empty unions (through type map.)
@@ -821,7 +831,7 @@ withClassInstanceAssociations ci a = do
 
         _ -> undefined
 
-  pf "WITH CLASS INSTANCE ASSOCIATIONS:\n\tOLD: %\n\tNEW: %\n\tWHAT: %" (ppDef $ Map.keysSet <$> ogTM) (ppDef $ Map.keysSet <$> classFuns) (ppDef $ Def.fmap2 Map.keysSet what <&> \(uci, dds) -> fromString (Def.printf "%: %" (ppDef uci) (ppDef dds)) :: Def.Context)
+  pf "WITH CLASS INSTANCE ASSOCIATIONS:\n\tOLD: %\n\tNEW: %\n\tWHAT: %" (ppDef $ Map.keysSet <$> ogTM) (ppDef $ Map.keysSet <$> classFuns) (ppDef $ Def.fmap2 Map.keysSet what <&> \(uci, dds) -> fromString (Def.pf "%: %" (ppDef uci) (ppDef dds)) :: Def.Context)
 
   -- this should probably be a reader thing.
   -- pf "WITH CLASS INSTANTIATIONS (env %): %" (pp (T.envID ci)) $ ppDef $ Map.keysSet <$> classFuns
@@ -864,7 +874,7 @@ mUnion (tunion, params, ret) = thisAnd (State.modify $ \s -> s { unionsVisited =
                 let menvs = tunion'.union <&> \(_, _, _, env) -> env
                 case menvs of
                   -- literally impossible as there would be no FTVs otherwise...
-                  [] -> error $ Def.printf "[COMPILER ERROR]: Encountered an empty union (ID: %) - should not happen." (show tunion.unionID)
+                  [] -> error $ Def.pf "[COMPILER ERROR]: Encountered an empty union (ID: %) - should not happen." (show tunion.unionID)
 
                   (e:es) -> do
                     -- preserve ID!!!!
@@ -878,7 +888,7 @@ mUnion (tunion, params, ret) = thisAnd (State.modify $ \s -> s { unionsVisited =
               memo' memoUnion (\mem mctx -> mctx { memoUnion = mem }) (tunion', params, ret) $ \(tunion'', params, ret) _ -> do
                 let menvs = tunion''.union <&> \(_, _, _, env) -> env
                 case menvs of
-                  [] -> error $ Def.printf "[COMPILER ERROR]: Encountered an empty union (ID: %) - should not happen." (show tunion.unionID)
+                  [] -> error $ Def.pf "[COMPILER ERROR]: Encountered an empty union (ID: %) - should not happen." (show tunion.unionID)
 
                   (e:es) -> do
                     nuid <- newUnionID
@@ -935,7 +945,7 @@ data Context' = Context
   , typeNodesVisited :: Counter
   , unionsVisited :: Counter
   }
-type Context = StateT Context' PrintContext
+type Context = StateT Context' BaseCtx
 
 startingContext :: Context'
 startingContext = Context
@@ -999,7 +1009,7 @@ mapType tt mt = case (project tt, project mt) of
   (TCon _ tts tus, TCon _ mts mus) -> mapTypes tts mts <> TypeMap mempty (Map.fromList $ zip (T.unionID . (\(u, _, _) -> u) <$> tus) mus)
   (TO (T.TVar tv), t) -> TypeMap (Map.singleton tv (embed t)) mempty
 
-  _ -> error $ Def.printf "[COMPILER ERROR]: Fuck."
+  _ -> error $ Def.pf "[COMPILER ERROR]: Fuck."
 
 mapTypes :: [Type T] -> [Type IM] -> TypeMap
 mapTypes tts mts = mconcat $ zipWith mapType tts mts
@@ -1049,7 +1059,7 @@ newUnionID = do
 --------------------------------------------------------
 
 
-withEnvContext :: Map (T.EnvF T (Type IM)) IM.Env -> IM.EnvInstantiations -> Map IM.EnvUnion (Set (T.EnvF T (Type IM))) -> EnvContext a -> PrintContext (a, EnvMemo)
+withEnvContext :: Map (T.EnvF T (Type IM)) IM.Env -> IM.EnvInstantiations -> Map IM.EnvUnion (Set (T.EnvF T (Type IM))) -> EnvContext a -> BaseCtx (a, EnvMemo)
 withEnvContext menvs allInstantiations cuckedUnionInstantiations x = do
   (m, mem, ()) <- RWS.runRWST x envUse envMemo
   pure (m, mem)
@@ -1122,7 +1132,7 @@ mfDecon = cata $ \(N t e) -> do
       -- fun unsafe shit.
       let dd = case project mt of
             TCon mdd _ _ -> mdd
-            mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
+            mpt -> error $ Def.pf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
 
       decons' <- for decons $ \(um, decon) -> do
         mdecon <- decon
@@ -1319,7 +1329,7 @@ mfConstructor dc@(DC dd _ _ _) imt = do
         TFun _ _ (Fix (TCon _ _ unions)) -> unions
 
         -- COMPILER ERROR
-        _ -> error $ Def.printf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%)." (pp imt)
+        _ -> error $ Def.pf "[COMPILER ERROR]: Constructor had an absolutely wrong type (%)." (pp imt)
 
   -- mtypes <- traverse mfType ttypes
   munions <- traverse mfUnion imunions
@@ -1344,12 +1354,12 @@ ftvButIgnoreUnions = cata $ \case
 expectIDataDef :: Type IM -> DataDef IM
 expectIDataDef mt = case project mt of
     TCon mdd _ _ -> mdd
-    mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
+    mpt -> error $ Def.pf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
 
 expectDataDef :: Type M -> DataDef M
 expectDataDef mt = case project mt of
     TCon mdd _ _ -> mdd
-    mpt -> error $ Def.printf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
+    mpt -> error $ Def.pf "Ayo, member type is not a data definition, wut???? (type: %)" (pp (embed mpt))
 
 
 
@@ -1358,7 +1368,7 @@ expectDataDef mt = case project mt of
 ------------------------
 
 
-type EnvContext = RWST EnvContextUse () EnvMemo PrintContext -- TEMP: PrintContext temporarily for debugging. should not be used for anything else.
+type EnvContext = RWST EnvContextUse () EnvMemo BaseCtx -- TEMP: PrintContext temporarily for debugging. should not be used for anything else.
 -- Stores environment instantiations. 
 --   NOTE: In the future, maybe more stuff (like which constructors were used!)
 data EnvContextUse = EnvContextUse
@@ -1398,7 +1408,7 @@ mustSelectInstance :: Type IM -> T.PossibleInstances T -> InstDef T
 mustSelectInstance (Fix (TCon mdd _ _)) insts =
   case insts !? mdd.ddScheme.ogDataDef of
     Just instdef -> instdef
-    Nothing -> error $ Def.printf "INSTANCE FOR % DOES NOT EXIST." (ppDef mdd)
+    Nothing -> error $ Def.pf "INSTANCE FOR % DOES NOT EXIST." (ppDef mdd)
 mustSelectInstance _ _ = error "TRYING TO SELECT AN INSTANCE FOR A FUNCTION."
 
 

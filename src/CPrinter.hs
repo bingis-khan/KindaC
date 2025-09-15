@@ -638,7 +638,7 @@ cDefinition :: Type M -> PL -> PL
 cDefinition mt v = go 0 mt where
   go pointingNum (Fix t) = case t of
     TCon dd [pointedToType] _ | isPointer dd -> go (pointingNum + 1) pointedToType
-    TCon dd ts _ | isPointer dd -> error $ Def.printf "POINTER TYPE WITH INCORRECT AMOUNT OF ARGUMENTS (%s)." (length ts)
+    TCon dd ts _ | isPointer dd -> error $ Def.pf "POINTER TYPE WITH INCORRECT AMOUNT OF ARGUMENTS (%s)." (length ts)
 
     TCon dd ts _ ->
       let ptrs = fold $ replicate pointingNum "*"
@@ -659,7 +659,7 @@ cType :: Type M -> PL
 cType = go 0 where
   go pointingNum (Fix t) = case t of
     TCon dd [pointedToType] _ | isPointer dd -> go (pointingNum + 1) pointedToType
-    TCon dd ts _ | isPointer dd -> error $ Def.printf "POINTER TYPE WITH INCORRECT AMOUNT OF ARGUMENTS (%s)." (length ts)
+    TCon dd ts _ | isPointer dd -> error $ Def.pf "POINTER TYPE WITH INCORRECT AMOUNT OF ARGUMENTS (%s)." (length ts)
 
     TCon dd ts _ ->
       let ptrs = fold $ replicate pointingNum "*"

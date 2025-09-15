@@ -13,6 +13,7 @@
 {-# OPTIONS_GHC -Wno-ambiguous-fields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Typecheck (typecheck, TypeError(..)) where
 
@@ -52,7 +53,7 @@ import qualified AST.Prelude as Prelude
 import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, ExprNode (..), DeclaredType (..), XClassFunDec, MutAccess (..), LitType (..), asksNode)
 import AST.Resolved (R)
 import AST.Typed ( TC, Scheme(..), TOTF(..), T )
-import AST.Def ((:.)(..), PP (..), Binding (..), BinOp (..), pf, PrintContext, pc, ppDef, fmap2, traverse2)
+import AST.Def ((:.)(..), PP (..), Binding (..), BinOp (..), ppDef, fmap2, traverse2, Log, LogType (T_AST, T_Uni), PrintfType, TypeID, countUp'', countUp)
 import qualified AST.Def as Def
 import Data.String (fromString)
 import Error (Error (..), renderError)
@@ -62,15 +63,25 @@ import Control.Monad.Trans.Class (lift)
 import Text.Megaparsec (sourceColumn)
 import Text.Megaparsec.Pos (unPos)
 import Text.Megaparsec (sourceLine)
-import CompilerContext (CompilerContext (CompilerContext))
-import qualified CompilerContext
+import InterModular (InterModular, imLift)
+import qualified InterModular
 import Control.Monad.Trans.Reader (Reader)
 import qualified Control.Monad.Trans.Reader as Reader
-import CompilerContext (CompilerState(..))
 import Control.Monad.Trans.State.Strict (StateT)
 import qualified Control.Monad.Trans.State.Strict as State
 import qualified Data.IntMap.Strict as IntMap
+import qualified TypingContext as TC
+import Stats (tStmtNum, tExprNum, numSeparateUnifications)
 
+pc :: (PP a, Log p, p ~ x unit, unit ~ ()) => a -> p
+pc = Def.pc T_AST
+
+pf :: PrintfType r => String -> r
+pf = Def.printf T_AST
+
+
+phase :: (Log pctx, x () ~ pctx) => String -> pctx
+phase = Def.phase T_AST
 
 
 ----------- TO REMEMBER -----------------
@@ -84,7 +95,7 @@ import qualified Data.IntMap.Strict as IntMap
 --    TODO: (we'll have to think of where to put the envaddition!!!!)
 --  2. expand environment n replace types (this won't happen here, but at the end of compiler context kekek)
 
-typecheck :: Maybe Prelude -> Module R -> CompilerContext ([TypeError], Module TC)
+typecheck :: Maybe Prelude -> Module R -> InterModular ([TypeError], Module TC)
 typecheck mprelude rStmts = {-# SCC typecheck #-} do
     let tcContext = Ctx { prelude = mprelude, returnType = Nothing, shouldPrintUnification = Nothing }
     let senv = emptySEnv  -- we add typechecking state here, because it might be shared between modules? (especially memoization!)... hol up, is there anything to even share?
@@ -92,14 +103,14 @@ typecheck mprelude rStmts = {-# SCC typecheck #-} do
     -- Step 1: Generate type substitution (typing context) based on the constraints.
     (tStmts, errs) <- generateSubstitution tcContext senv rStmts
 
-    Def.phase "Typechecking (Before substitution)"
+    phase "Typechecking (Before substitution)"
     pc tStmts
 
     ----- Step 1.25
     -- Now add those extra variables to all them envs.
     -- let envSu = subst su $ EnvAddition envAdds  -- after this, env addition might STILL have some tyvars left over, but this will be fixed by the final substitution (which will just work on the new environments!)
-    Def.phase "State of unis"
-    pc =<< CompilerContext.getTypeUni
+    phase "State of unis"
+    pc =<< InterModular.getTypeUni
 
 
     ----- Step 1.5: Substitute tyvars in Subst's unions, because they are not actively substituted yet?
@@ -112,10 +123,10 @@ typecheck mprelude rStmts = {-# SCC typecheck #-} do
     -- let su' = Subst suUnions' suTVs
 
 
-    -- Def.phase "Typechecking (og subst)"
+    -- phase "Typechecking (og subst)"
     -- pc $ dbgSubst su
 
-    -- Def.phase "Typechecking (fixed subst)"
+    -- phase "Typechecking (fixed subst)"
     -- pc $ dbgSubst su'
 
 
@@ -125,7 +136,7 @@ typecheck mprelude rStmts = {-# SCC typecheck #-} do
     let errs' = errs <> (AmbiguousType (error "what location should i put here???") <$> Set.toList ftvs)
 
 
-    Def.phase "Typechecking (After Substitution)"
+    phase "Typechecking (After Substitution)"
     -- pc tStmts''
 
 
@@ -137,7 +148,7 @@ typecheck mprelude rStmts = {-# SCC typecheck #-} do
 --      INFERENCE        --
 ---------------------------
 
-generateSubstitution :: Context -> TypecheckingState -> Module R -> CompilerContext (Module TC, [TypeError])
+generateSubstitution :: Context -> TypecheckingState -> Module R -> InterModular (Module TC, [TypeError])
 generateSubstitution env senv rModule = do
   (tvModule, s, errors) <- runRWST infer env senv
 
@@ -161,11 +172,11 @@ generateSubstitution env senv rModule = do
       -- su <- RWS.gets typeSubstitution
       reportAssociationErrors
       -- addSelectedEnvironmentsFromInst
-      -- liftIO $ Def.phase "TOP LEVEL BEFORE"
+      -- liftIO $ phase "TOP LEVEL BEFORE"
       -- Def.ctxPrint (Def.ppLines pp) tls
       -- stmts <- replaceClassFunsWithInstantiations su cia tls
 
-      -- liftIO $ Def.phase "TOP LEVEL AFTER"
+      -- liftIO $ phase "TOP LEVEL AFTER"
       -- Def.ctxPrint (Def.ppLines pp) stmts
 
       pure $ T.Mod
@@ -200,7 +211,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
         let ttstmt = first (\expr@(Fix (N en _)) -> (expr, en.t)) tstmt
         stmt'''@(O (O (Def.Annotated _ (Def.Located _ stmt''''')))) <- O . O . Def.Annotated anns . Def.Located location <$> inferStmt location ttstmt
         -- su <- RWS.gets typeSubstitution
-        whenPrintingUni $ pf "STMT: %" stmt'''
+        pf "STMT: %" stmt'''
         -- whenPrintingUni $ pf "STMT: %" (subst su (stmt'''''))
         pure stmt'''
 
@@ -1037,7 +1048,7 @@ generalize ifn = do
 
   pf "Substituted function %:" fn.functionDeclaration.functionId
   pc generalizedFnWithScheme
-  pc =<< lift CompilerContext.getTypeUni
+  pc =<< lift InterModular.getTypeUni
 
   -- Also, remember the substitution! (tvars might escape the environment)
   --  TODO: not sure if that's the best way. maybe instead of doing this, just add it in the beginning and resubstitute the function.
@@ -1050,7 +1061,7 @@ generalize ifn = do
 
 substAccessAndAssociations :: Infer T.ClassInstantiationAssocs
 substAccessAndAssociations = do
-  Def.phase "SUBST ACCESS"
+  phase "SUBST ACCESS"
   go where
     go = do
       didAccessProgressedSubstitutions <- substAccess
@@ -1063,7 +1074,7 @@ substAccessAndAssociations = do
       if didAccessProgressedSubstitutions || didAssociationsProgressedSubstitutions
         then Map.unionWith (error "more than one assoc for uci should not happen") classInstantiationAssocs <$> go
         else do
-          Def.phase "END SUBST ACCESS"
+          phase "END SUBST ACCESS"
           pure mempty
 
 
@@ -1175,10 +1186,7 @@ addExtraToEnv envIds (T.Env _ vars _ instEnvStack) =
     --     usedVarsInInst = unpackFromEnvironment instLevel instEnvVars
     --     usedVarsInInstDeduped = filter (\(v, _, t) -> Set.notMember (v, t) usedVarsInThisEnv) usedVarsInInst
     --   in usedVarsInInstDeduped
-  in lift $ CompilerContext $ RWS.modify $ \s -> s { CompilerContext.globalEnvAddition = Map.unionWith (\new old ->
-    -- Some other env addition might have used those variables before, so we have to remove repetitions.
-    let oldSet = Set.fromList old
-    in old <> filter (`Set.notMember` oldSet) new) newEnvAdditions s.globalEnvAddition }
+  in lift $ InterModular.addEnvAdditions newEnvAdditions
 
 --  2. report any errors or something.
 -- TODO: all of these 3 functions are kinda hindi-style programming. FIX IT AFTER I UNDERSTAND WHAT IM DOING.
@@ -1305,11 +1313,11 @@ constructSchemeForFunctionDeclaration dec = do
       -- IMPORTANT: We only extract types from non-instantiated! The instantiated type might/will contain types from our function and we don't want that. We only want to know which types are from outside.
       -- So, for a function, use its own type.
       -- For a variable, use the actual type as nothing is instantiated!
-  let digOutTyVarsAndUnionsFromEnv :: T.Env -> Infer (Set (T.TypeID, T.TyVar), Map T.EnvUnion ([Type TC], Type TC))
+  let digOutTyVarsAndUnionsFromEnv :: T.Env -> Infer (Set (TypeID, T.TyVar), Map T.EnvUnion ([Type TC], Type TC))
       digOutTyVarsAndUnionsFromEnv (T.RecursiveEnv _ _) = pure mempty
       digOutTyVarsAndUnionsFromEnv (T.Env _ env _ _) = fmap fold $ traverse (\(v, _ ,t) -> digThroughVar t v) env
         where
-          digThroughVar :: Type TC -> T.Variable -> Infer (Set (T.TypeID, T.TyVar), Map T.EnvUnion ([Type TC], Type TC))
+          digThroughVar :: Type TC -> T.Variable -> Infer (Set (TypeID, T.TyVar), Map T.EnvUnion ([Type TC], Type TC))
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
             T.DefinedFunction f _ _ _ -> do
@@ -1358,7 +1366,7 @@ constructSchemeForFunctionDeclaration dec = do
 
   pure (assocScheme, assocs)
 
-digOutTyVarsAndUnionsFromType :: Type TC -> Infer (Set (T.TypeID, T.TyVar), Map T.EnvUnion ([Type TC], Type TC))
+digOutTyVarsAndUnionsFromType :: Type TC -> Infer (Set (TypeID, T.TyVar), Map T.EnvUnion ([Type TC], Type TC))
 digOutTyVarsAndUnionsFromType = getType' >=> traverse2 (\t -> (t,) <$> digOutTyVarsAndUnionsFromType t) &=> \(tid, t) -> case t of
     TO (TyVar tyv) -> (Set.singleton (tid, tyv), mempty)
     TFun union ts t -> (mempty, Map.singleton union (fst <$> ts, fst t)) <> foldMap snd ts <> snd t
@@ -1548,13 +1556,13 @@ instantiateFunction isExternal assocLocation muci snapshot fn = do
     let fundec = fn.functionDeclaration
     let (Scheme schemeTVars schemeUnions) = fundec.functionOther.functionScheme
 
-    definesBeforeInst <- lift CompilerContext.numTypesAndUnionsDefined
+    definesBeforeInst <- lift InterModular.numTypesAndUnionsDefined
 
     pf "Before schemin: %" fundec.functionId
     pf "Before schemin: %" =<< presentFunctionType fn
     (tvs, unions) <- instantiateScheme snapshot fundec.functionOther.functionScheme
     punions <- traverse (\(u, _, _) -> getUnion u) unions
-    pf "TypeUni for % after scheme instantiation: %" fundec.functionId =<< lift CompilerContext.getTypeUni
+    pf "TypeUni for % after scheme instantiation: %" fundec.functionId =<< lift InterModular.getTypeUni
     pf "GOT SCHEME: % %" tvs punions
 
     -- Prepare a mapping for the scheme!
@@ -1604,7 +1612,7 @@ instantiateFunction isExternal assocLocation muci snapshot fn = do
             _ -> error "MUST NOT HAPPEN."
           _ -> error "MUST NOT HAPPEN."
 
-    pc =<< lift CompilerContext.getTypeUni
+    pc =<< lift InterModular.getTypeUni
     gfn <- presentFunctionType fn
     pf "For function %:\n\tScheme unions: % -> %\n\tType %.\n\tAfter instantiation: %"
       (pp fundec.functionId)
@@ -1613,7 +1621,7 @@ instantiateFunction isExternal assocLocation muci snapshot fn = do
       gfn
       =<< presentType fnType
 
-    lift $ CompilerContext.trackInstantiation definesBeforeInst fn
+    lift $ InterModular.trackInstantiation definesBeforeInst fn
     pure (fnType, v, mappedEnv)
 
 
@@ -1686,7 +1694,7 @@ instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
   let tvmap = Map.fromList $ zip schemeTVars tyvs
 
   -- Unions themselves also need to be mapped with the instantiated tvars!
-  newUnionIDs <- traverse (const (lift CompilerContext.nextUnionUniID)) schemeUnions
+  newUnionIDs <- traverse (const (lift InterModular.nextUnionUniID)) schemeUnions
   normalizedIDs <- traverse (\(u, _, _) -> fst <$> getUnion' u) schemeUnions 
   let premade = Map.fromList $ zip normalizedIDs newUnionIDs
   pf "PREMADE: %" premade
@@ -1755,7 +1763,7 @@ mapTVsWithMap premade exclude tvmap unionmap =
               pure (muci, ufi, ts', env')
         pure $ u { T.union = newUnion }
 
-    tryMemoType :: (Type TC -> TypeF TC T.TypeID -> UltraMap (TypeF TC T.TypeID)) -> Type TC -> UltraMap (Type TC)
+    tryMemoType :: (Type TC -> TypeF TC TypeID -> UltraMap (TypeF TC TypeID)) -> Type TC -> UltraMap (Type TC)
     tryMemoType fux tid = lift (getType' tid) >>= \(baseTid, t) -> if baseTid `Set.member` exclude
       then pure tid
       else do
@@ -1775,7 +1783,7 @@ mapTVsWithMap premade exclude tvmap unionmap =
                 State.modify $ first $ Map.insert baseTid t'
                 pure t'
 
-    tryMemoUnion :: (T.EnvUnion -> T.EnvUnionF TC T.TypeID -> UltraMap (T.EnvUnionF TC T.TypeID)) -> T.EnvUnion -> UltraMap T.EnvUnion
+    tryMemoUnion :: (T.EnvUnion -> T.EnvUnionF TC TypeID -> UltraMap (T.EnvUnionF TC TypeID)) -> T.EnvUnion -> UltraMap T.EnvUnion
     tryMemoUnion fux uid = do
       (baseUid, u) <- lift $ getUnion' uid
       State.gets snd >>= \us -> case premade !? baseUid of
@@ -1944,30 +1952,30 @@ mkPtr insidePtr = do
         Nothing -> error $ "[COMPILER ERROR]: Could not find inbuilt type '" <> show Prelude.ptrTypeName <> "'."
 
 
-mkType :: TypeF TC T.TypeID -> Infer T.TypeID
+mkType :: TypeF TC TypeID -> Infer TypeID
 mkType t = lift $ do
-  tid <- CompilerContext.nextTypeID
-  CompilerContext.modifyTypeUni $ IntMap.insert tid.fromTypeID $ Right t
+  tid <- InterModular.nextTypeID
+  InterModular.modifyTypeUni $ IntMap.insert tid.fromTypeID $ Right t
   pure tid
 
-mkUnion :: T.EnvUnionF TC T.TypeID -> Infer T.EnvUnion
+mkUnion :: T.EnvUnionF TC TypeID -> Infer T.EnvUnion
 mkUnion u = lift $ do
-  uid <- CompilerContext.nextUnionUniID
-  CompilerContext.modifyUniUni $ IntMap.insert uid.fromUnionUniID $ Right u
+  uid <- InterModular.nextUnionUniID
+  InterModular.modifyUniUni $ IntMap.insert uid.fromUnionUniID $ Right u
   pure uid
 
-mkUnion' :: T.EnvUnionF TC T.TypeID -> Infer T.EnvUnion
+mkUnion' :: T.EnvUnionF TC TypeID -> Infer T.EnvUnion
 mkUnion' u = lift $ do
   newUid <- newUnionID
-  uid <- CompilerContext.nextUnionUniID
-  CompilerContext.modifyUniUni $ IntMap.insert uid.fromUnionUniID $ Right $ u { T.unionID = newUid }
+  uid <- InterModular.nextUnionUniID
+  InterModular.modifyUniUni $ IntMap.insert uid.fromUnionUniID $ Right $ u { T.unionID = newUid }
   pure uid
 
 -- adds more stuff to the union and adds a reference for the old one to the union.
-nextUnion :: T.EnvUnion -> T.EnvUnionF TC T.TypeID -> Infer T.EnvUnion
+nextUnion :: T.EnvUnion -> T.EnvUnionF TC TypeID -> Infer T.EnvUnion
 nextUnion oldUnionID union = lift $ do
-  nextUnionID <- CompilerContext.nextUnionUniID
-  CompilerContext.modifyUniUni
+  nextUnionID <- InterModular.nextUnionUniID
+  InterModular.modifyUniUni
     $ IntMap.insert oldUnionID.fromUnionUniID (Left nextUnionID.fromUnionUniID)
     . IntMap.insert nextUnionID.fromUnionUniID (Right union)
   pure nextUnionID
@@ -1986,15 +1994,8 @@ uni (l1, t1) (l2, t2) = do
 
 uniMany :: (Def.Location, [Type TC]) -> (Maybe Def.Location, [Type TC]) -> Infer ()
 uniMany ts1 ts2 = do
-  whenPrintingUni $ pf "uni many!"
+  upf "uni many!"
   unifyMany ts1 ts2
-
-whenPrintingUni :: Def.Context -> Infer ()
-whenPrintingUni x = do
-  shouldPrint <- RWS.asks shouldPrintUnification
-  case shouldPrint of
-    Nothing -> pure ()
-    Just line -> Def.unsilenceablePrintInContext $ pf "%: %" line x
 
 -- maybe later get the location from the type?
 constrain :: Def.Location -> Type TC -> (ClassDef TC, T.PossibleInstances TC) -> Infer ()
@@ -2008,6 +2009,7 @@ unify :: (Def.Location, Type TC) -> (Maybe Def.Location, Type TC) -> Infer ()
 unify (locl, tttl) (locr, tttr) = do
   (ttl, tl) <- getType' tttl
   (ttr, tr) <- getType' tttr
+  upUni
   pf "% ?? %" tl tr
   if ttl == ttr
     then pure ()
@@ -2074,10 +2076,10 @@ addConstraint location ttid (klass, instances) = do
         -- create new tyvar with both classes merged!
         let cids = (klass, instances) : tyv.tyvConstraints
         newtyv <- freshTyVarInSubst cids
-        newtyvid <- lift CompilerContext.nextTypeID
-        lift $ CompilerContext.modifyTypeUni $
+        newtyvid <- lift InterModular.nextTypeID
+        lift $ InterModular.modifyTypeUni $
             IntMap.insert newtyvid.fromTypeID $ Right $ TO $ TyVar newtyv
-        pf "TVAR MAKER: New tyvar %. In %." newtyv tyv
+        upf "TVAR MAKER: New tyvar %. In %." newtyv tyv
         let bind' = bind (Left (location, Nothing))
         (tid, tyv) `bind'` newtyvid
 
@@ -2085,7 +2087,7 @@ addConstraint location ttid (klass, instances) = do
         t <- presentType tid
         err $ FunctionTypeConstrainedByClass location t klass
 
-bind :: Either (Def.Location, Maybe Def.Location) (Maybe Def.Location, Def.Location) -> (T.TypeID, T.TyVar) -> Type TC -> Infer ()
+bind :: Either (Def.Location, Maybe Def.Location) (Maybe Def.Location, Def.Location) -> (TypeID, T.TyVar) -> Type TC -> Infer ()
 bind loc (tyvid, tyv) tid = do
   t <- getType tid
   case t of
@@ -2098,12 +2100,12 @@ bind loc (tyvid, tyv) tid = do
           err $ InfiniteType loc tyv tid'
         else do
           pf "bind: % -> %" tyvid tid
-          lift $ CompilerContext.modifyTypeUni $ IntMap.insert tyvid.fromTypeID (Left tid.fromTypeID)
+          lift $ InterModular.modifyTypeUni $ IntMap.insert tyvid.fromTypeID (Left tid.fromTypeID)
 
 unifyFunEnv :: T.EnvUnion -> T.EnvUnion -> Infer ()
 unifyFunEnv lenv renv = do
   unionID <- newUnionID
-  unionUniID <- lift CompilerContext.nextUnionUniID
+  unionUniID <- lift InterModular.nextUnionUniID
 
 
   (baseLEnv, lenv'@T.EnvUnion { T.unionID = _ }) <- getUnion' lenv
@@ -2113,27 +2115,27 @@ unifyFunEnv lenv renv = do
       funEnv = envset2union $ union2envset lenv' <> union2envset renv'
 
   let env = T.EnvUnion { T.unionID = unionID, T.union = funEnv }
-  lift $ CompilerContext.modifyUniUni
+  lift $ InterModular.modifyUniUni
     $ IntMap.insert unionUniID.fromUnionUniID (Right env)       -- insert union itself
     . IntMap.insert baseLEnv.fromUnionUniID (Left unionUniID.fromUnionUniID)   -- insert ref
     . IntMap.insert baseREnv.fromUnionUniID (Left unionUniID.fromUnionUniID)   -- insert ref
 
 
-getUnion :: T.EnvUnion -> Infer (T.EnvUnionF TC T.TypeID)
+getUnion :: T.EnvUnion -> Infer (T.EnvUnionF TC TypeID)
 getUnion = fmap snd . getUnion'
 
-getUnion' :: T.EnvUnion -> Infer (T.EnvUnion, T.EnvUnionF TC T.TypeID)
+getUnion' :: T.EnvUnion -> Infer (T.EnvUnion, T.EnvUnionF TC TypeID)
 getUnion' uid = do
-  tu <- lift CompilerContext.getTypeUni
-  pure $ T.getUnionFromUni tu uid
+  tu <- lift InterModular.getTypeUni
+  pure $ TC.getUnionFromUni tu uid
 
-getType :: Type TC -> Infer (TypeF TC T.TypeID)
+getType :: Type TC -> Infer (TypeF TC TypeID)
 getType = fmap snd . getType'
 
-getType' :: Type TC -> Infer (Type TC, TypeF TC T.TypeID)
+getType' :: Type TC -> Infer (Type TC, TypeF TC TypeID)
 getType' tid = do
-  tu <- lift CompilerContext.getTypeUni
-  pure $ T.getTypeFromUni tu tid
+  tu <- lift InterModular.getTypeUni
+  pure $ TC.getTypeFromUni tu tid
 
 presentType :: Type TC -> Infer Def.Context
 presentType = getType >=> traverse presentType >=> \case
@@ -2185,7 +2187,7 @@ nun = pure ()
 --   , unions :: ()
 --   }
 
-newtype FTV a = FTV { fromFTV :: Reader T.TypeUni a } deriving (Functor, Applicative, Monad)
+newtype FTV a = FTV { fromFTV :: Reader TC.TypeUni a } deriving (Functor, Applicative, Monad)
 
 instance Semigroup a => Semigroup (FTV a) where
   fl <> fr = liftA2 (<>) fl fr
@@ -2194,9 +2196,9 @@ instance Monoid a => Monoid (FTV a) where
   mempty = pure mempty
 
 
-findFTV :: Substitutable a => a -> CompilerContext (Set (Type TC, T.TyVar))
+findFTV :: Substitutable a => a -> InterModular (Set (Type TC, T.TyVar))
 findFTV x = do
-  typeUni <- CompilerContext $ RWS.gets CompilerContext.globalTypeUni
+  typeUni <- InterModular.getTypeUni
   let tyvars = Reader.runReader (fromFTV $ ftv x) typeUni
   pure tyvars
 
@@ -2259,10 +2261,10 @@ instance Substitutable (Expr TC) where
 instance Substitutable (T.ExprNode TC) where
   ftv en = ftv en.t
 
-instance Substitutable T.TypeID where
+instance Substitutable TypeID where
   ftv tid = FTV Reader.ask >>= \tuni ->
     let ftvType ttid =
-          let (baseid, tt) = fmap2 ftvType $ T.getTypeFromUni tuni ttid
+          let (baseid, tt) = fmap2 ftvType $ TC.getTypeFromUni tuni ttid
           in case tt of
               TO (TyVar tyv) -> pure $ Set.singleton (baseid, tyv)
               t -> seqfold t
@@ -2442,10 +2444,10 @@ newFunctionInstantiation = Def.UFI <$> liftIO newUnique
 -- Returns a fresh new tyvare
 fresh :: Infer (Type TC)
 fresh = do
-  tid <- lift CompilerContext.nextTypeID
+  tid <- lift InterModular.nextTypeID
   tyv <- freshTyVar
-  pf "fresh: % %" tid tyv
-  lift $ CompilerContext.modifyTypeUni $
+  pf "fresh: % %" (ppDef tid) tyv
+  lift $ InterModular.modifyTypeUni $
     IntMap.insert tid.fromTypeID $ Right $ TO $ TyVar tyv
   pure tid
 
@@ -2476,7 +2478,7 @@ singleEnvUnion uci ufi tassocs env = do
 cloneUnion :: T.EnvUnion -> T.EnvUnionF TC (Type TC) -> Infer T.EnvUnion
 cloneUnion uuid union = do
   uid <- newUnionID
-  lift $ CompilerContext.modifyUniUni $ IntMap.insert uuid.fromUnionUniID $ Right $ union { T.unionID = uid }
+  lift $ InterModular.modifyUniUni $ IntMap.insert uuid.fromUnionUniID $ Right $ union { T.unionID = uid }
   pure uuid
 
 -- Creates an empty union.
@@ -2499,7 +2501,7 @@ classFunDecToClassType (CFD _ _ params ret _ _) =
 ------------------------------------------
 
 -- TODO: after I finish, or earlier, maybe make sections for main logic, then put stuff like datatypes or utility functions at the bottom.
-type Infer = RWST Context [TypeError] TypecheckingState CompilerContext  -- normal inference
+type Infer = RWST Context [TypeError] TypecheckingState InterModular  -- normal inference
 
 data Context = Ctx
   { prelude :: Maybe Prelude
@@ -2676,6 +2678,16 @@ justType = (Nothing,)
 -- DEBUG
 ----
 
+upc :: (PP a, Log p, p ~ x unit, unit ~ ()) => a -> p
+upc = Def.pc T_Uni
+
+upf :: PrintfType r => String -> r
+upf = Def.printf T_Uni
+
+
+uphase :: (Log pctx, x () ~ pctx) => String -> pctx
+uphase = Def.phase T_Uni
+
 
 printUni :: Int -> [Def.Ann] -> Infer a -> Infer a
 printUni line anns ix = if Def.ADebugUnification `elem` anns
@@ -2685,7 +2697,7 @@ printUni line anns ix = if Def.ADebugUnification `elem` anns
     -- also other shit
     assocs <- RWS.gets associations
     let newAssocs = take (length assocs - oldAssocLength) assocs
-    Def.unsilenceablePrintInContext $ pf "Assocs generated right now: %" $ fst <$> newAssocs
+    upf "Assocs generated right now: %" $ fst <$> newAssocs
     pure x
   else ix
 
@@ -2733,11 +2745,16 @@ seqfold  = fmap fold . sequenceA
 
 
 upExpr :: Infer ()
-upExpr = lift $ CompilerContext $ RWS.modify $ \cc -> cc { stats = cc.stats { CompilerContext.tcExpr = cc.stats.tcExpr + 1} }
+{-# inline upExpr #-}
+upExpr = lift $ imLift $ countUp tExprNum  -- lift $ InterModular $ RWS.modify $ \cc -> cc { stats = cc.stats { CompilerContext.tcExpr = cc.stats.tcExpr + 1} }
 
 upStmt :: Infer ()
-upStmt = lift $ CompilerContext $ RWS.modify $ \cc -> cc { stats = cc.stats { CompilerContext.tcStmt = cc.stats.tcStmt + 1} }
+{-# inline upStmt #-}
+upStmt = lift $ imLift $ countUp tStmtNum  -- lift $ CompilerContext $ RWS.modify $ \cc -> cc { stats = cc.stats { CompilerContext.tcStmt = cc.stats.tcStmt + 1} }
 
+upUni :: Infer ()
+{-# inline upUni #-}
+upUni = lift $ imLift $ countUp numSeparateUnifications
 
 -- the COCK operator
 infixr 1 &=>

@@ -1,0 +1,21 @@
+Remember, how I want this to be possible?
+
+f (s Str)
+	print-str(s)
+
+
+Str is a typeclass, but we're using it as a type.
+
+
+Similar, I have a problem, where List's first type parameter takes an allocator. We mostly don't care about it, but we have to parametrize it.
+So, we can make a special type variable def, which automatically guesses the required typeclass constraints.
+
+add-to-list (list List _ a, x a)
+
+or
+
+add-to-list (list List _alloc a, x a)
+
+
+Maybe we should use some other character, like @ or % or * or ^ or ? or whatever.
+

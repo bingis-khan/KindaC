@@ -207,4 +207,4 @@ instance PP LamDec where
   pp (LamDec uv e) = pp uv <> pp e
 
 instance PP Env where
-  pp env = fromString $ Def.printf "%s(%s)%s" (pp env.envID) (pp env.envStackLevel) $ Def.encloseSepBy "[" "]" ", " $ env.fromEnv <&> \(v, l) -> Def.ppVar l $ asPUniqueVar v
+  pp env = Def.pf "%s(%s)%s" (pp env.envID) (pp env.envStackLevel) $ Def.encloseSepBy "[" "]" ", " $ env.fromEnv <&> \(v, l) -> Def.ppVar l $ asPUniqueVar v

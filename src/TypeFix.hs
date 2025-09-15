@@ -9,7 +9,7 @@ import qualified AST.Typed as T
 import Data.List.NonEmpty (NonEmpty)
 import AST.Common (Module, AnnStmt, Function (..), DataDef (..), ClassDef (..), InstDef (..), StmtF (..), Expr, XMutAccess, IfStmt (..), CaseF (..), Type, TypeF (..), TVar (..), XEnvUnion, XEnv, ClassFunDec (..), InstFun (..), Decon, DeconF (..), ExprNode (N), XExprNode, DataCon (..), ExprF (..), LitType (..), XMem, XLamOther, ClassType, FunDec (..), ClassTypeF (..), MutAccess (..))
 import AST.Typed (TC, T, topLevelStatements, TOTF (..), EnvUnionF, ScopeSnapshot, Scheme (..), FunOther (..), EnvUnion, FunctionTypeAssociation (..), ExprNode (ExprNode), LamDec (..), TypeFixStats (..))
-import AST.Def (PrintContext, type (:.) (O), sequenceA2, traverse2, traverseSet, traverse3, pf, Counter)
+import AST.Def (BaseCtx, type (:.) (O), sequenceA2, traverse2, traverseSet, traverse3)
 import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad.Trans.RWS.Strict (RWST)
 import qualified Control.Monad.Trans.RWS.Strict as RWST
@@ -28,13 +28,15 @@ import Data.Foldable (find, fold)
 import Data.Functor ((<&>))
 import Data.Either (fromRight)
 import Data.Biapplicative (first)
+import qualified TypingContext as TC
+import Stats (Counter)
 
 
-typefix :: T.TypeUni -> T.EnvAdditions -> NonEmpty (Module TC) -> PrintContext (Module T, TypeFixStats)
+typefix :: TC.TypeUni -> TC.EnvAdditions -> NonEmpty (Module TC) -> BaseCtx (Module T)
 typefix typeUni envAdds mods = do
   let stmts = concatMap topLevelStatements mods
   (modt, mem, ()) <- RWST.runRWST (fixStmts stmts) (typeUni, envAdds) emptyMemoShit
-  pure (modt, TypeFixStats { tfTypeNodesVisited = mem.typeNodesVisited, tfUnionsVisited = mem.unionsVisited })
+  pure (modt) --, TypeFixStats { tfTypeNodesVisited = mem.typeNodesVisited, tfUnionsVisited = mem.unionsVisited })
 
 fixStmts :: [AnnStmt TC] -> TypeFix (Module T)
 fixStmts = traverse fixStmt
@@ -167,7 +169,7 @@ fixClassType = cata $ sequenceA >=> fmap embed . \case
 getType :: Type TC -> TypeFix (TypeF TC (Type TC))
 getType tid = do
   tu <- RWST.asks fst
-  pure $ snd $ T.getTypeFromUni tu tid
+  pure $ snd $ TC.getTypeFromUni tu tid
 
 fixTVar :: TVar TC -> TypeFix (TVar T)
 fixTVar tv = do
@@ -262,7 +264,7 @@ fixEnv (T.Env eid env locs currentEnvStack) = do
 getUnion :: XEnvUnion TC -> TypeFix (EnvUnionF TC (Type TC))
 getUnion uid = do
   tu <- RWST.asks fst
-  pure $ snd $ T.getUnionFromUni tu uid
+  pure $ snd $ TC.getUnionFromUni tu uid
 
 
 fixVar :: T.Variable -> TypeFix T.TVariable
@@ -399,7 +401,7 @@ fixMutAccess = traverse fixType . first fixMA where
 
 
 
-type TypeFix a = RWST (T.TypeUni, T.EnvAdditions) () MemoShit PrintContext a
+type TypeFix a = RWST (TC.TypeUni, TC.EnvAdditions) () MemoShit BaseCtx a
 
 data MemoShit = MemoShit
   { memoFunction :: Memo (Function TC) (Function T)

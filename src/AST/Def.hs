@@ -8,6 +8,7 @@
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE RankNTypes #-}
 module AST.Def (module AST.Def) where
 
 import Data.Text (Text)
@@ -18,8 +19,7 @@ import Prettyprinter (Doc)
 import Data.String (IsString (..))
 import qualified Prettyprinter as PP
 import Data.Foldable (fold)
-import Data.List (intersperse)
-import Control.Monad.IO.Class (MonadIO (..))
+import Data.List (intersperse, find, sort)
 import Data.Char (toUpper)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
@@ -34,12 +34,19 @@ import Data.Fix (Fix)
 import Data.Functor.Foldable (cata)
 import qualified Text.Megaparsec as TM
 import qualified Control.Monad.Trans.Reader as Reader
-import Control.Monad.Fix (MonadFix)
-import qualified Data.Text.IO as TextIO
 import Control.Monad.Trans.Class (lift, MonadTrans)
-import Control.Monad (when, unless)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
+import Control.Monad.Fix (MonadFix)
+import Control.Monad.IO.Class (MonadIO, liftIO)
+import qualified Data.Text.IO as TextIO
+import Control.Monad (unless, when)
+import Control.Monad.Trans.RST (RST)
+import qualified Control.Monad.Trans.RST as RST
+import Stats (Stats, emptyStats, rExprNum, Counter, FunInstTrack (..), instantiationsByNumTypes, rStmtNum, tStmtNum, tExprNum, numLoadedModules, numCreatedUnions, numCreatedTypes)
+import Lens.Micro (Lens', (%~), (&), (^.))
+import Lens.Micro.Mtl (view, (%=))
+import Control.Monad.RWS (MonadReader, MonadState)
 
 
 -- set printing config
@@ -49,35 +56,100 @@ defaultContext = dc
 dc = debugContext
 rc = runtimeContext
 
--- for stats.
-type Counter = Word
+
+
+-- LOGGING & STATS
+
+newtype BaseCtx a = BaseCtx (RST Config Stats IO a) deriving (Functor, Applicative, Monad, MonadFix, MonadFail, MonadIO, MonadReader Config, MonadState Stats)
+data Config = Config
+  { filename :: FilePath
+  , output :: Output
+  , printOnlyCurrent :: Flag
+
+  , dbgP :: Flag
+  , dbgR :: Flag
+  , dbgT_Uni :: Flag
+  , dbgT_AST :: Flag
+  , dbgF :: Flag
+  , dbgM :: Flag
+  , dbgG :: Flag
+
+  , statP :: Flag
+  , statR :: Flag
+  , statT :: Flag
+  , statF :: Flag
+  , statM :: Flag
+  , statG :: Flag  -- general stats, mostly about module loading and stuff.
+  }
+
+data Output
+  = Stdout
+  | File String
+  | NoOutput
+
+type Flag = Bool
+
+
+data LogType
+  = PP  -- id passthrough hack for nested printfs
+  | Stat
+
+  | P
+
+  | R
+
+  | T_Uni
+  | T_AST
+
+  | F
+
+  | M
+
+  | G
+  deriving (Eq, Ord)
+
+
+-- TODO: maybe more transformations will come?
+withBaseContext :: Config -> BaseCtx a -> IO (a, Stats)
+withBaseContext config (BaseCtx fx) = RST.runRST fx config emptyStats
+
+
+-- TODO: maybe make it MonadBaseCtx to execute actions in BaseCtx? then this would not be needed. and make plog a normal function.
+countUp :: Lens' Stats Counter -> BaseCtx ()
+countUp accessor = BaseCtx $ RST.modify $ \stats -> stats & accessor %~ (+1)
+
+countUp' :: MonadTrans t => Lens' Stats Counter -> t BaseCtx ()
+countUp' accessor = lift $ countUp accessor
+
+countUp'' :: (MonadTrans t, MonadTrans t') => Lens' Stats Counter -> t (t' BaseCtx) ()
+countUp'' accessor = lift $ lift $ countUp accessor
+
+trackInstantiation :: FunInstTrack -> BaseCtx ()
+trackInstantiation fit = instantiationsByNumTypes %= (fit:)
 
 
 -- context for debugging with all messages enabled.
 debugContext = CtxData
-  { silent = False
-  , printIdentifiers = True
+  { printIdentifiers = True
   , displayTypeParameters = False
   , displayLocations = False
-  , displayUnification = False
+  , typingContext = Nothing
   }
 
 -- disable debug messages for "runtime".
 runtimeContext = CtxData
-  { silent = True
-  , printIdentifiers = False
+  { printIdentifiers = False
   , displayTypeParameters = False
   , displayLocations = False
-  , displayUnification = False
+  , typingContext = Nothing
   }
 
 -- show types and stuff for the user (display types accurately to their definition, etc.)
 showContext = CtxData
-  { silent = False
-  , printIdentifiers = False
+  { printIdentifiers = False
   , displayTypeParameters = True
   , displayLocations = False
-  , displayUnification = False
+  , typingContext = Nothing
   }
 
 
@@ -179,6 +251,10 @@ data UniqueClass = TCI
   { classID :: Unique
   , className :: ClassName
   }
+
+newtype TypeID = TypeID { fromTypeID :: Int } deriving (Eq, Ord)
+
+newtype UnionUniID = UnionUniID { fromUnionUniID :: Int } deriving (Eq, Ord)
 
 -- This associates types for class associations with the types.
 -- Normal function calls store it with their instantiation, but I can't do that with class instantiations - associations depend on the selected type, which means I can't create them when I'm building the AST - only later, when association is resolved.
@@ -464,6 +540,21 @@ instance PP UniqueClass where
 instance PPDef UniqueClass where
   ppDef ucl = pp ucl.className
 
+instance PP TypeID where
+  pp tid = do
+    Reader.asks typingContext >>= \case
+      Nothing -> pp $ fromTypeID tid
+      Just tpf -> tpf tid
+
+instance PPDef TypeID where
+  ppDef = pp . fromTypeID
+
+instance PP UnionUniID where
+  pp = pp . fromUnionUniID
+
+instance PPDef UnionUniID where
+  ppDef = pp . fromUnionUniID
+
 
 instance PP UniqueMem where
   pp ucl = pp ucl.memName
@@ -471,7 +562,7 @@ instance PP UniqueMem where
 instance PP Locality where
   pp = \case
     Local -> ""
-    FromEnvironment level -> printf "^(%)" level
+    FromEnvironment level -> printf undefined "^(%)" level
 
 instance PP UnionID where
   pp = ppUnionID
@@ -498,14 +589,17 @@ instance PP Location where
   pp (Location from to start) = do
     ctxData <- Reader.ask
     if ctxData.displayLocations
-      then printf "<%|%:%>" (pp start) (pp from) (pp to)
+      then pf "<%|%:%>" (pp start) (pp from) (pp to)
       else mempty
 
 instance PP TM.SourcePos where
-  pp sp = printf "%:%" (pp sp.sourceLine) (pp sp.sourceColumn)
+  pp sp = pf "%:%" (pp sp.sourceLine) (pp sp.sourceColumn)
 
 instance PP TM.Pos where
   pp = pp . TM.unPos
+
+instance PP FunInstTrack where
+  pp fit = pf "%: % | %" fit.name fit.newTypes fit.newUnions
 
 
 ----------------
@@ -552,42 +646,54 @@ findAnnotation anns fn = listToMaybe $ mapMaybe fn anns
 
 
 
-----------------------
--- Printing Context --
-----------------------
+--- Printing Context
 
-class PrintableContext p where
-  printInContext :: Context -> p
-  unsilenceablePrintInContext :: Context -> p
+class Log p where
+  plog :: LogType -> Context -> p
 
-pc :: (PP a, PrintableContext p, p ~ x unit, unit ~ ()) => a -> p
-pc = printInContext . pp
+pc :: (PP a, Log p, p ~ x unit, unit ~ ()) => LogType -> a -> p
+pc lt = plog lt . pp
 
-instance PrintableContext (PrintContext ()) where  -- base instance
-  printInContext c = do
-    ctxData <- PrintContext Reader.ask
+instance Log (BaseCtx ()) where  -- base instance
+  plog lt c = do
+    config <- BaseCtx $ RST.ask
 
-    unless ctxData.silent $
-      liftIO $ TextIO.putStrLn $ ctx ctxData c
+    when (isPrintingEnabled lt config) $
+      liftIO $ TextIO.putStrLn $ ctx (configToContextData config) c
 
-  -- should later be replaced by more granular printing configuration!
-  unsilenceablePrintInContext c = do
-      ctxData <- PrintContext Reader.ask
-      liftIO $ TextIO.putStrLn $ ctx ctxData c
+configToContextData :: Config -> CtxData
+configToContextData = const debugContext
+
+isPrintingEnabled :: LogType -> Config -> Bool
+{-# inline isPrintingEnabled #-}
+isPrintingEnabled l cfg
+  = maybe False (($ cfg) . snd)
+  $ find ((==l) . fst)
+  [ (P, dbgP)
+  , (R, dbgR)
+  , (T_Uni, dbgT_Uni)
+  , (T_AST, dbgT_AST)
+  , (F, dbgF)
+  , (M, dbgM)
+  , (G, dbgG)
+  ]
+
+-- special IO instance for just stuff
+instance (unit ~ ()) => Log (IO unit) where
+  plog _ c = do
+    TextIO.putStrLn $ ctx showContext c
+
 
 -- m a ~ pc  <- that printable context is actually of structure m a
 -- a ~ ()    <- otherwise we get the ambiguous variable error. we assume a is () 
-instance (PrintableContext pc, m a ~ pc, a ~ (), MonadTrans t, Monad m) => PrintableContext (t m a) where
-  printInContext = lift . printInContext
-  unsilenceablePrintInContext = lift . unsilenceablePrintInContext
+instance (Log pc, m a ~ pc, a ~ (), MonadTrans t, Monad m) => Log (t m a) where
+  plog lt = lift . plog lt
 
-newtype PrintContext a = PrintContext { fromPrintContext :: ReaderT CtxData IO a  } deriving (Functor, Applicative, Monad, MonadIO, MonadFail, MonadFix)
+-- inPrintContext :: CtxData -> BaseCtx a -> IO a
+-- inPrintContext ctxData pcx = Reader.runReaderT (fromPrintContext pcx) ctxData
 
-inPrintContext :: CtxData -> PrintContext a -> IO a
-inPrintContext ctxData pcx = Reader.runReaderT (fromPrintContext pcx) ctxData
-
-localPrintContext :: CtxData -> PrintContext a -> PrintContext a
-localPrintContext c p = PrintContext $ Reader.local (const c) $ fromPrintContext p
+-- localPrintContext :: CtxData -> BaseCtx a -> BaseCtx  a
+-- localPrintContext c p = PrintContext $ Reader.local (const c) $ fromPrintContext p
 
 
 ------------
@@ -596,25 +702,23 @@ localPrintContext c p = PrintContext $ Reader.local (const c) $ fromPrintContext
 
 -- Context'd printf clone (without type specifiers!)
 
-pf :: PrintfType r => String -> r
-pf = printf
-
-printf :: PrintfType r => String -> r
-printf format =
-  let fd = PrintfData { formatString = format, args = [] }
+printf :: PrintfType r => LogType -> String -> r
+printf lt format =
+  let fd = PrintfData { logType = lt, formatString = format, args = [] }
   in ppPrintfThing fd
 
 class PrintfType r where
   ppPrintfThing :: PrintfData -> r
 
 data PrintfData = PrintfData
-  { formatString :: String
+  { logType :: LogType
+  , formatString :: String
   , args :: [Context]
   }
 
-instance {-# overlappable #-} PrintableContext p => PrintfType p where
+instance {-# overlappable #-} Log p => PrintfType p where
   ppPrintfThing ppData =
-      printInContext $ printfNow ppData
+      plog ppData.logType $ printfNow ppData
 
 instance PrintfType Context where
   ppPrintfThing = printfNow
@@ -645,8 +749,6 @@ instance {-# overlappable #-} (PP a, PrintfType x) => PrintfType (a -> x) where
 
 
 
-
-
 -----------------
 -- Printing stuff
 -----------------
@@ -654,17 +756,22 @@ instance {-# overlappable #-} (PP a, PrintfType x) => PrintfType (a -> x) where
 -- Context that stores the pretty printer Doc + data + help with, for example, names.
 type Context = Reader CtxData (Doc ())  -- I guess I can add syntax coloring or something with the annotation (the () in Doc)
 data CtxData = CtxData  -- basically stuff like printing options or something (eg. don't print types)
-  { silent :: Bool
-  , printIdentifiers :: Bool
+  { printIdentifiers :: Bool
   , displayTypeParameters :: Bool
   , displayLocations :: Bool
-  , displayUnification :: Bool
+
+  , typingContext :: Maybe (TypeID -> Context)
   }
 
-phase :: (PrintableContext pctx, x () ~ pctx) => String -> pctx
-phase text =
+-- nested printf
+pf :: PrintfType r => String -> r
+pf = printf PP
+
+
+phase :: (Log pctx, x () ~ pctx) => LogType -> String -> pctx
+phase lt text =
   let n = 10
-  in printInContext $ pf $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
+  in plog lt $ pf $ replicate n '=' <> " " <> map toUpper text <> " " <> replicate n '='
 
 
 ctx :: (PP a, IsString s) => CtxData -> a -> s
@@ -712,7 +819,7 @@ ppVar l v = localTag <?+> pretty (fromVN v.varName) <> ppIdent ("$" <> pretty (h
   where
     localTag = case l of
       Local -> Nothing
-      FromEnvironment level -> Just $ printf "^(%)" level
+      FromEnvironment level -> Just $ pf "^(%)" level
 
 ppUniqueClass :: UniqueClass -> Context
 ppUniqueClass klass = pf "%@%" (hashUnique klass.classID) (fromTN klass.className)
@@ -744,7 +851,7 @@ ppUnique :: Unique -> Context
 ppUnique = pretty . hashUnique
 
 ppMap :: (PP k, PP v) => [(k, v)] -> Context
-ppMap = ppLines' . fmap (uncurry (printf "%s => %s"))
+ppMap = ppLines' . fmap (uncurry (pf "%s => %s"))
 
 ppMap' :: (PP k, PP v) => Map k v -> Context
 ppMap' = ppMap . Map.toList

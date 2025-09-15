@@ -45,25 +45,26 @@ import Data.Traversable (for)
 import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Either (rights, lefts)
 import Data.List (find)
-import AST.Def (type (:.)(O), Annotated (..), Binding (..), Located (..), pp, pf)
+import AST.Def (type (:.)(O), Annotated (..), Binding (..), Located (..), pp, pf, countUp'', countUp', countUp)
 import qualified AST.Def as Def
 import qualified AST.Common as Common
 import AST.Prelude (Prelude (..))
 import Control.Monad ( when, foldM, void )
 import AST.Typed (TC, functionAnnotations)
-import CompilerContext (CompilerContext (CompilerContext), CompilerState (stats))
-import qualified CompilerContext as Compiler
+import InterModular (InterModular, imLift)
+import qualified InterModular
 import Control.Monad.Trans.Class (lift)
 import Error (Error (..), renderError)
 import Data.String (fromString)
 import Data.Text (Text)
 import Control.DeepSeq (NFData)
 import GHC.Generics (Generic)
+import Stats (rExprNum, rStmtNum)
 
 
 
 -- Resolves variables, constructors and types and replaces them with unique IDs.
-resolve :: Maybe Prelude -> Compiler.ModuleLoader -> Module U -> CompilerContext ([ResolveError], Module R)
+resolve :: Maybe Prelude -> InterModular.Loader -> Module U -> InterModular ([ResolveError], Module R)
 resolve mPrelude moduleLoader (U.Mod ustmts) = {-# SCC resolve #-} do
   let newState = maybe emptyState (mkState moduleLoader) mPrelude
   (rstmts, state, errs) <- RWST.runRWST (rStmts ustmts) mPrelude newState
@@ -788,7 +789,7 @@ mkStringInterpolation fullInterpolationLocation si = do
 -- findBuiltinStrClass = undefined
 
 
-type Ctx = RWST (Maybe Prelude) [ResolveError] CtxState CompilerContext  -- I might add additional context later.
+type Ctx = RWST (Maybe Prelude) [ResolveError] CtxState InterModular  -- I might add additional context later.
 
 data CtxState = CtxState
   { scopes :: NonEmpty Scope
@@ -796,7 +797,7 @@ data CtxState = CtxState
   , inLambda :: Bool  -- hack to check if we're in a lambda currently. when the lambda is not in another lambda, we put "Local" locality.
   , tvarBindings :: Map Def.UnboundTVar (Def.Location, TVar R)
 
-  , loaderFn :: Compiler.ModuleLoader
+  , loaderFn :: InterModular.Loader
   , modules :: Map U.ModuleQualifier (Module TC)  -- list imported modules. automatically gets scoped, so dunt wurry.
 
   -- we need to keep track of each defined function to actually typecheck it.
@@ -826,7 +827,7 @@ getScopes :: Ctx (NonEmpty Scope)
 getScopes = RWST.gets scopes
 
 -- Add later after I do typechecking.
-mkState :: Compiler.ModuleLoader -> Prelude -> CtxState
+mkState :: InterModular.Loader -> Prelude -> CtxState
 mkState moduleLoader prel = CtxState
   { scopes = NonEmpty.singleton initialScope
   , envStack = mempty
@@ -1429,7 +1430,7 @@ isPointer con =
 
 --- stats
 upExpr :: Ctx ()
-upExpr = lift $ CompilerContext $ RWS.modify $ \cc -> cc { stats = cc.stats { Compiler.rExpr = cc.stats.rExpr + 1} }
+upExpr = lift $ imLift $ countUp rExprNum
 
 upStmt :: Ctx ()
-upStmt = lift $ CompilerContext $ RWS.modify $ \cc -> cc { stats = cc.stats { Compiler.rStmt = cc.stats.rStmt + 1} }
+upStmt = lift $ imLift $ countUp rStmtNum
