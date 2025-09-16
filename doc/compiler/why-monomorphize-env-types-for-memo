@@ -1,0 +1,28 @@
+It's this case:
+
+g ()
+	const = 88
+	h (nn n)  # <-
+		onst = 420
+		hh (mm m)  # <-
+			print onst
+			print const
+			f(nn, mm)
+			return
+
+		hh(1)     # <-
+		return
+
+	h(1)    # <-
+	h(True) # <-
+	return
+
+Look at hh. its type will only be mono-ed to Int.
+
+But, it will be called from two contexts: n = Int and n = Bool.
+
+If we didn't mono the environment types, then memo would think it's equivalent. (wrong)
+
+But, can we maybe not monomorphise for all types? and only relevant ones?
+
+We can only count OUTSIDE TVARS. Then, the result would be the same.

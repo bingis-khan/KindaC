@@ -57,9 +57,7 @@ Maybe a
 	Just a
 	None
 
-xxx = 1111
 or-just (mx, other-x)
-	print xxx
 	case mx
 		Just(x)
 			return x

@@ -1,0 +1,68 @@
+There was a pretty big problem with typechecking....
+
+the more a function was using other functions, the slower it got. that's bad. instantiation cost should only be paid by the function's declaration.
+
+
+So, how can we do it.
+
+The idea is, that env union unification will NEVER fail. It's true in non-recursive cases (and I think recursive cases can also be solved.)
+
+So, basic 1_tXX tests are solved. (and all the ones that do not require typeclasses.)
+
+
+except... I remember that we have to take into consideration the different environment in monomorphisation, otherwise some tests fail. why?
+
+shit, i still don't know. tests which fail after removing monomorphising for types: 1_t16, 1_t24, 5_t10. 5_t40, 5_t41, 5_t44.
+
+all of the tests fail now because of empty unions.
+OH, I know. see doc/compiler/why-monomorphize-env-types-for-memo
+
+There's a possible error, where, when we're not evaluating depth-wise, then we must also monomorphize based on chosen instances (and thus associations).
+
+!!!: Another perf problem there (which already exists): we instantiate functions when associations are resolved. This means, that two consecutive calls will have different inner instantiations and thus two different functions will be generated when monomorphising. This: bad. We can implement a caching system in typechecking to prevent that.
+
+
+
+
+
+Now, the typeclasses....
+
+The problem is, that our current typeclass stuff does not yet properly work. Now I understand why my way of loose typeclass constraints was worse....
+
+So, proper associated types and associated type accessors.
+
+So that provided the class unifies, the result unifies as well.
+
+inst Iter Map it it.Iter.Item b <= Iter it
+	Item = b
+
+	next (self Ptr _) -> Item
+		....
+
+
+okay, that's enough. how do we do the thing? how does this shit currently work???
+
+
+
+--------------- OKAY
+
+So, recap.
+
+Each function in the environment has an *association list*. The [t] stores *ALL* associated types.
+
+So, imagine:
+
+x
+	next() :: Item
+	.it :: Iter Item
+	next() :: Item'
+
+Item becomes a<f>
+Item' becomes b<f> and so on.
+
+they ALL become tyvars, so this it it! we don't need anything more!
+we don't need exact union types! if a union is not part of the associated types, we can just generate it.
+
+Wait, but... that does not invalidate my loose typechecking of instances. the system is resilient to those errors. is there any benefit for unification always succeeding?
+	at least I don't have to resolve those now. although, all of it can be in resolver, so it wouldn't be as bad.
+	but is there ANY BENEFIT to guaranteeing that there are no errors?

@@ -501,6 +501,7 @@ mFunction uciOrUfi et vfn = do
 
   withClassInstanceAssociations tenv $ withTypeMap typemap $ do
     -- NOTE: Env must be properly monomorphised with the type map, because it can also call other functions, so each env might have different types though albeit
+    --  doc/compiler/why-monomorphize-env-types-for-memo
     menv <- mEnvTypes vfn.functionDeclaration.functionEnv
     pf "IM Env Types: %" (pp menv)
 

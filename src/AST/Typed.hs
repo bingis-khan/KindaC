@@ -32,14 +32,6 @@ import Stats (Counter)
 
 
 
-
-data TypeFixStats = TypeFixStats
-  { tfTypeNodesVisited :: Counter
-  , tfUnionsVisited :: Counter
-  }
-
-
-
 data Typed
 type T = Typed
 

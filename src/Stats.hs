@@ -11,6 +11,7 @@ data FunInstTrack = FunInstTrack
   { name :: Text
   , newTypes :: Int
   , newUnions :: Int
+  , numAssociations :: Int
   } deriving Eq
 
 type Counter = Word  -- for stats.

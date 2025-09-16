@@ -7,14 +7,13 @@ module TypeFix (typefix) where
 
 import qualified AST.Typed as T
 import Data.List.NonEmpty (NonEmpty)
-import AST.Common (Module, AnnStmt, Function (..), DataDef (..), ClassDef (..), InstDef (..), StmtF (..), Expr, XMutAccess, IfStmt (..), CaseF (..), Type, TypeF (..), TVar (..), XEnvUnion, XEnv, ClassFunDec (..), InstFun (..), Decon, DeconF (..), ExprNode (N), XExprNode, DataCon (..), ExprF (..), LitType (..), XMem, XLamOther, ClassType, FunDec (..), ClassTypeF (..), MutAccess (..))
-import AST.Typed (TC, T, topLevelStatements, TOTF (..), EnvUnionF, ScopeSnapshot, Scheme (..), FunOther (..), EnvUnion, FunctionTypeAssociation (..), ExprNode (ExprNode), LamDec (..), TypeFixStats (..))
+import AST.Common (Module, AnnStmt, Function (..), DataDef (..), ClassDef (..), InstDef (..), StmtF (..), Expr, XMutAccess, IfStmt (..), CaseF (..), Type, TypeF (..), TVar (..), XEnvUnion, XEnv, ClassFunDec (..), InstFun (..), Decon, DeconF (..), ExprNode (N), XExprNode, DataCon (..), ExprF (..), LitType (..), XLamOther, ClassType, FunDec (..), ClassTypeF (..), MutAccess (..))
+import AST.Typed (TC, T, topLevelStatements, TOTF (..), EnvUnionF, ScopeSnapshot, Scheme (..), FunOther (..), FunctionTypeAssociation (..), ExprNode (ExprNode), LamDec (..))
 import AST.Def (type (:.) (O), sequenceA2, traverse2, traverseSet, traverse3)
-import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad.Trans.RWS.Strict (RWST)
 import qualified Control.Monad.Trans.RWS.Strict as RWST
-import Misc.Memo (Memo, emptyMemo, memo, qmemo, memo')
-import Data.Functor.Foldable (cata, project, embed)
+import Misc.Memo (Memo, emptyMemo, memo, qmemo)
+import Data.Functor.Foldable (cata, embed)
 import qualified AST.Def as Def
 import Data.Bitraversable (bitraverse)
 import Data.Fix (Fix(..))

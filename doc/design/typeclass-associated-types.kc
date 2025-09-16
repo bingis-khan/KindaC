@@ -29,7 +29,7 @@ After generalization!
 
 When ass around dd: shouldn't happen!
 When tyvar: ignore!
-When tvar that is not of this function: ignore, i think! maybe it's impossible for tvars from appear from nested functions!
+When tvar that is not of this function: ignore, i think! maybe it's impossible for tvars to appear from nested functions!
 When tvar that is of this function: add it to the function's associated types list!
 When function: signal error!
 

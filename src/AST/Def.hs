@@ -549,7 +549,7 @@ instance PP TM.Pos where
   pp = pp . TM.unPos
 
 instance PP FunInstTrack where
-  pp fit = pf "%: % | %" fit.name fit.newTypes fit.newUnions
+  pp fit = pf "%: % | % | %" fit.name fit.newTypes fit.newUnions fit.numAssociations
 
 
 ----------------

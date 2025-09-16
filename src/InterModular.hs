@@ -11,8 +11,8 @@ import AST.Def (TypeID, UnionUniID, Log (plog), Context, typingContext, PrintfTy
 import Data.Text (Text)
 import Data.Map (Map, (!?))
 import qualified AST.Untyped as U
-import AST.Common (Module, Function, FunDec (functionId))
-import AST.Typed (TC)
+import AST.Common (Module, Function, FunDec (functionId, functionOther))
+import AST.Typed (TC, FunOther (functionAssociations))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import TypingContext (globalTypeUni, TypingContext, globalEnvAddition')
 import qualified TypingContext as TC
@@ -197,7 +197,7 @@ trackInstantiation :: (Int, Int) -> Function TC -> InterModular ()
 trackInstantiation (beforeTypes, beforeUnions) fn = do
   (afterTypes, afterUnions) <- numTypesAndUnionsDefined
 
-  let inst = FunInstTrack fn.functionDeclaration.functionId.varName.fromVN (afterTypes - beforeTypes) (afterUnions - beforeUnions)
+  let inst = FunInstTrack fn.functionDeclaration.functionId.varName.fromVN (afterTypes - beforeTypes) (afterUnions - beforeUnions) (length fn.functionDeclaration.functionOther.functionAssociations)
   IM $ lift $ BaseCtx.trackInstantiation inst
 
 
