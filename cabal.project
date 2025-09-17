@@ -1,0 +1,14 @@
+packages: ./
+
+import: https://www.stackage.org/lts-24.4/cabal.config
+
+tests: True
+multi-repl: True
+semaphore: True
+jobs: $ncpus
+
+profiling: True
+
+package *
+  profiling-detail: late
+  ghc-options: -finfo-table-map -fdistinct-constructor-tables -j
