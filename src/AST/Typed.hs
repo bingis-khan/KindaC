@@ -224,7 +224,7 @@ type instance Module TC = Mod TC
 -- toTCType = undefined
 
 
-envID :: EnvF phase t -> Def.EnvID
+envID :: EnvF phase ty -> Def.EnvID
 envID = \case
   Env eid _ _ _ -> eid
   RecursiveEnv eid _ -> eid
@@ -239,7 +239,7 @@ asProto = \case
 ---------
 
 
-isUnionEmpty :: EnvUnionF phase t -> Bool
+isUnionEmpty :: EnvUnionF phase ty -> Bool
 isUnionEmpty (EnvUnion _ []) = True
 isUnionEmpty _ = False
 
@@ -253,11 +253,11 @@ dbgSnapshot = Def.ppLines . fmap (\(cd, insts) -> pf "% => %" (Def.ppDef cd) (De
 ---------
 
 
-instance Eq t => Eq (EnvF phase t) where
+instance Eq ty => Eq (EnvF phase ty) where
   Env lid lts _ _ == Env rid rts _ _ = lid == rid && (lts <&> \(_, _, x) -> x) == (rts <&> \(_, _, x) -> x)
   l == r  = envID l == envID r
 
-instance Ord t => Ord (EnvF phase t) where
+instance Ord ty => Ord (EnvF phase ty) where
   Env lid lts _ _ `compare` Env rid rts _ _ = (lid, lts <&> \(_, _, x) -> x) `compare` (rid, rts <&> \(_, _, x) -> x)
   l `compare` r = envID l `compare` envID r
 
@@ -279,14 +279,14 @@ instance Ord TyVar where
   tyv `compare` tyv' = tyv.fromTyV `compare` tyv'.fromTyV
 
 
-instance (Eq t, Eq (XFunVar phase)) => Eq (VariableF phase t) where
+instance (Eq ty, Eq (XFunVar phase)) => Eq (VariableF phase ty) where
   l == r = case (l, r) of
     (DefinedVariable uv, DefinedVariable uv') -> uv == uv'
     (DefinedFunction fn ts _ ufi, DefinedFunction fn' ts' _ ufi') -> (fn, ts, ufi) == (fn', ts', ufi')
     (DefinedClassFunction cfd _ t uci, DefinedClassFunction cfd' _ t' uci') -> (cfd, t, uci) == (cfd', t', uci')
     _ -> False
 
-instance (Ord t, Ord (XFunVar phase)) => Ord (VariableF phase t) where
+instance (Ord ty, Ord (XFunVar phase)) => Ord (VariableF phase ty) where
   l `compare` r = case (l, r) of
     (DefinedVariable uv, DefinedVariable uv') -> uv `compare` uv'
     (DefinedFunction fn ts _ ufi, DefinedFunction fn' ts' _ ufi') -> (fn, ts, ufi') `compare` (fn', ts', ufi')
@@ -308,7 +308,7 @@ instance (PP (XLVar phase), PP (XTVar phase), PP (XVar phase), PP (XCon phase), 
 instance (PPDef (XClass phase), PP (VariableF phase (Type phase)), PP (Type phase), PP (XEnvUnion phase) ) => PP (FunOther phase) where
   pp fo = pf "% %" fo.functionScheme fo.functionAssociations
 
-instance (PP t, PP (VariableF phase t)) => PP (EnvUnionF phase t) where
+instance (PP ty, PP (VariableF phase ty)) => PP (EnvUnionF phase ty) where
   pp EnvUnion { unionID = uid, union = us } = pp uid <> Def.encloseSepBy "{" "}" ", " (pp <$> us)
 
 instance (PP a, PP (VariableF phase a)) => PP (EnvF phase a) where

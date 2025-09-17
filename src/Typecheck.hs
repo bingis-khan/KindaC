@@ -867,6 +867,7 @@ inferClassDef = memo memoClass (\mem s -> s { memoClass = mem }) $ \cd _ -> mdo
   let tcd = ClassDef
         { classID = cd.classID
         , classFunctions = funs
+        , classDeclarationLocation = Def.TmpNoLocation
         }
   funs <- for cd.classFunctions $ inferClassFunDec tcd . R.DefinedClassFunDec
   pure tcd

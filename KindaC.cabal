@@ -1,4 +1,4 @@
-cabal-version: 1.12
+cabal-version: 3.0
 
 -- This file has been generated from package.yaml by hpack version 0.38.1.
 --
@@ -11,13 +11,55 @@ homepage:       https://github.com/githubuser/surcher#readme
 author:         Big Bobby
 maintainer:     example@example.com
 copyright:      2023 Big Bobby
-license:        BSD3
+license:        BSD-3-Clause
 license-file:   LICENSE
 build-type:     Simple
 extra-source-files:
     README.md
 
+common extensions
+  default-extensions:
+    DeepSubsumption
+    DeriveAnyClass
+    DerivingVia
+    DuplicateRecordFields
+    NoStarIsType
+    OverloadedLabels
+    OverloadedRecordDot
+    OverloadedStrings
+    PackageImports
+    PolyKinds
+    RecordWildCards
+    RequiredTypeArguments
+    StrictData
+    Strict
+    TypeFamilies
+    UndecidableInstances
+    ViewPatterns
+
+  default-language: GHC2021
+
+common ghc-options
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Winvalid-haddock
+    -Wno-unticked-promoted-constructors
+    -Wno-unused-do-bind
+    -Wpartial-fields
+    -Wredundant-constraints
+    -Wunused-packages
+    -fdistinct-constructor-tables
+    -fhide-source-paths
+    -finfo-table-map
+    -funbox-strict-fields
+
 library
+  import: extensions
+  import: ghc-options
   exposed-modules:
       AST.Common
       AST.Def
@@ -47,7 +89,6 @@ library
       Paths_KindaC
   hs-source-dirs:
       src
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -finfo-table-map -fdistinct-constructor-tables -g -threaded
   build-depends:
       HUnit
     , base >=4.7 && <5
@@ -75,15 +116,15 @@ library
     , time
     , transformers
     , vector
-  default-language: Haskell2010
 
 executable kc
+  import: extensions
+  import: ghc-options
   main-is: Main.hs
   other-modules:
       Paths_KindaC
   hs-source-dirs:
       app
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -finfo-table-map -fdistinct-constructor-tables -g -threaded -rtsopts
   build-depends:
       HUnit
     , KindaC
@@ -112,16 +153,16 @@ executable kc
     , time
     , transformers
     , vector
-  default-language: Haskell2010
 
 test-suite all
+  import: extensions
+  import: ghc-options
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
       Paths_KindaC
   hs-source-dirs:
       test/src
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -finfo-table-map -fdistinct-constructor-tables -g -threaded -threaded -rtsopts
   build-depends:
       HUnit
     , KindaC
@@ -150,4 +191,3 @@ test-suite all
     , time
     , transformers
     , vector
-  default-language: Haskell2010
