@@ -12,7 +12,6 @@ import AST.Def (Locality, PP (..), (<+>), PPDef, fmap2)
 import Data.List.NonEmpty (NonEmpty)
 import qualified AST.Typed as T
 import qualified Data.List.NonEmpty as NonEmpty
-import Data.String (fromString)
 import Data.Text (Text)
 import Data.Functor ((<&>))
 import Data.Map.Strict (Map)

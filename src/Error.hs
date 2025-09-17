@@ -6,7 +6,7 @@ import Data.Text (Text)
 import qualified AST.Def as Def
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Text as Text
-import AST.Def (Location(startPos), PP)
+import AST.Def (Location(startPos))
 import Text.Megaparsec (SourcePos(sourceLine))
 import qualified Text.Megaparsec as TM
 import Data.Functor ((<&>))

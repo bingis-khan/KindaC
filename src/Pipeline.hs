@@ -21,27 +21,20 @@ import AST.Prelude (Prelude (..))
 import qualified AST.Prelude as Prelude
 import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), ExprNode (..), datatypes, LitType (..))
 import qualified AST.Def as Def
-import AST.Typed (TC, Mod (topLevelStatements), T)
+import AST.Typed (TC, T)
 import AST.Def (Result(..), phase, pc, LogType (P, R, T_AST, M, F))
 import Mono (mono)
 import CPrinter (cModule)
 import qualified InterModular
 import Control.Monad.IO.Class (liftIO)
-import qualified Control.Monad.Trans.RWS.Strict as RWST
-import Data.Map.Strict ((!?))
-import qualified System.Directory as Directory
 import Error (Error (..))
 import qualified System.FilePath as FilePath
-import Control.Monad.Trans.Class (lift)
-import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IntMap
 import InterModular (InterModular, moduleCtx)
 import qualified InterModular as InterModule
-import qualified Control.Monad.Trans.RST as RST
 import TypeFix (typefix)
 import TypingContext (globalTypeUni, globalEnvAddition)
 import qualified AST.Untyped as U
-import Lens.Micro ((^.))
 import BaseCtx (BaseCtx)
 
 

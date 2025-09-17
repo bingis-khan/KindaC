@@ -57,8 +57,6 @@ import Control.Monad.Trans.Class (lift)
 import Error (Error (..), renderError)
 import Data.String (fromString)
 import Data.Text (Text)
-import Control.DeepSeq (NFData)
-import GHC.Generics (Generic)
 import Stats (rExprNum, rStmtNum)
 import BaseCtx (countUp)
 

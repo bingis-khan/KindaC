@@ -6,15 +6,13 @@ import qualified Data.Text.IO as TextIO
 import System.Environment (getArgs)
 import Pipeline (startFromModule, codegen)
 import Control.Monad.IO.Class (liftIO)
-import qualified System.FilePath as FilePath
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
 import System.Exit (exitFailure)
 import qualified AST.Def as Def
-import GHC.Debug.Stub (withGhcDebug)
 import Data.Time (getCurrentTime, diffUTCTime, nominalDiffTimeToSeconds)
 import Data.Fixed (showFixed)
-import AST.Def (LogType (Stat, G, PP), pf)
+import AST.Def (LogType (PP), pf)
 import Data.Function ((&))
 import Data.Maybe (fromMaybe)
 import Control.Monad (when)

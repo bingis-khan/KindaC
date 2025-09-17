@@ -14,12 +14,12 @@ module AST.Def (module AST.Def) where
 import Data.Text (Text)
 import Data.Unique (Unique, hashUnique)
 import qualified Data.Text as Text
-import Control.Monad.Trans.Reader (Reader, runReader, ask, ReaderT)
+import Control.Monad.Trans.Reader (Reader, runReader, ask)
 import Prettyprinter (Doc)
 import Data.String (IsString (..))
 import qualified Prettyprinter as PP
 import Data.Foldable (fold)
-import Data.List (intersperse, find, sort)
+import Data.List (intersperse)
 import Data.Char (toUpper)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
@@ -37,16 +37,8 @@ import qualified Control.Monad.Trans.Reader as Reader
 import Control.Monad.Trans.Class (lift, MonadTrans)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
-import Control.Monad.Fix (MonadFix)
-import Control.Monad.IO.Class (MonadIO, liftIO)
 import qualified Data.Text.IO as TextIO
-import Control.Monad (unless, when)
-import Control.Monad.Trans.RST (RST)
-import qualified Control.Monad.Trans.RST as RST
-import Stats (Stats, emptyStats, rExprNum, Counter, FunInstTrack (..), instantiationsByNumTypes, rStmtNum, tStmtNum, tExprNum, numLoadedModules, numCreatedUnions, numCreatedTypes)
-import Lens.Micro (Lens', (%~), (&), (^.))
-import Lens.Micro.Mtl (view, (%=))
-import Control.Monad.RWS (MonadReader, MonadState)
+import Stats (FunInstTrack (..))
 
 
 -- set printing config
