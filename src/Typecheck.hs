@@ -22,7 +22,7 @@ import qualified Data.Text as Text
 import Data.Biapplicative (first)
 import Data.Map.Strict (Map, (!?))
 import qualified Data.Map.Strict as Map
-import Control.Monad.Trans.RWS.Strict (runRWST)
+import Control.Monad.Trans.RWS.Strict (runRWST, RWST)
 import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed)
