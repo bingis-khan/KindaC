@@ -14,18 +14,18 @@ import Misc.Memo (Memo, Memoizable)
 import qualified Misc.Memo as Memo
 import qualified AST.Common as Common
 import qualified AST.Mono as M
-import Data.Maybe (listToMaybe, mapMaybe, fromJust, fromMaybe)
+import Data.Maybe (listToMaybe, mapMaybe, fromJust)
 import Control.Monad (when, unless, join)
 import Control.Monad.Trans.RWS.Strict (RWS)
 import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Fix (Fix (..))
-import Data.Foldable (for_, sequenceA_, foldl', fold)
+import Data.Foldable (for_, sequenceA_, fold)
 import Data.Functor.Foldable (cata, project, para, embed)
 import Data.Functor.Identity (Identity(..))
 import Data.Functor ((<&>))
-import Data.Bifunctor (first, second)
+import Data.Bifunctor (second)
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import Data.String (IsString)
@@ -40,8 +40,8 @@ import Data.Traversable (for)
 import Data.Either (lefts)
 import qualified Data.Map.Strict as Map
 import AST.Common (Module, AnnStmt, StmtF (..), Decon, DeconF (..), DataCon (..), DataDef (..), Type, Expr, ExprNode (..), ExprF (..), TypeF (..), Function, IfStmt (..), MutAccess (..), LitType (..), askNode)
-import AST.Mono (M, EnvMod (assignee, assigned))
-import AST.Def ((:.)(..), Annotated (..), CtxData (..), Locality, pp, fmap2, BinOp (..), UnOp (..), Located (..))
+import AST.Mono (M)
+import AST.Def ((:.)(..), Annotated (..), Locality, fmap2, BinOp (..), UnOp (..), Located (..))
 import qualified AST.Def as Def
 
 

@@ -22,11 +22,11 @@ import qualified Data.Text as Text
 import Data.Biapplicative (first)
 import Data.Map.Strict (Map, (!?))
 import qualified Data.Map.Strict as Map
-import Control.Monad.Trans.RWS.Strict (RWST (RWST), runRWST)
+import Control.Monad.Trans.RWS.Strict (runRWST, RWST)
 import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Fix (Fix (Fix))
-import Data.Functor.Foldable (Base, cata, embed, hoist, project, para)
-import Control.Monad (replicateM, zipWithM_, unless, when, (<=<), (>=>))
+import Data.Functor.Foldable (Base, cata, embed)
+import Control.Monad (replicateM, zipWithM_, unless, (<=<), (>=>))
 import Data.Bitraversable (bitraverse)
 import Data.Foldable (for_, fold, foldlM)
 import Data.Set (Set, (\\))
@@ -52,7 +52,7 @@ import AST.Prelude (Prelude)
 import qualified AST.Prelude as Prelude
 import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, ExprNode (..), DeclaredType (..), XClassFunDec, MutAccess (..), LitType (..), asksNode)
 import AST.Resolved (R)
-import AST.Typed ( TC, Scheme(..), TOTF(..), T )
+import AST.Typed ( TC, Scheme(..), TOTF(..) )
 import AST.Def ((:.)(..), PP (..), Binding (..), BinOp (..), ppDef, fmap2, traverse2, Log, LogType (T_AST, T_Uni), PrintfType, TypeID)
 import qualified AST.Def as Def
 import Data.String (fromString)
@@ -60,7 +60,6 @@ import Error (Error (..), renderError)
 import AST.Typed (FunOther(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Control.Monad.Trans.Class (lift)
-import Text.Megaparsec (sourceColumn)
 import Text.Megaparsec.Pos (unPos)
 import Text.Megaparsec (sourceLine)
 import InterModular (InterModular, imLift)

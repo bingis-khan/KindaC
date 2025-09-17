@@ -26,7 +26,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
-import Data.Foldable (foldl')
 import qualified Data.Set as Set
 import qualified Text.Megaparsec.Char as C
 import AST.Def (Ann (..), TCon (..), ConName (..), VarName (..), Annotated (..), (:.) (..), UnboundTVar (..), MemName (..), ClassName (..), ModuleName (..), UnOp (..), BinOp (..), Location (..), Located (..), pf)

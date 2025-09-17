@@ -15,7 +15,6 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Functor ((<&>))
 import AST.Def (PP (..), PPDef, ppDef)
 import AST.Typed (TC)
-import Data.String (fromString)
 import Data.Text (Text)
 import Data.Fix (Fix)
 

@@ -14,6 +14,7 @@ import qualified AST.Typed as T
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Fix (Fix(..))
 import Data.Maybe (mapMaybe, listToMaybe)
+import System.Directory (getCurrentDirectory)
 import System.Exit (exitFailure)
 import Data.Foldable (find)
 import Text.Printf (printf)
@@ -21,28 +22,22 @@ import AST.Prelude (Prelude (..))
 import qualified AST.Prelude as Prelude
 import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), ExprNode (..), datatypes, LitType (..))
 import qualified AST.Def as Def
-import AST.Typed (TC, Mod (topLevelStatements), T)
+import AST.Typed (TC, T)
 import AST.Def (Result(..), phase, pc, LogType (P, R, T_AST, M, F))
 import Mono (mono)
 import CPrinter (cModule)
 import qualified InterModular
-import Control.Monad.IO.Class (liftIO)
-import qualified Control.Monad.Trans.RWS.Strict as RWST
-import Data.Map.Strict ((!?))
-import qualified System.Directory as Directory
+import Control.Monad.IO.Class (liftIO, MonadIO)
 import Error (Error (..))
 import qualified System.FilePath as FilePath
-import Control.Monad.Trans.Class (lift)
-import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IntMap
 import InterModular (InterModular, moduleCtx)
 import qualified InterModular as InterModule
-import qualified Control.Monad.Trans.RST as RST
 import TypeFix (typefix)
 import TypingContext (globalTypeUni, globalEnvAddition)
 import qualified AST.Untyped as U
-import Lens.Micro ((^.))
 import BaseCtx (BaseCtx)
+import System.FilePath ((</>))
 
 
 -- temporary redef
@@ -51,8 +46,8 @@ force = id
 
 
 preludePath, stdPath :: FilePath
-preludePath = "/home/bob/prj/KindaC/kcsrc/prelude.kc"
-stdPath = "/home/bob/prj/KindaC/kcsrc/std/"
+preludePath = "kcsrc/prelude.kc"
+stdPath = "kcsrc/std/"
 
 
 startFromModule :: FilePath -> BaseCtx (Either (NonEmpty Text) (Module T))
@@ -91,7 +86,8 @@ loadModule mPrelude filename = do
       pc P ast
 
       phase R "Resolving"
-      (rerrs, rmod) <- force <$> resolve mPrelude (moduleLoader mPrelude moduleName) ast
+      loader <- moduleLoader mPrelude moduleName
+      (rerrs, rmod) <- force <$> resolve mPrelude loader ast
       pc R rmod
 
       
@@ -101,9 +97,10 @@ loadModule mPrelude filename = do
       InterModular.addErrors moduleName $ map (" " <>) $ s2t source rerrs ++ s2t source terrs
       pure $ Just tmod
 
-
-moduleLoader :: Maybe Prelude -> Text -> InterModule.Loader
-moduleLoader mprel = InterModular.moduleLoader stdPath (loadModule mprel)
+moduleLoader :: MonadIO m => Maybe Prelude -> Text -> m InterModule.Loader
+moduleLoader mprel moduleName = do 
+  basePath <- liftIO getCurrentDirectory
+  pure $ InterModular.moduleLoader (basePath </> stdPath) (loadModule mprel) moduleName
 
 codegen :: Module T -> BaseCtx Text
 codegen joinedModules = do
@@ -126,10 +123,12 @@ codegen joinedModules = do
 loadPrelude :: InterModular Prelude
 loadPrelude = do
   epmod <- do
-    source <- liftIO $ TextIO.readFile preludePath
+    basePath <- liftIO getCurrentDirectory
+    let fullPreludePath = basePath </> preludePath
+    source <- liftIO $ TextIO.readFile fullPreludePath
 
     phase P "Parsing"
-    case parse preludePath source of
+    case parse fullPreludePath source of
       Left err -> do
         pure $ Left err
 
