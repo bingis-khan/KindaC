@@ -41,14 +41,20 @@ qmemo :: (Monad ctx, Memoizable ctx, Ord r) => (OverallState ctx -> Memo r t) ->
 {-# inline qmemo #-}
 qmemo toMemo fromMemo transform r = memo toMemo fromMemo (\x _ -> transform x) r
 
-memo' :: (Monad ctx, Memoizable ctx, Ord r) => (OverallState ctx -> Memo r t) -> (Memo r t -> OverallState ctx -> OverallState ctx) -> r -> (r -> (t -> ctx ()) -> ctx t) -> ctx t
+memo' 
+  :: (Monad ctx, Memoizable ctx, Ord r) 
+  => (OverallState ctx -> Memo r t)
+  -> (Memo r t -> OverallState ctx -> OverallState ctx) 
+  -> r
+  -> (r -> (t -> ctx ()) -> ctx t)
+  -> ctx t
 {-# inline memo' #-}
 memo' toMemo fromMemo r transform = memo toMemo fromMemo transform r
 
 isMemoed :: Ord a => a -> Memo a b -> Maybe b
 isMemoed x (Memo mp) = mp !? x
 
-emptyMemo :: Ord id => Memo id a
+emptyMemo :: Ord identifier => Memo identifier a
 emptyMemo = Memo mempty
 
 

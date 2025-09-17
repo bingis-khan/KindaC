@@ -99,7 +99,9 @@ showContext = CtxData
 --  copied from TypeCompose package (I didn't need the whole thing, so I just copied the definition)
 --  Now you can use type composition.
 infixl 9 :.
-newtype (g :. f) a = O (g (f a)) deriving (Eq, Ord, Functor, Foldable, Traversable)
+newtype (g :. f) a = O (g (f a)) 
+  deriving stock (Eq, Ord)
+  deriving anyclass (Functor, Foldable, Traversable)
 
 unO :: (g :. f) a -> g (f a)
 unO (O gfa) = gfa
@@ -605,7 +607,7 @@ instance (unit ~ ()) => Log (IO unit) where
 
 -- m a ~ pc  <- that printable context is actually of structure m a
 -- a ~ ()    <- otherwise we get the ambiguous variable error. we assume a is () 
-instance (Log pc, m a ~ pc, a ~ (), MonadTrans t, Monad m) => Log (t m a) where
+instance (Log context, m a ~ context, a ~ (), MonadTrans t, Monad m) => Log (t m a) where
   plog lt = lift . plog lt
 
 -- inPrintContext :: CtxData -> BaseCtx a -> IO a

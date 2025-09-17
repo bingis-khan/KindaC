@@ -11,7 +11,7 @@ import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
 
 import qualified AST.Typed as T
-import Data.List.NonEmpty (NonEmpty ((:|)))
+import Data.List.NonEmpty (NonEmpty)
 import Data.Fix (Fix(..))
 import Data.Maybe (mapMaybe, listToMaybe)
 import System.Directory (getCurrentDirectory)

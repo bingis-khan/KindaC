@@ -8,3 +8,7 @@ test.c
 dist-newstyle
 tags
 tags.mtime
+*.prof
+*.eventlog
+*.hp
+*.html
