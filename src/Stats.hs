@@ -38,6 +38,8 @@ data Stats = Stats
   , _numCreatedTypes :: Int
   , _numCreatedUnions :: Int
   , _numSeparateUnifications :: Counter
+  , _numTVMaps :: Counter
+  , _numCSMaps :: Counter
 
   , _instantiationsByNumTypes :: [FunInstTrack]
 
@@ -71,6 +73,8 @@ emptyStats = Stats
   , _instantiationsByNumTypes = mempty
   , _numSeparateUnifications = 0
   , _numLoadedModules = 0
+  , _numTVMaps = 0
+  , _numCSMaps = 0
   }
 
 

@@ -66,3 +66,52 @@ we don't need exact union types! if a union is not part of the associated types,
 Wait, but... that does not invalidate my loose typechecking of instances. the system is resilient to those errors. is there any benefit for unification always succeeding?
 	at least I don't have to resolve those now. although, all of it can be in resolver, so it wouldn't be as bad.
 	but is there ANY BENEFIT to guaranteeing that there are no errors?
+
+
+
+
+
+-----------
+
+checked flamegraph.
+
+Two big cost centers: typechecking and monomorphisation.
+
+From what I'm seeing, most of typechecking is INSTANTIATION! (bingo) (maybe?)
+wait, but... low self times. it goes through instantiation, but what's next?
+
+
+
+---
+
+
+im writing a quick new typecheking scheme.
+
+We can ignore Resolver. TypeFix, we might throw out, because singular type IDs might be useful in Mono.
+
+
+Typechecking:
+
+How it is currently:
+
+it SEEMS like instantiation is taking forever. I ASSUME it's because we're mapping a lot of stuff.
+
+T unique types: 332369
+T unique unions: 62593
+T num unis: 5115
+T tv maps: 46735  mapTVs
+T cs maps: 418133 mapClassSnapshot
+
+sheesh.
+
+Also, where are we generating those fresh variables in instantiateFunction?
+
+- in instantiateScheme.
+
+
+
+
+inferStmt
+inferExpr
+inferType
+

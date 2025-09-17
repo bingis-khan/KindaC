@@ -63,6 +63,8 @@ printStats cfg s = do
     pf "T expr: %\nT stmt: %" (s ^. tExprNum) (s ^. tStmtNum)
     pf "T unique types: %\nT unique unions: %" (s ^. numCreatedTypes) (s ^. numCreatedUnions)
     pf "T num unis: %" (s ^. numSeparateUnifications)
+    pf "T tv maps: %" (s ^. numTVMaps)
+    pf "T cs maps: %" (s ^. numCSMaps)
 
   when cfg.statM $ do
     pf "M expr: %" $ s ^. mExprNum

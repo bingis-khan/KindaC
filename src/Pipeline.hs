@@ -67,7 +67,7 @@ startFromModule path = do
       tfmod <- typefix tc.globalTypeUni tc.globalEnvAddition mods
 
       phase F "Typechecking (fix)"
-      pc F tfmod
+      pc F $ Def.ppLines tfmod
 
       pure $ Right tfmod
 
