@@ -20,7 +20,7 @@ extra-source-files:
 common extensions
   default-extensions:
     DeepSubsumption
-    DeriveAnyClass
+    -- DeriveAnyClass
     DerivingVia
     DuplicateRecordFields
     NoStarIsType
