@@ -4,16 +4,17 @@
 module BaseCtx (module BaseCtx) where
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Trans.RST (RST)
-import Stats (Stats, Counter, FunInstTrack, instantiationsByNumTypes, emptyStats)
+import Stats (Stats, Counter, FunInstTrack, emptyStats, instantiationsByNumTypes) --, instantiationsByNumTypes)accessor +~ 1
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.RWS (MonadReader, MonadState, MonadTrans (..))
-import Lens.Micro (Lens')
+import Control.Monad.RWS (MonadReader, MonadState, MonadTrans (..), modify')
+import Lens.Micro (Lens', (+~))
 import AST.Def (Log (plog), CtxData, LogType (..), ctx, debugContext)
 import Lens.Micro.Mtl ((+=), (%=))
 import qualified Control.Monad.Trans.RST as RST
 import Control.Monad (when)
 import qualified Data.Text.IO as TextIO
 import Data.Foldable (find)
+import Control.DeepSeq (force)
 
 
 -- LOGGING & STATS
@@ -57,13 +58,13 @@ withBaseContext config (BaseCtx fx) = RST.runRST fx config emptyStats
 
 -- TODO: maybe make it MonadBaseCtx to execute actions in BaseCtx? then this would not be needed. and make plog a normal function.
 countUp :: Lens' Stats Counter -> BaseCtx ()
-countUp accessor = accessor += 1
+countUp accessor = modify' $ accessor +~ 1
 
 countUp' :: MonadTrans t => Lens' Stats Counter -> t BaseCtx ()
-countUp' accessor = lift $ countUp accessor
+countUp' !accessor = lift $ countUp accessor
 
 countUp'' :: (MonadTrans t, MonadTrans t') => Lens' Stats Counter -> t (t' BaseCtx) ()
-countUp'' accessor = lift $ lift $ countUp accessor
+countUp'' !accessor = lift $ lift $ countUp accessor
 
 trackInstantiation :: FunInstTrack -> BaseCtx ()
 trackInstantiation fit = instantiationsByNumTypes %= (fit:)

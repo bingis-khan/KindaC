@@ -1,7 +1,7 @@
-module Control.Monad.Trans.RST (module Control.Monad.Trans.RST, module Control.Monad.Trans.RWS) where
+module Control.Monad.Trans.RST (module Control.Monad.Trans.RST, module Control.Monad.Trans.RWS.Strict) where
 
-import Control.Monad.Trans.RWS hiding (runRWST)
-import qualified Control.Monad.Trans.RWS as RWS (runRWST)
+import Control.Monad.Trans.RWS.Strict hiding (runRWST)
+import qualified Control.Monad.Trans.RWS.Strict as RWS (runRWST)
 
 -- funny
 --  (in the future, I should make it its own datatype.)

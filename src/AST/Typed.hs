@@ -140,8 +140,8 @@ data VariableF phase t
   -- scope snapshots might not be needed!
   -- Here, we need to store the instances. They must also be up for substitution. How would I represent it?
   -- TODO: Right now, we are substituting UCIs at the end of a function. What we can do right now, is we can also substitute this map. I can do this better probably - maybe we can associate function instantiations with a specific TVar?
-  | DefinedFunction (Function phase) [t] (ScopeSnapshot phase) Def.UniqueFunctionInstantiation
-  | DefinedClassFunction (ClassFunDec phase) (ScopeSnapshot phase) t Def.UniqueClassInstantiation  -- which class function and which instances are visible at this point. 
+  | DefinedFunction (Function phase) [t] (ScopeSnapshot phase) ~Def.UniqueFunctionInstantiation
+  | DefinedClassFunction (ClassFunDec phase) (ScopeSnapshot phase) t ~Def.UniqueClassInstantiation  -- which class function and which instances are visible at this point. 
   -- deriving (Eq, Ord)
   deriving (Functor, Foldable, Traversable)
 type Variable = VariableF TC (Type TC)
@@ -163,7 +163,7 @@ type Env = EnvF TC (Type TC)
 
 data EnvUnionF phase t = EnvUnion
   { unionID :: Def.UnionID
-  , union :: [(Maybe Def.UniqueClassInstantiation, Def.UniqueFunctionInstantiation, [t], EnvF phase t)]  -- (ufi, assocs, env) -- List can be empty for types written by the programmer (which also don't have any other function's environment yet). This is okay, because functions are not yet monomorphised.
+  , union :: ~[(Maybe Def.UniqueClassInstantiation, Def.UniqueFunctionInstantiation, [t], EnvF phase t)]  -- (ufi, assocs, env) -- List can be empty for types written by the programmer (which also don't have any other function's environment yet). This is okay, because functions are not yet monomorphised.
   } deriving (Eq, Ord, Functor, Foldable, Traversable)
 
 type EnvUnion = UnionUniID  -- changed to a REF.

@@ -1,5 +1,5 @@
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE DeriveFunctor, DeriveTraversable #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -39,6 +39,7 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Text.IO as TextIO
 import Stats (FunInstTrack (..))
+import Control.Monad.Identity (Identity (..))
 
 
 -- set printing config
@@ -99,9 +100,7 @@ showContext = CtxData
 --  copied from TypeCompose package (I didn't need the whole thing, so I just copied the definition)
 --  Now you can use type composition.
 infixl 9 :.
-newtype (g :. f) a = O (g (f a)) 
-  deriving stock (Eq, Ord)
-  deriving anyclass (Functor, Foldable, Traversable)
+newtype (g :. f) a = O (g (f a)) deriving (Eq, Ord, Functor, Foldable)
 
 unO :: (g :. f) a -> g (f a)
 unO (O gfa) = gfa
@@ -352,6 +351,12 @@ instance PP Context where
 instance PPDef Context where
   ppDef = id
 
+instance PP a => PP (Identity a) where
+  pp (Identity x) = pp x
+
+instance PPDef a => PPDef (Identity a) where
+  ppDef (Identity x) = ppDef x
+
 
 instance PP a => PP (Annotated a) where
   pp (Annotated ann c) = annotate ann (pp c)
@@ -506,7 +511,7 @@ instance PP UniqueMem where
 instance PP Locality where
   pp = \case
     Local -> ""
-    FromEnvironment level -> printf undefined "^(%)" level
+    FromEnvironment level -> printf PP "^(%)" level
 
 instance PP UnionID where
   pp = ppUnionID
@@ -543,7 +548,7 @@ instance PP TM.Pos where
   pp = pp . TM.unPos
 
 instance PP FunInstTrack where
-  pp fit = pf "%: % | % | %" fit.name fit.newTypes fit.newUnions fit.numAssociations
+  pp fit = pf "%: % | % | % | % | %" fit.name fit.newTypes fit.newUnions fit.numAssociations fit.schemeTVars fit.schemeUnions
 
 
 ----------------

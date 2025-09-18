@@ -14,6 +14,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE NoStrict #-}
 
 module Typecheck (typecheck, TypeError(..)) where
 
@@ -97,7 +98,7 @@ phase = Def.phase T_AST
 
 typecheck :: Maybe Prelude -> Module R -> InterModular ([TypeError], Module TC)
 typecheck mprelude rStmts = {-# SCC typecheck #-} do
-    let tcContext = Ctx { prelude = mprelude, returnType = Nothing, shouldPrintUnification = Nothing }
+    let tcContext = Ctx { prelude = mprelude, returnType = Nothing }
     let senv = emptySEnv  -- we add typechecking state here, because it might be shared between modules? (especially memoization!)... hol up, is there anything to even share?
 
     -- Step 1: Generate type substitution (typing context) based on the constraints.
@@ -153,6 +154,7 @@ generateSubstitution env senv rModule = do
   pure (tvModule, errors)
   where
     infer = do
+      pf "starting subst"
       -- Typecheck *all* functions, datatypes, etc. We want to typecheck a function even if it's not used (unlike Zig! (soig))
       _ <- inferDatatypes rModule.allDatatypes
       _ <- inferFunctions rModule.allFunctions
@@ -722,12 +724,16 @@ inferDatatype = \case
 inferDataDef :: DataDef R -> Infer (DataDef TC)
 inferDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }) $
   \(DD ut rtvars erdcs anns) addMemo -> mdo
+    pf "miau"
     tvars <- traverse inferTVar rtvars
-    let dd = DD ut (T.Scheme tvars unions) edcs anns  -- NOTE: TVar correctness (no duplication, etc.) should be checked in Resolver!
+    pf "cock"
+    let ~scheme = (T.Scheme tvars unions)
+    let ~dd = DD ut scheme edcs anns  -- NOTE: TVar correctness (no duplication, etc.) should be checked in Resolver!
+    pf "not miau"
 
     addMemo dd
 
-    edcs <- case erdcs of
+    ~edcs <- case erdcs of
       Right rdcs -> fmap Right $ for rdcs $ \(DC _ uc rts dcAnn)-> do
         ts <- traverse inferType rts
         let dc = DC dd uc ts dcAnn
@@ -737,7 +743,7 @@ inferDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }
         t <- inferType rt
         pure $ Def.Annotated recAnn (memname, t)
 
-    unions <- case edcs of
+    ~unions <- case edcs of
           Right dcs -> trafold extractUnionsFromConstructor dcs
           Left drs -> trafold (\(Def.Annotated _ (_, t)) -> mapUnion ut t) drs
 
@@ -2520,7 +2526,6 @@ type Infer = RWST Context [TypeError] TypecheckingState InterModular  -- normal 
 data Context = Ctx
   { prelude :: Maybe Prelude
   , returnType :: Maybe (Type TC)
-  , shouldPrintUnification :: Maybe Int  -- should be in PrintContext, but we cannot modify the inner monad. we require a redesign!
   }
 
 
@@ -2707,7 +2712,7 @@ printUni :: Int -> [Def.Ann] -> Infer a -> Infer a
 printUni line anns ix = if Def.ADebugUnification `elem` anns
   then do
     oldAssocLength <- RWS.gets $ length . associations
-    x <- RWS.local (\r -> r { shouldPrintUnification = Just line }) ix
+    x <- ix
     -- also other shit
     assocs <- RWS.gets associations
     let newAssocs = take (length assocs - oldAssocLength) assocs
@@ -2756,24 +2761,19 @@ seqfold  = fmap fold . sequenceA
 
 
 upExpr :: Infer ()
-{-# inline upExpr #-}
-upExpr = lift $ imLift $ countUp tExprNum  -- lift $ InterModular $ RWS.modify $ \cc -> cc { stats = cc.stats { CompilerContext.tcExpr = cc.stats.tcExpr + 1} }
+upExpr = lift $! imLift $! countUp tExprNum  -- lift $ InterModular $ RWS.modify $ \cc -> cc { stats = cc.stats { CompilerContext.tcExpr = cc.stats.tcExpr + 1} }
 
 upStmt :: Infer ()
-{-# inline upStmt #-}
-upStmt = lift $ imLift $ countUp tStmtNum  -- lift $ CompilerContext $ RWS.modify $ \cc -> cc { stats = cc.stats { CompilerContext.tcStmt = cc.stats.tcStmt + 1} }
+upStmt = lift $! imLift $! countUp tStmtNum  -- lift $! CompilerContext $! RWS.modify $! \cc -> cc { stats = cc.stats { CompilerContext.tcStmt = cc.stats.tcStmt + 1} }
 
 upUni :: Infer ()
-{-# inline upUni #-}
-upUni = lift $ imLift $ countUp numSeparateUnifications
+upUni = lift $! imLift $! countUp numSeparateUnifications
 
 upMapSthTVs :: UltraMap ()
-{-# inline upMapSthTVs #-}
-upMapSthTVs = lift $ lift $ imLift $ countUp numTVMaps
+upMapSthTVs = lift $! lift $! imLift $! countUp numTVMaps
 
 upMapCS :: Infer ()
-{-# inline upMapCS #-}
-upMapCS = lift $ imLift $ countUp numCSMaps
+upMapCS = lift $! imLift $! countUp numCSMaps
 
 -- the COCK operator
 infixr 1 &=>

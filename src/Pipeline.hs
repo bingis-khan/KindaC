@@ -17,7 +17,6 @@ import Data.Maybe (mapMaybe, listToMaybe)
 import System.Directory (getCurrentDirectory)
 import System.Exit (exitFailure)
 import Data.Foldable (find)
-import Text.Printf (printf)
 import AST.Prelude (Prelude (..))
 import qualified AST.Prelude as Prelude
 import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), ExprNode (..), datatypes, LitType (..))
@@ -136,6 +135,7 @@ loadPrelude = do
         pc P ast
 
         phase R "Resolving"
+        Def.printf R "ayo"
         (rerrs, rmod) <- resolve Nothing (error "no module loader for prelude") ast
         pc R rmod
 
@@ -219,7 +219,7 @@ loadPrelude = do
               mdd = find fitsPtrType pmod.exports.datatypes
             in case mdd of
               Just dd -> Success $ \t -> TCon dd [t] []
-              Nothing -> Failure $ ne $ printf "[Prelude: Ptr] Could not find suitable Ptr type (Ptr type name + one tvar)" 
+              Nothing -> Failure $ ne $ Def.pf "[Prelude: Ptr] Could not find suitable Ptr type (Ptr type name + one tvar)"
 
       ebool <- findBasicType Prelude.boolTypeName
       eint  <- findBasicType Prelude.intTypeName

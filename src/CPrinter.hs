@@ -321,7 +321,7 @@ cExpr expr = flip para expr $ \(N t e) -> case e of
     UnOp Not x -> enclose "(" ")" $ "!" & x
     Lam env params body -> cLambda env params t body
     RecCon dd insts ->
-      cRecordInit dd (error "record types do not need these") insts
+      cRecordInit dd [] insts
     UnOp Deref ee -> cDeref ee
 
     -- NOTE: interesting, we still have "As", although it's not needed after typechecking. another reason to modify the Common AST
@@ -1071,7 +1071,7 @@ instance (a ~ ()) => Monoid (PPG a) where
 
 
 -- Line (Expression) PP state.
-newtype PPL a = PL {fromPL :: RWS () [Text] (Context, [AdditionalLine]) a} deriving (Functor, Applicative, Monad, Memoizable)
+newtype PPL a = PL {fromPL :: RWS () [Text] (Context, [AdditionalLine]) a} deriving newtype (Functor, Applicative, Monad, Memoizable)
 
 type PL = PPL ()
 

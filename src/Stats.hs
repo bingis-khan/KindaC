@@ -12,6 +12,8 @@ data FunInstTrack = FunInstTrack
   , newTypes :: Int
   , newUnions :: Int
   , numAssociations :: Int
+  , schemeTVars :: Int
+  , schemeUnions :: Int
   } deriving Eq
 
 type Counter = Word  -- for stats.

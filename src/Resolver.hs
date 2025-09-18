@@ -9,6 +9,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE NoStrict #-}
 module Resolver (resolve, ResolveError) where
 
 import Data.Unique (newUnique)
@@ -45,7 +46,7 @@ import Data.Traversable (for)
 import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Either (rights, lefts)
 import Data.List (find)
-import AST.Def (type (:.)(O), Annotated (..), Binding (..), Located (..), pp, pf)
+import AST.Def (type (:.)(O), Annotated (..), Binding (..), Located (..), pp, PrintfType, LogType (R), Location (TmpNoLocation))
 import qualified AST.Def as Def
 import qualified AST.Common as Common
 import AST.Prelude (Prelude (..))
@@ -61,10 +62,13 @@ import Stats (rExprNum, rStmtNum)
 import BaseCtx (countUp)
 
 
+pf :: PrintfType r => String -> r
+pf = Def.printf R
+
 
 -- Resolves variables, constructors and types and replaces them with unique IDs.
 resolve :: Maybe Prelude -> InterModular.Loader -> Module U -> InterModular ([ResolveError], Module R)
-resolve mPrelude moduleLoader (U.Mod ustmts) = {-# SCC resolve #-} do
+resolve mPrelude ~moduleLoader (U.Mod ustmts) = {-# SCC resolve #-} do
   let newState = maybe emptyState (mkState moduleLoader) mPrelude
   (rstmts, state, errs) <- RWST.runRWST (rStmts ustmts) mPrelude newState
 
@@ -86,7 +90,7 @@ rStmts = traverse -- traverse through the list with Ctx
     rStmt (Annotated anns (Located location uStmt)) =
       let stmt = pure . Annotated anns . Located location
           pass = pure $ Annotated [] $ Located location Pass
-      in upStmt >> case uStmt of
+      in upStmt >> pf "STMT" >> case uStmt of
       Print e -> do
         re <- rExpr e
         stmt $ Print re
@@ -309,12 +313,13 @@ rStmts = traverse -- traverse through the list with Ctx
       Other (U.DataDefinition dd) -> mdo
         tid <- generateType dd.ddName
         -- tying the knot for the datatype definition
+        pf "new tid: %" tid
 
+        tvars <- pure $ mkTVars (Def.BindByType tid) dd.ddScheme
         let dataDef = DD tid tvars rCons anns
         registerDatatype dataDef
 
 
-        let tvars = mkTVars (Def.BindByType tid) dd.ddScheme
         rCons <- bindTVars ((location,) <$> tvars) $ case dd.ddCons of
           Right cons ->
             fmap Right $ for cons $ \(DC () cname ctys conAnns) -> do
@@ -367,6 +372,7 @@ rStmts = traverse -- traverse through the list with Ctx
 
       Fun (U.FunDef (FD () name params ret (uconstraints, headerLocation)) body) -> do
         vid <- generateVar name  -- NOTE: this is added to scope in `newFunction` (for some reason.) TODO: change it later (after I finish implementing records.) TODO: to what?????
+        pf "new vid: %" vid
 
         constraints <- rConstraints uconstraints
 
@@ -378,8 +384,9 @@ rStmts = traverse -- traverse through the list with Ctx
                 Nothing -> Set.singleton $ bindTVar (defaultEmpty utv constraints) (BindByVar vid) utv
               t -> fold <$> sequenceA t
 
-        rec
-          let function = Function (FD env vid rparams rret (anns, headerLocation)) rbody
+        function <- mdo
+          let ~fd = (FD env vid rparams rret (anns, headerLocation))
+          let function = Function fd rbody
           newFunction function
 
           eid <- newEnvID
@@ -397,6 +404,7 @@ rStmts = traverse -- traverse through the list with Ctx
           -- TODO: maybe just make it a part of 'closure'?
           let innerEnv = Map.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
           env <- mkEnv eid innerEnv
+          pure function
 
         stmt $ Fun function
 
@@ -450,7 +458,7 @@ rStmts = traverse -- traverse through the list with Ctx
       Inst rinst -> mdo
         klass <- resolveClass location rinst.instClass
 
-        klassType <- resolveType (error "location in types!") $ fst rinst.instType
+        klassType <- resolveType TmpNoLocation $ fst rinst.instType
         constraints <- rConstraints rinst.instConstraints
 
         let instTVars = map (\utv -> R.bindTVar (Def.defaultEmpty utv constraints) (BindByInst (R.asUniqueClass klass)) utv) $ snd rinst.instType
@@ -527,6 +535,8 @@ currentLevel :: Ctx Int
 currentLevel = subtract 1 . length <$> RWS.gets scopes
 
 
+data Lazy = Lazy { fromLazy :: ~R.Env }
+
 -- must be called BEFORE binding tvars. It checks and errors out if there is a bound tvar that's being constrained.
 rConstraints :: XClassConstraints U -> Ctx (Map Def.UnboundTVar (Set Class))
 rConstraints constraints = do
@@ -556,7 +566,7 @@ rDecon = transverse $ \(N location d) -> fmap (N location) $ case d of
 
     CaseConstructor con <$> sequenceA decons
   CaseRecord tyName members -> do
-    ty <- resolveType (error "location in types!") tyName
+    ty <- resolveType TmpNoLocation tyName
     mems <- traverse sequenceA members
 
     -- NOTE: we can check here if members exist in datatype.
@@ -618,7 +628,7 @@ rExpr = cata $ \(N location expr) -> fmap (embed . N location) $ upExpr >> case 
     rexpr <- e
     pure $ MemAccess rexpr memname
   RecCon tyname mems -> do
-    ty <- resolveType (error "location in types!") tyname
+    ty <- resolveType TmpNoLocation tyname
     mems' <- Def.sequenceA2 mems
 
     case R.tryGetMembersFromDatatype ty of
@@ -685,7 +695,7 @@ rClassType = transverse $ \case
 rType' :: TypeF U (Ctx a) -> Ctx (TypeF R a)
 rType' = \case
   TCon t tapps () -> do
-    rt <- resolveTypeOrClass (error $ pf "location for % in types!" t) t
+    rt <- resolveTypeOrClass TmpNoLocation t  -- (error $ pf "location for % in types!" t) t
     rtApps <- sequenceA tapps
     case (rt, rtApps) of
       (Left klass, []) ->
@@ -700,7 +710,7 @@ rType' = \case
         pure $ TO $ TClass klass
 
   TO v -> do
-    tv <- resolveTVar (error "location in types!") v
+    tv <- resolveTVar TmpNoLocation v
     pure $ TO $ TVar tv
   TFun () args ret -> do
     rArgs <- sequence args
@@ -796,7 +806,7 @@ data CtxState = CtxState
   , inLambda :: Bool  -- hack to check if we're in a lambda currently. when the lambda is not in another lambda, we put "Local" locality.
   , tvarBindings :: Map Def.UnboundTVar (Def.Location, TVar R)
 
-  , loaderFn :: InterModular.Loader
+  , loaderFn :: ~InterModular.Loader
   , modules :: Map U.ModuleQualifier (Module TC)  -- list imported modules. automatically gets scoped, so dunt wurry.
 
   -- we need to keep track of each defined function to actually typecheck it.
@@ -827,7 +837,7 @@ getScopes = RWST.gets scopes
 
 -- Add later after I do typechecking.
 mkState :: InterModular.Loader -> Prelude -> CtxState
-mkState moduleLoader prel = CtxState
+mkState ~moduleLoader prel = CtxState
   { scopes = NonEmpty.singleton initialScope
   , envStack = mempty
   , tvarBindings = mempty
@@ -1125,7 +1135,7 @@ generateType name = do
   pure ty
 
 registerDatatype :: DataDef R -> Ctx ()
-registerDatatype dd = do
+registerDatatype ~dd = do
   -- Check for duplication first
   -- if it exists, we still replace it, but an error is signaled.
   -- TODO: All of this is iffy. I don't really know what it's doing.
@@ -1142,7 +1152,7 @@ registerDatatype dd = do
 
 -- NOTE: used only in DataDefs... remove?
 mkTVars :: Def.Binding -> [Def.UnboundTVar] -> [TVar R]
-mkTVars b = fmap $ R.bindTVar mempty b
+mkTVars ~b ~xs = fmap (R.bindTVar mempty b) xs
 
 bindTVars :: [(Def.Location, TVar R)] -> Ctx a -> Ctx a
 bindTVars tvs cx = do
@@ -1247,7 +1257,7 @@ unit = do
 
     -- When we're resolving prelude, find it from the environment.
     Nothing ->
-      resolveCon (error "location in types!") (U.unqualified Prelude.unitName) <&> \case
+      resolveCon TmpNoLocation (U.unqualified Prelude.unitName) <&> \case
         Just uc -> uc
         Nothing -> error $ "[COMPILER ERROR]: Could not find Unit type with the name: '" <> show Prelude.unitName <> "'. This must not happen."
 
@@ -1260,7 +1270,7 @@ findBuiltinStrConcat = do
 
     -- When we're resolving prelude, find it from the environment.
     Nothing ->
-      resolveCon (error "location in types!") (U.unqualified Prelude.strConcatName) <&> \case
+      resolveCon TmpNoLocation (U.unqualified Prelude.strConcatName) <&> \case
         Just uc -> uc
         Nothing -> error $ "[COMPILER ERROR]: Could not find StrConcat type with the name: '" <> show Prelude.strConcatName <> "'. This must not happen."
 

@@ -6,6 +6,7 @@
 {-# HLINT ignore "Redundant pure" #-}  -- this is retarded. it sometimes increases readability with that extra pure.
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE NoStrict #-}
 module Mono (mono) where
 
 import qualified AST.Typed as T
@@ -49,6 +50,7 @@ import Data.List (nubBy)
 import Data.List (nub)
 import Stats (Counter, mStmtNum, mExprNum, mTypeNum, mUnionNum, mfStmtNum, mfExprNum, mfTypeNum, mfUnionNum)
 import BaseCtx (BaseCtx, countUp')
+
 
 pf :: PrintfType r => String -> r
 pf = Def.printf Def.M

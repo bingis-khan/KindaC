@@ -3,13 +3,14 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE NoStrict #-}
 module TypeFix (typefix) where
 
 import qualified AST.Typed as T
 import Data.List.NonEmpty (NonEmpty)
 import AST.Common (Module, AnnStmt, Function (..), DataDef (..), ClassDef (..), InstDef (..), StmtF (..), Expr, XMutAccess, IfStmt (..), CaseF (..), Type, TypeF (..), TVar (..), XEnvUnion, XEnv, ClassFunDec (..), InstFun (..), Decon, DeconF (..), ExprNode (N), XExprNode, DataCon (..), ExprF (..), LitType (..), XLamOther, ClassType, FunDec (..), ClassTypeF (..), MutAccess (..))
 import AST.Typed (TC, T, topLevelStatements, TOTF (..), EnvUnionF, ScopeSnapshot, Scheme (..), FunOther (..), FunctionTypeAssociation (..), ExprNode (ExprNode), LamDec (..))
-import AST.Def (type (:.) (O), sequenceA2, traverse2, traverseSet, traverse3)
+import AST.Def (type (:.) (O), sequenceA2, traverse2, traverseSet, traverse3, PrintfType, LogType (F))
 import Control.Monad.Trans.RWS.Strict (RWST)
 import qualified Control.Monad.Trans.RWS.Strict as RWST
 import Misc.Memo (Memo, emptyMemo, memo, qmemo)
@@ -30,6 +31,9 @@ import Data.Biapplicative (first)
 import qualified TypingContext as TC
 import Stats (Counter)
 import BaseCtx (BaseCtx)
+
+pf :: PrintfType r => String -> r
+pf = Def.printf F
 
 
 typefix :: TC.TypeUni -> TC.EnvAdditions -> NonEmpty (Module TC) -> BaseCtx (Module T)
@@ -178,6 +182,7 @@ fixTVar tv = do
 
 fixUnion :: XEnvUnion TC -> TypeFix (XEnvUnion T)
 fixUnion = memo memoUnion (\mem s -> s { memoUnion = mem }) $ \uid addMemo -> mdo
+  pf "union"
   RWST.modify $ \s -> s { unionsVisited = s.unionsVisited + 1 }
 
   u <- getUnion uid
@@ -284,6 +289,7 @@ fixVar = \case
 
 fixClass :: ClassDef TC -> TypeFix (ClassDef T)
 fixClass = memo memoClass (\mem s -> s { memoClass = mem }) $ \cd addMemo -> mdo
+  pf "class"
   let tcd = ClassDef cd.classID tcfds cd.classDeclarationLocation
   tcfds <- for cd.classFunctions $ \(CFD _ cfdId params ret () loc) -> do
     tparams <- traverse (bitraverse fixDecon fixClassType) params
@@ -300,6 +306,7 @@ fixClassFunDec (CFD klass cfdId _ _ _ _) = do
 
 fixDataDef :: DataDef TC -> TypeFix (DataDef T)
 fixDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }) $ \dd addMemo -> mdo
+  pf "dd"
   let tdd = DD dd.ddName tscheme tcons dd.ddAnns
   addMemo tdd
 
@@ -321,6 +328,7 @@ fixCon dc = do
 
 fixFun :: Function TC -> TypeFix (Function T)
 fixFun = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \fn addMemo -> mdo
+    pf "fun"
     let fd = fn.functionDeclaration
     let fundec = FD env fd.functionId params ret other
     let tfn = Function fundec funbody
@@ -345,6 +353,7 @@ fixFunDec fd = do
 
 fixInst :: InstDef TC -> TypeFix (InstDef T)
 fixInst = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \instdef _ -> mdo
+    pf "inst"
     klass <- fixClass instdef.instClass
     itype <- bitraverse fixDataDef (traverse fixTVar) instdef.instType
 

@@ -11,6 +11,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE NoStrictData, NoStrict #-}
 module AST.Common (module AST.Common) where
 
 import qualified AST.Def as Def
@@ -235,11 +236,11 @@ data DeclaredType phase  -- a separate datatype to basically allow easy pretty p
   | DeclaredType (Type phase)
 
 data FunDec phase = FD
-  { functionEnv :: XEnv phase
-  , functionId :: XFunVar phase
+  { functionEnv :: (XEnv phase)
+  , functionId :: (XFunVar phase)
   , functionParameters :: [(Decon phase, XFunType phase)]
-  , functionReturnType :: XFunType phase
-  , functionOther :: XFunOther phase
+  , functionReturnType :: (XFunType phase)
+  , functionOther :: (XFunOther phase)
   }
 
 data Function phase = Function
@@ -287,8 +288,8 @@ data InstDef phase = InstDef
 data InstFun phase = InstFun
   { instFunDec :: FunDec phase
   , instFunBody :: NonEmpty (AnnStmt phase)
-  , instClassFunDec :: Rec phase (XClassFunDec phase)
-  , instDef :: Rec phase (InstDef phase)
+  , instClassFunDec :: (Rec phase (XClassFunDec phase))
+  , instDef :: (Rec phase (InstDef phase))
   }
 
 

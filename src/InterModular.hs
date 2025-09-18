@@ -12,7 +12,7 @@ import Data.Text (Text)
 import Data.Map (Map, (!?))
 import qualified AST.Untyped as U
 import AST.Common (Module, Function, FunDec (functionId, functionOther))
-import AST.Typed (TC, FunOther (functionAssociations))
+import AST.Typed (TC, FunOther (functionAssociations, functionScheme), Scheme (Scheme))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import TypingContext (globalTypeUni, TypingContext, globalEnvAddition')
 import qualified TypingContext as TC
@@ -196,8 +196,8 @@ numTypesAndUnionsDefined = use tc <&> TC.numTypesAndUnionsDefined
 trackInstantiation :: (Int, Int) -> Function TC -> InterModular ()
 trackInstantiation (beforeTypes, beforeUnions) fn = do
   (afterTypes, afterUnions) <- numTypesAndUnionsDefined
-
-  let inst = FunInstTrack fn.functionDeclaration.functionId.varName.fromVN (afterTypes - beforeTypes) (afterUnions - beforeUnions) (length fn.functionDeclaration.functionOther.functionAssociations)
+  let Scheme tvars unions = fn.functionDeclaration.functionOther.functionScheme
+  let inst = FunInstTrack fn.functionDeclaration.functionId.varName.fromVN (afterTypes - beforeTypes) (afterUnions - beforeUnions) (length fn.functionDeclaration.functionOther.functionAssociations) (length tvars) (length unions)
   IM $ lift $ BaseCtx.trackInstantiation inst
 
 
@@ -225,7 +225,7 @@ relativeTo newBasePath = IM . RST.local (\ccc ->
 
 
 imLift :: BaseCtx a -> InterModular a
-imLift = IM . lift
+imLift !x = IM $! lift $! x
 
 
 instance (unit ~ ()) => Log (InterModular unit) where
