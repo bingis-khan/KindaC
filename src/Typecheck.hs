@@ -53,8 +53,8 @@ import AST.Prelude (Prelude)
 import qualified AST.Prelude as Prelude
 import AST.Common (Module, AnnStmt, StmtF (..), Type, CaseF (..), ExprF (..), ClassFunDec (..), DataCon (..), DataDef (..), ClassType, ClassTypeF (..), TypeF (..), TVar (..), Function (..), functionEnv, Exports (..), ClassDef (..), InstDef (..), InstFun (..), functionOther, FunDec (..), Decon, DeconF (..), IfStmt (..), Expr, ExprNode (..), DeclaredType (..), XClassFunDec, MutAccess (..), LitType (..), asksNode)
 import AST.Resolved (R)
-import AST.Typed ( TC, Scheme(..), TOTF(..) )
-import AST.Def ((:.)(..), PP (..), Binding (..), BinOp (..), ppDef, fmap2, traverse2, Log, LogType (T_AST, T_Uni), PrintfType, TypeID)
+import AST.Typed ( TC, Scheme(..), TOTF(..), Match, MatchF (..) )
+import AST.Def ((:.)(..), PP (..), Binding (..), BinOp (..), ppDef, fmap2, traverse2, Log, LogType (T_AST, T_Uni), PrintfType, TypeID, ClassInstID (..))
 import qualified AST.Def as Def
 import Data.String (fromString)
 import Error (Error (..), renderError)
@@ -73,6 +73,8 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified TypingContext as TC
 import Stats (tStmtNum, tExprNum, numSeparateUnifications, numTVMaps, numCSMaps)
 import BaseCtx (countUp)
+import Control.Monad.Trans.RST (RST)
+import qualified Control.Monad.Trans.RST as RST
 
 pc :: (PP a, Log p, p ~ x unit, unit ~ ()) => a -> p
 pc = Def.pc T_AST
@@ -90,12 +92,6 @@ phase = Def.phase T_AST
 --   - The previous typechecker was unreadable. Use appropriate variable names, avoid the functional composition hell.
 --   - Use comments even if something is obvious. (but not too obvious?)
 
-------------- Another rewrite
--- Two phases:
---  1. assign types
---    TODO: (we'll have to think of where to put the envaddition!!!!)
---  2. expand environment n replace types (this won't happen here, but at the end of compiler context kekek)
-
 typecheck :: Maybe Prelude -> Module R -> InterModular ([TypeError], Module TC)
 typecheck mprelude rStmts = {-# SCC typecheck #-} do
     let tcContext = Ctx { prelude = mprelude, returnType = Nothing }
@@ -104,41 +100,17 @@ typecheck mprelude rStmts = {-# SCC typecheck #-} do
     -- Step 1: Generate type substitution (typing context) based on the constraints.
     (tStmts, errs) <- generateSubstitution tcContext senv rStmts
 
-    phase "Typechecking (Before substitution)"
-    pc tStmts
-
-    ----- Step 1.25
-    -- Now add those extra variables to all them envs.
-    -- let envSu = subst su $ EnvAddition envAdds  -- after this, env addition might STILL have some tyvars left over, but this will be fixed by the final substitution (which will just work on the new environments!)
     phase "State of unis"
     pc =<< InterModular.getTypeUni
 
-
-    ----- Step 1.5: Substitute tyvars in Subst's unions, because they are not actively substituted yet?
-    -- HACK: I didn't check it when that happens, so I'll do it at the end.
-    --  Unions that are to be substituted may have unsubstituted parameters. This should quickly fix that. However, I'm not sure where this happens. So, this is a TODO to figure out why this happens and when.
-    -- ISSUE(function-tvars-in-its-env)
-    -- let Subst suUnions suTVs = su
-    -- let suNoUnions = Subst mempty suTVs
-    -- let suUnions' = subst suNoUnions . subst envSu <$> suUnions
-    -- let su' = Subst suUnions' suTVs
-
-
-    -- phase "Typechecking (og subst)"
-    -- pc $ dbgSubst su
-
-    -- phase "Typechecking (fixed subst)"
-    -- pc $ dbgSubst su'
-
-
-    -- Step 2: Substitute the types with the inferred ones.
-    -- let tStmts'' = subst su' tStmts'
+    -- check if there are any free variables to ERROR ON.
+    -- TODO: after i test it out, replace ftvs without any typeclasses with Units. Only error on tyvars with typeclasses.
     ftvs <- Set.map snd <$> findFTV tStmts
-    let errs' = errs <> (AmbiguousType (error "what location should i put here???") <$> Set.toList ftvs)
+    let errs' = errs <> (AmbiguousType Def.TmpNoLocation <$> Set.toList ftvs)
 
-
-    phase "Typechecking (After Substitution)"
-    -- pc tStmts''
+    
+    phase "Typechecking (AST)"
+    pc tStmts
 
     pure (errs', tStmts)
 
@@ -149,7 +121,7 @@ typecheck mprelude rStmts = {-# SCC typecheck #-} do
 
 generateSubstitution :: Context -> TypecheckingState -> Module R -> InterModular (Module TC, [TypeError])
 generateSubstitution env senv rModule = do
-  (tvModule, s, errors) <- runRWST infer env senv
+  (tvModule, _, errors) <- runRWST infer env senv
 
   pure (tvModule, errors)
   where
@@ -163,21 +135,12 @@ generateSubstitution env senv rModule = do
       _ <- inferInstances rModule.allInstances
       exs <- inferExports rModule.exports
 
-      -- run it one last time.
-      cia <- substAccessAndAssociations
-      -- pc cia
+      -- run it one last time for top level
+      _ <- substAccessAndAssociations
 
       assocs <- RWS.gets associations
       pf "LAST ASSOCS: %" (pp $ fst <$> assocs) :: Infer ()
-      -- su <- RWS.gets typeSubstitution
       reportAssociationErrors
-      -- addSelectedEnvironmentsFromInst
-      -- liftIO $ phase "TOP LEVEL BEFORE"
-      -- Def.ctxPrint (Def.ppLines pp) tls
-      -- stmts <- replaceClassFunsWithInstantiations su cia tls
-
-      -- liftIO $ phase "TOP LEVEL AFTER"
-      -- Def.ctxPrint (Def.ppLines pp) stmts
 
       pure $ T.Mod
         { T.topLevelStatements = tls
@@ -202,21 +165,19 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
     conStmtScaffolding = cata (fmap embed . inferAnnStmt)
 
     -- go through additional layers (in the future also position information)...
-    inferAnnStmt :: (PP a, Substitutable a) => Base (AnnStmt R) (Infer a) -> Infer (Base (AnnStmt TC) a)
+    inferAnnStmt :: (PP a) => Base (AnnStmt R) (Infer a) -> Infer (Base (AnnStmt TC) a)
     inferAnnStmt (O (O (Def.Annotated anns (Def.Located location rStmt)))) = printUni (unPos location.startPos.sourceLine) anns $ do
         upStmt
         tstmt <- bitraverse inferExpr id rStmt
 
         -- Map expr -> type for unification
         let ttstmt = first (\expr@(Fix (N en _)) -> (expr, en.t)) tstmt
-        stmt'''@(O (O (Def.Annotated _ (Def.Located _ stmt''''')))) <- O . O . Def.Annotated anns . Def.Located location <$> inferStmt location ttstmt
-        -- su <- RWS.gets typeSubstitution
+        stmt'''@(O (O (Def.Annotated _ (Def.Located _ _)))) <- O . O . Def.Annotated anns . Def.Located location <$> inferStmt location ttstmt
         pf "STMT: %" stmt'''
-        -- whenPrintingUni $ pf "STMT: %" (subst su (stmt'''''))
         pure stmt'''
 
     inferStmt :: Def.Location -> StmtF R (Expr TC, Type TC) a -> Infer (StmtF TC (Expr TC) a)
-    inferStmt location stmt = case stmt of
+    inferStmt _ stmt = case stmt of
 
       Assignment v varLocation (rexpr@(Fix (N en _)), t) -> do
         vt <- var v
@@ -225,18 +186,18 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
         pure $ Assignment v varLocation rexpr
 
 
-      Mutation v varLocation loc accesses (expr@(Fix (N ne _)), t) -> do
+      Mutation v varLocation locality accesses (expr@(Fix (N ne _)), t) -> do
         vt <- var v
 
-        case loc of
+        case locality of
           Def.Local -> pure ()
           Def.FromEnvironment {} ->
             addEnv (T.DefinedVariable v) vt
 
         -- prepare accesses for typechecking.
         taccesses <- for accesses $ \case
-              MutRef loc -> (MutRef loc,) <$> fresh
-              MutField loc mem -> (MutField loc mem,) <$> fresh
+              MutRef l -> (MutRef l,) <$> fresh
+              MutField l mem -> (MutField l mem,) <$> fresh
 
         let
           maybeConcat :: Maybe Def.Location -> Def.Location -> Def.Location
@@ -267,7 +228,7 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
         (guessedType, _) <- foldlM foldMutAccess (t, Nothing) (reverse taccesses)
 
         (varLocation, vt) `uni` (Just ne.loc, guessedType)
-        pure $ Mutation v varLocation loc taccesses expr
+        pure $ Mutation v varLocation locality taccesses expr
 
 
       If (IfStmt { condition = (cond, condt), ifTrue, ifElifs, ifElse }) -> do
@@ -292,7 +253,6 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
         pure $ Switch rswitch (fst <$> tdecons)
         where
-
           inferCase Case { deconstruction = decon, caseCondition = caseCon, caseBody = body } = do
             tdecon <- inferDecon decon
             let tCaseCon = fst <$> caseCon
@@ -300,14 +260,12 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
 
       Return rret -> do
-        pf "uu"
         ret <- inferExpr rret
         emret <- RWS.asks returnType
-        pf "miau"
+
         eret <- maybe (findBuiltinType Prelude.tlReturnFind) pure emret  -- NOTE: When default return type is nothing, this means that we are parsing prelude. Return type from top level should be "Int" (or, in the future, U8).
-        pf "ooo"
-        asksNode (\ne -> (ne.loc, ne.t)) ret `uni` (Nothing, eret)
-        pf "aaaa"
+        askUni ret `uni` (Nothing, eret)
+
         pure $ Return ret
 
       While (cond, condt) body -> do
@@ -331,16 +289,10 @@ inferStmts = traverse conStmtScaffolding  -- go through the block of statements.
 
       Fun rfn -> do
         fn <- inferFunction rfn
-
-        -- RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
-
         pure $ Fun fn
 
       Inst rinst -> do
         inst <- inferInstance rinst
-
-        -- RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
-
         pure $ Inst inst
 
       Other () -> pure $ Other ()
@@ -374,21 +326,18 @@ inferExpr = cata (fmap embed . inferExprType)
             -- NOTE: We have to call it here, because some types in the declaration might be dependent on member types.
             --  At the end there will be one last member access.
             -- TODO: technically, we can do it all at the end. I should add it to state and replace them at the end (since they are all referred to by the unique instantiation id).
-            classInstantiationAssocs <- substAccessAndAssociations
-            -- su <- RWS.gets typeSubstitution
-            -- replacedBody <- replaceInExpr su classInstantiationAssocs exprBody
+            substAccessAndAssociations
 
-            pure (classInstantiationAssocs, exprBody)
+            pure exprBody
 
           -- be sure to copy the environment HERE!
-          let varsFromNestedFun = case fenv of
-                T.Env _ venv _ _ -> Set.fromList $ venv <&> \(v, _, t) -> (v, t)
-                _ -> error "FUKKK"
+          let
+            T.EnvDef _ venv _ = fenv
+            varsFromNestedFun = Set.fromList $ venv <&> \(v, _, t) -> (v, t)
 
           RWS.modify $ \s -> s { instantiations = varsFromNestedFun <> s.instantiations }
 
-          ufi <- newFunctionInstantiation  -- i guess we don't really need to save that tho.
-          union <- singleEnvUnion Nothing ufi [] fenv
+          union <- singleEnvUnion (T.UnionLam fenv)
           let ret = asksNode T.t body'
           t <- mkType $ TFun union argts ret
 
@@ -413,7 +362,7 @@ inferExpr = cata (fmap embed . inferExprType)
 
 
         Var v loc -> do
-          (t, v') <- instantiateVariable location loc =<< inferVariable location v
+          (t, v') <- instantiateVariable location loc v
 
           case loc of
             Def.Local -> pure ()
@@ -426,8 +375,8 @@ inferExpr = cata (fmap embed . inferExprType)
         Con c emptyEnv -> do
           c' <- inferConstructor c
 
-          t <- instantiateConstructor emptyEnv c'
-          pure (Con c' emptyEnv, t)
+          (t, match) <- instantiateConstructor emptyEnv c'
+          pure (Con c' (emptyEnv, match), t)
 
         RecCon dd insts -> do
           -- currently, all the redefinitions are reported in Resolver.
@@ -517,12 +466,7 @@ inferExpr = cata (fmap embed . inferExprType)
           pf "cc"
           askUni callee' `uni` (Just location, ft)  -- first unify the whole function shape.
 
-          -- then, unify specific arguments.
-          -- WHAT: or I would do it, but it don't work for one test. why???? there's something funny going on with the typechecker again?
-          -- for_ (zip argts ((Nothing,) <$> argfs)) $ uncurry uni
-
           -- TODO: in the future, make a special function for calls, which will signal nice errors.
-
           pure (Call callee' args', ret)
 
         UnOp Def.Not ee -> do
@@ -559,53 +503,6 @@ inferExpr = cata (fmap embed . inferExprType)
 
 
 
-inferVariable :: Def.Location -> R.Variable -> Infer T.Variable
-inferVariable location = \case
-  R.DefinedVariable v -> pure $ T.DefinedVariable v
-  R.ExternalVariable v _ -> pure $ T.DefinedVariable v  -- TODO: CURRENTLY BROKEN. THE TYPE SHOULD BE PASSED.
-
-  R.ExternalFunction fn rsnapshot -> do
-    snapshot <- inferSnapshot rsnapshot
-    pure $ T.DefinedFunction fn mempty snapshot tempFunctionInstantiation
-
-  R.DefinedFunction fn rsnapshot -> do
-    tfn <- inferFunction fn
-    snapshot <- inferSnapshot rsnapshot
-    pure $ T.DefinedFunction tfn mempty snapshot tempFunctionInstantiation
-
-  R.ExternalClassFunction cfd@(CFD cd _ _ _ () _) rsnapshot -> do
-    -- insts <- fmap Map.fromList $ for (Map.toList (rinsts ! )) $ \(rdd, rinst) -> do
-    --   dd <- inferDatatype rdd
-    --   inst <- case rinst of
-    --     R.DefinedInst rists  -> inferInstance rists
-    --     R.ExternalInst tinst -> pure tinst
-    --   pure (dd, inst)
-    snapshot <- inferSnapshot rsnapshot
-    let insts = Def.defaultEmpty cd snapshot
-
-    self <- fresh
-    let constr = constrain location
-    self `constr` (cd, insts)
-
-    pure $ T.DefinedClassFunction cfd snapshot self tempClassInstantiation
-
-  R.DefinedClassFunction rcfd rsnapshot -> do
-    cfd@(CFD cd _ _ _ () _) <- inferClassDeclaration rcfd
-    -- insts <- fmap Map.fromList $ traverse (bitraverse inferDatatype inferInstance) $ Map.toList rinsts
-    snapshot <- inferSnapshot rsnapshot
-    let insts = Def.defaultEmpty cd snapshot
-
-    self <- fresh
-    let constr = constrain location
-    self `constr` (cd, insts)
-
-    pure $ T.DefinedClassFunction cfd snapshot self tempClassInstantiation
-
-tempFunctionInstantiation :: Def.UniqueFunctionInstantiation
-tempFunctionInstantiation = error "should not evaluate"
-
-tempClassInstantiation :: Def.UniqueClassInstantiation
-tempClassInstantiation = error "should not evaluate"
 
 inferSnapshot :: R.ScopeSnapshot -> Infer (T.ScopeSnapshot TC)
 inferSnapshot = Def.bitraverseMap inferClass inferPossibleInstances
@@ -655,7 +552,6 @@ inferClassType = cata $ (.) (fmap embed) $ \case
       t <- fresh
       let constr = constrain (error "todo (should come from class type)")
       t `constr` (cd, mempty)  -- NOTE: we MUST ensure that this turns into a TVar. If not, it should be an error...? 
-      -- pure $ error "should not evaluate." <$ project t
       undefined
 
     TO (R.TVar rtv) -> do
@@ -670,7 +566,7 @@ inferType = cata $ \case
   TCon (R.DefinedDatatype rdd) rparams () -> do
     dd <- inferDataDef rdd
     params <- sequenceA rparams
-    (newParams, unions) <- instantiateScheme mempty dd.ddScheme
+    (Match newParams unions _, ()) <- instantiateScheme mempty dd.ddScheme (const $ pure ())
 
     (Def.TmpNoLocation, newParams) `uniMany` (Nothing, params) -- just in case unify em
 
@@ -678,7 +574,7 @@ inferType = cata $ \case
 
   TCon (R.ExternalDatatype dd) rparams () -> do
     params <- sequenceA rparams
-    (newParams, unions) <- instantiateScheme mempty dd.ddScheme
+    Match newParams unions _ <- instantiateScheme' mempty dd.ddScheme
 
     (Def.TmpNoLocation, newParams) `uniMany` (Nothing, params) -- just in case unify em
     mkType $ TCon dd params unions
@@ -727,7 +623,7 @@ inferDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }
     pf "miau"
     tvars <- traverse inferTVar rtvars
     pf "cock"
-    let ~scheme = (T.Scheme tvars unions)
+    let ~scheme = T.Scheme tvars unions []
     let ~dd = DD ut scheme edcs anns  -- NOTE: TVar correctness (no duplication, etc.) should be checked in Resolver!
     pf "not miau"
 
@@ -745,7 +641,7 @@ inferDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }
 
     ~unions <- case edcs of
           Right dcs -> trafold extractUnionsFromConstructor dcs
-          Left drs -> trafold (\(Def.Annotated _ (_, t)) -> mapUnion ut t) drs
+          Left drs -> trafold (\(Def.Annotated _ (_, t)) -> extractUnion ut t) drs
 
     pure dd
 
@@ -778,9 +674,9 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
 
 
     -- Set up temporary recursive env (if this function is recursive, this env will be used).
-    let recenv = T.RecursiveEnv rfundec.functionEnv.envID (null $ R.fromEnv rfundec.functionEnv)
-    let noGeneralizationScheme = Scheme mempty mempty
-    let fundec = FD recenv rfundec.functionId params ret $ T.FunOther noGeneralizationScheme [] anns (snd rfundec.functionOther)
+    -- let recenv = T.RecursiveEnv rfundec.functionEnv.envID (null $ R.fromEnv rfundec.functionEnv)
+    let noGeneralizationScheme = Scheme mempty mempty mempty
+    let fundec = FD env rfundec.functionId params ret $ T.FunOther noGeneralizationScheme anns (snd rfundec.functionOther)
     let fun = Function { functionDeclaration = fundec, functionBody = body }
 
     -- Add *ungeneralized* type.
@@ -796,11 +692,11 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
       --  At the end there will be one last member access.
       -- TODO: technically, we can do it all at the end. I should add it to state and replace them at the end (since they are all referred to by the unique instantiation id).
       pf "IN FUNCTION %s" (pp fundec.functionId) :: Infer ()
-      classInstantiationAssocs <- substAccessAndAssociations
+      substAccessAndAssociations
       -- su <- RWS.gets typeSubstitution
       -- replacedStmts <- replaceClassFunsWithInstantiations su classInstantiationAssocs stmts
 
-      pure (classInstantiationAssocs, stmts)
+      pure stmts
 
     -- now, replace it with a non-recursive environment.
     let fundec' = fundec { functionEnv = env }
@@ -839,7 +735,7 @@ inferFunction = memo memoFunction (\mem s -> s { memoFunction = mem }) $ \rfn ad
 --         appliedUCIs = Map.restrictKeys cia ucisInFunction
 --     pure $ Var (T.DefinedFunction fn ts snapshot ufi) loc
 
---   As x at -> As <$> x <*> pure at
+--   As x at -> As <$> x <> pure at
 
 --   expr -> sequenceA expr
 
@@ -881,7 +777,7 @@ inferClassDef = memo memoClass (\mem s -> s { memoClass = mem }) $ \cd _ -> mdo
 inferClassFunDec :: ClassDef TC -> XClassFunDec R -> Infer (ClassFunDec TC)
 inferClassFunDec cd = \case
   (R.ExternalClassFunDec cfd) -> pure cfd
-  (R.DefinedClassFunDec (CFD _ uv params ret () headerLocation)) -> do
+  (R.DefinedClassFunDec (CFD _ uv params ret ())) -> do
     params' <- for params $ \(decon, rt) -> do
       d <- inferDecon decon
       t <- inferClassType rt
@@ -894,12 +790,12 @@ inferClassFunDec cd = \case
       pure (d, t)
 
     ret' <- inferClassType ret
-    pure $ CFD cd uv params' ret' () headerLocation
+    pure $ CFD cd uv params' ret' undefined
 
 inferClassDeclaration :: ClassFunDec R -> Infer (ClassFunDec TC)
-inferClassDeclaration (CFD rcd uv _ _ () _) = do
+inferClassDeclaration (CFD rcd uv _ _ ()) = do
   tcd <- inferClassDef rcd
-  let mcfd = find (\(CFD _ cuv _ _ () _) -> cuv == uv) tcd.classFunctions
+  let mcfd = find (\(CFD _ cuv _ _ _) -> cuv == uv) tcd.classFunctions
   pure $ Def.mustOr (pf "[COMPILER ERROR]: Could not find function %s in class %s." (pp uv) (pp tcd.classID)) mcfd
 
 inferInst :: R.Inst -> Infer (InstDef TC)
@@ -923,11 +819,13 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
 
   fns <- for inst.instFuns $ \rfn -> do
     pf "fn"
-    cfd@(CFD _ _ cparams cret _ classFunHeaderLocation) <- inferClassFunDec klass rfn.instClassFunDec
+    cfd@(CFD _ _ cparams cret _) <- inferClassFunDec klass rfn.instClassFunDec
 
     -- TODO: add check?
     fn <- generalize $ mdo
       pf "lam generalize"
+      -- TODO NEW: same as in `inferType`
+      Match tvs unions _ <- instantiateScheme' mempty it.ddScheme
       self <- mkType $ TCon it tvs unions  -- TODO: when we stop ignoring tvars, properly instantiate them here.
       pf "miau"
 
@@ -960,20 +858,19 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
         TypeNotDeclared -> fresh
 
       -- now unify it with the base class function type.
-      (tvs, unions) <- instantiateScheme mempty it.ddScheme
-      classFun <- instantiateClassFunction cfd self
+      (classFunType, _) <- instantiateClassFunction cfd undefined undefined
 
       union <- emptyUnion
       genFun <- mkType $ TFun union (snd <$> params) ret
 
       let instFunHeaderLocation = snd rfn.instFunDec.functionOther
-      (instFunHeaderLocation, genFun) `uni` (Just classFunHeaderLocation, classFun)
+      (instFunHeaderLocation, genFun) `uni` (Nothing, classFunType)
 
 
       -- Set up temporary recursive env (if this function is recursive, this env will be used).
       let recenv = T.RecursiveEnv rfundec.functionEnv.envID (null $ R.fromEnv rfundec.functionEnv)
       let noGeneralizationScheme = Scheme mempty mempty
-      let fundec = FD recenv rfundec.functionId params ret $ T.FunOther noGeneralizationScheme [] anns (snd rfundec.functionOther)
+      let fundec = FD env rfundec.functionId params ret $ T.FunOther undefined anns (snd rfundec.functionOther)
       let fun = Function { functionDeclaration = fundec, functionBody = body }
 
       -- Infer body.
@@ -984,10 +881,10 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
         -- NOTE: We have to call it here, because some types in the declaration might be dependent on member types.
         --  At the end there will be one last member access.
         -- TODO: technically, we can do it all at the end. I should add it to state and replace them at the end (since they are all referred to by the unique instantiation id).
-        classInstantiationAssocs <- substAccessAndAssociations
+        substAccessAndAssociations
         -- replacedStmts <- replaceClassFunsWithInstantiations su classInstantiationAssocs stmts
 
-        pure (classInstantiationAssocs, stmts)
+        pure stmts
 
       -- now, replace it with a non-recursive environment.
       let fundec' = fundec { functionEnv = env }
@@ -1011,25 +908,6 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
   pure instDef
 
 
--- -- error if inst function's type is different.
--- --  in its own function, because in the future the error will be more detailed.
--- ensureClassFunctionHasSameShapeAsInstance :: ClassFunDec TC -> Function TC -> Infer ()
--- ensureClassFunctionHasSameShapeAsInstance cfd@(CFD _ _ cparams cret _) fn = do
---   let
---     checkDifference :: ClassType TC -> Type TC -> [(ClassType TC, Type TC)]
---     checkDifference (Fix Self) _ = mempty  -- Assumption: self is correct (due to previous typechecking stuff). I don't bother checking it to write less code now :]
---     checkDifference (Fix (NormalType lct)) rt = case (lct, project rt) of
---       (TO _, TO _) -> undefined
-
---     FD _ _ params ret _ = fn.functionDeclaration
---     cts = cret : fmap snd cparams
---     ts  = ret : fmap snd params
---     -- I assume parameter list length was checked before.
---     diffs = fold $ zipWith checkDifference cts ts
-
---   unless (null diffs) $
---     err $ InstanceFunctionTypeNotMatchingClass cfd fn diffs
-
 
 -- Generalizes the function inside.
 generalize :: Infer (Function TC) -> Infer (Function TC)
@@ -1043,48 +921,48 @@ generalize ifn = do
 
   -- First substitution will substitute types that are already defined.
   -- What's left will be TyVars that are in the definition.
-  (scheme, assocs) <- constructSchemeForFunctionDeclaration fn.functionDeclaration
+  scheme <- constructSchemeForFunctionDeclaration fn.functionDeclaration
 
   pf "Scheme for %s: %s" (pp fn.functionDeclaration.functionId) (pp scheme) :: Infer ()
-  pf "Assocs for %s: %s" (pp fn.functionDeclaration.functionId) (pp assocs) :: Infer ()
+  -- pf "Assocs for %s: %s" (pp fn.functionDeclaration.functionId) (pp assocs) :: Infer ()
 
 
-  let generalizedFnWithScheme = fn { functionDeclaration = fn.functionDeclaration { functionOther = T.FunOther { T.functionScheme = scheme, T.functionAssociations = assocs, T.functionAnnotations = fn.functionDeclaration.functionOther.functionAnnotations, T.functionLocation = fn.functionDeclaration.functionOther.functionLocation } } }
+  let generalizedFnWithScheme = fn { functionDeclaration = fn.functionDeclaration { functionOther = T.FunOther
+    { T.functionScheme = scheme
+    , T.functionAnnotations = fn.functionDeclaration.functionOther.functionAnnotations
+    , T.functionLocation = fn.functionDeclaration.functionOther.functionLocation
+    } } }
 
   pf "Substituted function %:" fn.functionDeclaration.functionId
   pc generalizedFnWithScheme
   pc =<< lift InterModular.getTypeUni
 
-  -- Also, remember the substitution! (tvars might escape the environment)
-  --  TODO: not sure if that's the best way. maybe instead of doing this, just add it in the beginning and resubstitute the function.
-  -- let (Subst _ tvars) = su  -- NOTE: safe!
-  -- for_ (Map.toList tvars) $ uncurry (bind undefined)
-
-
   pure generalizedFnWithScheme
 
 
-substAccessAndAssociations :: Infer T.ClassInstantiationAssocs
+-- NEW: it should be called before every env creation.
+substAccessAndAssociations :: Infer ()
 substAccessAndAssociations = do
   phase "SUBST ACCESS"
   go where
     go = do
       didAccessProgressedSubstitutions <- substAccess
-      classInstantiationAssocs <- substAssociations
-      let didAssociationsProgressedSubstitutions = not $ null classInstantiationAssocs
-      pf "CIA KEYS: %" $ pp $ Set.toList $ Map.keysSet classInstantiationAssocs
+      didAssociationsProgressedSubstitutions <- substAssociations
+      -- let didAssociationsProgressedSubstitutions = not $ null classInstantiationAssocs
+      -- pf "CIA KEYS: %" $ classInstantiationAssocs
       -- pc classInstantiationAssocs
 
       -- There should be no more than one UCI for a type. These are already selected.
       if didAccessProgressedSubstitutions || didAssociationsProgressedSubstitutions
-        then Map.unionWith (error "more than one assoc for uci should not happen") classInstantiationAssocs <$> go
+        then go
         else do
           phase "END SUBST ACCESS"
-          pure mempty
+          pure ()
 
 
 -- substitutes members n shiii (this is done in conjunction with associated types).
 -- returns True if substitutions were done.
+-- TODO: uggo function in general (including the `getExpectedType`)
 substAccess :: Infer Bool
 substAccess = do
   membersAccessed <- RWS.gets memberAccess
@@ -1100,50 +978,69 @@ substAccess = do
 
 
 -- returns True if substitutions were done.
-substAssociations :: Infer T.ClassInstantiationAssocs
+-- TODO: uggo function 2
+substAssociations :: Infer Bool
 substAssociations = do
   assocs <- RWS.gets associations
   RWS.modify $ \s -> s { associations = mempty }
 
-  (substitutedAssociations, classInstantiationAssocs) <- fmap (bimap filterDesignatedForRemoval (foldr (<>) Map.empty) . unzip) $ for assocs $ \t@(T.TypeAssociation (fromLocation, from) (toLocation, to) (CFD cd uv _ _ () _) uci baseUFI envsToAddTo, insts) -> do
+  substitutedAssociations <- fmap filterDesignatedForRemoval $ for assocs $ \t@(T.TypeAssociation (fromLocation, from) (toLocation, to) (CFD cd uv _ _ _) classInstID envsToAddTo, insts) -> do
     unFrom <- getType from
     case unFrom of
         TCon dd _ _ -> case insts !? cd >>= (!? dd) of
           Just inst -> do
             -- select instance function to instantiate.
-            let instFun = Def.mustOr (pf "[COMPILER ERROR]: Could not select function %s bruh," (pp uv)) $ find (\InstFun { instClassFunDec = CFD _ cuv _ _ () _ } -> cuv == uv) inst.instFuns
+            let instFun = Def.mustOr (pf "[COMPILER ERROR]: Could not select function %s bruh," (pp uv)) $ find (\InstFun { instClassFunDec = CFD _ cuv _ _ _ } -> cuv == uv) inst.instFuns
 
             -- hope it's correct....
             -- let baseFunctionScopeSnapshot = Map.singleton instFun.instDef.instClass insts  -- FIX: bad interface. we make a singleton, because we know which class it is. also, instance might create constraints of some other class bruh. ill fix it soon.
             -- TODO: FromEnvironment locality only here, because it means we won't add anything extra to the instantiations.
-            (instFunType, T.DefinedFunction fn instAssocs _ ufi, env@(T.Env _ _ _ level)) <- instantiateFunction fromLocation (Just uci) insts $ Function instFun.instFunDec instFun.instFunBody
+            (instFunType, T.DefinedFunction fn _, theseInsts) <- instantiateFunction fromLocation insts $ Function instFun.instFunDec instFun.instFunBody
 
             pf "fun assoc uni %: %" fn.functionDeclaration.functionId <$> presentFunctionType fn =<< getTypeUni
             mto <- presentType to <$> getTypeUni
             ifnt <- presentType instFunType <$> getTypeUni
             pf "uni: % %" mto ifnt
             (toLocation, to) `uni` justType instFunType
-            pf "ENV ASSOC: %" env
-            addExtraToEnv envsToAddTo env
+            -- pf "ENV ASSOC: %" env
+            addExtraToEnv envsToAddTo undefined
 
             -- su <- RWS.gets typeSubstitution
 
-            pure ((t, True), Map.singleton ((,instFunType) <$> baseUFI, uci) (from, (instAssocs, instFun), level, ufi))
+            pure (t, True)
 
           Nothing -> do
-            pure ((t, False), mempty)  -- error.
+            pure (t, False)  -- error.
 
         -- I guess we don't signal errors yet! We'll do it on the next pass.
-        _ -> pure ((t, False), mempty)
+        _ -> pure (t, False)
 
   dbgAssociations "after" substitutedAssociations
   RWS.modify $ \s -> s { associations = s.associations <> substitutedAssociations }
-  pure classInstantiationAssocs
+  pure $ not $ null substitutedAssociations
+
 
 -- adds last fixups to the environment.
-addExtraToEnv :: [Def.EnvID] -> T.Env -> Infer ()
-addExtraToEnv _ (T.RecursiveEnv {}) = error "should not happen"
-addExtraToEnv envIds (T.Env _ vars _ instEnvStack) =
+-- NEW: shouldn't it be the same as what's in instantiateVariable with function?
+--    like, shouldn't it be recursive, adding instantiations from a function used in the instantiation??
+-- 
+-- class ToInt
+-- 	to-int (n _) -> Int
+
+-- env = 420
+-- f ()
+-- 	inst ToInt Bool
+-- 		to-int (n Bool) -> Int
+-- 			return env
+
+-- 	print to-int(True)
+-- 	return
+
+-- f()
+--     test result: NEGATIVE. Incorrect codegen. The implementation was INCORRECT. I have to change it.
+--   So, I was right. It should be the same!
+addExtraToEnv :: [Def.EnvID] -> T.EnvDef -> Infer ()
+addExtraToEnv envIds (T.EnvDef _ vars instEnvStack) =
   let
     envsAndLevels = reverse $ zip (reverse envIds) [0 :: Def.Level ..]
 
@@ -1200,7 +1097,7 @@ reportAssociationErrors = do
   -- su <- RWS.gets typeSubstitution
 
   -- first, report errors.
-  substitutedAssociations <- fmap filterDesignatedForRemoval $ for assocs $ \t@(T.TypeAssociation (fromLocation, from) _ (CFD cd _ _ _ () _) _ _ _, insts) -> do
+  substitutedAssociations <- fmap filterDesignatedForRemoval $ for assocs $ \t@(T.TypeAssociation (fromLocation, from) _ (CFD cd _ _ _ _) _ _, insts) -> do
     getType from >>= \case
         TCon dd _ _ -> case insts !? cd >>= (!? dd) of
           Just _ -> error "[COMPILER ERROR]: resolvable associated type found. should already be taken care of."
@@ -1240,7 +1137,7 @@ rummageThroughAssociations funUV tyvars = do
     bind (error "todo") (tid, tyvar) tvarID
 
   -- first, report errors.
-  substitutedAssociations <- fmap filterDesignatedForRemoval $ for assocs $ \t@(T.TypeAssociation (fromLocation, from) _ (CFD cd _ _ _ () _) _ _ _, insts) -> do
+  substitutedAssociations <- fmap filterDesignatedForRemoval $ for assocs $ \t@(T.TypeAssociation (fromLocation, from) _ (CFD cd _ _ _ _) _ _, insts) -> do
     getType from >>= \case
         TO (TVar tv) | tv.binding == BindByVar funUV -> do
           -- will be added later to the association list!
@@ -1253,10 +1150,10 @@ rummageThroughAssociations funUV tyvars = do
   RWS.modify $ \s -> s { associations = substitutedAssociations }  -- TODO: what? what am i doing
 
   -- second: extract associations for the function.
-  functionAssociationsAndFutureTVars <- fmap catMaybes $ for assocs $ \(T.TypeAssociation (fromLocation, from) (toLocation, to) cfd uci _ _, _) -> do
+  functionAssociationsAndFutureTVars <- fmap catMaybes $ for assocs $ \(T.TypeAssociation (fromLocation, from) (toLocation, to) cfd _ _, _) -> do
     getType from >>= \case
         TO (TVar tv) | tv.binding == BindByVar funUV ->
-          fmap Just $ (T.FunctionTypeAssociation tv to cfd uci,) <$> lift (findFTV to)
+          fmap Just $ (T.FunctionTypeAssociation tv to cfd undefined,) <$> lift (findFTV to)
         _ -> pure Nothing
 
   let functionAssociations = fst <$> functionAssociationsAndFutureTVars
@@ -1312,24 +1209,24 @@ filterDesignatedForRemoval = fmap fst . filter (not . snd)
 -- Constructs a scheme for a function.
 -- ignores assigned scheme!
 --  BRUH: RN INSTEAD OF GENERATING SUBSTITUTION, JUST REPLACE THE TYVARS!
-constructSchemeForFunctionDeclaration :: FunDec TC -> Infer (Scheme TC, [T.FunctionTypeAssociation TC])
+constructSchemeForFunctionDeclaration :: FunDec TC -> Infer (Scheme TC)
 constructSchemeForFunctionDeclaration dec = do
       -- IMPORTANT: We only extract types from non-instantiated! The instantiated type might/will contain types from our function and we don't want that. We only want to know which types are from outside.
       -- So, for a function, use its own type.
       -- For a variable, use the actual type as nothing is instantiated!
-  let digOutTyVarsAndUnionsFromEnv :: T.Env -> Infer (Set (TypeID, T.TyVar), Map T.EnvUnion ([Type TC], Type TC))
-      digOutTyVarsAndUnionsFromEnv (T.RecursiveEnv _ _) = pure mempty
-      digOutTyVarsAndUnionsFromEnv (T.Env _ env _ _) = fmap fold $ traverse (\(v, _ ,t) -> digThroughVar t v) env
+  -- NEW TODO: replace with extractUnion + ftv
+  let digOutTyVarsAndUnionsFromEnv :: T.EnvDef -> Infer (Set (TypeID, T.TyVar), Set T.EnvUnion)
+      digOutTyVarsAndUnionsFromEnv (T.EnvDef _ env _) = fmap fold $ traverse (\(v, _ ,t) -> digThroughVar t v) env
         where
-          digThroughVar :: Type TC -> T.Variable -> Infer (Set (TypeID, T.TyVar), Map T.EnvUnion ([Type TC], Type TC))
+          digThroughVar :: Type TC -> T.Variable -> Infer (Set (TypeID, T.TyVar), Set T.EnvUnion)
           digThroughVar t = \case
             T.DefinedVariable _ -> digOutTyVarsAndUnionsFromType t
-            T.DefinedFunction f _ _ _ -> do
+            T.DefinedFunction f _ -> do
               params <- traverse (digOutTyVarsAndUnionsFromType . snd) f.functionDeclaration.functionParameters
               ret <- digOutTyVarsAndUnionsFromType f.functionDeclaration.functionReturnType  -- should we dig through external functions?
               pure $ fold params <> ret
 
-            T.DefinedClassFunction (CFD cd _ _ _ () _) snapshot _ _   -- TODO: I think we don't need to dig through instances?
+            T.DefinedClassFunction (CFD cd _ _ _ _) _   -- TODO: I think we don't need to dig through instances?
               -> pure mempty
 
   (tyVarsOutside, unionsOutside) <- digOutTyVarsAndUnionsFromEnv dec.functionEnv
@@ -1337,8 +1234,8 @@ constructSchemeForFunctionDeclaration dec = do
 
       -- TypesDefinedHere = FnType \\ Environment
   let tyVarsOutside' = Set.map snd tyVarsOutside
-  let tyVarsOnlyFromHere = Set.filter ((`Set.notMember` tyVarsOutside') . snd) tyVarsDeclaration
-      unionsOnlyFromHere = unionsDeclaration Map.\\ unionsOutside
+      tyVarsOnlyFromHere = Set.filter ((`Set.notMember` tyVarsOutside') . snd) tyVarsDeclaration
+      unionsOnlyFromHere = unionsDeclaration \\ unionsOutside
 
       -- ALGO: ASSOCIATIONS
 
@@ -1348,12 +1245,13 @@ constructSchemeForFunctionDeclaration dec = do
   tvarsDefinedForThisFunction <- liftA2 (<>) (trafold (definedTVars . snd) dec.functionParameters) (definedTVars dec.functionReturnType)
 
   pf "FunDec for %: %" (pp dec.functionId) (pp dec)
-  pf "UNIONS for %: % = % \\\\ %" (pp dec.functionId) (pp $ Map.keysSet unionsOnlyFromHere) (pp $ Map.keysSet unionsDeclaration) (pp $ Map.keysSet unionsOutside)
+  pf "UNIONS for %: % = % \\\\ %" (pp dec.functionId) (pp unionsOnlyFromHere) (pp unionsDeclaration) (pp unionsOutside)
   pf "ASSOCS when %:" (pp dec.functionId)
   associations <- RWS.gets associations
-  pf "Associations (???): %" (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation (fromLocation, from) to _ uci ufi _, _) -> pf "(%) %: %" (pp (uci, ufi)) (pp from) (pp to) :: String)
+  pf "Associations (???): %" (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation (fromLocation, from) to cfd _ _, _) -> pf "(%) %: %" (pp cfd.classFunID) (pp from) (pp to) :: String)
 
   -- add associations.
+  -- NEW: here TyVars -> TVars. this is bad, because it's illogical. I should change it. But it should work.
   (assocs, tvmap) <- rummageThroughAssociations dec.functionId tyVarsOnlyFromHere -- remember to use the new Subst, which generalizes the associations.
   pf "after rummaging: %" assocs
   reportAssociationErrors
@@ -1362,19 +1260,21 @@ constructSchemeForFunctionDeclaration dec = do
   -- do the substitution like THIS.
   pf "after binding"
 
+  -- TODO NEW: here I will exclude unions in type associations in the future from Scheme for caching instantiations (and mostly for functions to not repeat)
   let
-      Scheme tvars _ = Scheme (Set.toList $ Set.fromList (Map.elems tvmap) <> tvarsDefinedForThisFunction) (fmap (\(u, (ts, t)) -> (u, ts, t)) $ Map.toList unionsOnlyFromHere)
+      tvars = Set.toList $ Set.fromList (Map.elems tvmap) <> tvarsDefinedForThisFunction
 
   (_, assocUnions) <- trafold (\(T.FunctionTypeAssociation _ t _ _) -> digOutTyVarsAndUnionsFromType t) assocs
-  let assocScheme = Scheme tvars (fmap (\(u, (params, ret)) -> (u, params, ret)) $ Map.toList $ unionsOnlyFromHere <> assocUnions)
+  let assocScheme = Scheme tvars (Set.toList $ unionsOnlyFromHere <> assocUnions) assocs
 
-  pure (assocScheme, assocs)
+  pure assocScheme
 
-digOutTyVarsAndUnionsFromType :: Type TC -> Infer (Set (TypeID, T.TyVar), Map T.EnvUnion ([Type TC], Type TC))
+-- TODO NEW: TypingContext should be moved outside to increase laziness.
+digOutTyVarsAndUnionsFromType :: Type TC -> Infer (Set (TypeID, T.TyVar), Set T.EnvUnion)
 digOutTyVarsAndUnionsFromType = getType' >=> traverse2 (\t -> (t,) <$> digOutTyVarsAndUnionsFromType t) &=> \(tid, t) -> case t of
     TO (TyVar tyv) -> (Set.singleton (tid, tyv), mempty)
-    TFun union ts t -> (mempty, Map.singleton union (fst <$> ts, fst t)) <> foldMap snd ts <> snd t
-    TCon _ ts unis -> foldMap snd ts <> foldMap ((mempty,) . (\(u, params, ret) -> Map.singleton u (params, ret))) unis
+    TFun union ts t -> (mempty, Set.singleton union) <> foldMap snd ts <> snd t
+    TCon _ ts unis -> foldMap snd ts <> foldMap ((mempty,) . Set.singleton) unis
     t -> foldMap snd t
 
 
@@ -1396,14 +1296,15 @@ findTVarsForIDInClassType euid = cata $ \case
 withReturn :: Type TC -> Infer a -> Infer a
 withReturn ret = RWS.local $ \e -> e { returnType = Just ret }
 
+-- TODO NEW: Bad name and weird implementation.
+-- This function is for getting the type of a record accessor.
 getExpectedType :: Def.Location -> Type TC -> Def.MemName -> Infer (Maybe (Type TC), Bool)  -- (maybe type, should remove from list?)
 getExpectedType location t memname = getType t >>= \case
-  TCon dd@(DD _ (Scheme ogTVs ogUnions) (Left recs) _) tvs unions ->
+  TCon dd@(DD _ (Scheme ogTVs ogUnions ~[]) (Left recs) _) tvs unions ->
     case find (\(Def.Annotated _ (name, _)) -> name == memname) recs of
       Just (Def.Annotated _ (_, recType)) -> do
-        ogUnions' <- for ogUnions $ \(uid, _, _) -> getUnion uid
-        let mapTVs = mapTVsWithMap mempty mempty (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions') $ fmap (\(u, _, _) -> u) unions)
-        recType' <- ump $ mapTVs recType
+        ogUnions' <- for ogUnions getUnion
+        recType' <- ump (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions') unions) mempty $ mapTVs recType
         pure (Just recType', True)
 
       Nothing -> do
@@ -1452,17 +1353,18 @@ inferDecon = cata $ \(N location d) -> fmap embed $ case d of
     CaseConstructor rcon idecons -> do
 
       -- Ger proper constructor.
-      con@(DC dd@(DD _ scheme@(Scheme ogTVs ogUnions) _ _) _ usts _) <- inferConstructor rcon
+      con@(DC dd@(DD _ scheme@(Scheme ogTVs ogUnions _) _ _) _ usts _) <- inferConstructor rcon
 
       -- Deconstruct decons.
       decons <- sequenceA idecons
 
       -- Custom instantiation for a deconstruction.
       -- Create a parameter list to this constructor
-      (tvs, unions) <- instantiateScheme mempty scheme
-      ogUnions' <- for ogUnions $ \(uid, _, _) -> getUnion uid
-      let mapTVs = mapTVsWithMap mempty mempty (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip (T.unionID <$> ogUnions') $ fmap (\(u, _, _) -> u) unions)
-      ts <- ump $ traverse mapTVs usts
+      --  NOTE: scheme is a scheme from a datatype, so no insts to worry about
+      ogUnions' <- for ogUnions getUnion
+      (Match tvs unions _, ts) <- instantiateScheme mempty scheme $ \mapTVs -> do
+        traverse mapTVs usts
+
 
       let args = askType <$> decons
       (location, args) `uniMany` (Just (error "todo: add location information to datatype declaration"), ts)
@@ -1476,166 +1378,230 @@ inferDecon = cata $ \(N location d) -> fmap embed $ case d of
 ------
 
 -- TODO: merge it with 'inferVariable'.
-instantiateVariable :: Def.Location -> Def.Locality -> T.Variable -> Infer (Type TC, T.Variable)
+instantiateVariable :: Def.Location -> Def.Locality -> R.Variable -> Infer (Type TC, T.Variable)
 instantiateVariable location loc = \case
-  T.DefinedVariable v -> var v <&> (,T.DefinedVariable v)
-  T.DefinedFunction fn _ snapshot _ -> do
-    (t, v, env) <- instantiateFunction location Nothing snapshot fn -- notice that we use the UFI from here (inferVariable just creates a temp error type to not use it)
+  R.DefinedVariable v -> var v <&> (,T.DefinedVariable v)
+  R.ExternalVariable uv t -> pure (t, T.DefinedVariable uv)
 
-    associations <- RWS.gets associations
-    pf "Associations (instantiation): %" (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation (fromLocation, from) to _ uci ufi _, _) -> pf "(%) %: %" (pp (uci, ufi)) (pp from) (pp to) :: String)
+  R.DefinedFunction rfn rsnapshot -> do
+    fn <- inferFunction rfn
+    snapshot <- inferSnapshot rsnapshot
+    (t, v, theseInsts) <- instantiateFunction location snapshot fn
+    RWS.modify $ \s -> s { instantiations = Set.insert (v, t) $ theseInsts <> s.instantiations }
+    pure (t, v)
 
+  R.ExternalFunction fn rsnapshot -> do
+    snapshot <- inferSnapshot rsnapshot
+    (t, v, theseInsts) <- instantiateFunction location snapshot fn -- notice that we use the UFI from here (inferVariable just creates a temp error type to not use it)
+
+    -- pf "Associations (instantiation): %" (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation (fromLocation, from) to _ _ _, _) -> pf "(%) %: %" (pp (uci, ufi)) (pp from) (pp to) :: String)
+
+    -- NEW: Temporarily commented out. This will be the base for 
     -- add instantiations!
     --  only when it's a local function should you add stuff from its environment to instantiations.
-    let gatherInstsFromEnvironment :: T.Env -> Infer (Set (T.Variable, Type TC))
-        gatherInstsFromEnvironment = \case
-            T.RecursiveEnv _ _ -> pure mempty
-            T.Env _ vars _ _ -> flip trafold vars $ \case
-              (envVar@(T.DefinedFunction fn _ _ ufi), Def.Local, t) -> do
-                -- NOTE: we need mapped envs, so we have to dig through the type. but, are we too permissive? should we only choose this current env? or all of them? how do we distinguish the "current" one?
-                let currentEnvID = T.envID fn.functionDeclaration.functionEnv
-                (baset, envs) <- getType' t >>= \(baset, tt) -> case tt of
-                  TFun union _ _ -> (baset,) <$> (getUnion union <&> \u -> map (\(_, _, _, env) -> env) $ filter (\(_, ufi', _, env) -> ufi' == ufi) u.union)
-                  _ -> error "impossible, it's a function type."
-                Set.insert (envVar, baset) <$> (trafold gatherInstsFromEnvironment envs)
-              (envVar, _, t) -> pure $ Set.singleton (envVar, t)
+    -- let gatherInstsFromEnvironment :: T.Env -> Infer (Set (T.Variable, Type TC))
+    --     gatherInstsFromEnvironment = \case
+    --         T.RecursiveEnv _ _ -> pure mempty
+    --         T.Env _ -> flip trafold vars $ \case
+    --           (envVar@(T.DefinedFunction fn _), Def.Local, t) -> do
+    --             -- NOTE: we need mapped envs, so we have to dig through the type. but, are we too permissive? should we only choose this current env? or all of them? how do we distinguish the "current" one?
+    --             let currentEnvID = T.envID fn.functionDeclaration.functionEnv
+    --             (baset, envs) <- getType' t >>= \(baset, tt) -> case tt of
+    --               TFun union _ _ -> (baset,) <$> (getUnion union <&> \u -> map (\(_, _, _, env) -> env) $ filter (\(_, ufi', _, env) -> ufi' == ufi) u.union)
+    --               _ -> error "impossible, it's a function type."
+    --             Set.insert (envVar, baset) <$> (trafold gatherInstsFromEnvironment envs)
+    --           (envVar, _, t) -> pure $ Set.singleton (envVar, t)
 
-    theseInsts <- if loc == Def.Local
-      then gatherInstsFromEnvironment env
-      else pure mempty
+    -- theseInsts <- if loc == Def.Local
+    --   -- only when it's a function in the same level as this, add its environment to the enclosing function's environment
+    --   -- TODO are we checking, that the types do not repeat? (different type IDs...)
+    --   then gatherInstsFromEnvironment env
+    --   else pure mempty
 
     RWS.modify $ \s -> s { instantiations = Set.insert (v, t) $ theseInsts <> s.instantiations }
 
     pure (t, v)
 
 
-  T.DefinedClassFunction cfd@(CFD cd funid params ret () _) snapshot self _ -> do
-    fnType <- instantiateClassFunction cfd self
-    let insts = snapshot
-    uci <- newClassInstantiation
-    associateType (location, self) (location, fnType) cfd insts uci Nothing
+  -- Should we generate ClassInstIDs here, or in Resolver????
+  -- nahhhhh, that's arbitrary as hell.
+  R.DefinedClassFunction rcfd rsnapshot -> do
+    snapshot <- inferSnapshot rsnapshot
+    cfd@(CFD cd _ _ _ _) <- inferClassDeclaration rcfd
+
+    instantiateClassFunction cfd snapshot location
+
+  R.ExternalClassFunction cfd@(CFD cd _ _ _ _) rsnapshot -> do
+    snapshot <- inferSnapshot rsnapshot
+    let insts = Def.defaultEmpty cd snapshot
+
     -- addClassFunctionUse fnUnion cfd self insts
-    pf "INSTANTIATING CLASS FUN %(%). INSTS: %" (pp funid) (pp uci) $ fmap (fmap (\(DD { ddName }) -> ddName) . Set.toList . Map.keysSet) $ Map.elems insts :: Infer ()
+    -- pf "INSTANTIATING CLASS FUN %(%). INSTS: %" (pp funid) (pp uci) $ fmap (fmap (\(DD { ddName }) -> ddName) . Set.toList . Map.keysSet) $ Map.elems insts :: Infer ()
+
+    (fnType, v) <- instantiateClassFunction cfd snapshot location
+    pure (fnType, v)
 
 
-    pure (fnType, T.DefinedClassFunction cfd snapshot self uci)
 
-instantiateClassFunction :: ClassFunDec TC -> Type TC -> Infer (Type TC)
-instantiateClassFunction (CFD _ funid params ret () _) self = do
+instantiateClassFunction :: ClassFunDec TC -> T.ScopeSnapshot TC -> Def.Location -> Infer (Type TC, T.Variable)
+instantiateClassFunction cfd@(CFD cd funid params ret scheme@(Scheme schemeTVars schemeUnions _)) snapshot location = do
+    -- NEW: same part from inferVariable:
+    self <- fresh
+    let possibleInstancesHere = Def.defaultEmpty cd snapshot
+    let constr = constrain location
+    self `constr` (cd, possibleInstancesHere)
+
+    cid <- newClassInstID
+
+
     -- TODO: a lot of it is duplicated from DefinedFunction. sussy
     -- TODO TODO: NOT SURE IF IT'S ALL NECESSARY!!!!!!!!!!!!!!!!!!!!!!!!
     -- SHOULD EXPLAIN EACH LINE BECAUSE SOMETHING FEELS OFF
-    let allTypes = ret : map snd params
-    let thisFunctionsTVars = foldMap (findTVarsForIDInClassType funid) allTypes
+    -- let allTypes = ret : map snd params
+    -- let thisFunctionsTVars = foldMap (findTVarsForIDInClassType funid) allTypes
 
     -- dig out unions from class type (instantiate class type)
     -- all these unions should come from datatypes. so...
-    let extractUnions :: ClassType TC -> Infer (Map T.EnvUnion ([Type TC], Type TC))
-        extractUnions = cata $ \case
-          NormalType (TCon dd params _) -> do
-            ddUnions <- Map.fromList . fmap (\(u, ts, t) -> (u, (ts, t))) <$> extractUnionsFromDataType dd
-            paramUnions <- seqfold params
-            pure $ ddUnions <> paramUnions
-          ct -> seqfold ct
+    -- let extractUnions :: ClassType TC -> Infer (Set (T.EnvUnion))
+    --     extractUnions = cata $ \case
+    --       NormalType (TCon dd params _) -> do
+    --         ddUnions <- Set.fromList <$> extractUnionsFromDataType dd
+    --         paramUnions <- seqfold params
+    --         pure $ ddUnions <> paramUnions
+    --       ct -> seqfold ct
 
-    thisFunctionsUnions <- trafold extractUnions allTypes
+    -- thisFunctionsUnions <- trafold extractUnions allTypes
 
-    let schemeTVars = Set.toList thisFunctionsTVars
-    let schemeUnions = Map.toList thisFunctionsUnions <&> \(u, (params, ret)) -> (u, params, ret)
-    let scheme = Scheme schemeTVars schemeUnions
+    -- let schemeTVars = Set.toList thisFunctionsTVars
+    -- let schemeUnions = Set.toList thisFunctionsUnions
+    -- let scheme = Scheme schemeTVars schemeUnions mempty
 
-    (itvs, iunions) <- instantiateScheme mempty scheme
-    let tvmap = Map.fromList $ zip schemeTVars itvs
-    ogUnions' <- for schemeUnions $ \(u, _, _) -> getUnion u
-    let unionmap = Map.fromList $ zip (T.unionID <$> ogUnions') $ iunions <&> \(u, _, _) -> u
-    let mapTVs = mapTVsWithMap mempty mempty tvmap unionmap <=< lift . mkTypeFromClassType self
+    -- TODO NEW: I think this part code appears somewhere else also. Type mapping should be better.
+    (_, (iparams, iret)) <- instantiateScheme mempty scheme $ \mapTVs' -> do
+      let mapTVs = mapTVs' <=< lift . mkTypeFromClassType self
+      ts <- traverse (mapTVs . snd) params
+      r <- mapTVs ret
+      pure (ts, r)
 
-    fnType <- mkType =<< ump (liftA3 TFun (lift emptyUnion) (traverse (mapTVs . snd) params) (mapTVs ret))
-    pure fnType
+    fnUnion <- emptyUnion
+    fnType <- mkType $ TFun fnUnion iparams iret
+
+    -- NEW: part from instantiateVariable:
+    associateType (location, self) (location, fnType) cfd cid snapshot
+
+    pure (fnType, T.DefinedClassFunction cfd cid)
 
 
--- NOTE: these last two parameters are basically a hack. I don't yet know what to do when we're dealing with an instance function, so we're only doing it here for now. (we should probably do the same thing there, but it's not local, so modifying the state then would be bad. I'll have to think about it.)
-instantiateFunction :: Def.Location -> Maybe Def.UniqueClassInstantiation -> T.ScopeSnapshot TC -> Function TC -> Infer (Type TC, T.Variable, T.Env)
-instantiateFunction assocLocation muci snapshot fn = do
+-- Return: new type, variable and variables to add to enclosing envs!
+instantiateFunction :: Def.Location -> T.ScopeSnapshot TC -> Function TC -> Infer (Type TC, T.Variable, Set (T.Variable, Type TC))
+instantiateFunction assocLocation snapshot fn = do
     let fundec = fn.functionDeclaration
-    let (Scheme schemeTVars schemeUnions) = fundec.functionOther.functionScheme
+    let (Scheme schemeTVars schemeUnions _) = fundec.functionOther.functionScheme
 
     definesBeforeInst <- lift InterModular.numTypesAndUnionsDefined
 
     pf "Before schemin: %" fundec.functionId
     pf "Before schemin: %" =<< presentFunctionType fn <$> getTypeUni
-    (tvs, unions) <- instantiateScheme snapshot fundec.functionOther.functionScheme
-    punions <- traverse (\(u, _, _) -> getUnion u) unions
+    (match@(Match tvs unions _), (funparams, funret, envInsts)) <- instantiateScheme snapshot fundec.functionOther.functionScheme $ \mapTVs -> do
+      params <- traverse (mapTVs . snd) fundec.functionParameters
+      ret <- mapTVs fundec.functionReturnType
+
+      envInsts <- instantiationsRelativeToFunction mapTVs fundec.functionEnv
+      pure (params, ret, envInsts)
+
+
+    pf "after assocs: %" =<< presentFunctionType fn <$> getTypeUni
+
+    fnUnion <- singleEnvUnion $ T.UnionFun fn match
+    fnType <- mkType $ TFun fnUnion funparams funret
+    let v = T.DefinedFunction fn match
+
+    punions <- traverse getUnion unions
     pf "TypeUni for % after scheme instantiation: %" fundec.functionId =<< lift InterModular.getTypeUni
     pf "GOT SCHEME: % %" tvs punions
 
-    -- Prepare a mapping for the scheme!
-    let tvmap = Map.fromList $ zip schemeTVars tvs
-    schemeUnions' <- for schemeUnions $ \(u, _, _) -> getUnion u
-    let unionmap = Map.fromList $ zip (T.unionID <$> schemeUnions') $ unions <&> \(u, _, _) -> u
-    dontMapThoseTypes <- definedVarTypes fundec.functionEnv
-    pf "DONT MAP EM: %" dontMapThoseTypes
-    let
-      mapTVs :: Type TC -> UltraMap (Type TC)
-      mapTVs = mapTVsWithMap mempty dontMapThoseTypes tvmap unionmap <=< lift . mapClassSnapshot mempty dontMapThoseTypes (Set.fromList schemeTVars) snapshot
-
     pf "Instantiation of %" (pp fundec.functionId) :: Infer ()
     pf "TVars: %" (pp schemeTVars)  :: Infer ()
-    pf "Unions: %" =<< traverse (\(u, _, _) -> getUnion u) schemeUnions
+    pf "Unions: %" =<< traverse getUnion schemeUnions
     pf "Scope Snapshot:\n%" (T.dbgSnapshot snapshot) :: Infer ()
     pf "after schemin: %" =<< presentFunctionType fn <$> getTypeUni
 
-    pc $ (Def.ppMap . fmap (bimap pp pp) . Map.toList) tvmap
-    pc $ (Def.ppMap . fmap (bimap Def.ppUnionID pp) . Map.toList) unionmap
-
-
-    -- Create type from function declaration
-    ufi <- newFunctionInstantiation
-
-    -- add new associations
-    (fnType, v) <- ultraMapThing $ do
-      assocs <- for fundec.functionOther.functionAssociations $ \(T.FunctionTypeAssociation tv to cfd@(CFD cd _ _ _ () _) uci) -> do
-        let from = fromMaybe (error "couldn't map tvar in function type association") $ tvmap !? tv
-        lift $ pf "FROM: %" from
-        mto <- mapTVs to
-        lift $ pf "TO: %" =<< presentType mto <$> getTypeUni
-        lift $ associateType (assocLocation, from) (assocLocation, mto) cfd snapshot uci (Just ufi) -- TEMP
-        pure mto
-
-      lift $ pf "after assocs: %" =<< presentFunctionType fn <$> getTypeUni
-
-      fnUnion <- lift $ singleEnvUnion muci ufi assocs fundec.functionEnv
-      fnType <- mapTVs =<< lift (mkType (TFun fnUnion (snd <$> fundec.functionParameters) fundec.functionReturnType))
-
-      let v = T.DefinedFunction fn assocs snapshot ufi
-      pure (fnType, v)
-
-    mappedEnv <- getType fnType >>= \case  -- we're lazy, so we're not writing another function, we're just unsafely deconstructing the result of that function.
-          TFun union _ _ -> getUnion union <&> \case
-            (T.EnvUnion { T.union = [(_, _, _, env)] }) -> env
-            _ -> error "MUST NOT HAPPEN."
-          _ -> error "MUST NOT HAPPEN."
+    -- pc $ (Def.ppMap . fmap (bimap pp pp) . Map.toList) tvmap
+    -- pc $ (Def.ppMap . fmap (bimap Def.ppUnionID pp) . Map.toList) unionmap
 
     pc =<< lift InterModular.getTypeUni
     gfn <- presentFunctionType fn <$> getTypeUni
     pf "For function %:\n\tScheme unions: % -> %\n\tType %.\n\tAfter instantiation: %"
       (pp fundec.functionId)
-      schemeUnions'
+      schemeUnions
       punions
       gfn
       =<< presentType fnType <$> getTypeUni
 
     lift $ InterModular.trackInstantiation definesBeforeInst fn
-    pure (fnType, v, mappedEnv)
+    pure (fnType, v, envInsts)
+
+
+-- gather instantiations for stuff this function used
+--   wait, how does the OG handle retrieving stuff from functions, which are local, but were called inside other function???
+--   wait, were they also filtered by Resolver's renvQuery?
+--   TODO: check that. write the similar implementation first, then check.
+--   TODO: maybe optimize, so I don't acess reader state all the time?
+--         will this have any penalty with effects??
+instantiationsRelativeToFunction :: (Type TC -> UltraMap (Type TC)) -> T.EnvDef -> UltraMap (Set (T.Variable, Type TC))
+instantiationsRelativeToFunction mapTVs (T.EnvDef _ baseVars _) = do
+  -- flip trafold vars $ \case
+  --   (envVar@(T.DefinedFunction fn match), Def.Local, t) -> do
+  --     (baset, tt) <- getType' t
+
+  --     -- instnatiate match and do other stuff
+  --     -- TODO: I should consider the design of typemap for this, since we will be adding more and more mappings to this.
+  --     undefined
+  --   (envVar, _, t) -> pure $ Set.singleton (envVar, t)
+  
+  -- only when it's a local function should you add stuff from its environment to instantiations.
+  let gatherInstsFromEnvironment :: [(T.Variable, Def.Locality, Type TC)] -> UltraMap (Set (T.Variable, Type TC))
+      gatherInstsFromEnvironment vars = flip trafold vars $ \case
+            (envVar@(T.DefinedFunction fn match), Def.Local, t) -> do
+              -- NOTE: we need mapped envs, so we have to dig through the type. but, are we too permissive? should we only choose this current env? or all of them? how do we distinguish the "current" one?
+              -- NEW ALGO: future typeclass thing?
+              mappedT <- mapTVs t
+              let scheme = fn.functionDeclaration.functionOther.functionScheme
+              env <- withMatch scheme match fn.functionDeclaration.functionEnv
+
+              Set.insert (envVar, mappedT) <$> (gatherInstsFromEnvironment env)
+            (envVar, _, t) -> do
+              mappedT <- mapTVs t
+              pure $ Set.singleton (envVar, mappedT)
+  gatherInstsFromEnvironment baseVars
+
+withMatch :: T.Scheme TC -> Match -> T.EnvDef -> UltraMap [(T.Variable, Def.Locality, Type TC)]
+withMatch (Scheme sTVs suUnions suAssocs) match env = do
+  sUnions <- lift $ traverse (fmap T.unionID . getUnion) suUnions
+  let sAssocs = suAssocs <&> \(T.FunctionTypeAssociation _ _ _ cid) -> cid
+
+  Match mTVs mUnions mAssocs <- mapMatch match
+  (T.EnvDef _ vars _) <- RST.local
+    ( \um ->
+      let appendMap ks vs = Map.union $ Map.fromList $ zip ks vs
+      in UMS
+      { ultraTypeMap  = appendMap sTVs mTVs um.ultraTypeMap
+      , ultraUnionMap = appendMap sUnions mUnions um.ultraUnionMap
+      , ultraAssocMap = appendMap sAssocs mAssocs um.ultraAssocMap
+      }
+    )
+    $ mapEnv env
+  pure vars
+
 
 
 -- check which types should NOT be instantiated (for cuckedUnions)
 --  should we go that deep?
-definedVarTypes :: T.Env -> Infer (Set (Type TC))
+--   NOTE NEW: it should go only as deep as the ftv function.
+definedVarTypes :: T.EnvDef -> Infer (Set (Type TC))
 definedVarTypes = doEnv where
   doEnv = \case
-    T.RecursiveEnv {} -> pure mempty
-    T.Env _ vars _ _ -> do
+    T.EnvDef _ vars _ -> do
       let (dvars, others) = partition (\(v, _, _) -> case v of { T.DefinedVariable {} -> True; _ -> False }) vars
       dvarBaseTypes <- trafold (\(_, _, t) -> Set.singleton . fst <$> getType' t) dvars
       -- otherTypes <- fmap fold $ traverse doType $ map (\(_, _, t) -> t) others
@@ -1644,17 +1610,20 @@ definedVarTypes = doEnv where
   doType :: Type TC -> Infer (Set (Type TC))
   doType = getType >=> traverse doType >=> \case
     TFun union ts t -> doUnion union <&> (<> fold ts <> t)
-    TCon _ ts unions -> (fold ts <>) <$> trafold (doUnion . (\(u, _, _) -> u)) unions
+    TCon _ ts unions -> (fold ts <>) <$> trafold doUnion unions
     _ -> pure mempty
 
   doUnion :: T.EnvUnion -> Infer (Set (Type TC))
-  doUnion = getUnion >=> \u -> trafold (\(_, _, _, env) -> doEnv env) u.union
+  doUnion = getUnion >=> \u -> flip trafold u.union $ \case
+    -- T.UnionFun fn _ -> doEnv $ fn.functionEnv
+    -- T.UnionLam env -> doEnv env
 
-associateType :: (Def.Location, Type TC) -> (Def.Location, Type TC) -> ClassFunDec TC -> T.ScopeSnapshot TC -> Def.UniqueClassInstantiation -> Maybe Def.UniqueFunctionInstantiation -> Infer ()
-associateType (fromLocation, based) (toLocation, result) cfd insts uci ufi = do
-    pf "ASSOC: %s %s" (pp uci) (pp ufi)
+-- NOTE NEW: we need the whole scope snapshot, because we will be instantiating the whole function, which might require other classes. Is it correct? Or am I overshitting myself?
+associateType :: (Def.Location, Type TC) -> (Def.Location, Type TC) -> ClassFunDec TC -> Def.ClassInstID -> T.ScopeSnapshot TC -> Infer ()
+associateType (fromLocation, based) (toLocation, result) cfd classInstID insts = do
+    -- pf "ASSOC: %s %s" (pp uci) (pp ufi)
     estack <- RWS.gets envStack
-    let ta = T.TypeAssociation (fromLocation, based) (toLocation, result) cfd uci ufi estack
+    let ta = T.TypeAssociation (fromLocation, based) (toLocation, result) cfd classInstID estack
 
     RWS.modify $ \s -> s { associations = (ta, insts) : s.associations }
 
@@ -1662,50 +1631,88 @@ associateType (fromLocation, based) (toLocation, result) cfd insts uci ufi = do
 -- addClassFunctionUse :: T.EnvUnion -> T.ClassFunDec -> T.Type -> T.PossibleInstances -> Infer ()
 -- addClassFunctionUse eu cfd self insts = RWS.modify $ \s -> s { classFunctionUnions = (eu, cfd, self, insts) : s.classFunctionUnions }
 
-instantiateConstructor :: Def.EnvID -> DataCon TC -> Infer (Type TC)
+instantiateConstructor :: Def.EnvID -> DataCon TC -> Infer (Type TC, Match)
 instantiateConstructor envID = \case
   DC dd@(DD _ scheme _ _) _ [] _ -> do
-    (tvs, unions) <- instantiateScheme mempty scheme
-    mkType $ TCon dd tvs unions
+    match@(Match tvs unions []) <- instantiateScheme' mempty scheme
+    t <- mkType $ TCon dd tvs unions
+    pure (t, match)
 
-  (DC dd@(DD _ scheme@(Scheme ogTVs ogUnions) _ _) _ usts@(_:_) _) -> do
-    (tvs, unions) <- instantiateScheme mempty scheme
-    ogUnions' <- for ogUnions $ \(u, _, _) -> T.unionID <$> getUnion u
-    let mapTVs = mapTVsWithMap mempty mempty (Map.fromList $ zip ogTVs tvs) (Map.fromList $ zip ogUnions' $ fmap (\(u, _, _) -> u) unions)
-    ts <- ump $ traverse mapTVs usts
+  (DC dd@(DD _ scheme _ _) _ usts@(_:_) _) -> do
+    (match@(Match tvs unions _), ts) <- instantiateScheme mempty scheme $ \mapTVs -> do
+      traverse mapTVs usts
 
     ret <- mkType $ TCon dd tvs unions
 
     -- don't forget the empty env!
-    let emptyEnv = T.Env envID [] mempty []
-    ufi <- newFunctionInstantiation
-    union <- singleEnvUnion Nothing ufi [] emptyEnv
-
-    mkType $ TFun union ts ret
+    union <- singleEnvUnion $ T.UnionConEnv envID
+    t <- mkType $ TFun union ts ret
+    pure (t, match)
 
 instantiateRecord :: DataDef TC -> Infer (Type TC)
 instantiateRecord dd@(DD _ scheme (Left _) _) = do
-  (tvs, unions) <- instantiateScheme mempty scheme
+  Match tvs unions _ <- instantiateScheme' mempty scheme
   mkType $ TCon dd tvs unions
 
 instantiateRecord (DD ut scheme (Right _) _) = error $ pf "Attempted to instantiate ADT (%s) as a Record!" (pp ut)
 
 
-instantiateScheme :: T.ScopeSnapshot TC -> Scheme TC -> Infer ([Type TC], [(T.EnvUnion, [Type TC], Type TC)])
-instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
+instantiateScheme' :: T.ScopeSnapshot TC -> Scheme TC -> Infer Match
+instantiateScheme' snapshot scheme = fst <$> instantiateScheme snapshot scheme (const $ pure ())
+
+instantiateScheme :: T.ScopeSnapshot TC -> Scheme TC -> ((Type TC -> UltraMap (Type TC)) -> UltraMap a) -> Infer (Match, a)
+instantiateScheme snapshot (Scheme schemeTVars schemeUnions schemeAssocs) stuffToMap = do
   -- Prepare a mapping for the scheme!
   tyvs <- traverse (const fresh) schemeTVars  -- scheme
   let tvmap = Map.fromList $ zip schemeTVars tyvs
 
-  -- Unions themselves also need to be mapped with the instantiated tvars!
-  newUnionIDs <- traverse (const (lift InterModular.nextUnionUniID)) schemeUnions
-  normalizedIDs <- traverse (\(u, _, _) -> fst <$> getUnion' u) schemeUnions 
-  let premade = Map.fromList $ zip normalizedIDs newUnionIDs
-  pf "PREMADE: %" premade
-  let mapOnlyTVsForUnions = mapTVsWithMap premade mempty tvmap mempty <=< lift . mapClassSnapshot (Map.keysSet premade) mempty (Set.fromList schemeTVars) insts
-  unions <- ump $ for (zip newUnionIDs schemeUnions) $ \(newUID, (union, params, ret)) -> do
-    let union' = lift . cloneUnion newUID =<< traverse mapOnlyTVsForUnions =<< lift (getUnion union)
-    liftA3 (,,) union' (traverse mapOnlyTVsForUnions params) (mapOnlyTVsForUnions ret)
+  -- ALGO NEW: we must also map the Match types in the instantiated union!!
+  newUnionUIDs <- traverse (const (lift InterModular.nextUnionUniID)) schemeUnions
+  schemeUnionIDs <- traverse (fmap (T.unionID . snd) . getUnion') schemeUnions 
+  let unionMap = Map.fromList $ zip schemeUnionIDs newUnionUIDs
+
+  -- do the whole mapping in context
+
+  -- unions with new ID, but `Match` is not yet mapped
+  schemeUnionsMatchNotMapped <- for schemeUnions $ \uuid -> do
+    u <- getUnion uuid
+    uid <- newUnionID
+    pure $ u { T.unionID = uid }
+
+  let ogAssocIDs = schemeAssocs <&> \(T.FunctionTypeAssociation _ _ _ classInstID) -> classInstID
+  newAssocIDs <- for ogAssocIDs reinstantiateClassInstID
+  let assocMap = Map.fromList $ zip ogAssocIDs newAssocIDs
+
+  (match, x) <- ump tvmap unionMap assocMap $ do
+    -- The problem is that unions can contain other unions which are exposed. So, we have to map 'em.
+    -- 
+    -- 1. map `Match` types of scheme unions
+    unions <- for schemeUnionsMatchNotMapped $ \u -> do
+      matchMappedUnion  <- for u.union $ traverse mapTVs
+      pure $ u { T.union = matchMappedUnion }
+
+    -- 2. add actual union implementation for this.
+    lift $ for_ (zip newUnionUIDs unions) $
+      uncurry addUnionWithExistingID
+
+    -- 3. associations
+    assocs <- for (zip newAssocIDs schemeAssocs) $ \(newInstID, T.FunctionTypeAssociation tv to cfd@(CFD cd _ _ _ _) _) -> do
+      from <- mapTVs =<< lift (mkType $ TO $ TVar tv)
+      mto <- mapTVs to
+      lift $ do
+        pf "FROM: %" from
+        pf "TO: %" =<< presentType mto <$> getTypeUni
+
+        -- ALGO: reinstantiate the class ID. This will make it separate from the OG ID in case it'll get generalized again, but also we can compare it to the original Scheme to know which old ID it belongs to.
+        associateType (Def.TmpNoLocation, from) (Def.TmpNoLocation, mto) cfd newInstID snapshot
+        pure newInstID
+
+    let match = Match tyvs newUnionUIDs assocs
+
+    -- 4. cuck stuff at the end (used as pejorative for the caller of this function, not related to `cuckedUnions`)
+    x <- stuffToMap mapTVs
+
+    pure (match, x)
 
   -- NOTE not needed now?
   -- funny FIX (it should be done better.)
@@ -1723,150 +1730,122 @@ instantiateScheme insts (Scheme schemeTVars schemeUnions) = do
   -- also, don't forget to constrain new types.
   for_ (zip tyvs schemeTVars) $ \(t, tv) -> do
     for_ tv.tvClasses $ \klass -> do
-      let instmap = fromMaybe mempty $ insts !? klass
+      let instmap = fromMaybe mempty $ snapshot !? klass
       let constr = constrain (error "todo")
       t `constr` (klass, instmap)
 
-  pure (tyvs, unions)
+  pure (match, x)  -- (tyvs, unions)
 
 
 -- very bad... memo for mapping types.
-type UltraMap a = StateT (Map (Type TC) (Type TC), Map T.EnvUnion T.EnvUnion) Infer a
-ultraMapThing :: UltraMap a -> Infer a
-ultraMapThing umx = State.evalStateT umx mempty
+type UltraMap a = RST UltraMaps (Map (Type TC) (Type TC), Map T.EnvUnion T.EnvUnion) Infer a
+ultraMapThing :: Map (TVar TC) (Type TC) -> Map Def.UnionID (T.EnvUnion) -> Map ClassInstID ClassInstID -> UltraMap a -> Infer a
+ultraMapThing typemap unionmap assocmap umx = fst <$> RST.runRST umx (UMS { ultraTypeMap = typemap, ultraUnionMap = unionmap, ultraAssocMap = assocmap }) mempty
+data UltraMaps = UMS
+  { ultraTypeMap :: Map (TVar TC) (Type TC)
+  , ultraUnionMap :: Map Def.UnionID (T.EnvUnion)
+  , ultraAssocMap :: Map ClassInstID ClassInstID
+  }
 
 ump = ultraMapThing
 
 
--- Should recursively map all the TVars in the type. (including in the unions.)
--- TODO: this function became retarded
---   premade - premap unions when unions depend on each other during instantiation.
---   exclude - for cucked unions, we must not instantiate types. it works i guess. maybe i should do something better.
-mapTVsWithMap :: Map T.EnvUnion T.EnvUnion -> Set (Type TC) -> Map (TVar TC) (Type TC) -> Map Def.UnionID (T.EnvUnion) -> Type TC -> UltraMap (Type TC)
-mapTVsWithMap premade exclude tvmap unionmap =
-  let
-    mapTVs :: Type TC -> UltraMap (Type TC)
-    mapTVs = tryMemoType $ \baseTid ttt -> upMapSthTVs >> traverse mapTVs ttt >>= \case
-        TO (TVar tv) -> error "bruh"  -- lift $ getType $ fromMaybe baseTid (tvmap !? tv)
-        TFun union ts tret -> do
-          uid <- T.unionID <$> lift (getUnion union)
-          union' <- maybe (mapUnion union) pure (unionmap !? uid)  -- TODO: put this in tryMemoUnion...
-          pure $ TFun union' ts tret
-        TCon dd ts unions -> do
-          unions' <- for unions $ \(union, params, ret) -> do
-            uid <- T.unionID <$> lift (getUnion union)
-            liftA3 (,,) (maybe (mapUnion union) pure (unionmap !? uid)) (traverse mapTVs params) (mapTVs ret)
-          pure $ TCon dd ts unions'
-        TO tt -> pure $ TO tt
+mapTVs :: Type TC -> UltraMap (Type TC)
+mapTVs tid = do
+  tryMemoType tid $ \baseTid ttt -> upMapSthTVs >> traverse mapTVs ttt >>= \case
+    TO (TVar tv) -> error "bruh"  -- lift $ getType $ fromMaybe baseTid (tvmap !? tv)
+    TFun union ts tret -> do
+      union' <- mapUnion union
+      pure $ TFun union' ts tret
+    TCon dd ts unions -> do
+      unions' <- for unions $ \union -> do
+        mapUnion union
+      pure $ TCon dd ts unions'
+    TO tt -> pure $ TO tt
 
-    mapUnion :: T.EnvUnion -> UltraMap T.EnvUnion
-    mapUnion = tryMemoUnion $ \_ u -> do
-        upMapSthTVs
-        newUnion <- for u.union $ \(muci, ufi, ts, env) -> do
-              ts' <- traverse mapTVs ts
-              env' <- mapEnv premade exclude tvmap unionmap env
-              pure (muci, ufi, ts', env')
-        pure $ u { T.union = newUnion }
+tryMemoType :: Type TC -> (Type TC -> TypeF TC TypeID -> UltraMap (TypeF TC TypeID)) -> UltraMap (Type TC)
+tryMemoType tid fux = lift (getType' tid) >>= \(baseTid, t) -> do
+    RST.gets fst >>= \tvs -> case tvs !? baseTid of
+      Just newU -> pure newU
+      Nothing -> do
+            t' <- case t of
+              TO (TVar tv) -> do
+                tvmap <- RST.asks ultraTypeMap
+                pure $ fromMaybe baseTid (tvmap !? tv)  -- HACK! to not duplicate changed tvars accidentally
+              _ -> do
+                evaldType <- fux baseTid t
+                if t == evaldType
+                  then pure tid
+                  else do
+                        newT <- lift $ mkType evaldType
+                        pure newT
 
-    tryMemoType :: (Type TC -> TypeF TC TypeID -> UltraMap (TypeF TC TypeID)) -> Type TC -> UltraMap (Type TC)
-    tryMemoType fux tid = lift (getType' tid) >>= \(baseTid, t) -> if baseTid `Set.member` exclude
-      then pure tid
-      else do
-        State.gets fst >>= \tvs -> case tvs !? baseTid of
-          Just newU -> pure newU
-          Nothing -> do
-                t' <- case t of
-                  TO (TVar tv) -> pure $ fromMaybe baseTid (tvmap !? tv)  -- HACK! to not duplicate changed tvars accidentally
-                  _ -> do
-                    evaldType <- fux baseTid t
-                    if t == evaldType
-                      then pure tid
-                      else do
-                            newT <- lift $ mkType evaldType
-                            pure newT
+            RST.modify $ first $ Map.insert baseTid t'
+            pure t'
 
-                State.modify $ first $ Map.insert baseTid t'
-                pure t'
+mapUnion :: T.EnvUnion -> UltraMap T.EnvUnion
+mapUnion = tryMemoUnion $ \_ u -> do
+    upMapSthTVs
+    newUnion <- for u.union $ \case
+      T.UnionFun fn match -> do
+        match' <- mapMatch match
+        pure $ T.UnionFun fn match'
+      T.UnionLam env -> T.UnionLam <$> mapEnv env
+      T.UnionConEnv envID -> pure $ T.UnionConEnv envID
+          -- ts' <- traverse mapTVs ts
+          -- env' <- mapEnv premade exclude tvmap unionmap env
+          -- pure (muci, ufi, ts', env')
+    pure $ u { T.union = newUnion }
 
-    tryMemoUnion :: (T.EnvUnion -> T.EnvUnionF TC TypeID -> UltraMap (T.EnvUnionF TC TypeID)) -> T.EnvUnion -> UltraMap T.EnvUnion
-    tryMemoUnion fux uid = do
-      (baseUid, u) <- lift $ getUnion' uid
-      State.gets snd >>= \us -> case premade !? baseUid of
-          Just premadeUnion -> pure premadeUnion
-          Nothing -> case us !? baseUid of
-            Just newU -> pure newU
+tryMemoUnion :: (T.EnvUnion -> T.EnvUnionF TypeID -> UltraMap (T.EnvUnionF TypeID)) -> T.EnvUnion -> UltraMap T.EnvUnion
+tryMemoUnion fux uid = do
+  (baseUid, u) <- lift $ getUnion' uid
+  RST.gets snd >>= \us -> case us !? baseUid of
+        Just newU -> pure newU
+        Nothing -> do
+          unionmap <- RST.asks ultraUnionMap
+          case unionmap !? u.unionID of
+            Just mu -> pure mu
             Nothing -> do
               evaldUnion <- fux baseUid u
               if u == evaldUnion
                 then pure uid
                 else do
                   newU <- lift $ mkUnion evaldUnion
-                  State.modify $ fmap $ Map.insert baseUid newU
+                  RST.modify $ fmap $ Map.insert baseUid newU
                   pure newU
 
-  in mapTVs
+-- NEW NOTE: kinda bad, because we're redoing the mistakes I did. I wonder if there is a better way? I guess I didn't want to map unions (I wanted to leave em alone)
+mapEnv :: T.EnvDef -> UltraMap T.EnvDef
+mapEnv (T.EnvDef eid vars stack) = do
+  vars' <- for vars $ \(v, l, t) -> do
+    v' <- case v of
+      T.DefinedVariable uv ->
+        pure $ T.DefinedVariable uv
+      T.DefinedFunction fn match -> do
+        match' <- mapMatch match
+        pure $ T.DefinedFunction fn match'
+      T.DefinedClassFunction cfd classInstID ->
+        pure $ T.DefinedClassFunction cfd classInstID
 
-mapEnv :: Map T.EnvUnion T.EnvUnion -> Set (Type TC) -> Map (TVar TC) (Type TC) -> Map Def.UnionID T.EnvUnion -> T.Env -> UltraMap T.Env
-mapEnv premade exclude tvmap unionmap = \case
-    T.Env eid vars localities level -> do
-      upMapSthTVs
-      vars' <- for vars $ \(v, loc, t) -> do
-        v' <- mapVar v
-        t' <- mapTVsWithMap premade exclude tvmap unionmap t
-        pure (v', loc, t')
-      pure $ T.Env eid vars' localities level
-    e -> pure e
-  where
-    mapVar :: T.Variable -> UltraMap T.Variable
-    mapVar v = upMapSthTVs >> case v of
-      T.DefinedClassFunction cfd snap self uci -> do
-        mappedSelf <- mapTVsWithMap premade exclude tvmap unionmap self
-        pure $ T.DefinedClassFunction cfd snap mappedSelf uci
-      T.DefinedFunction fn assocs snap ufi -> do
-        mappedAssocs <- for assocs $ mapTVsWithMap premade exclude tvmap unionmap
-        pure $ T.DefinedFunction fn mappedAssocs snap ufi
-      v -> pure v
+    t' <- mapTVs t
+    pure (v', l, t')
 
+  pure $ T.EnvDef eid vars' stack
 
--- This replaces the snapshot (available instances) for classes with a tvar in the set. Might be merged with mapTVsWithMap, but I'll have to make sure it's always used in the same context.
-mapClassSnapshot :: Set T.EnvUnion -> Set (Type TC) -> Set (TVar TC) -> T.ScopeSnapshot TC -> Type TC -> Infer (Type TC)
-mapClassSnapshot excludedUnions exclude tvs snapshot = mapType
-  where
-    mapType :: Type TC -> Infer (Type TC)
-    mapType = getType' >=> \(tid, tt) -> if tid `Set.member` exclude
-      then pure tid
-      else upMapCS >> traverse mapType tt >>= \case
-        TFun union args ret -> do
-          union' <- mapUnion union
-          mkType $ TFun union' args ret
-        TCon dd ts unions -> do
-          unions' <- traverse (\(u, params, ret) -> mapUnion u <&> (, params, ret)) unions
-          mkType $ TCon dd ts unions'
-        _ -> pure tid
-
-    mapUnion :: T.EnvUnion -> Infer T.EnvUnion
-    mapUnion uid = getUnion' uid >>= \(baseUid, uu) -> if baseUid `Set.member` excludedUnions
-      then pure baseUid
-      else upMapCS >> traverse mapType uu >>= \u -> do
-        newUnion <- for u.union $ traverse $ \case
-            T.Env eid vars localities level -> do
-              vars' <- traverse (\(v, l, t) -> mapVar v <&> (, l, t)) vars
-              pure $ T.Env eid vars' localities level
-            e -> pure e
-        nextUnion baseUid $ u { T.union = newUnion }
-
-    mapVar :: T.Variable -> Infer T.Variable
-    mapVar v = upMapCS >> traverse mapType v >>= \case
-      ogclass@(T.DefinedClassFunction cfd _ selfID uci) -> getType selfID <&> \case
-        TO (T.TVar tv) | Set.member tv tvs -> T.DefinedClassFunction cfd snapshot selfID uci
-        _ -> ogclass
-      v -> pure v
+-- TODO NEW: bruh, the "assocs" part is weird. should I map inside it or leave it alone? probably leave it alone, as it means, that it's not tied to our function, so it should not be mapped.
+--   or maybe not. imagine an inner instance, which has tvars in its environment, but depends on some top level var for its type.
+-- so... maybe. NOTE: right now I'm leaving it be, but I should keep it in mind.
+mapMatch :: T.Match -> UltraMap T.Match
+mapMatch (Match ts us as) = do
+  assocmap <- RST.asks ultraAssocMap
+  Match <$> traverse mapTVs ts <*> traverse mapUnion us <*> pure (as <&> \classInstID -> fromMaybe classInstID (assocmap !? classInstID))
 
 
 -- Constructs an environment from all the instantiations.
 --  We need the instantiations, because not all instantiations of a function can come up in the environment.
 --  But, when there is a TVar in the type, it means all instantiated types of TVars must be there.
-withEnv :: R.Env -> Infer (T.ClassInstantiationAssocs, a) -> Infer (T.Env, a)
+withEnv :: R.Env -> Infer a -> Infer (T.EnvDef, a)
 withEnv renv x = do
   let eid = renv.envID
   pf "BEGIN ENV: %" (pp renv)
@@ -1876,12 +1855,16 @@ withEnv renv x = do
 
   -- 2. execute in scope.
   RWS.modify $ \s -> s { instantiations = Set.empty, envStack = eid : s.envStack }
-  (ucis, x') <- x
+  x' <- x
   modifiedInstantiations <- RWS.gets instantiations
 
 
   -- 3. then filter the stuff that actually is from the environment
-  --  TODO: this might not be needed, since we conditionally add an instantiation if it's FromEnvironment.
+  --  TODO: This realistically encounters two cases:
+  --    1. remove self insert
+  --    2. don't remove self insert
+  --   in instantiateVariable, we always add the function itself to the `instantiations` (environment), but if it's local, we don't need to do that. Here it would be removed. BUT. Imagine... maybe we just would not add the instantiation if the function is not local??? imagine that.
+  -- TODO: also, this kind of thing "degrades" the meaning of Resolver even more, as we can just as well define the environment during typechecking. Should we even keep resolver??
   renvQuery <- Map.fromList <$> traverse (\(v, l) -> (,l) <$> inferVariableProto v) (R.fromEnv renv)
   let newEnvVars
   --       = mapMaybe (\case
@@ -1900,9 +1883,9 @@ withEnv renv x = do
 
   -- 4. and put that filtered stuff back. ? NO. ONLY IN ENV DEFS. SO WE COPY THAT ENVIRONMENT THERE NIGGA. inferFunction can be called for normal variables.
   -- let usedInstantiations = Set.fromList $ fmap (\(v, _, t) -> (v, t)) newEnv
-  RWS.modify $ \s -> s { instantiations = outOfEnvInstantiations, envStack = tail s.envStack }  -- NOTE: `tail` instead of `drop`, because if an empty list here must be a bug in the code.
+  RWS.modify $ \s -> s { instantiations = outOfEnvInstantiations, envStack = tail s.envStack }  -- NOTE: `tail` instead of `drop`, because if an empty list is here must be a bug in the code.
 
-  let newEnv = T.Env eid newEnvVars renvQuery renv.envStackLevel
+  let newEnv = T.EnvDef eid newEnvVars renv.envStackLevel
   pure (newEnv, x')
 
 
@@ -1938,7 +1921,7 @@ findBuiltinType (Prelude.PF tc pf) = do
       ts <- RWS.gets $ memoToMap . memoDataDefinition
       case findMap tc (\(DD ut _ _ _) -> ut.typeName) ts of
         Just dd@(DD _ scheme _ _) -> do
-          (tvs, unions) <- instantiateScheme mempty scheme
+          Match tvs unions _ <- instantiateScheme' mempty scheme
           mkType $ TCon dd tvs unions
         Nothing -> error $ "[COMPILER ERROR]: Could not find inbuilt type '" <> show tc <> "'."
 
@@ -1951,7 +1934,7 @@ mkPtr insidePtr = do
       ts <- RWS.gets $ memoToMap . memoDataDefinition
       case findMap Prelude.ptrTypeName (\(DD ut _ _ _) -> ut.typeName) ts of
         Just dd@(DD _ scheme _ _) -> do
-          (tvs@[innerTyVar], unions) <- instantiateScheme mempty scheme
+          Match tvs@[innerTyVar] unions _ <- instantiateScheme' mempty scheme
           (error "should it even fail?", innerTyVar) `uni` (Nothing, insidePtr)
           mkType $ TCon dd tvs unions
 
@@ -1964,13 +1947,13 @@ mkType t = lift $ do
   InterModular.modifyTypeUni $ IntMap.insert tid.fromTypeID $ Right t
   pure tid
 
-mkUnion :: T.EnvUnionF TC TypeID -> Infer T.EnvUnion
+mkUnion :: T.EnvUnionF TypeID -> Infer T.EnvUnion
 mkUnion u = lift $ do
   uid <- InterModular.nextUnionUniID
   InterModular.modifyUniUni $ IntMap.insert uid.fromUnionUniID $ Right u
   pure uid
 
-mkUnion' :: T.EnvUnionF TC TypeID -> Infer T.EnvUnion
+mkUnion' :: T.EnvUnionF TypeID -> Infer T.EnvUnion
 mkUnion' u = lift $ do
   newUid <- newUnionID
   uid <- InterModular.nextUnionUniID
@@ -1978,7 +1961,7 @@ mkUnion' u = lift $ do
   pure uid
 
 -- adds more stuff to the union and adds a reference for the old one to the union.
-nextUnion :: T.EnvUnion -> T.EnvUnionF TC TypeID -> Infer T.EnvUnion
+nextUnion :: T.EnvUnion -> T.EnvUnionF TypeID -> Infer T.EnvUnion
 nextUnion oldUnionID union = lift $ do
   nextUnionID <- InterModular.nextUnionUniID
   InterModular.modifyUniUni
@@ -2041,7 +2024,7 @@ unify (locl, tttl) (locr, tttr) = do
 
     (TCon t ta unions, TCon t' ta' unions') | t == t' -> do
       unifyMany (locl, ta) (locr, ta')
-      zipWithM_ unifyFunEnv (unions <&> \(u, _, _) -> u) (unions' <&> \(u, _, _) -> u)  -- i don't think we need to unify the types associated with EnvUnion, right???
+      zipWithM_ unifyFunEnv unions unions'  -- i don't think we need to unify the types associated with EnvUnion, right???
 
     (_, _) -> do
       ttl' <- presentType ttl <$> getTypeUni
@@ -2127,15 +2110,15 @@ unifyFunEnv lenv renv = do
     . IntMap.insert baseREnv.fromUnionUniID (Left unionUniID.fromUnionUniID)   -- insert ref
 
 
-getUnion :: T.EnvUnion -> Infer (T.EnvUnionF TC TypeID)
+getUnion :: T.EnvUnion -> Infer (T.EnvUnionF TypeID)
 getUnion = fmap snd . getUnion'
 
-getUnion' :: T.EnvUnion -> Infer (T.EnvUnion, T.EnvUnionF TC TypeID)
+getUnion' :: T.EnvUnion -> Infer (T.EnvUnion, T.EnvUnionF TypeID)
 getUnion' uid = do
   tu <- lift InterModular.getTypeUni
   pure $ TC.getUnionFromUni tu uid
 
-getUnion'' :: TC.TypeUni -> T.EnvUnion -> T.EnvUnionF TC TypeID
+getUnion'' :: TC.TypeUni -> T.EnvUnion -> T.EnvUnionF TypeID
 getUnion'' tu = snd . TC.getUnionFromUni tu
 
 getType :: Type TC -> Infer (TypeF TC TypeID)
@@ -2156,7 +2139,7 @@ presentType :: Type TC -> TC.TypeUni -> Def.Context
 presentType t tu = go t where
   go t =  case fmap go (getType'' tu t) of
     TCon tc ts unions ->
-      let us = fmap (\(u, _, _) -> presentUnion tu u) unions
+      let us = fmap (presentUnion tu) unions
       in pf "(% % %)" (ppDef tc) ts us
     TFun union ts t ->
       let u = presentUnion tu union
@@ -2168,7 +2151,7 @@ presentUnion :: TC.TypeUni -> T.EnvUnion -> Def.Context
 presentUnion tu u = go u where
   go u =
     let u' = fmap (flip presentType tu) (getUnion'' tu u)
-    in pf "%%" u'.unionID (Def.encloseSepBy "{" "}" ", " $ u'.union <&> \(_, _, assocs, env) -> pf "(%, %)" assocs env :: Def.Context)
+    in pf "%%" u'.unionID (Def.encloseSepBy "{" "}" ", " $ u'.union <&> \unionMember -> pf "%" unionMember :: Def.Context)
 
 presentFunctionType :: Function TC -> TC.TypeUni -> Def.Context
 presentFunctionType fn tu =
@@ -2278,7 +2261,7 @@ instance Substitutable (Expr TC) where
     Var v _ -> ftv v
     e -> fold e
 
-instance Substitutable (T.ExprNode TC) where
+instance Substitutable (T.ExprNode) where
   ftv en = ftv en.t
 
 instance Substitutable TypeID where
@@ -2294,20 +2277,14 @@ instance Substitutable TypeID where
 instance Substitutable (T.LamDec TC) where
   ftv (T.LamDec _ env) = ftv env
 
-instance Substitutable t => Substitutable (T.VariableF TC t) where
+instance Substitutable t => Substitutable (T.VariableF t) where
   ftv _ = mempty
 
 
 instance Substitutable Def.UniqueVar where
   ftv _ = mempty
 
-instance Substitutable Def.UniqueClassInstantiation where
-  ftv _ = mempty
-
 instance Substitutable Def.MemName where
-  ftv _ = mempty
-
-instance Substitutable Def.UniqueFunctionInstantiation where
   ftv _ = mempty
 
 instance Substitutable Def.Location where
@@ -2318,13 +2295,16 @@ instance Substitutable (Function TC) where
   ftv fn = liftA2 (\\) (ftv fn.functionBody) (ftv fn.functionDeclaration)
 
 instance Substitutable (FunDec TC) where
-  ftv (FD _ _ params ret other) = ftv params <> ftv ret <> ftv other.functionAssociations -- <> ftv env  -- TODO: env ignored here, because we expect these variables to be defined outside. If it's undefined, it'll come up in ftv from the function body. 
+  ftv (FD _ _ params ret other) =
+    ftv params <> ftv ret <> ftv other -- <> ftv env  -- TODO: env ignored here, because we expect these variables to be defined outside. If it's undefined, it'll come up in ftv from the function body. 
 
 instance Substitutable (T.FunOther TC) where
-  ftv other = ftv other.functionAssociations
+  ftv other =
+    let Scheme _ _ assocs = other.functionScheme
+    in ftv assocs
 
 instance Substitutable T.TypeAssociation where
-  ftv (T.TypeAssociation from to _ _ _ _) = ftv from <> ftv to
+  ftv (T.TypeAssociation from to _ _ _) = ftv from <> ftv to
 
 -- -- FIX: FUCK
 -- instance Substitutable a => Substitutable (IORef a) where
@@ -2342,13 +2322,19 @@ instance Substitutable (T.FunctionTypeAssociation TC) where
 --     t -> trafold ftv t
 
 
-instance Substitutable t => Substitutable (T.EnvUnionF TC t) where
+instance Substitutable t => Substitutable (T.EnvUnionF t) where
   ftv (T.EnvUnion _ envs) = ftv envs
 
+instance Substitutable t => Substitutable (T.UnionMemberF t) where
+  ftv = foldMap ftv
 
-instance Substitutable t => Substitutable (T.EnvF TC t) where
-  ftv (T.Env _ vars _ _) = foldMap (\(_, _, t) -> ftv t) vars
+
+instance Substitutable t => Substitutable (T.EnvF t) where
+  ftv (T.Env env) = ftv env
   ftv (T.RecursiveEnv _ _) = mempty
+
+instance Substitutable ty => Substitutable (T.EnvDefF ty) where
+  ftv = foldMap ftv
 
   -- redundant work. memoize this shit also.
   -- subst su (T.Env eid env locs currentEnvStack) = T.Env eid (newEnvVars <> optionalAddition) locs currentEnvStack
@@ -2455,11 +2441,6 @@ instance Substitutable a => Substitutable (Maybe a) where
 newUnionID :: MonadIO io => io Def.UnionID
 newUnionID = Def.UnionID <$> liftIO newUnique
 
-newClassInstantiation :: Infer Def.UniqueClassInstantiation
-newClassInstantiation = Def.UCI <$> liftIO newUnique
-
-newFunctionInstantiation :: Infer Def.UniqueFunctionInstantiation
-newFunctionInstantiation = Def.UFI <$> liftIO newUnique
 
 -- Returns a fresh new tyvare
 fresh :: Infer (Type TC)
@@ -2490,16 +2471,14 @@ letters :: [Text]
 letters = map (Text.pack . ('\'':)) $ [1..] >>= flip replicateM ['a'..'z']
 
 
-singleEnvUnion :: Maybe Def.UniqueClassInstantiation -> Def.UniqueFunctionInstantiation -> [Type TC] -> T.Env -> Infer T.EnvUnion
-singleEnvUnion uci ufi tassocs env = do
+singleEnvUnion :: T.UnionMember -> Infer T.EnvUnion
+singleEnvUnion um = do
   uid <- newUnionID
-  mkUnion $ T.EnvUnion { T.unionID = uid, T.union = [(uci, ufi, tassocs, env)] }
+  mkUnion $ T.EnvUnion { T.unionID = uid, T.union = [um] }
 
-cloneUnion :: T.EnvUnion -> T.EnvUnionF TC (Type TC) -> Infer T.EnvUnion
-cloneUnion uuid union = do
-  uid <- newUnionID
-  lift $ InterModular.modifyUniUni $ IntMap.insert uuid.fromUnionUniID $ Right $ union { T.unionID = uid }
-  pure uuid
+addUnionWithExistingID :: T.EnvUnion -> T.EnvUnionF (Type TC) -> Infer ()
+addUnionWithExistingID uuid union = do
+  lift $ InterModular.modifyUniUni $ IntMap.insert uuid.fromUnionUniID $ Right $ union
 
 -- Creates an empty union.
 emptyUnion :: Infer T.EnvUnion
@@ -2512,8 +2491,16 @@ findMap :: Eq a => a -> (b -> a) -> Map b c -> Maybe c
 findMap kk f = fmap snd . find (\(k, _) -> f k == kk). Map.toList
 
 classFunDecToClassType :: ClassFunDec R -> ClassType R
-classFunDecToClassType (CFD _ _ params ret _ _) =
+classFunDecToClassType (CFD _ _ params ret _) =
   Fix $ NormalType $ TFun undefined undefined undefined
+
+
+newClassInstID :: Infer ClassInstID
+newClassInstID = ClassInstID <$> liftIO newUnique
+
+-- NOTE: we don't actually need the old class ID, but it makes it obvious we are reinstantiating it. we might also add info as to the previous ID.
+reinstantiateClassInstID :: ClassInstID -> Infer ClassInstID
+reinstantiateClassInstID = const $ newClassInstID
 
 
 ------------------------------------------
@@ -2576,17 +2563,6 @@ newtype TVarGen = TVG Int
 
 newTVarGen :: TVarGen
 newTVarGen = TVG 0
-
-
-newtype TypeIDGen = TIG Int
-
-newTypeIDGen :: TypeIDGen
-newTypeIDGen = TIG 0
-
-newtype UnionUniIDGen = UUIDG Int
-
-newUnionIDGen :: UnionUniIDGen
-newUnionIDGen = UUIDG 0
 
 
 
@@ -2722,7 +2698,7 @@ printUni line anns ix = if Def.ADebugUnification `elem` anns
 
 
 dbgAssociations :: String -> [(T.TypeAssociation, T.ScopeSnapshot TC)] -> Infer ()
-dbgAssociations title associations = pf "Associations (%): %" title (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation from to _ uci ufi _, _) -> pf "(%) %: %" (pp (uci, ufi)) (pp from) (pp to) :: String)
+dbgAssociations title associations = pf "Associations (%): %" title (Def.encloseSepBy "[" "]" ", " $ associations <&> \(T.TypeAssociation from to _ classInstID _, _) -> pf "(%) %: %" classInstID from to :: String)
 
 
 
@@ -2730,27 +2706,35 @@ dbgAssociations title associations = pf "Associations (%): %" title (Def.enclose
 -- This is currently how we extract unions from types.
 -- This needs to be done, because custom types need to track which unions were used.
 -- TODO: this should probably be made better. Maybe store those unions in DataDef?
-extractUnionsFromDataType :: DataDef TC -> Infer [(T.EnvUnion, [Type TC], Type TC)]
+extractUnionsFromDataType :: DataDef TC -> Infer [T.EnvUnion]
 extractUnionsFromDataType (DD _ _ (Right dcs) _) =
   trafold extractUnionsFromConstructor dcs
 
 extractUnionsFromDataType dd@(DD ut _ (Left drs) _) =
-  flip trafold drs $ \(Def.Annotated _ (_, t)) -> mapUnion ut t
+  flip trafold drs $ \(Def.Annotated _ (_, t)) -> extractUnion ut t
 
-extractUnionsFromConstructor :: DataCon TC -> Infer [(T.EnvUnion, [Type TC], Type TC)]
-extractUnionsFromConstructor (DC (DD ut _ _ _) _ ts _) = trafold (mapUnion ut) ts
+extractUnionsFromConstructor :: DataCon TC -> Infer [T.EnvUnion]
+extractUnionsFromConstructor (DC (DD ut _ _ _) _ ts _) = trafold (extractUnion ut) ts
 
 -- TODO: clean up all the mapUnion shit. think about proper structure.
-mapUnion :: Def.UniqueType -> Type TC -> Infer [(T.EnvUnion, [Type TC], Type TC)]
-mapUnion ut = getType >=> \case
+-- NEW: what even is it doing????
+-- it's getting unions out. note, that there are "live", instantiated unions. it's kinda funny, because we have to traverse dis shit.
+extractUnion :: Def.UniqueType -> Type TC -> Infer [T.EnvUnion]
+extractUnion ut = getType >=> \case
   -- TODO: explain what I'm doing - somehow verify if it's correct (with the unions - should types like `Proxy (Int -> Int)` store its union in conUnions? or `Ptr (Int -> Int)`?).
   TCon (DD tut _ _ _) paramts conUnions
     -- breaks cycle with self referential datatypes.
-    | tut == ut -> trafold (mapUnion ut) paramts
-    | otherwise -> (conUnions <>) <$> trafold (mapUnion ut) paramts
+    | tut == ut -> trafold (extractUnion ut) paramts
+    | otherwise -> liftA2 (<>) (concat <$> traverse ueu conUnions) (trafold (extractUnion ut) paramts)
 
-  TFun u args ret -> liftA2 (\l r -> (u, args, ret) : l <> r) (trafold (mapUnion ut) args) (mapUnion ut ret)
+  TFun u args ret -> liftA3 (\ue l r -> ue <> l <> r) (ueu u) (trafold (extractUnion ut) args) (extractUnion ut ret)
   TO _ -> pure []
+
+-- NEW: unfortunately, we have to look inside the union with the current typing scheme.
+--      not really needed in datatype, but when I use it for generalizing, I should look inside
+addUnionAndExtractFromUnion, ueu :: T.EnvUnion -> Infer [T.EnvUnion]
+ueu = addUnionAndExtractFromUnion  -- shorthand
+addUnionAndExtractFromUnion u = pure [u]
 
 
 trafold :: (Monoid b, Traversable t, Applicative f) => (a -> f b) -> t a -> f b

@@ -223,6 +223,7 @@ $(deriveBitraversable ''IfStmt)
 $(deriveBitraversable ''CaseF)
 $(deriveBitraversable ''StmtF)
 
+
 --------------
 -- Function --
 --------------
@@ -258,6 +259,7 @@ data Function phase = Function
 type family XClass phase
 type family XDClass phase
 type family XClassFunDec phase
+type family XClassFunOther phase  -- TODO: shit type family, but good enough for now. After everything works, do a last cleanup here.
 
 data ClassDef phase = ClassDef
   { classID :: XDClass phase
@@ -266,7 +268,13 @@ data ClassDef phase = ClassDef
   , classDeclarationLocation :: Def.Location
   }
 
-data ClassFunDec phase = CFD (Rec phase (ClassDef phase)) (XFunVar phase) [(Decon phase, ClassType phase)] (ClassType phase) (XClassConstraints phase) Def.Location
+data ClassFunDec phase = CFD
+  { klass :: (Rec phase (ClassDef phase))
+  , classFunID :: (XFunVar phase)
+  , classFunParams :: [(Decon phase, ClassType phase)]
+  , classFunRet :: (ClassType phase)
+ , classFunOther :: (XClassFunOther phase)
+  }
 
 data ClassTypeF phase a
   = Self
@@ -343,7 +351,7 @@ instanceToFunction :: InstFun a -> Function a
 instanceToFunction instdef = Function instdef.instFunDec instdef.instFunBody
 
 classFunDecToClassType :: ClassFunDec a -> ClassType phase
-classFunDecToClassType (CFD _ _ params ret _ _) =
+classFunDecToClassType (CFD _ _ params ret _) =
   Fix $ NormalType $ TFun undefined undefined undefined
 
 relit :: (XStringInterpolation phase -> XStringInterpolation phase') -> LitType phase -> LitType phase'
@@ -372,10 +380,10 @@ instance Ord (XDClass phase) => Ord (ClassDef phase) where
 
 
 instance Eq (XFunVar phase) => Eq (ClassFunDec phase) where
-  CFD _ uv _ _ _ _ == CFD _ uv' _ _ _ _ = uv == uv'
+  CFD _ uv _ _ _ == CFD _ uv' _ _ _ = uv == uv'
 
 instance Ord (XFunVar phase) => Ord (ClassFunDec phase) where
-  CFD _ uv _ _ _ _ `compare` CFD _ uv' _ _ _ _ = uv `compare` uv'
+  CFD _ uv _ _ _ `compare` CFD _ uv' _ _ _ = uv `compare` uv'
 
 
 instance (Eq (XClass phase), Eq (XTCon phase)) => Eq (InstDef phase) where
@@ -598,7 +606,7 @@ instance (PP (XDClass phase), PP (XFunVar phase), PP (XLVar phase), PP (XMem pha
   pp c = Def.ppBody pp (pp c.classID) c.classFunctions
 
 instance (PP (XLVar phase), PP (XFunVar phase), PP (XMem phase), PP (XCon phase), PP (XTCon phase), PP (XExprNode phase), PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (ClassFunDec phase) where
-  pp (CFD _ v params ret _ _) = pp v <+> Def.encloseSepBy "(" ")" ", " (fmap (\(pDecon, pType) -> pp pDecon <+> pp pType) params) <+> pp ret
+  pp (CFD _ v params ret _) = pp v <+> Def.encloseSepBy "(" ")" ", " (fmap (\(pDecon, pType) -> pp pDecon <+> pp pType) params) <+> pp ret
 
 instance (PP (XLVar phase), PP (XCon phase), PP (XTCon phase), PP (XMem phase), PP (XVar phase), PP (XReturn phase), PP (XOther phase), PP (XFunDef phase), PP (XInstDef phase), PP (XVarOther phase), PP (XLamOther phase), PP (XEnv phase), PP (XFunVar phase), PP (Type phase), PP (XExprNode phase), PP (XFunType phase), PP (XLamVar phase), PPDef (XTCon phase), PP (XMutAccess phase), PP (XFunOther phase), PP (XStringInterpolation phase), PP (Type phase)) => PP (Function phase) where
   pp fn = Def.ppBody' pp (pp fn.functionDeclaration) fn.functionBody

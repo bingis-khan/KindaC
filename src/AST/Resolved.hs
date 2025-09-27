@@ -43,6 +43,7 @@ type instance XClassFunDec Resolved = ClassFun
 type instance XDClass Resolved = Def.UniqueClass
 type instance XInstDef Resolved = InstDef R
 type instance XClassConstraints Resolved = () -- Map (TVar R) (Set Class)
+type instance XClassFunOther Resolved = ()
 type instance XOther Resolved = ()
 type instance XFunOther Resolved = ([Def.Ann], Def.Location)
 type instance XTOther Resolved = RTO
@@ -100,8 +101,8 @@ asPUniqueVar = \case
   PDefinedFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
   PExternalFunction (Function { functionDeclaration = FD { functionId = fid } }) -> fid
 
-  PDefinedClassFunction (CFD _ uv _ _ _ _) -> uv
-  PExternalClassFunction (CFD _ uv _ _ _ _) -> uv
+  PDefinedClassFunction (CFD _ uv _ _ _) -> uv
+  PExternalClassFunction (CFD _ uv _ _ _) -> uv
 
 asProto :: Variable -> VariableProto
 asProto = \case

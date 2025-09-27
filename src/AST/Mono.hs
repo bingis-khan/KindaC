@@ -9,7 +9,6 @@ import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Exp
 import qualified AST.Def as Def
 import AST.Def (Locality, PP (..), (<+>))
 import Data.List.NonEmpty (NonEmpty)
-import AST.Typed (T)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.String (fromString)
 import Data.Functor ((<&>))
@@ -86,7 +85,7 @@ data Env
 
 data OtherDD = OtherDD
   { appliedTypes :: [Type M]
-  , ogDataDef :: DataDef T
+  -- , ogDataDef :: DataDef T
   }
 
 envID :: Env -> Def.EnvID

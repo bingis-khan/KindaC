@@ -83,7 +83,6 @@ library
       Resolver
       Stats
       Typecheck
-      TypeFix
       TypingContext
   other-modules:
       Paths_KindaC

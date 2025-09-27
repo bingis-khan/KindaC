@@ -25,9 +25,10 @@ import Control.Monad.IO.Class (liftIO)
 import InterModular (CompilationState, runModuleCtx, resumeModuleCtx)
 import Pipeline (loadPrelude, loadModule, codegen)
 import Entry (defaultConfig)
-import TypeFix (typefix)
-import TypingContext (TypingContext(..))
+import TypingContext (TypingContext(..), globalTypeUni)
 import BaseCtx (withBaseContext)
+import Lens.Micro ((^.))
+import AST.Typed (topLevelStatements)
 
 -- smol config
 testdir :: FilePath
@@ -117,8 +118,8 @@ compileAndOutputFile (prelude, state) filepath outdirpath = do
         case etmod of
           Left err -> pure $ Left $ Text.unlines $ NonEmpty.toList err
           Right (mods, tc) -> do
-            tfmod <- typefix tc.globalTypeUni tc.globalEnvAddition mods
-            cmod <- codegen tfmod
+            let tmods = concat $ NonEmpty.toList $ topLevelStatements <$>  mods
+            cmod <- codegen tc tmods
             let outpath = outdirpath </> takeBaseName filepath <> ".c"
             liftIO $ TextIO.writeFile outpath cmod
             pure $ Right outpath

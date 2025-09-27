@@ -19,9 +19,9 @@ import System.Exit (exitFailure)
 import Data.Foldable (find)
 import AST.Prelude (Prelude (..))
 import qualified AST.Prelude as Prelude
-import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), ExprNode (..), datatypes, LitType (..))
+import AST.Common (Module, DataDef (..), Type, DataCon, Expr, TypeF (..), ExprF (..), ExprNode (..), datatypes, LitType (..), AnnStmt)
 import qualified AST.Def as Def
-import AST.Typed (TC, T)
+import AST.Typed (TC, Mod (topLevelStatements))
 import AST.Def (Result(..), phase, pc, LogType (P, R, T_AST, M, F))
 import Mono (mono)
 import CPrinter (cModule)
@@ -32,11 +32,11 @@ import qualified System.FilePath as FilePath
 import qualified Data.IntMap.Strict as IntMap
 import InterModular (InterModular, moduleCtx)
 import qualified InterModular as InterModule
-import TypeFix (typefix)
-import TypingContext (globalTypeUni, globalEnvAddition)
+import TypingContext (globalTypeUni, TypingContext)
 import qualified AST.Untyped as U
 import BaseCtx (BaseCtx)
 import System.FilePath ((</>))
+import Lens.Micro ((^.))
 
 
 -- temporary redef
@@ -49,7 +49,7 @@ preludePath = "kcsrc/prelude.kc"
 stdPath = "kcsrc/std/"
 
 
-startFromModule :: FilePath -> BaseCtx (Either (NonEmpty Text) (Module T))
+startFromModule :: FilePath -> BaseCtx (Either (NonEmpty Text) (TypingContext, [AnnStmt TC]))
 startFromModule path = do
   emod <- moduleCtx path $ do
     prelude <- loadPrelude
@@ -58,12 +58,8 @@ startFromModule path = do
   case emod of
     Left errs -> pure $ Left errs
     Right (mods, tc) -> do
-      tfmod <- typefix tc.globalTypeUni tc.globalEnvAddition mods
-
-      phase F "Typechecking (fix)"
-      pc F $ Def.ppLines tfmod
-
-      pure $ Right tfmod
+      let tmods = concat $ NonEmpty.toList $ topLevelStatements <$>  mods
+      pure $ Right (tc, tmods)
 
 
 -- Loads and typechecks a module.
@@ -101,10 +97,10 @@ moduleLoader mprel moduleName = do
   basePath <- liftIO getCurrentDirectory
   pure $ InterModular.moduleLoader (basePath </> stdPath) (loadModule mprel) moduleName
 
-codegen :: Module T -> BaseCtx Text
-codegen joinedModules = do
+codegen :: TypingContext -> [AnnStmt TC] -> BaseCtx Text
+codegen tc joinedModules = do
   phase M "Monomorphizing"
-  mmod <- mono joinedModules
+  mmod <- mono tc joinedModules
 
   phase M "Monomorphized statements"
   pc M mmod
@@ -165,7 +161,7 @@ loadPrelude = do
         findBasicType :: Def.TCon -> InterModular (PreludeErr (Type TC))
         findBasicType typename = 
             let isCorrectType :: DataDef TC -> Bool
-                isCorrectType (DD ut (T.Scheme [] []) _ _) = ut.typeName == typename
+                isCorrectType (DD ut (T.Scheme [] [] []) _ _) = ut.typeName == typename
                 isCorrectType _ = False
 
                 mdd  = find isCorrectType pmod.exports.datatypes
@@ -183,7 +179,7 @@ loadPrelude = do
           findUnit = 
             let
                 mdd :: DataDef TC -> Maybe (DataCon TC)
-                mdd (DD ut (T.Scheme [] []) (Right [con]) _) | ut.typeName == Prelude.unitTypeName = Just con
+                mdd (DD ut (T.Scheme [] [] []) (Right [con]) _) | ut.typeName == Prelude.unitTypeName = Just con
                 mdd _ = Nothing
 
                 mdc   = listToMaybe $ mapMaybe mdd pmod.exports.datatypes
@@ -195,7 +191,7 @@ loadPrelude = do
           findStrConcat = 
             let
                 mdd :: DataDef TC -> Maybe (DataCon TC)
-                mdd (DD ut (T.Scheme [_, _] []) (Right [con]) _) | ut.typeName == Prelude.strConcatTypeName = Just con
+                mdd (DD ut (T.Scheme [_, _] [] []) (Right [con]) _) | ut.typeName == Prelude.strConcatTypeName = Just con
                 mdd _ = Nothing
 
                 mdc   = listToMaybe $ mapMaybe mdd pmod.exports.datatypes
@@ -214,7 +210,7 @@ loadPrelude = do
             let
               fitsPtrType :: DataDef TC -> Bool
               fitsPtrType = \case
-                DD ut (T.Scheme [_] []) _ _ -> ut.typeName == Prelude.ptrTypeName
+                DD ut (T.Scheme [_] [] []) _ _ -> ut.typeName == Prelude.ptrTypeName
                 _ -> False
               mdd = find fitsPtrType pmod.exports.datatypes
             in case mdd of

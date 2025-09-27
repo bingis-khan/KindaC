@@ -267,7 +267,7 @@ sDefinedFunctionHeader = do
     constraints <- sClassConstraints
     pure $ CFD () name params ret constraints
 
-  pure $ fcfd location
+  pure $ fcfd
 
 
 sInst :: Parser (Stmt Untyped)

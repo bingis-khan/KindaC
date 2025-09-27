@@ -439,13 +439,13 @@ cEnv' missingInsts menv@(M.Env _ vars) = do
                 uniqueDefVars <&> \(v, _, t) -> statement $ do
                 cDefinition t $ envVarName v t
 
-          let etype = "struct" § "et" & pls (hashUnique eid.fromEnvID)
+          let etype = "struct" § "et" & pls eid
           let env = etype <§ cBlock varTypes §> ";"
           addTopLevel env
 
 
 
-          let name = "et" & pls (hashUnique eid.fromEnvID) & "s"
+          let name = "et" & pls eid & "s"
           pure (etype, name)
 
   let uniqueInstVars = filter (\case { (M.DefinedFunction fn, _, _) -> Set.notMember fn missingInsts; _ -> True }) uniqueDefVars

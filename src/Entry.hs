@@ -35,8 +35,8 @@ compilerMain = do
         TextIO.putStrLn $ Text.unlines $ NonEmpty.toList errs
         exitFailure
 
-      Right tfMod -> do
-        cmod <- codegen tfMod
+      Right (tc, tmod) -> do
+        cmod <- codegen tc tmod
 
         case config.output of
           File name -> liftIO $ TextIO.writeFile name cmod

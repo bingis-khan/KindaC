@@ -202,9 +202,7 @@ newtype UnionUniID = UnionUniID { fromUnionUniID :: Int } deriving (Eq, Ord)
 -- This associates types for class associations with the types.
 -- Normal function calls store it with their instantiation, but I can't do that with class instantiations - associations depend on the selected type, which means I can't create them when I'm building the AST - only later, when association is resolved.
 
--- TODO: this is kinda bad. It should probably be done in subst or something, but I want it done quick.
-newtype UniqueClassInstantiation = UCI { fromUCI :: Unique } deriving (Eq, Ord)
-newtype UniqueFunctionInstantiation = UFI { fromUFI :: Unique } deriving (Eq, Ord)  -- TODO: this is used to match "instances". it also bad.
+newtype ClassInstID = ClassInstID { fromClassInstID :: Unique }
 
 -- I need to use classes in the same context as types.. but I use different types.
 -- Q: should I just remove UniqueClass?
@@ -270,9 +268,14 @@ instance Ord UniqueClass where
 instance Show UniqueClass where
   show (TCI { className = name, classID = l }) = show name.fromTN <> "@#" <> show (hashUnique l)
 
+instance Eq ClassInstID where
+  cid == cid' = cid.fromClassInstID == cid'.fromClassInstID
 
-instance Show UniqueClassInstantiation where
-  show (UCI { fromUCI = un }) = "UCI" <> show (hashUnique un)
+instance Ord ClassInstID where
+  cid `compare` cid' = cid.fromClassInstID `compare` cid'.fromClassInstID
+
+instance Show ClassInstID where
+  show (ClassInstID uq) = show $ hashUnique uq
 
 
 -- ...plus additional tags
@@ -415,6 +418,8 @@ instance PP Text where
 instance PP Char where
   pp = pretty
 
+instance PP Bool
+
 instance {-# OVERLAPPABLE #-} (Functor a, PP (a Context)) => PP (Fix a) where
   pp = cata pp
 
@@ -489,17 +494,22 @@ instance PP UniqueClass where
 instance PPDef UniqueClass where
   ppDef ucl = pp ucl.className
 
+instance PP ClassInstID
+
 instance PP TypeID where
   pp tid = do
     Reader.asks typingContext >>= \case
-      Nothing -> pp $ fromTypeID tid
-      Just tpf -> tpf tid
+      Nothing -> pf "T#%" $ fromTypeID tid
+      Just (tpf, _) -> tpf tid
 
 instance PPDef TypeID where
   ppDef = pp . fromTypeID
 
 instance PP UnionUniID where
-  pp = pp . fromUnionUniID
+  pp uuid = do
+    Reader.asks typingContext >>= \case
+      Nothing -> pf "U#%" $ fromUnionUniID uuid
+      Just (_, upf) -> upf uuid
 
 instance PPDef UnionUniID where
   ppDef = pp . fromUnionUniID
@@ -522,14 +532,6 @@ instance PP EnvID where
 instance PPDef EnvID where
   ppDef = ppEnvID
 
-instance PP UniqueClassInstantiation where
-  pp uci = "U" <> (fromString . show . hashUnique) uci.fromUCI
-
-instance PPDef UniqueClassInstantiation where
-  ppDef = pp
-
-instance PP UniqueFunctionInstantiation where
-  pp uci = "F" <> (fromString . show . hashUnique) uci.fromUFI
 
 instance PP Ann where
   pp = fromString . show
@@ -686,7 +688,7 @@ data CtxData = CtxData  -- basically stuff like printing options or something (e
   , displayTypeParameters :: Bool
   , displayLocations :: Bool
 
-  , typingContext :: Maybe (TypeID -> Context)
+  , typingContext :: Maybe (TypeID -> Context, UnionUniID -> Context)
   }
 
 -- nested printf
@@ -777,7 +779,7 @@ ppUnique :: Unique -> Context
 ppUnique = pretty . hashUnique
 
 ppMap :: (PP k, PP v) => [(k, v)] -> Context
-ppMap = ppLines' . fmap (uncurry (pf "%s => %s"))
+ppMap = ppLines' . fmap (uncurry (pf "% => %"))
 
 ppMap' :: (PP k, PP v) => Map k v -> Context
 ppMap' = ppMap . Map.toList

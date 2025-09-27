@@ -1,0 +1,282 @@
+Quick description of main points of the algorithm:
+
+Typechecking:
+
+standard unification.
+
+instantiation:
+	tvars, unions
+	then generate and map associations (both tvar from and to)
+
+mapTVsWithTypeMap generates types and unions recursively (tryMemoType, tryMemoUnion)
+mapClassSnapshot also generates types (nextUnion, mkType)
+
+with each generalization and at the end, run subst associations.
+make sure, that it's the same stuff that gets mapped throughout Scheme and Function.
+
+NOTE: when instantiating associated types, different unions are generated (even though all instances are the same),
+so functions which do the same thing are monomorphised into different ones.
+
+so, maybe have a tuple uniquely identifying an instantiation: (fun, tvars, unions, insts)  <- note that each inst corresponds to an assoc.
+this way, we can substitute instantiation with an existing one.
+or, if a function does not create any unions, just use the same one?
+then, bottom up, we can obtain the same function by starting from the "lowest" associate types??????
+
+
+	I should test for it. Special parameters in tests, like:
+	# $monoinst for-each 2
+	This would mean, that for-each must be monomorphised to only two separate functions in the whole program.
+	This should ensure that we are monomorphising correctly and not generating superfluous instances.
+
+
+----
+
+# How to identify a class function to map in a specific place??
+
+Right now, in MONO (so not here gegeg), we check the environment for class functions and match on the monomorphised ones. That's less than ideal, kinda cringe, kinda gay if I do say so myself.
+
+What's a better way?? I know!
+
+f () [iid: 1]
+	classfn ()[iid: 1]
+
+g () [iid: 2, 3]
+	f () [iid: 2]
+	f () [iid: 3]
+
+g () [iid: 4, 5]
+g () [iid: 6, 7]
+
+we also "instantiate" InstIDs!
+Then, when going the other way:
+
+mono:
+g() [iid: 4, 5]
+	4 -> 2
+	5 -> 3
+		f () [iid: 2]
+			2 -> 1
+			classfn () ok (4)
+		f () [iid: 3]
+			3 -> 1
+			classfn () ok (5)
+
+g() [iid: 4, 5]
+	6 -> 2
+	7 -> 3
+		f () [iid: 2]
+			2 -> 1
+			classfn () ok (6)
+		f () [iid: 3]
+			3 -> 1
+			classfn () ok (7)
+
+What about generalization? How does it look like, if an instance is generalized instead of a type being mapped?
+ - ah. we just leave the type be bruh.
+ - the thing is, InstID is connected to a TypeAssociation or FunctionAssociation.
+ - so, to generalize, we just gather them.
+ - only when instantiated, we assign new instances.
+
+
+in g(): Map: 2: some-t', 3: some-t''
+	Var f (Match t):
+		MatchOG: [TVar] [UnionID] [InstID (iid: 2)]  <- we know which instance to choose.
+			Then in f(), [iid: 2] => [iid: 1]
+		Match t: [t] [Union t] [Left t (but its placeholder, should be an error, but we keep t for error checking maybe? or will the type be useful? or maybe uninstantiated functions might be memoed like this?)]
+in f(): 1: some-t'
+	classfn () {iid: 1}  <- this here just has InstID.
+
+
+Now, another optimization/whatever is upon us: is there a way to maybe "cache" these? I guess it should cache itself tho. Similar to before, if the Match tuple is the same, memo dis nigga.
+
+
+# How to match?
+
+Each variable has a "Match" datatype:
+	- tvars (Scheme tvars)
+	- unions (Scheme unions)
+	- chosen instances (new thing: InstID, works like typemap and unionmap)
+		- known problem I forgot about: how do we identify specific class instantiations (eg. by having called a function in two places, which calls a class function.)
+
+		
+		- also, we have instantiated functions yo. so we must match on their types, right?
+		- yeah, but we don't know a class instance's Match
+			- correctly implemented class types won't work entirely, because of unions within associated types.
+			- i mean it would be possible, but harder, because we just want to know which types to map in this function: class -> instdef -> ???
+		- but we can know
+This should replace the `mapType` shit in Mono.
+
+--
+
+MatchOg
+	[TVar] [UnionID] [InstID]
+
+Match t
+	[t] [Union t] [(InstID, Function T (including MatchOg), Match t (for that Function T))]
+
+The InstID part is kinda iffy, because an instance appears later, so it can be... nothing. Unlike empty unions and fresh tvars.
+
+
+
+
+
+# How to uniquely identify a function (so that repeated instantiations don't produce different mono functions, because unions are slightly different)
+
+Suppose we can somehow tell that a union is only used INSIDE a function.
+
+If both scheme unions and associated type instance unions is marked INSIDE:
+	- memo based on: tvars & instances
+	- (that means if they are the same, just repeat the function)
+	- NOTE that the whole new union of the function type of the function instantiation does not count and must ALWAYS BE NEW.
+
+But scheme unions are always OUTSIDE of the function. In fact, if something is a scheme union, it always interacts with outside.
+So, a union is INSIDE if it's not a scheme union!
+
+	Okay, but... I might be adding unions to scheme if they are associated. Lemme check.
+	Yeah. in `constructSchemeForFunctionDeclaration` (see `assocUnions`). We just get the top union of the function type.
+	Then they are mapped. That's how they get "instantiated." We can just avoid doing that and then with each instantiation choose whether we should get a new union OR reuse.
+
+
+# EnvAdditions and its consequences.
+
+When we choose instances, environments change.
+
+	(we're going sequentially)
+	class
+	x = undefined()
+	f ()  <- as we're exiting, we don't know the type: it's still fresh (x'). So the env is like [x, (class)to-string x']
+		inst Int
+			to-string (n Int)  <- [whatever, envcost]
+				return whatever(n + envconst)
+		to-string(x)
+
+	x <= 1  <- here we realize the type of x to be Int.
+	Now, at the end, we have to change [(class)to-string] to [whatever, envconst] (env of the selected instance.)
+
+I guess instead of TypeFix, we can do the same thing as TypeUni and do an IntMap for environments.
+
+
+# Which parts of a union we need to keep, map?
+
+like mentioned before: tvars, unions, and stuff from associated types. that's all. if we keep it near the variable, we'll be able to generate it.
+
+So, each union might now be something like:
+
+T Union t
+	envs [Function T, Match t]  # (Match as mentioned before, yknowwhatimean)
+
+But notice... no stupid bullshit. We don't need to look inside. We just merge unions like balls and dont care.
+
+	The only reason to look inside is if there are recursive unions.
+	We should check it some other way than mapping kek. (ref: my gayass master's thesis)
+
+Note, that this will break our basic associated types, because we use that environment stack to match on types. bruh, dis so shit.
+
+But WE DON'T CARE, NIGGUH. THIS SHIT WILL STILL GET INSTANTIATED, CUH.
+^ If we have better "match types"
+
+
+# What the fuck is (Map VariableProto Locality) for????
+
+
+# I guess we still have to go inside and map unions?
+
+We don't *really* have to, but I'll do it while the big rewrite is happening.
+!!!: But, one optimization we can do, is that we don't care about instantiations at *top level*, so we can just disregard it!
+
+But it's still bad. I want instantiation complexity to *only* depend on the current function. The reason is, it doesn't matter during typechecking, as this won't generate errors and won't be visible to the user. It only matters for Mono. So, I guess we should make it lazy? But we should also somehow share the computation maybe.
+
+
+
+TypeFix
+
+making actual types from IntMaps
+adding EnvAdditions.
+
+except for EnvAdditions, hopefully can be skipped for a big perf boost (because types won't be retraversed.)
+
+
+
+Mono
+
+this is the stupid thing. we kinda sorta match on the type to figure out type and union mappings. this is bad. I wonder if I can make this better.
+also, instance selection really happens here.
+
+for each class function in env, check if it's a class, and, when it's encountered, select a possible instance.
+
+maybe I should use all the cheeky stuff - i can scan before eveything and somehow figure out/mono all the functions.
+then unions inner stuff in unions will only be selected from some some for it.
+
+
+
+
+MonoFix
+
+we take care of the escaped tvars. but I wonder if we can deal with it better. (cuckedUnionInsts)
+
+also, the envs. I'm not sure what's going on with this thing.
+
+
+also, it's wrong. i have a failing test which returns the type and it dont work.
+
+
+
+---------
+
+Actual implementation:
+
+So, what new IDs do I need?
+
+TypeID, UnionUniID, EnvID, InstID
+
+I guess InstID and EnvID don't have to be Ints, because they are not RefMapped.
+But something to consider in the future
+(would be nice with effects, right now I would need to store the generator somewhere, probably in BaseCtx.)
+
+Important: We also need to map the Match types from a union when instantiating a Scheme!
+	(if we want to match)
+	Also, we need to mapTVs of a *lambda environment*. This case is not likely, but I don't like it.
+		But it makes sense, unfortunately.
+		TODO: I wonder if I can make it better. The problem is in Monomorphisation, this will allow me to "contextlessly" monomorphise a function.
+		But I wonder if it should work that way.
+		!!!: Maybe somehow defer it, and only monomorphize it on instantiation. This actually seems okay and performant.
+		     Then we wouldn't have to map `Match`s and lambda environments.
+
+		NOTE ID: mapTVs of lambda envs
+		Do we also have to map *nested* lambda expressions?
+			f (x a) -> () -> ()
+				fn = :println(x)  # [println a -> (), x a]
+				fn2 = :fn()       # [fn [println a -> (), x a]() -> ()]
+				return fn2
+			# 1 union in scheme
+			{lam[fn {lam[println a -> (), x a]}]}
+
+			Do we have to map the inner union tho? Should it just be in Scheme?
+				Answer to both: yes.
+
+			1. If we're not using a `Match` for lambda envs, then we must map it.
+			   The related function to create a scheme should go inside unions to retrieve lambda envs.
+			2. But we might as well just have a `Match` for lambda. The issues are:
+				- how do we go about constructing it?
+				- when do we construct it? (at the end of the lambda? at the end of the enclosing function?)
+				- I guess we can just do "MatchLam", which just contains tvars and unions. But it would need to be constructed during instantiation.
+					NOTE: for now, I'll just map unions
+			- in both cases, how do we monomorphize the environment, so that the same environment gets constructed AND it's not super expensive to compare in memo?
+				Right now, in old Mono, EnvF compares both its id and types. We can leave it at that for now.
+				Supposed that two functions get monomorphised to the same thing, or at least the types in lambda's Env get to do that, it'll get shared, which is not what I want, but it'll work.
+					(basically, the same reasons I'm keeping unions with the same types separate - we should not loose the date about the flow of data before optimizations)
+
+			For now, I've decided on number 1. But I'm not a fan, because ideally the instantiation *should be flat*.
+			TODO: When I figure out how to do the MatchLam thing, I'll do it.
+
+
+		Note, that the problem is not eventaully having to monomorphise it. This *will* happen.
+			The problem is the pointless mapping of types, especially in polymorphic functions that have the env of this lambda in their scheme unions.
+			We should defer this computation until it actually needs to be done.
+			Also we won't be able to "access" the lambda itself, bruh. The monomorphisation will only matter for generating a union and only later will be useful when we are monomorphizing the function.
+			Uh. Maybe a `Match` + enclosing function's `Scheme` is good enough?
+
+
+# TODO: Solving cucked unions
+
+I think it's possible to do those in typecheck. Because we keep track of all instantiations, we may be able to replace the shitty TVars with all instantiations in Typecheck somehow.

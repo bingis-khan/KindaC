@@ -5,4 +5,4 @@
 
 # we should minimize warnings, if any.
 # some are expected, hard to eliminate (which?)
-stack run -- "$1.kc" --output-c && cc "test.c" -Wunused -o "$1.out" && ./"$1.out"
+cabal run kc -- "$1.kc" --output-c && cc "test.c" -Wunused -o "$1.out" && ./"$1.out"

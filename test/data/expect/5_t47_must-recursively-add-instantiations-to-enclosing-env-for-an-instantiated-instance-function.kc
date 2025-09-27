@@ -1,0 +1,19 @@
+# Must recursively add other instantiations from an instance function.
+# 420
+# $envsize f 1
+
+class ToInt
+	to-int (n _) -> Int
+
+env = 420
+f ()
+	g (): env
+
+	inst ToInt Bool
+		to-int (n Bool) -> Int
+			return g()
+
+	print to-int(True)
+	return
+
+f()

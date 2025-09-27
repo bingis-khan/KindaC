@@ -49,6 +49,7 @@ type instance XStringInterpolation Untyped = [Either Text (Expr Untyped)]
 
 data ClassConstraint = CC Def.Location (Qualified Def.ClassName) Def.UnboundTVar deriving Eq
 type instance XClassConstraints Untyped = [ClassConstraint]
+type instance XClassFunOther Untyped = [ClassConstraint]
 
 type instance XEnv Untyped = ()
 

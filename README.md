@@ -7,6 +7,10 @@ The plan is to do the whole pipeline (except codegen) in order to typecheck and 
 
 ## current
 
+This will be a opt rewrite todo from now on:
+- differing behavior for instantiateFunction callsites: as a normal function and instance function.
+  - normal function behavior was the correct one. we must do the same thing for instances. (t5_47)
+
 
 --
 

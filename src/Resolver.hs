@@ -51,7 +51,7 @@ import qualified AST.Def as Def
 import qualified AST.Common as Common
 import AST.Prelude (Prelude (..))
 import Control.Monad ( when, foldM, void )
-import AST.Typed (TC, functionAnnotations)
+import AST.Typed (TC, functionAnnotations, emptyScheme)
 import InterModular (InterModular, imLift)
 import qualified InterModular
 import Control.Monad.Trans.Class (lift)
@@ -139,14 +139,14 @@ rStmts = traverse -- traverse through the list with Ctx
             vid <- generateVar name
             stmt $ Mutation vid varLocation loc [] re
 
-          R.DefinedClassFunction (CFD _ cfdUV _ _ _ _) _ -> do
-            err $ CannotMutateFunctionDeclaration location cfdUV.varName
+          R.DefinedClassFunction cfd _ -> do
+            err $ CannotMutateFunctionDeclaration location cfd.classFunID.varName
 
             vid <- generateVar name
             stmt $ Mutation vid varLocation loc [] re
 
-          R.ExternalClassFunction (CFD _ cfdUV _ _ _ _) _ -> do
-            err $ CannotMutateFunctionDeclaration location cfdUV.varName
+          R.ExternalClassFunction cfd _ -> do
+            err $ CannotMutateFunctionDeclaration location cfd.classFunID.varName
 
             vid <- generateVar name
             stmt $ Mutation vid varLocation loc [] re
@@ -254,7 +254,7 @@ rStmts = traverse -- traverse through the list with Ctx
                   Just klass -> do
                     let
                       importedClassFuns = Set.fromList $ NonEmpty.toList usedClassFuns
-                      cfns = Map.fromList $ (\cfn@(CFD _ cfnId _ _ _ _) -> (cfnId.varName, R.PExternalClassFunction cfn)) <$> filter (\(CFD _ funId _ _ _ _) -> funId.varName `Set.member` importedClassFuns) klass.classFunctions  -- filter used cons and construct a con Map.
+                      cfns = Map.fromList $ (\cfn -> (cfn.classFunID.varName, R.PExternalClassFunction cfn)) <$> filter (\cfn -> cfn.classFunID.varName `Set.member` importedClassFuns) klass.classFunctions  -- filter used cons and construct a con Map.
 
                     -- check if any of the cons were not imported (and error 'em)
                     for_ (importedClassFuns \\ Map.keysSet cfns) $ \importedButNonExistingCFN ->
@@ -427,7 +427,7 @@ rStmts = traverse -- traverse through the list with Ctx
           -- let _ = cd.classDependentTypes
           -- let deps = []
 
-          fundecs <- for cd.classFunctions $ \(CFD () name params ret uconstraints classFunctionHeaderLocation) -> do
+          fundecs <- for cd.classFunctions $ \(CFD () name params ret uconstraints) -> do
             funid <- generateVar name
 
             constraints <- rConstraints uconstraints
@@ -449,7 +449,7 @@ rStmts = traverse -- traverse through the list with Ctx
               rret' <- rClassType ret
               pure (rparams', rret')
 
-            pure $ CFD rcd funid rparams rret () classFunctionHeaderLocation
+            pure $ CFD rcd funid rparams rret ()
 
           registerClass rcd
         pass
@@ -512,10 +512,8 @@ rStmts = traverse -- traverse through the list with Ctx
             { instFunDec = fundec
             , instFunBody = rbody
             , instDef = inst
-            -- , classFunctionPrototypeUniqueVar = protovid  -- TEMP remove
             , instClassFunDec = cfd
             }
-
 
         registerInst inst
 
@@ -534,8 +532,6 @@ rStmts = traverse -- traverse through the list with Ctx
 currentLevel :: Ctx Int
 currentLevel = subtract 1 . length <$> RWS.gets scopes
 
-
-data Lazy = Lazy { fromLazy :: ~R.Env }
 
 -- must be called BEFORE binding tvars. It checks and errors out if there is a bound tvar that's being constrained.
 rConstraints :: XClassConstraints U -> Ctx (Map Def.UnboundTVar (Set Class))
@@ -596,17 +592,6 @@ rExpr = cata $ \(N location expr) -> fmap (embed . N location) $ upExpr >> case 
     LInt i -> pure $ Lit $ LInt i
     LFloat f -> pure $ Lit $ LFloat f
     LString si -> mkStringInterpolation location si
-    --   rsi <- for2 si $ \vn -> do
-    --       (loc, v) <- resolveVar vn
-
-    --       -- we only allow defined variables in string interpolation
-    --       case v of
-    --         DefinedVariable {} -> pure ()
-    --         ExternalVariable {} -> pure ()
-    --         _ -> err $ OnlyVariablesAreAllowedInStringInterpolation vn
-
-    --       pure (v, loc)
-
 
   Var v () -> do
     (l, vid) <- resolveVar location v
@@ -760,7 +745,6 @@ mkStringInterpolation fullInterpolationLocation si = do
       [Left s] -> pure $ Lit $ LString s
       [Right ee] -> do
         re@(Fix (N varLocation re')) <- rExpr ee
-        -- (loc, v) <- resolveVar vn
 
         -- we only allow defined variables in string interpolation
         case digOutVar re of
@@ -921,7 +905,7 @@ resolveVar loc (Qualified (Just mq) name) = do
             else Nothing
 
         findClassFun = findInExternalModule tmod Common.classes $ \cd ->
-          case find (\(CFD _ funId _ _ _ _) -> funId.varName == name) cd.classFunctions of
+          case find (\cfn -> cfn.classFunID.varName == name) cd.classFunctions of
             Just cfd -> Just $ R.ExternalClassFunction cfd snapshot
             Nothing -> Nothing
 
@@ -1025,7 +1009,7 @@ registerClass cd = do
     { tyScope = Map.insert (Def.uniqueClassAsTypeName cd.classID) (Left (R.DefinedClass cd)) sc.tyScope
 
     -- inner functions
-    , varScope = foldr (\cfd@(CFD _ uv _ _ _ _) -> Map.insert uv.varName (R.PDefinedClassFunction cfd)) sc.varScope cd.classFunctions
+    , varScope = foldr (\cfd -> Map.insert cfd.classFunID.varName (R.PDefinedClassFunction cfd)) sc.varScope cd.classFunctions
     }
 
   RWST.modify $ \ctx -> ctx { classes = cd : ctx.classes }
@@ -1060,8 +1044,8 @@ findFunctionInClass :: Def.Location -> Def.VarName -> R.Class -> Ctx (XClassFunD
 findFunctionInClass searchLocation vn ecd =
   let
     mcfd = case ecd of
-      R.DefinedClass cd -> R.DefinedClassFunDec <$> find (\(CFD _ uv _ _ _ _) -> uv.varName == vn) cd.classFunctions
-      R.ExternalClass cd -> R.ExternalClassFunDec <$> find (\(CFD _ uv _ _ _ _) -> uv.varName == vn) cd.classFunctions
+      R.DefinedClass cd -> R.DefinedClassFunDec <$> find (\cfd -> cfd.classFunID.varName == vn) cd.classFunctions
+      R.ExternalClass cd -> R.ExternalClassFunDec <$> find (\cfd -> cfd.classFunID.varName == vn) cd.classFunctions
     cid = R.asUniqueClass ecd
   in case mcfd of
     Just cfd -> pure cfd
@@ -1069,8 +1053,8 @@ findFunctionInClass searchLocation vn ecd =
       err $ UndefinedFunctionOfThisClass searchLocation cid vn
       uv <- generateVar vn
       pure $ case ecd of
-        R.DefinedClass cd -> R.DefinedClassFunDec $ CFD cd uv [] (Fix Self) () searchLocation
-        R.ExternalClass cd -> R.ExternalClassFunDec $ CFD cd uv [] (Fix Self) () searchLocation
+        R.DefinedClass cd -> R.DefinedClassFunDec $ CFD cd uv [] (Fix Self) ()
+        R.ExternalClass cd -> R.ExternalClassFunDec $ CFD cd uv [] (Fix Self) emptyScheme
 
 
 getScopeSnapshot :: Ctx R.ScopeSnapshot
@@ -1372,8 +1356,6 @@ mkEnv :: Def.EnvID -> Map VariableProto Def.Locality -> Ctx (XEnv R)
 mkEnv eid innerEnv = do
   currentEnvStack <- RWS.gets envStack
   curlev <- currentLevel
-  -- locality <- localityOfVariablesAtCurrentScope
-  -- pure $ Env eid currentEnvStack (mapMaybe (\v -> (locality !? R.asPUniqueVar v) <&> \(_, loc) -> (v, loc)) $ Set.toList innerEnv)  -- filters variables to ones that are in the environment.
   let remapLocality = \case
         (_, Def.Local) -> Nothing
         (_, Def.FromEnvironment lev) | lev > curlev -> Nothing

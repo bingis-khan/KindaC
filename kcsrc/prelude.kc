@@ -41,14 +41,15 @@ Ptr a
 	Ptr a
 
 
+# temporarily commented out, because we removed recursive environments for now.
 # some test function
-fib (x)
-	if x == 0
-		return 0
-	elif x == 1
-		return 1
-	else
-		return fib(x - 1) + fib(x - 2)
+#fib (x)
+#	if x == 0
+#		return 0
+#	elif x == 1
+#		return 1
+#	else
+#		return fib(x - 1) + fib(x - 2)
 
 
 # ayoooo
@@ -90,6 +91,7 @@ uncurry (fn (a, b) -> c) -> (Tuple a b) -> c
 void (x)
 	return
 
+id (x): x
 
 test-xxx = 420
 test-function-with-env-in-prelude ()
