@@ -50,7 +50,7 @@ type family Type phase
 
 data TypeF phase a
   = TFun (XTFun phase) [a] a
-  | TCon (XTCon phase) [a] (XTConOther phase)
+  | TCon (XTCon phase) [a] (XTConOther phase)  -- TODO: maybe we should add the env thing here.
   | TO (XTOther phase)  -- BAD, becuase in Mono it makes it less typesafe, but it's kinda easier. I just won't ever construct it in Mono.
   deriving (Functor, Foldable, Traversable)
 
@@ -133,12 +133,12 @@ data DataCon phase = DC
 
 
 type family XDTCon phase
-type family XDataScheme phase
+type family XDataOther phase
 type Mem phase = Annotated (XMem phase, Type phase)
 
 data DataDef phase = DD
   { ddName :: XDTCon phase
-  , ddScheme  :: XDataScheme phase
+  , ddOther  :: XDataOther phase
   , ddCons   :: Either (NonEmpty (Mem phase)) [DataCon phase]
   , ddAnns   :: [Def.Ann]  -- TEMP: not very typesafe in Untyped, but should be okay. Might later change it to "extra". (not typesafe, because we assign an empty list by default during construction and only later do we update it.)
   }
@@ -522,10 +522,10 @@ instance (PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (Fix 
         TFun {} -> "(" <> c <> ")"
         _ -> c
 
-instance (PP a, PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase)) => PP (TypeF phase a) where
+instance (PP a, PPDef (XTCon phase), PP (XTOther phase), PP (XTFun phase), PP (XTConOther phase)) => PP (TypeF phase a) where
   pp = \case
     TCon tcon params unions ->
-      foldl' (<+>) (ppDef tcon) (pp <$> params) -- <+> pp unions
+      "(" <> foldl' (<+>) (ppDef tcon) (pp <$> params) <+> Def.pf "#(%)" unions <> ")"
     TO x -> pp x
     TFun tfOther args ret -> pp tfOther <> Def.encloseSepBy "(" ")" ", " (pp <$> args) <+> "->" <+> pp ret
 
@@ -562,9 +562,9 @@ instance PPDef (InstDef phase) where
   ppDef = undefined
 
 
-instance (PP (XMem phase), PP (XDCon phase), PP (XDTCon phase), PP (Type phase), PP (XDataScheme phase), PP (Type phase)) => PP (DataDef phase) where
-  pp (DD tid tvs (Right dcons) _) = Def.ppBody pp (pp tid <+> pp tvs) dcons
-  pp (DD tid tvs (Left mems) _) = Def.ppBody (\(Annotated _ (mem, t)) -> pp mem <+> pp t) (pp tid <+> pp tvs) $ NonEmpty.toList mems
+instance (PP (XMem phase), PP (XDCon phase), PP (XDTCon phase), PP (Type phase), PP (XDataOther phase), PP (Type phase)) => PP (DataDef phase) where
+  pp (DD tid tvs (Right dcons) other) = Def.ppBody pp (pp tid <+> pp tvs <+> pp other) dcons
+  pp (DD tid tvs (Left mems) other) = Def.ppBody (\(Annotated _ (mem, t)) -> pp mem <+> pp t <+> pp other) (pp tid <+> pp tvs) $ NonEmpty.toList mems
 
 instance PP (XDTCon phase) => PPDef (DataDef phase) where
   ppDef dd = pp dd.ddName

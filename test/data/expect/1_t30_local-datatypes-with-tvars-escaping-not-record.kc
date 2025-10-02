@@ -1,0 +1,23 @@
+#$ Local datatypes with local tvars escaping.
+# Data Unit
+# Data Unit
+# True
+# False
+
+f (x a)
+	Data b
+		Miau b a
+
+	return Miau(Unit, x)
+
+x = f(123)
+print x
+
+y = f(True)
+print y
+
+z = f(123)
+print x == z
+
+z' = f(420)
+print x == z'

@@ -17,7 +17,7 @@ import Lens.Micro.TH (makeLenses)
 
 
 type TypeTypeUni = RefMap TypeID (TypeF TC TypeID)
-type UnionTypeUni = RefMap UnionUniID (EnvUnionF TypeID)
+type UnionTypeUni = RefMap UnionUniID (EnvUnionF T.EnvUnion TypeID)
 type RefMap k a = IntMap (Either Int a)  -- TODO: change it later to IntMap and observe an improvement?
 
 newtype TypeIDGen = TypeIDGen TypeID
@@ -30,13 +30,13 @@ data TypeUni = TypeUni
   }
 makeLenses ''TypeUni
 
-type EnvAdditions = Map Def.EnvID [(T.Variable, Def.Locality, Type TC)]
+type Envs = Map Def.EnvID (T.EnvDef, T.Scheme TC)
 
 data TypingContext = TypingContext
     { globalTypeIDGen :: TypeIDGen
     , globalUnionIDGen :: UnionIDGen
     , _globalTypeUni :: TypeUni
-    , globalEnvs :: EnvAdditions
+    , globalEnvs :: Envs
     , globalInsts :: ()
     }
 makeLenses ''TypingContext
@@ -65,7 +65,7 @@ emptyContext = TypingContext
 getTypeFromUni :: TypeUni -> TypeID -> (TypeID, TypeF TC TypeID)
 getTypeFromUni typeUni = getSomethingFromRefMap fromTypeID TypeID typeUni._typeUni
 
-getUnionFromUni :: TypeUni -> UnionUniID -> (UnionUniID, EnvUnionF TypeID)
+getUnionFromUni :: TypeUni -> UnionUniID -> (UnionUniID, EnvUnionF T.EnvUnion TypeID)
 getUnionFromUni typeUni = getSomethingFromRefMap fromUnionUniID UnionUniID typeUni._unionUni
 
 getSomethingFromRefMap :: (k -> Int) -> (Int -> k) -> RefMap k a -> k -> (k, a)
@@ -93,6 +93,13 @@ ppUnionFromUniSafe tu uuid =
         Just (Left nx) -> go $ UnionUniID nx
   in go uuid
 
+ppUnionIDFromUniSafe :: TypeUni -> UnionUniID -> Context
+ppUnionIDFromUniSafe tu uuid =
+  let go x = case tu._unionUni IntMap.!? (fromUnionUniID x) of
+        Nothing -> Def.ppDef x
+        Just (Right a) -> Def.pp a.unionID
+        Just (Left nx) -> go $ UnionUniID nx
+  in go uuid
 
 insertToRefMap :: k -> a -> RefMap k a -> RefMap k a
 insertToRefMap = undefined

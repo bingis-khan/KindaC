@@ -1,0 +1,24 @@
+#$ Local datatypes with local tvars escaping.
+# 123
+# ()
+# True
+# ()
+# True
+
+f (x a)
+	Data b
+		external a
+		local b
+
+	return Data { external: x, local: Unit }
+
+x = f(123)
+print x.external
+print x.local
+
+y = f(True)
+print y.external
+print y.local
+
+z = f(123)
+print x == z

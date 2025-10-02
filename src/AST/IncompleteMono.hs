@@ -5,7 +5,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE UndecidableInstances #-}
 module AST.IncompleteMono (module AST.IncompleteMono, Def.EnvID) where
-import AST.Common (Function, Type, XLVar, XReturn, XExprNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataScheme, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation, TypeF)
+import AST.Common (Function, Type, XLVar, XReturn, XExprNode, Expr, XLamOther, XLamVar, XVarOther, XFunDef, XVar, XConOther, DataCon, XCon, DataDef, XTCon, XMem, XFunOther, XFunVar, XFunType, XEnv, XTOther, XTConOther, XTFun, XDTCon, XDataOther, Rec, XDCon, functionDeclaration, functionId, XTVar, XOther, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation, TypeF)
 import qualified AST.Def as Def
 import AST.Def (Locality, PP (..), (<+>), PPDef, fmap2)
 import Data.List.NonEmpty (NonEmpty)
@@ -46,7 +46,7 @@ type instance XTOther IM = OtherT
 type instance XTConOther IM = [EnvUnion]
 type instance XTFun IM = EnvUnion
 type instance XDTCon IM = Def.UniqueType
-type instance XDataScheme IM = OtherDD
+type instance XDataOther IM = OtherDD
 type instance XDCon IM = Def.UniqueCon
 type instance XTVar IM = TVar
 type instance XOther IM = ()  -- TODO: should probably be EnvMod, but I don't want to modify the mStmts code yet.
@@ -127,8 +127,8 @@ envLevel = \case
 
 data EnvUnion = EnvUnion
   { unionID :: Def.UnionID
-  , union :: NonEmpty (T.EnvDefF (Type IM))  -- TODO: maybe having a typechecked version here is already passe (due to RemoveUnused effectively happening in Typecheck). I don't want to touch this before finishing class functions, because there were no real problems with it yet and I don't want to introduce any subtle bugs (eg. creating too many env defs, too large unions)
-  , oldUnion :: T.EnvUnionF (Type TC)
+  , union :: NonEmpty (T.EnvDefF EnvUnion (Type IM))  -- TODO: maybe having a typechecked version here is already passe (due to RemoveUnused effectively happening in Typecheck). I don't want to touch this before finishing class functions, because there were no real problems with it yet and I don't want to introduce any subtle bugs (eg. creating too many env defs, too large unions)
+  , oldUnion :: T.EnvUnionF T.EnvUnion (Type TC)
   }
 
 

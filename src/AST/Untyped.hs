@@ -26,7 +26,7 @@ type instance XMem Untyped = Def.MemName
 type instance XTVar Untyped = Def.UnboundTVar
 type instance XLamOther Untyped = ()
 type instance XFunOther Untyped = ([ClassConstraint], Def.Location)
-type instance XDataScheme Untyped = [Def.UnboundTVar]
+type instance XDataOther Untyped = [Def.UnboundTVar]
 
 type instance XVar Untyped = Qualified Def.VarName
 type instance XVarOther Untyped = ()

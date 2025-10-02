@@ -294,6 +294,8 @@ instance Show EnvID where
   show = show . hashUnique . fromEnvID
 
 
+type FunStack = [UniqueVar]
+
 type EnvStack = [EnvID]
 
 envStackToLevel :: EnvStack -> Level
@@ -500,7 +502,7 @@ instance PP TypeID where
   pp tid = do
     Reader.asks typingContext >>= \case
       Nothing -> pf "T#%" $ fromTypeID tid
-      Just (tpf, _) -> tpf tid
+      Just (tpf, _, _) -> tpf tid
 
 instance PPDef TypeID where
   ppDef = pp . fromTypeID
@@ -509,10 +511,13 @@ instance PP UnionUniID where
   pp uuid = do
     Reader.asks typingContext >>= \case
       Nothing -> pf "U#%" $ fromUnionUniID uuid
-      Just (_, upf) -> upf uuid
+      Just (_, upf, _) -> upf uuid
 
 instance PPDef UnionUniID where
-  ppDef = pp . fromUnionUniID
+  ppDef uuid =
+    Reader.asks typingContext >>= \case
+      Nothing -> pf "U#%" $ fromUnionUniID uuid
+      Just (_, _, uidpf) -> uidpf uuid
 
 
 instance PP UniqueMem where
@@ -688,7 +693,7 @@ data CtxData = CtxData  -- basically stuff like printing options or something (e
   , displayTypeParameters :: Bool
   , displayLocations :: Bool
 
-  , typingContext :: Maybe (TypeID -> Context, UnionUniID -> Context)
+  , typingContext :: Maybe (TypeID -> Context, UnionUniID -> Context, UnionUniID -> Context)
   }
 
 -- nested printf

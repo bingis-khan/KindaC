@@ -1,10 +1,11 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE NoStrict, NoStrictData #-}
 module Misc.Memo (memo, memo', qmemo, emptyMemo, isMemoed, Memo(..), Memoizable) where
 
-import Data.Map.Strict (Map, (!?))
-import qualified Data.Map.Strict as Map
+import Data.Map (Map, (!?))
+import qualified Data.Map as Map
 import Control.Monad.Trans.RWS.Strict (RWST)
 import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Kind (Type)
@@ -25,7 +26,7 @@ memo toMemo fromMemo transform r = do
     Just t -> pure t
     Nothing -> do
       -- unfortunately, we have to have this function, because we want to initialize the thunk first.
-      let addMemo t = memoModify $ \s ->
+      let addMemo ~t = memoModify $ \s ->
             let (Memo m) = toMemo s
                 m' = Memo $ Map.insert r t m
             in fromMemo m' s
@@ -71,4 +72,4 @@ instance (Monoid w, Monad m) => Memoizable (RWST r w state m) where
 instance Monad m => Memoizable (StateT state m) where
   type OverallState (StateT state m) = state
   memoGets = StateT.gets
-  memoModify = StateT.modify
+  memoModify = StateT.modify'

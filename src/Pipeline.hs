@@ -161,14 +161,14 @@ loadPrelude = do
         findBasicType :: Def.TCon -> InterModular (PreludeErr (Type TC))
         findBasicType typename = 
             let isCorrectType :: DataDef TC -> Bool
-                isCorrectType (DD ut (T.Scheme [] [] []) _ _) = ut.typeName == typename
+                isCorrectType (DD ut (T.Scheme [] [] [], []) _ _) = ut.typeName == typename
                 isCorrectType _ = False
 
                 mdd  = find isCorrectType pmod.exports.datatypes
                 name = Def.pf "%" typename :: Def.Context
             in case mdd of
               Just dd -> do
-                let bt = TCon dd [] []
+                let bt = TCon dd [] ([], [])
                 basicTypeID <- InterModular.nextTypeID
                 InterModular.modifyTypeUni $ IntMap.insert basicTypeID.fromTypeID $ Right bt
                 pure $ Success $ basicTypeID
@@ -179,7 +179,7 @@ loadPrelude = do
           findUnit = 
             let
                 mdd :: DataDef TC -> Maybe (DataCon TC)
-                mdd (DD ut (T.Scheme [] [] []) (Right [con]) _) | ut.typeName == Prelude.unitTypeName = Just con
+                mdd (DD ut (T.Scheme [] [] [], []) (Right [con]) _) | ut.typeName == Prelude.unitTypeName = Just con
                 mdd _ = Nothing
 
                 mdc   = listToMaybe $ mapMaybe mdd pmod.exports.datatypes
@@ -191,7 +191,7 @@ loadPrelude = do
           findStrConcat = 
             let
                 mdd :: DataDef TC -> Maybe (DataCon TC)
-                mdd (DD ut (T.Scheme [_, _] [] []) (Right [con]) _) | ut.typeName == Prelude.strConcatTypeName = Just con
+                mdd (DD ut (T.Scheme [_, _] [] [], []) (Right [con]) _) | ut.typeName == Prelude.strConcatTypeName = Just con
                 mdd _ = Nothing
 
                 mdc   = listToMaybe $ mapMaybe mdd pmod.exports.datatypes
@@ -210,11 +210,11 @@ loadPrelude = do
             let
               fitsPtrType :: DataDef TC -> Bool
               fitsPtrType = \case
-                DD ut (T.Scheme [_] [] []) _ _ -> ut.typeName == Prelude.ptrTypeName
+                DD ut (T.Scheme [_] [] [], []) _ _ -> ut.typeName == Prelude.ptrTypeName
                 _ -> False
               mdd = find fitsPtrType pmod.exports.datatypes
             in case mdd of
-              Just dd -> Success $ \t -> TCon dd [t] []
+              Just dd -> Success $ \t -> TCon dd [t] ([], [])
               Nothing -> Failure $ ne $ Def.pf "[Prelude: Ptr] Could not find suitable Ptr type (Ptr type name + one tvar)"
 
       ebool <- findBasicType Prelude.boolTypeName

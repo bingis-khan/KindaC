@@ -280,3 +280,41 @@ Important: We also need to map the Match types from a union when instantiating a
 # TODO: Solving cucked unions
 
 I think it's possible to do those in typecheck. Because we keep track of all instantiations, we may be able to replace the shitty TVars with all instantiations in Typecheck somehow.
+
+
+# Returning functions
+
+Problem: 
+outer (n)
+	inner ()
+			return n
+
+	return inner
+
+f = outer(420)
+
+When we `mUnion` the returned union, we "skip" outer and go straight to "inner", so the union does not end up getting mapped.
+
+We somehow have to store call context. I store all enclosing matches (I map them when instantiating; Maybe I should make use of the env stack, which would store the exact same info. but then I don't know what's being instantiated. since we have to map types anyway, I can add the next match.)
+
+
+
+# Union equality????? What does it mean for a union?
+
+Because of `Match`es, there are some knots to be tied, so we might go into an infinite loop. How do we monomorphize a union?
+
+outer (n)
+	inner ()
+			return n
+
+	return inner
+
+f = outer(420)
+
+
+In top level, we don't care about inner stuff about unions: all get mapped.
+
+So, actually, all unions that exit a function get mapped. So, only EnvUnionID or its baseID to be specific + function stack (or maybe a `Match` stack?). We only care about inner stuff because of cucked unions.
+
+
+NOTE: IT SEEMS LIKE Data.Map.Strict IS FORCING VALUES (not only keys??)

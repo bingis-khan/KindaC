@@ -200,7 +200,7 @@ trackInstantiation (beforeTypes, beforeUnions) fn = do
   IM $ lift $ BaseCtx.trackInstantiation inst
 
 
-addEnvAdditions :: TC.EnvAdditions -> InterModular ()
+addEnvAdditions :: TC.Envs -> InterModular ()
 addEnvAdditions newEnvAdditions = do
   undefined
   -- tc . globalEnvAddition' %= Map.unionWith mergeEnvAdditions newEnvAdditions
@@ -232,7 +232,8 @@ instance (unit ~ ()) => Log (InterModular unit) where
   plog lt x = do
     typePrinter <- wholeTypePrinter
     unionPrinter <- wholeUnionPrinter
-    IM $ lift $ plog lt $ local (\c -> c { typingContext = Just (typePrinter, unionPrinter) }) x
+    unionIDPrinter <- unionIDPrinter
+    IM $ lift $ plog lt $ local (\c -> c { typingContext = Just (typePrinter, unionPrinter, unionIDPrinter ) }) x
 
 wholeTypePrinter :: InterModular (TypeID -> Context)
 wholeTypePrinter = do
@@ -243,3 +244,8 @@ wholeUnionPrinter :: InterModular (UnionUniID -> Context)
 wholeUnionPrinter = do
   tu <- use $ tc . globalTypeUni
   pure $ TC.ppUnionFromUniSafe tu
+
+unionIDPrinter :: InterModular (UnionUniID -> Context)
+unionIDPrinter = do
+  tu <- use $ tc . globalTypeUni
+  pure $ TC.ppUnionIDFromUniSafe tu

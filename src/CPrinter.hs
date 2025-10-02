@@ -170,12 +170,12 @@ cStmt = cata $ \(O (O (Annotated anns (Located _ monoStmt)))) -> case monoStmt o
         ]
 
 
-  Fun (M.EnvDefs envs) ->
+  Fun (M.EnvInsts envs) ->
     for_ envs $ \case
       Left envmod -> cEnvMod envmod
 
       Right envdef -> do
-        unless (M.isEnvEmpty envdef.envDef.functionDeclaration.functionEnv) $
+        unless (M.isEnvDefEmpty envdef.envDef.functionDeclaration.functionEnv) $
           statement $ do
             envNames <- cEnvDef envdef
             envNames.envType § envNames.envName § "=" § envNames.envInstantiation
@@ -391,7 +391,7 @@ cUnion args ret union' =
           let functionType = cTypeFun ret params "fun"
           let allEnvs = union.union <&> \env -> do
                 -- instantiate the environment part.
-                unless (M.isEnvEmpty env) $ statement $ do
+                unless (M.isEnvDefEmpty env) $ statement $ do
                   envNames <- cEnv env
                   envNames.envType § envNames.envName
 
@@ -404,18 +404,17 @@ cUnion args ret union' =
           pure unionType
 
 
-cEnv :: M.Env -> PPL EnvNames
+cEnv :: M.EnvDef -> PPL EnvNames
 cEnv = cEnv' mempty
 
-cEnvDef :: M.EnvDef -> PPL EnvNames
+cEnvDef :: M.EnvInst -> PPL EnvNames
 cEnvDef envdef = cEnv' (Set.fromList envdef.notYetInstantiated) envdef.envDef.functionDeclaration.functionEnv
 
 -- a create-all function for Env.
 --  NOTE: missingInsts is functions which should not be initialized. this is a smell. memo does not account for them and I'm counting on it to be correct...
 --    UPDATE: nah, it didn't work. moved it out of memo.
-cEnv' :: Set (Function M) -> M.Env -> PPL EnvNames
-cEnv' _ (M.RecursiveEnv {}) = undefined
-cEnv' missingInsts menv@(M.Env _ vars) = do
+cEnv' :: Set (Function M) -> M.EnvDef -> PPL EnvNames
+cEnv' missingInsts menv@(M.EnvDef _ vars _) = do
   let envVarName v t = case v of
           M.DefinedVariable uv -> cVarName uv
           M.DefinedFunction fn | doesFunctionNeedExplicitEnvironment t -> cEnvFunctionVarName (cFunction t fn) t
@@ -426,10 +425,9 @@ cEnv' missingInsts menv@(M.Env _ vars) = do
         tup@(v, _, _) -> ((v, Nothing), tup)
 
   (et, ename) <- Memo.memo' (compiledEnvs . fst) (\memo -> mapPLCtx $ \ctx -> ctx { compiledEnvs = memo }) menv $ \menv _ -> case menv of
-        M.RecursiveEnv _ _ -> undefined
-        M.Env eid vars -> do
+        M.EnvDef eid vars _ -> do
           -- safety measure for bugs
-          when (M.isEnvEmpty menv) $
+          when (M.isEnvDefEmpty menv) $
             error "[COMPILER ERROR]: Called `cEnv` with an empty environment. I can ignore it, but this is probably a bug. This should be checked beforehand btw. Why? sometimes, it requires special handling, so making it an error kind of makes me aware of this."
 
           -- let vars' = filter (\case { (M.DefinedFunction fn, _, _) -> Set.notMember fn missingInsts; _ -> True }) vars
@@ -462,7 +460,7 @@ cEnvMod M.EnvMod { M.assigned = assigned, M.assignee = fn } = do
       else cFunction t v
 
   case assigned of
-    M.LocalEnv env@(M.Env _ vars) -> do
+    M.LocalEnv env@(M.EnvDef _ vars _) -> do
       -- TODO: copied.
       -- NOTE 18.07.25 - what the fuck am i doing here.
       --     Ah, right. We're getting all variables that much assignee. NOT SURE IF THERE IS GOING TO BE MORE THAN ONE FUNCTION, but just to be safe I guess. TODO: make an assert for this to find a counter example.
@@ -480,7 +478,7 @@ cEnvMod M.EnvMod { M.assigned = assigned, M.assignee = fn } = do
     M.LocalEnv {} -> error "UNREACHABLE?"
 
     M.EnvFromEnv eas -> for_ eas $ \ea -> statement $ do
-      let env@(M.Env _ vars) = ea.accessedEnv
+      let env@(M.EnvDef _ vars _) = ea.accessedEnv
       let uniqueDefVars = fmap snd $ Map.toList $ Map.fromList $ vars <&> \case
             tup@(v@(M.DefinedFunction _), _, t) | doesFunctionNeedExplicitEnvironment t -> ((v, Just t), tup)
             tup@(v, _, _) -> ((v, Nothing), tup)
@@ -492,7 +490,7 @@ cEnvMod M.EnvMod { M.assigned = assigned, M.assignee = fn } = do
         "env->" & accesses & envVarName fn t § "=" § cVar t Def.Local (M.DefinedFunction fn)  -- Might be a HACK: since (I think) we only use it when the other side is Local, we can set it as local. This happened, when 
 
 
-cLambda :: M.Env -> [(Def.UniqueVar, Type M)] -> Type M -> PL -> PL
+cLambda :: M.EnvDef -> [(Def.UniqueVar, Type M)] -> Type M -> PL -> PL
 cLambda env params lamType lamBody = do
   tmp <- nextTemp
 
@@ -508,7 +506,7 @@ cLambda env params lamType lamBody = do
   let ccparams = if not needsEnv
       then cparams
       else
-        let envparam = if M.isEnvEmpty env
+        let envparam = if M.isEnvDefEmpty env
             then "void*"
             else do
               envNames <- cEnv env
@@ -523,7 +521,7 @@ cLambda env params lamType lamBody = do
     then funref
 
     -- there is an environment - either this function's env or some other environment. If it's not our function's, then we don't need to initialize it.
-    else if M.isEnvEmpty env
+    else if M.isEnvDefEmpty env
       then "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : cparams) "") funref § "}"
 
       else do
@@ -555,7 +553,7 @@ cFunction fnt fun' =
 
     let cparams = zip filledIn paramTypes <&> \(var, t) -> cDefinition t var
     let envparam = do
-          let envtype = if M.isEnvEmpty fd.functionEnv
+          let envtype = if M.isEnvDefEmpty fd.functionEnv
               then "void*"
               else do
                 envNames <- cEnv fd.functionEnv
@@ -801,7 +799,7 @@ cVar t Def.Local (M.DefinedFunction fun) = do
     then cFunction t fun
 
     -- there is an environment - either this function's env or some other environment. If it's not our function's, then we don't need to initialize it.
-    else if M.isEnvEmpty fun.functionDeclaration.functionEnv
+    else if M.isEnvDefEmpty fun.functionDeclaration.functionEnv
       then "(" § union § ")" § "{" § ".fun" § "=" § cCast (cTypeFun ret ("void*" : (cType <$> args)) "") (cFunction t fun) § "}"
 
       else do
@@ -1097,7 +1095,7 @@ data Context = Context
   , topLevelBlocks :: [Text]
 
   , compiledUnions :: Memo M.EnvUnion PL
-  , compiledEnvs :: Memo M.Env (PL, PL)
+  , compiledEnvs :: Memo M.EnvDef (PL, PL)
   , compiledFunctions :: Memo (Function M, NeedsImplicitEnvironment) PL
   , compiledTypes :: Memo (DataDef M) PL
   }

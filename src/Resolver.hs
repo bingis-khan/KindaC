@@ -25,7 +25,7 @@ import Data.List.NonEmpty (NonEmpty ((:|)), (<|))
 import qualified Data.List.NonEmpty as NonEmpty
 import Control.Applicative ((<|>))
 import Data.Set (Set, (\\))
-import Data.Bifoldable (bifold)
+import Data.Bifoldable (bifold, bifoldMap)
 import qualified Data.Set as Set
 
 import AST.Common
@@ -315,8 +315,8 @@ rStmts = traverse -- traverse through the list with Ctx
         -- tying the knot for the datatype definition
         pf "new tid: %" tid
 
-        tvars <- pure $ mkTVars (Def.BindByType tid) dd.ddScheme
-        let dataDef = DD tid tvars rCons anns
+        tvars <- pure $ mkTVars (Def.BindByType tid) dd.ddOther
+        let dataDef = DD tid (tvars, envtvars) rCons anns
         registerDatatype dataDef
 
 
@@ -338,6 +338,9 @@ rStmts = traverse -- traverse through the list with Ctx
               t' <- rType t
               pure $ Annotated recAnns (mem, t')
 
+        let tvs = Set.filter ((/= BindByType tid) . binding) . gatherTVars
+        let envtvars = Set.toList $ bifoldMap (foldMap (tvs . snd . deannotate)) (foldMap (foldMap tvs . conTypes)) rCons
+
         pass
 
       -- TODO: THIS IS ALL TEMPORARY - I SHOULD PROBABLY MAKE DIFFERENT DATA STRUCTURES FOR THIS!
@@ -354,7 +357,7 @@ rStmts = traverse -- traverse through the list with Ctx
               t -> fold <$> sequenceA t
 
         eid <- newEnvID
-        (rparams, rret) <- bindTVars ((headerLocation,) <$> Set.toList tvars) $ closure eid $ do
+        (rparams, rret) <- bindTVars ((headerLocation,) <$> Set.toList tvars) $ inFunctionThing vid $ closure eid $ do
           rparams' <- traverse (\(n, t) -> do
             rn <- rDecon n
             rt <- rDeclaredType t
@@ -367,7 +370,8 @@ rStmts = traverse -- traverse through the list with Ctx
         -- TODO: maybe just make it a part of 'closure'?
         env <- mkEnv eid mempty
 
-        newFunction $ Function (FD env vid rparams rret (Def.AExternal : anns, headerLocation)) $ NonEmpty.singleton $ Fix $ O $ O $ Annotated [] $ Located location Pass
+        funstack <- RWST.gets functionStack
+        newFunction $ Function (FD env vid rparams rret (FunOther funstack (Def.AExternal : anns) headerLocation)) $ NonEmpty.singleton $ Fix $ O $ O $ Annotated [] $ Located location Pass
         stmt Pass
 
       Fun (U.FunDef (FD () name params ret (uconstraints, headerLocation)) body) -> do
@@ -385,7 +389,8 @@ rStmts = traverse -- traverse through the list with Ctx
               t -> fold <$> sequenceA t
 
         function <- mdo
-          let ~fd = (FD env vid rparams rret (anns, headerLocation))
+          funstack <- RWST.gets functionStack
+          let ~fd = (FD env vid rparams rret (FunOther funstack anns headerLocation))
           let function = Function fd rbody
           newFunction function
 
@@ -506,7 +511,8 @@ rStmts = traverse -- traverse through the list with Ctx
           -- TODO: maybe just make it a part of 'closure'?
           let innerEnv = Map.delete (R.PDefinedVariable vid) $ sconcat $ gatherVariables <$> rbody
           env <- mkEnv eid innerEnv
-          let fundec = FD env vid rparams rret (anns, snd ifn.instFunDec.functionOther)
+          funstack <- RWS.gets functionStack
+          let fundec = FD env vid rparams rret (FunOther funstack anns $ snd ifn.instFunDec.functionOther)
 
           pure InstFun
             { instFunDec = fundec
@@ -707,6 +713,12 @@ rType' = \case
 -- Utility
 ------------
 
+gatherTVars :: Type R -> Set (TVar R)
+gatherTVars = cata $ \case
+  TO (TVar tv) -> Set.singleton tv
+  t -> fold t
+
+
 scope :: Ctx a -> Ctx a
 scope x = do
   oldScope <- RWST.get  -- enter scope
@@ -726,6 +738,15 @@ closure eid x = do
 
   return x'
 
+inFunctionThing :: Def.UniqueVar -> Ctx a -> Ctx a
+inFunctionThing fnv x = do
+  oldScope <- RWST.get          -- enter scope
+
+  RWST.modify $ \state@(CtxState { functionStack = functionStack' }) -> state { functionStack = fnv : functionStack' }
+  x' <- x                       -- evaluate body
+  RWST.put oldScope             -- exit scope
+
+  return x'
 
 -- cheap and bad string interpolation. (it would be more readable if we generated types on the fly. the errors would be slightly better!)
 mkStringInterpolation :: Def.Location ->  XStringInterpolation U -> Ctx (ExprF R (Expr R))
@@ -787,6 +808,7 @@ type Ctx = RWST (Maybe Prelude) [ResolveError] CtxState InterModular  -- I might
 data CtxState = CtxState
   { scopes :: NonEmpty Scope
   , envStack :: [Def.EnvID]
+  , functionStack :: Def.FunStack  -- TEMP NEW: KILL ME
   , inLambda :: Bool  -- hack to check if we're in a lambda currently. when the lambda is not in another lambda, we put "Local" locality.
   , tvarBindings :: Map Def.UnboundTVar (Def.Location, TVar R)
 
@@ -811,7 +833,7 @@ data Scope = Scope
 
 emptyState :: CtxState
 emptyState =
-  CtxState { scopes = NonEmpty.singleton emptyScope, envStack = mempty, tvarBindings = mempty, loaderFn = error "should not import anything in Prelude!", modules = mempty, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty, instances = mempty }
+  CtxState { scopes = NonEmpty.singleton emptyScope, envStack = mempty, functionStack = mempty, tvarBindings = mempty, loaderFn = error "should not import anything in Prelude!", modules = mempty, inLambda = False, functions = mempty, datatypes = mempty, classes = mempty, instances = mempty }
 
 emptyScope :: Scope
 emptyScope = Scope { varScope = mempty, conScope = mempty, tyScope = mempty, instScope = mempty }
@@ -824,6 +846,7 @@ mkState :: InterModular.Loader -> Prelude -> CtxState
 mkState ~moduleLoader prel = CtxState
   { scopes = NonEmpty.singleton initialScope
   , envStack = mempty
+  , functionStack = mempty
   , tvarBindings = mempty
   , loaderFn = moduleLoader
   , modules = mempty
@@ -991,7 +1014,7 @@ placeholderCon name = do
 
   -- fill in later with a placeholder type.
   let dc = DC dd uc [] []
-      dd = DD ti [] (Right [dc]) []
+      dd = DD ti ([], mempty) (Right [dc]) []
   pure $ DefinedConstructor dc
 
 
@@ -1220,7 +1243,7 @@ placeholderType name = do
   -- generate a placeholder type.
   ti <- generateType $ Def.TC $ "PlaceholderType" <> name.fromTC
 
-  let dd = DD ti [] (Right []) []
+  let dd = DD ti ([], mempty) (Right []) []
   pure $ DefinedDatatype dd
 
 modifyThisScope :: (Scope -> Scope) -> Ctx ()
@@ -1360,7 +1383,7 @@ mkEnv eid innerEnv = do
         (_, Def.Local) -> Nothing
         (_, Def.FromEnvironment lev) | lev > curlev -> Nothing
         (PExternalFunction fn, _) | Def.AExternal `elem` fn.functionDeclaration.functionOther.functionAnnotations -> Nothing  -- controversial! we must exclude external functions. what is controversial is if we should do it here or during codegen?
-        (PDefinedFunction fn, _) | Def.AExternal `elem` fst fn.functionDeclaration.functionOther -> Nothing  -- controversial! we must exclude external functions. what is controversial is if we should do it here or during codegen?
+        (PDefinedFunction fn, _) | Def.AExternal `elem` fn.functionDeclaration.functionOther.foAnnotations -> Nothing  -- controversial! we must exclude external functions. what is controversial is if we should do it here or during codegen?
 
         (v, Def.FromEnvironment lev) | lev == curlev -> Just (v, Def.Local)
         (v, Def.FromEnvironment lev) -> Just (v, Def.FromEnvironment lev)

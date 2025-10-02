@@ -45,13 +45,13 @@ type instance XInstDef Resolved = InstDef R
 type instance XClassConstraints Resolved = () -- Map (TVar R) (Set Class)
 type instance XClassFunOther Resolved = ()
 type instance XOther Resolved = ()
-type instance XFunOther Resolved = ([Def.Ann], Def.Location)
+type instance XFunOther Resolved = FunOther
 type instance XTOther Resolved = RTO
 type instance XTFun Resolved = ()
-type instance XTConOther Resolved = ()
+type instance XTConOther Resolved = ()  -- external tvars
 type instance XExprNode Resolved = Def.Location
 type instance XFunType Resolved = DeclaredType R
-type instance XDataScheme Resolved = [TVar R]
+type instance XDataOther Resolved = ([TVar R], [TVar R])
 type instance XMutAccess Resolved = MutAccess R
 type instance XInstExport R = Inst
 type instance XStringInterpolation R = Text  -- we "unpack" string interpolation pretty early - here. NOTE: I might change it if the errors are bad tho.
@@ -64,6 +64,12 @@ data LamDec = LamDec Def.UniqueVar Env
 type instance XEnv R = Env
 type instance XLamOther Resolved = LamDec
 
+
+data FunOther = FunOther
+  { foFunStack :: Def.FunStack
+  , foAnnotations :: [Def.Ann]
+  , foLocation :: Def.Location
+  }
 
 type ScopeSnapshot = Map Class PossibleInstances
 
@@ -208,3 +214,6 @@ instance PP LamDec where
 
 instance PP Env where
   pp env = Def.pf "%s(%s)%s" (pp env.envID) (pp env.envStackLevel) $ Def.encloseSepBy "[" "]" ", " $ env.fromEnv <&> \(v, l) -> Def.ppVar l $ asPUniqueVar v
+
+instance PP FunOther where
+  pp fo = Def.pf "FO[% % %]" fo.foFunStack fo.foAnnotations fo.foLocation
