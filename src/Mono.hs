@@ -864,7 +864,7 @@ mUnionWithoutTopMap tunionUID = thisAnd (countUp mUnionNum) $ do
 
                 (e:es) -> do
                   -- pf "NEW NORMAL UNION: % % % => %" tunion'' params ret nuid
-                  pure $ e :| es
+                  pure $ NonEmpty.nub $ e :| es
               pure munion
 
       pf "mUnionWithoutTopMap end"
