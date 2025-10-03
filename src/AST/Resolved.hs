@@ -197,6 +197,11 @@ instance PP Constructor where
     DefinedConstructor con -> pp con.conID
     ExternalConstructor con -> pp con.conID
 
+instance PPDef Constructor where
+  ppDef = \case
+    DefinedConstructor con -> pp con.conID
+    ExternalConstructor con -> pp con.conID
+
 instance PP DataType where
   pp = pp . asUniqueType
 

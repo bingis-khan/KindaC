@@ -1,4 +1,4 @@
-#$ Env expansion works, but the outer function 'ff' is not called (while inner is, that's the difficulty :3 )
+#$ [env expansion] Env expansion works, but the outer function 'ff' is not called (while inner is, that's the difficulty :3 )
 # 123
 
 

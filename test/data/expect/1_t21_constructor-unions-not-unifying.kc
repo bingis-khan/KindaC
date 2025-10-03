@@ -1,4 +1,4 @@
-#$ I don't remember what this was for, but its name (error name) was "constructor unions not unifying".
+#$ [env expansion] I don't remember what this was for, but its name (error name) was "constructor unions not unifying".
 
 id (x)
 	return x

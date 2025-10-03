@@ -318,3 +318,23 @@ So, actually, all unions that exit a function get mapped. So, only EnvUnionID or
 
 
 NOTE: IT SEEMS LIKE Data.Map.Strict IS FORCING VALUES (not only keys??)
+
+
+
+# function stack emulation
+
+bad bad bad.
+
+basically, because we can reach functions through calls (instantiations), the naive way to build a stack does not work.
+So, we have to "emulate it" when entering a function and also for unions which were mapped we need to do the same to enumerate matches.
+
+for functions:
+`trimmedStack`
+`withTrimmed`
+
+for other stuff??? like unions i guess.
+`enstack` <- builds a stack from a list of Matches
+`stackFun` <- temporarily appends to a stack. not sure if it's correct for some cases tho.
+
+
+This is error prone, so after I figure shit out, rethink and redo it (like, maybe I should map the unions from the environment? the IDs are the same, but we copy the union during instantiation, so it already happens.)

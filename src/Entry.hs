@@ -144,6 +144,7 @@ understandOpt ('-':'-':optname, opt) (mfname, fc) = (,) mfname $ (. fc) $ \c -> 
     opt
 
   "only-current" -> c { printOnlyCurrent = True }
+  "dtc" -> c { detailedCons = True }
   "print-opts" -> undefined
   "no-output" -> c { output = NoOutput }
   "output-c" -> c { output = File $ fromMaybe "test.c" mfname }
@@ -159,6 +160,7 @@ defaultConfig fn = Config
   { filename = fn
   , output = Stdout  -- TODO: when it becomes a real compiler, change it to a File with the name from filepath.
   , printOnlyCurrent = False
+  , detailedCons = False
 
   , dbgP = False
   , dbgR = False

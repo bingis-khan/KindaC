@@ -76,6 +76,7 @@ debugContext = CtxData
   { printIdentifiers = True
   , displayTypeParameters = False
   , displayLocations = False
+  , displayDetailedCons = False
   , typingContext = Nothing
   }
 
@@ -84,6 +85,7 @@ runtimeContext = CtxData
   { printIdentifiers = False
   , displayTypeParameters = False
   , displayLocations = False
+  , displayDetailedCons = False
   , typingContext = Nothing
   }
 
@@ -92,6 +94,7 @@ showContext = CtxData
   { printIdentifiers = False
   , displayTypeParameters = True
   , displayLocations = False
+  , displayDetailedCons = False
   , typingContext = Nothing
   }
 
@@ -454,6 +457,9 @@ instance PP VarName where
 instance PP ConName where
   pp cn = pretty cn.fromCN
 
+instance PPDef ConName where
+  ppDef cn = pretty cn.fromCN
+
 instance PP TCon where
   pp tc = pretty tc.fromTC
 
@@ -692,6 +698,7 @@ data CtxData = CtxData  -- basically stuff like printing options or something (e
   { printIdentifiers :: Bool
   , displayTypeParameters :: Bool
   , displayLocations :: Bool
+  , displayDetailedCons :: Bool
 
   , typingContext :: Maybe (TypeID -> Context, UnionUniID -> Context, UnionUniID -> Context)
   }
@@ -730,6 +737,9 @@ comment s cctx = "#" <+> s <\> cctx
 annotate :: [Ann] -> Context -> Context
 annotate [] actx = actx
 annotate xs actx = "\n" <> ppAnn xs <\> actx
+
+enclose :: Monoid a => a -> a -> a -> a
+enclose l r cs = l <> cs <> r
 
 encloseSepBy :: Monoid a => a -> a -> a -> [a] -> a
 encloseSepBy l r p cs = l <> sepBy p cs <> r

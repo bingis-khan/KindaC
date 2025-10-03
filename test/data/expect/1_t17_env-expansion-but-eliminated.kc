@@ -1,4 +1,4 @@
-#$ Env expansion is not done, because the nested 'gg' function is not called.
+#$ [env expansion] Env expansion is not done, because the nested 'gg' function is not called.
 # 123
 
 

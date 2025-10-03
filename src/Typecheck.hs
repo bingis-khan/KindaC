@@ -454,17 +454,13 @@ inferExpr = cata (fmap embed . inferExprType)
           args' <- sequenceA args
           let argts = askType <$> args'
           -- argfs <- for argts $ const fresh  -- fresh variables for better errors.
-          pf "what"
           callee' <- callee
 
-          pf "ca"
           ret <- fresh
           union <- emptyUnion
-          pf "cb"
           ft <- mkType $ TFun union argts ret
 
           -- pretty bad errors for calls.
-          pf "cc"
           askUni callee' `uni` (Just location, ft)  -- first unify the whole function shape.
 
           -- TODO: in the future, make a special function for calls, which will signal nice errors.
@@ -628,13 +624,10 @@ inferDatatype = \case
 inferDataDef :: DataDef R -> Infer (DataDef TC)
 inferDataDef = memo memoDataDefinition (\mem s -> s { memoDataDefinition = mem }) $
   \(DD ut (rtvars, renvtvars) erdcs anns) addMemo -> mdo
-    pf "miau"
     tvars <- traverse inferTVar rtvars
     envtvars <- traverse inferTVar renvtvars
-    pf "cock"
     let ~scheme = T.Scheme tvars unions []
     let ~dd = DD ut (scheme, envtvars) edcs anns  -- NOTE: TVar correctness (no duplication, etc.) should be checked in Resolver!
-    pf "not miau"
 
     addMemo dd
 
@@ -1375,7 +1368,7 @@ inferDecon = cata $ \(N location d) -> fmap embed $ case d of
       -- Create a parameter list to this constructor
       --  NOTE: scheme is a scheme from a datatype, so no insts to worry about
       ogUnions' <- for ogUnions getUnion
-      (Match tvs unions _, ts) <- instantiateScheme mempty Nothing scheme $ \mapTVs -> do
+      (Match tvs unions _, ts) <- instantiateScheme mempty Nothing scheme $ do
         traverse mapTVs usts
 
 
@@ -1400,7 +1393,7 @@ instantiateVariable location loc = \case
     fn <- inferFunction rfn
     snapshot <- inferSnapshot rsnapshot
     (t, v, theseInsts) <- instantiateFunction location snapshot fn
-    RWS.modify $ \s -> s { instantiations = Set.insert (v, t) $ theseInsts <> s.instantiations }
+    RWS.modify $ \s -> s { instantiations = Set.insert (v, t) $ (if loc == Def.Local then theseInsts else mempty) <> s.instantiations }
     pure (t, v)
 
   R.ExternalFunction fn rsnapshot -> do
@@ -1431,7 +1424,7 @@ instantiateVariable location loc = \case
     --   then gatherInstsFromEnvironment env
     --   else pure mempty
 
-    RWS.modify $ \s -> s { instantiations = Set.insert (v, t) $ theseInsts <> s.instantiations }
+    RWS.modify $ \s -> s { instantiations = Set.insert (v, t) $ (if loc == Def.Local then theseInsts else mempty) <> s.instantiations }
 
     pure (t, v)
 
@@ -1490,10 +1483,10 @@ instantiateClassFunction cfd@(CFD cd funid params ret scheme@(Scheme schemeTVars
     -- let scheme = Scheme schemeTVars schemeUnions mempty
 
     -- TODO NEW: I think this part code appears somewhere else also. Type mapping should be better.
-    (_, (iparams, iret)) <- instantiateScheme mempty Nothing scheme $ \mapTVs' -> do
-      let mapTVs = mapTVs' <=< lift . mkTypeFromClassType self
-      ts <- traverse (mapTVs . snd) params
-      r <- mapTVs ret
+    (_, (iparams, iret)) <- instantiateScheme mempty Nothing scheme $ do
+      let cmapTVs = mapTVs <=< lift . mkTypeFromClassType self
+      ts <- traverse (cmapTVs . snd) params
+      r <- cmapTVs ret
       pure (ts, r)
 
     fnUnion <- emptyUnion
@@ -1515,12 +1508,13 @@ instantiateFunction assocLocation snapshot fn = do
 
     pf "Before schemin: %" fundec.functionId
     pf "Before schemin: %" =<< presentFunctionType fn <$> getTypeUni
-    (match@(Match tvs unions _), (funparams, funret, envInsts)) <- instantiateScheme snapshot (Just fn) fundec.functionOther.functionScheme $ \mapTVs -> do
+    (match@(Match tvs unions _), (funparams, funret, envInsts)) <- instantiateScheme snapshot (Just fn) fundec.functionOther.functionScheme $ do
       params <- traverse (mapTVs . snd) fundec.functionParameters
       ret <- mapTVs fundec.functionReturnType
 
-      envInsts <- instantiationsRelativeToFunction mapTVs fundec.functionEnv
+      envInsts <- instantiationsRelativeToFunction fundec.functionEnv
       pure (params, ret, envInsts)
+
 
 
     pf "after assocs: %" =<< presentFunctionType fn <$> getTypeUni
@@ -1553,6 +1547,8 @@ instantiateFunction assocLocation snapshot fn = do
       gfn
       =<< presentType fnType <$> getTypeUni
 
+    pf "instrel %: %" fundec.functionId envInsts
+
     lift $ InterModular.trackInstantiation definesBeforeInst fn
     pure (fnType, v, envInsts)
 
@@ -1563,17 +1559,8 @@ instantiateFunction assocLocation snapshot fn = do
 --   TODO: check that. write the similar implementation first, then check.
 --   TODO: maybe optimize, so I don't acess reader state all the time?
 --         will this have any penalty with effects??
-instantiationsRelativeToFunction :: (Type TC -> UltraMap (Type TC)) -> T.EnvDef -> UltraMap (Set (T.Variable, Type TC))
-instantiationsRelativeToFunction mapTVs (T.EnvDef _ baseVars _) = do
-  -- flip trafold vars $ \case
-  --   (envVar@(T.DefinedFunction fn match), Def.Local, t) -> do
-  --     (baset, tt) <- getType' t
-
-  --     -- instnatiate match and do other stuff
-  --     -- TODO: I should consider the design of typemap for this, since we will be adding more and more mappings to this.
-  --     undefined
-  --   (envVar, _, t) -> pure $ Set.singleton (envVar, t)
-  
+instantiationsRelativeToFunction :: T.EnvDef -> UltraMap (Set (T.Variable, Type TC))
+instantiationsRelativeToFunction (T.EnvDef _ baseVars _) = do
   -- only when it's a local function should you add stuff from its environment to instantiations.
   let gatherInstsFromEnvironment :: [(T.Variable, Def.Locality, Type TC)] -> UltraMap (Set (T.Variable, Type TC))
       gatherInstsFromEnvironment vars = flip trafold vars $ \case
@@ -1585,9 +1572,23 @@ instantiationsRelativeToFunction mapTVs (T.EnvDef _ baseVars _) = do
               env <- withMatch scheme match fn.functionDeclaration.functionEnv
 
               Set.insert (envVar, mappedT) <$> (gatherInstsFromEnvironment env)
-            (envVar, _, t) -> do
+
+            
+            -- non-expanding.
+            (T.DefinedFunction fn match, _, t) -> do
               mappedT <- mapTVs t
-              pure $ Set.singleton (envVar, mappedT)
+              mmatch <- mapMatch match
+              pure $ Set.singleton (T.DefinedFunction fn mmatch, mappedT)
+
+            (T.DefinedVariable uv, _, t) -> do
+              mappedT <- mapTVs t
+              pure $ Set.singleton (T.DefinedVariable uv, mappedT)
+
+            (T.DefinedClassFunction cfd instid, _, t) -> do
+              mt <- mapTVs t
+              minstid <- mapClassInstID instid
+              pure $ Set.singleton (T.DefinedClassFunction cfd minstid, mt)
+
   gatherInstsFromEnvironment baseVars
 
 withMatch :: T.Scheme TC -> Match -> T.EnvDef -> UltraMap [(T.Variable, Def.Locality, Type TC)]
@@ -1656,7 +1657,7 @@ instantiateConstructor envID = \case
     pure (t, match, envTVs)
 
   (DC dd@(DD _ (scheme, envtvars) _ _) _ usts@(_:_) _) -> do
-    (match@(Match tvs unions _), ts) <- instantiateScheme mempty Nothing scheme $ \mapTVs -> do
+    (match@(Match tvs unions _), ts) <- instantiateScheme mempty Nothing scheme $ do
       traverse mapTVs usts
     envTVs <- traverse (mkType . TO . TVar) envtvars
     ret <- mkType $ TCon dd tvs (unions, envTVs)
@@ -1676,9 +1677,9 @@ instantiateRecord (DD ut scheme (Right _) _) = error $ pf "Attempted to instanti
 
 
 instantiateScheme' :: T.ScopeSnapshot TC -> Scheme TC -> Infer Match
-instantiateScheme' snapshot scheme = fst <$> instantiateScheme snapshot Nothing scheme (const $ pure ())
+instantiateScheme' snapshot scheme = fst <$> instantiateScheme snapshot Nothing scheme (pure ())
 
-instantiateScheme :: T.ScopeSnapshot TC -> Maybe (Function TC) -> Scheme TC -> ((Type TC -> UltraMap (Type TC)) -> UltraMap a) -> Infer (Match, a)
+instantiateScheme :: T.ScopeSnapshot TC -> Maybe (Function TC) -> Scheme TC -> UltraMap a -> Infer (Match, a)
 instantiateScheme snapshot mfn scheme@(Scheme schemeTVars schemeUnions schemeAssocs) stuffToMap = mdo
   -- Prepare a mapping for the scheme!
   tyvs <- traverse (const fresh) schemeTVars  -- scheme
@@ -1728,7 +1729,7 @@ instantiateScheme snapshot mfn scheme@(Scheme schemeTVars schemeUnions schemeAss
     let numatch = Match tyvs newUnionUIDs assocs
 
     -- 4. cuck stuff at the end (used as pejorative for the caller of this function, not related to `cuckedUnions`)
-    nux <- stuffToMap mapTVs
+    nux <- stuffToMap
 
     pure (numatch, nux)
 
@@ -1900,14 +1901,16 @@ mapEnv (T.EnvDef eid vars stack) = do
 --   or maybe not. imagine an inner instance, which has tvars in its environment, but depends on some top level var for its type.
 -- so... maybe. NOTE: right now I'm leaving it be, but I should keep it in mind.
 mapMatch :: T.Match -> UltraMap T.Match
-mapMatch (Match ts us as) = do
-  pf "fuck"
-  assocmap <- RST.asks ultraAssocMap
+mapMatch (Match ts us as) =
   Match
     <$> traverse mapTVs ts
     <*> traverse mapUnion us
-    <*> pure (as <&> \classInstID -> fromMaybe classInstID (assocmap !? classInstID))
+    <*> traverse mapClassInstID as
 
+mapClassInstID :: Def.ClassInstID -> UltraMap Def.ClassInstID
+mapClassInstID cid = do
+  assocmap <- RST.asks ultraAssocMap
+  pure $ fromMaybe cid (assocmap !? cid)
 
 -- Constructs an environment from all the instantiations.
 --  We need the instantiations, because not all instantiations of a function can come up in the environment.

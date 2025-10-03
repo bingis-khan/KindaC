@@ -102,9 +102,6 @@ codegen tc joinedModules = do
   phase M "Monomorphizing"
   mmod <- mono tc joinedModules
 
-  phase M "Monomorphized statements"
-  pc M mmod
-
   -- TODO: stats shouldn't really be here, but whatever.
   -- Def.unsilenceablePrintInContext (Def.pf "M exprs: %\nM stmt: %\nMF expr: %\nMF stmt: %\n" stats.exprVisited stats.stmtVisited stats.mfExprVisited stats.mfStmtVisited) :: BaseCtx ()
   -- Def.unsilenceablePrintInContext (Def.pf "M type nodes: %\nM unions: %\nMF type nodes: %\nMF unions %\n" stats.typeNodesVisited stats.unionsVisited stats.mfTypeNodesVisited stats.mfUnionsVisited) :: BaseCtx ()

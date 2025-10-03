@@ -97,7 +97,7 @@ cStmt = cata $ \(O (O (Annotated anns (Located _ monoStmt)))) -> case monoStmt o
             statement $ cPrintf "%s\\n" [e]
           CustomType dd ts unions -> do
             bareExpression e
-            statement $ cPrintf (Def.pf "%\\n" (Fix (TCon dd ts []) :: Type M)) []
+            statement $ cPrintf (Def.pf "%\\n" (Fix (TCon dd ts ([], [])) :: Type M)) []
           Function union args ret ->
             let e' =
                   if M.areAllEnvsEmpty union
@@ -1155,7 +1155,7 @@ typeFromExpr (Fix (N t _)) = case project t of
   TFun union ts ret -> Function union ts ret
   -- Brittle, but it's temporary anyway.
   TO {} -> error "should not happen"
-  TCon dd ts unions
+  TCon dd ts (unions, _)
     | dd.ddName.typeName == Def.TC "Bool" -> Bool
     | dd.ddName.typeName == Def.TC "Int" -> Integer
     | dd.ddName.typeName == Def.TC "Unit" -> Unit

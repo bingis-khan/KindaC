@@ -8,7 +8,7 @@ import Stats (Stats, Counter, FunInstTrack, emptyStats, instantiationsByNumTypes
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.RWS (MonadReader, MonadState, MonadTrans (..), modify')
 import Lens.Micro (Lens', (+~))
-import AST.Def (Log (plog), CtxData, LogType (..), ctx, debugContext)
+import AST.Def (Log (plog), CtxData, LogType (..), ctx, debugContext, displayDetailedCons)
 import Lens.Micro.Mtl ((+=), (%=))
 import qualified Control.Monad.Trans.RST as RST
 import Control.Monad (when)
@@ -24,6 +24,7 @@ data Config = Config
   { filename :: FilePath
   , output :: Output
   , printOnlyCurrent :: Flag
+  , detailedCons :: Flag
 
   , dbgP :: Flag
   , dbgR :: Flag
@@ -78,7 +79,7 @@ instance (unit ~ ()) => Log (BaseCtx unit) where  -- base instance
       liftIO $ TextIO.putStrLn $ ctx (configToContextData config) c
 
 configToContextData :: Config -> CtxData
-configToContextData = const debugContext
+configToContextData cfg = debugContext { displayDetailedCons = cfg.detailedCons }
 
 isPrintingEnabled :: LogType -> Config -> Bool
 {-# inline isPrintingEnabled #-}
