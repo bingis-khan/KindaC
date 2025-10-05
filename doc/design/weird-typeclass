@@ -1,0 +1,37 @@
+# LOCAL CLASS, BUT CLASS FUN INST GENERALIZED OVER ty. SHOULD THIS BE CORRECT????
+
+f (n ty)
+    class Dupa
+		print-dupa (self _) -> Unit
+
+	inst Int
+		print-dupa (self ty) -> Unit
+			print('whatever')
+			return
+
+    return :class-fun(n)
+
+What should happen?
+1. Check for instance per call and select it?
+2. Generate a constraint for inner class, which may not be satisfied.
+
+
+# INSTANCE OF TVAR
+
+This is currently not possible, but might be interesting: local instances for tvars. Might be useful, when we want to have a local class which goes through multiple datatypes, including the stuff we passed in (probably constrained by something) and the instance would make use of these constraints.
+
+But in this case, what should happen here?
+1. Should the instance be selected?
+2. Should we generate an unfillable constraint?
+
+
+f (n ty)
+    class Dupa
+		print-dupa (self _) -> Unit
+
+	inst ty
+		print-dupa (self ty) -> Unit
+			print('whatever')
+			return
+
+    return :class-fun(n)
