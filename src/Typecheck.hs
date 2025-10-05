@@ -1549,6 +1549,7 @@ instantiateFunction assocLocation snapshot fn = do
 
 
 
+    pf "insts % %" fundec.functionId envInsts
     pf "after assocs: %" =<< presentFunctionType fn <$> getTC
 
     fnUnion <- singleEnvUnion $ T.UnionFun fn [] match

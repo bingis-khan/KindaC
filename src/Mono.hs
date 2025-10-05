@@ -410,17 +410,16 @@ withEnv mfn eid cx = do
 
 -- TODO NEW: REEVALUATE THIS FUNCTION BRUH. IF WE START UPDATING THE ENV IN PLACE, IT SHOULD BE GOOD.
 -- Evaluate the locality of a class function after we have access to the instance.
+-- OKAY, WE NEED TO UPDATE THE LOCALITY OF VARIABLES IN AN EXPRESSION.
 reLocality :: Def.EnvStack -> Def.Locality -> T.VariableF u a -> Context Def.Locality
 reLocality envStack ogLocality = \case
-  -- NOTE: I COMMENTED IT OUT FOR NOW WHILE I'M BEGINNING THE TYPECLASS IMPLEMENTATION.
-  -- v@(T.DefinedClassFunction _ classInstID) -> do
-  --   (_, es) <- selectInstance' classInstID
+  v@(T.DefinedClassFunction _ classInstID) -> do
+    vfn <- selectInstance classInstID
 
-  --   let vfn = Common.instanceToFunction ivfn
-  --   let (T.EnvDef _ _ instEnvStack) = vfn.functionDeclaration.functionEnv
-  --   let newLoc = if envStack == instEnvStack then Local else FromEnvironment (Def.envStackToLevel instEnvStack)
-  --   pf "NEW LOCALITY % (% =?= %) OF VAR (miau)" (pp newLoc) (pp instEnvStack) (pp envStack)
-  --   pure newLoc
+    let (M.EnvDef _ _ menvLevel) = vfn.functionDeclaration.functionEnv
+    let newLoc = if Def.envStackToLevel envStack == menvLevel then Local else FromEnvironment menvLevel
+    -- pf "NEW LOCALITY % (% =?= %) OF VAR (miau)" (pp newLoc) (pp instEnvStack) (pp envStack)
+    pure newLoc
 
 
   _ -> pure ogLocality

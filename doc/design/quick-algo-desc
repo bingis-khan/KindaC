@@ -4,6 +4,11 @@
 - maybe (ill see) I'll end up removing fixtypes. at least where necessary (like, mapping over them would not be desired. so leave types themselves, but for example don't do union fixpoints, because we might not want to go though em)
 - check doc/design/weird and add a test for that.
 - check doc/design/typeclasses:179 and add a test for that.
+- remove duplicate env entries during typecheck
+	- appears in 5_t13
+	- they get eliminated in CPrinter, but that's bad....
+	- this is because the class funs instantiation is known immediately, the envs are added AND THEN we carry on with typechecking and readd these variables.
+	- I guess I need to store "EnvAdditions" after all (these additions will not be propagated when instantiating)
 
 
 
