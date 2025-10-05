@@ -180,10 +180,10 @@ instance PP EnvUnion where
 instance PP Env where
   pp = \case
     Env ed -> pp ed
-    RecursiveEnv eid isEmpty -> Def.pf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+    RecursiveEnv eid isEmpty -> Def.pf "%[REC%]" (Def.ppDef eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 instance PP EnvDef where
-  pp (EnvDef eid vs _) = pp eid <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
+  pp (EnvDef eid vs _) = Def.ppDef eid <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
 
 
 instance PP Variable where

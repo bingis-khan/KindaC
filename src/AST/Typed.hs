@@ -50,7 +50,7 @@ type TC = TypedWithIndexes
 
 type instance Type TC = TypeID
 type instance XFunVar TC = Def.UniqueVar
-type instance XEnv TC = EnvDef
+type instance XEnv TC = Def.EnvID
 type instance XEnvUnion TC = EnvUnion
 type instance XVar TC = Variable
 type instance XVarOther TC = Def.Locality
@@ -88,7 +88,7 @@ type instance XStringInterpolation TC = Text  -- here, we're eliminating the str
 type instance XExportType TC = Type TC
 
 
-data LamDec phase = LamDec Def.UniqueVar (EnvDefF EnvUnion (Type phase))
+data LamDec phase = LamDec Def.UniqueVar (XEnv TC)
 type instance XLamOther TC = LamDec TC
 
 data TOTF phase
@@ -136,7 +136,7 @@ type Env = EnvF EnvUnion (Type TC)
 
 data UnionMemberF union t
   = UnionFun (Function TC) [(Function TC, MatchF union t)] (MatchF union t)
-  | UnionLam (EnvDefF union t) [(Function TC, MatchF union t)]
+  | UnionLam (XEnv TC) [(Function TC, MatchF union t)]
   | UnionConEnv Def.EnvID  -- nothing, empty environment. it's for documentation - I can just create an "EnvDef".
   deriving (Eq, Ord, Functor, Foldable, Traversable)
 
@@ -182,7 +182,7 @@ emptyScheme = Scheme [] [] []
 
 
 
-data FunctionTypeAssociation phase = FunctionTypeAssociation (TVar phase) (Type phase) (ClassFunDec phase) Def.ClassInstID
+data FunctionTypeAssociation phase = FunctionTypeAssociation (TVar phase) (Type phase) (ClassFunDec phase) Def.ClassInstID [Def.EnvID]  -- ENVSTACK TEMP. WE JUST NEED ACCESS TO IT WHILE WE ADD THE GENERALIZED CLASSFUNDEC TO THE ENVIRONMENT. LATER ITS NOT NEEDED.
 
 data TypeAssociation = TypeAssociation (Def.Location, Type TC) (Def.Location, Type TC) (ClassFunDec TC) Def.ClassInstID [Def.EnvID]  -- TODO: I think only one location is required. We can't really get location of self?
 
@@ -236,6 +236,10 @@ asProto = \case
   DefinedClassFunction cd _ -> PDefinedClassFunction cd
 
 ---------
+
+addToEnv :: [(Variable, Def.Locality, Type TC)] -> EnvDef -> EnvDef
+{-# inline addToEnv #-}
+addToEnv nuvars (EnvDef eid vars stack) = EnvDef eid (vars <> nuvars) stack
 
 
 isUnionEmpty :: EnvUnionF u ty -> Bool
@@ -330,8 +334,8 @@ instance (PP (UnionMemberF u ty), PP ty, PP u) => PP (EnvUnionF u ty) where
 
 instance (PP a, PP (VariableF u a)) => PP (EnvF u a) where
   pp = \case
-    Env (EnvDef eid vs lev) -> pp eid <> fromString (Def.pf "(%)" (show lev)) <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
-    RecursiveEnv eid isEmpty -> Def.pf "%[REC%]" (pp eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
+    Env (EnvDef eid vs lev) -> ppDef eid <> fromString (Def.pf "(%)" (show lev)) <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
+    RecursiveEnv eid isEmpty -> Def.pf "%[REC%]" (ppDef eid) (if isEmpty then "(empty)" else "(some)" :: Def.Context)
 
 instance PPDef (XClass phase) => PP (TOTF phase) where
   pp = \case
@@ -350,17 +354,17 @@ instance PP ExprNode where
   pp en = pp en.t <+> pp en.loc
 
 instance (PP (Type phase), PPDef (XClass phase)) => PP (FunctionTypeAssociation phase) where
-  pp (FunctionTypeAssociation tv t _ _) = Def.pf "(% => %)" (pp tv) (pp t)
+  pp (FunctionTypeAssociation tv t _ cid _) = Def.pf "<%>(% => %)" cid tv t
 
 instance PP TypeAssociation where
-  pp (TypeAssociation from to _ _ _) = Def.pf "(% => %)" (pp (snd from)) (pp (snd to))
+  pp (TypeAssociation from to _ cid _) = Def.pf "<%>(% => %)" cid (snd from) (snd to)
 
 instance (PP a, PP u) => PP (VariableF u a) where
   pp = \case
     DefinedVariable v -> pp v
     DefinedFunction f match -> pp f.functionDeclaration.functionId <> "&F" <> "(" <> pp match <> ")"
     DefinedClassFunction (CFD cd uv _ _ _) inst ->
-      Def.pf "%&<%>[%]" (pp uv) (pp inst)  -- (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts))) undefined
+      Def.pf "%&<%>" (pp uv) (pp inst)  -- (Def.sepBy ", " $ fmap (\inst -> (pp . ddName . fst . instType) inst) (Map.elems (Def.defaultEmpty cd insts))) undefined
 
 instance (PP ty, PP u) => PP (MatchF u ty) where
   pp (Match ts us as) = pf "Match % % %" (pp ts) (pp us) (pp as)
@@ -369,7 +373,7 @@ instance (PP (Type phase), PP (VariableF EnvUnion (Type phase))) => PP (LamDec p
   pp (LamDec uv env) = pp env <> pp uv
 
 instance (PP ty, PP u) => PP (EnvDefF u ty) where
-  pp (EnvDef eid vs lev) = pp eid <> fromString (Def.pf "(%)" (show lev)) <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
+  pp (EnvDef eid vs lev) = ppDef eid <> fromString (Def.pf "(%)" (show lev)) <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
 
 $(deriveBifunctor ''MatchF)
 instance (u ~ EnvUnion, PP ty, PP u, PPDef ty, PPDef u) => PP (UnionMemberF u ty) where

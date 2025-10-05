@@ -1,3 +1,12 @@
+# TODO
+- partially fix type unification for instances (right now I removed the call to `instantiateClassFunction` in `inferInstance`, because it adds the constraint, which we don't need)
+- im looking to remove Substitutable
+- maybe (ill see) I'll end up removing fixtypes. at least where necessary (like, mapping over them would not be desired. so leave types themselves, but for example don't do union fixpoints, because we might not want to go though em)
+- check doc/design/weird and add a test for that.
+- check doc/design/typeclasses:179 and add a test for that.
+
+
+
 Quick description of main points of the algorithm:
 
 Typechecking:
@@ -338,3 +347,4 @@ for other stuff??? like unions i guess.
 
 
 This is error prone, so after I figure shit out, rethink and redo it (like, maybe I should map the unions from the environment? the IDs are the same, but we copy the union during instantiation, so it already happens.)
+

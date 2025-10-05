@@ -275,7 +275,7 @@ data ClassFunDec phase = CFD
   , classFunID :: (XFunVar phase)
   , classFunParams :: [(Decon phase, ClassType phase)]
   , classFunRet :: (ClassType phase)
- , classFunOther :: (XClassFunOther phase)
+  , classFunOther :: (XClassFunOther phase)
   }
 
 data ClassTypeF phase a

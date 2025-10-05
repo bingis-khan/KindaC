@@ -40,6 +40,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Text.IO as TextIO
 import Stats (FunInstTrack (..))
 import Control.Monad.Identity (Identity (..))
+import Control.Exception (throw, ErrorCall (ErrorCall))
 
 
 -- set printing config
@@ -77,7 +78,7 @@ debugContext = CtxData
   , displayTypeParameters = False
   , displayLocations = False
   , displayDetailedCons = False
-  , typingContext = Nothing
+  , printContext = Nothing
   }
 
 -- disable debug messages for "runtime".
@@ -86,7 +87,7 @@ runtimeContext = CtxData
   , displayTypeParameters = False
   , displayLocations = False
   , displayDetailedCons = False
-  , typingContext = Nothing
+  , printContext = Nothing
   }
 
 -- show types and stuff for the user (display types accurately to their definition, etc.)
@@ -95,7 +96,7 @@ showContext = CtxData
   , displayTypeParameters = True
   , displayLocations = False
   , displayDetailedCons = False
-  , typingContext = Nothing
+  , printContext = Nothing
   }
 
 
@@ -506,24 +507,24 @@ instance PP ClassInstID
 
 instance PP TypeID where
   pp tid = do
-    Reader.asks typingContext >>= \case
+    Reader.asks printContext >>= \case
       Nothing -> pf "T#%" $ fromTypeID tid
-      Just (tpf, _, _) -> tpf tid
+      Just p -> p.tpc tid
 
 instance PPDef TypeID where
   ppDef = pp . fromTypeID
 
 instance PP UnionUniID where
   pp uuid = do
-    Reader.asks typingContext >>= \case
+    Reader.asks printContext >>= \case
       Nothing -> pf "U#%" $ fromUnionUniID uuid
-      Just (_, upf, _) -> upf uuid
+      Just p -> p.upc uuid
 
 instance PPDef UnionUniID where
   ppDef uuid =
-    Reader.asks typingContext >>= \case
+    Reader.asks printContext >>= \case
       Nothing -> pf "U#%" $ fromUnionUniID uuid
-      Just (_, _, uidpf) -> uidpf uuid
+      Just p -> p.uidpc uuid
 
 
 instance PP UniqueMem where
@@ -538,7 +539,10 @@ instance PP UnionID where
   pp = ppUnionID
 
 instance PP EnvID where
-  pp = ppEnvID
+  pp eid =
+    Reader.asks printContext >>= \case
+      Nothing -> pf "E#%" $ ppEnvID eid
+      Just p -> p.epc eid
 
 instance PPDef EnvID where
   ppDef = ppEnvID
@@ -553,6 +557,8 @@ instance PP Location where
     if ctxData.displayLocations
       then pf "<%|%:%>" (pp start) (pp from) (pp to)
       else mempty
+
+  pp TmpNoLocation = "<noloc>"
 
 instance PP TM.SourcePos where
   pp sp = pf "%:%" (pp sp.sourceLine) (pp sp.sourceColumn)
@@ -673,7 +679,7 @@ printfNow ppData =
     let
       tryFormat :: Char -> [Context] -> ([Context], Context)
       tryFormat '%' (current:remaining) = (remaining, current)
-      tryFormat '%' [] = error "didn't provide enough args!"
+      tryFormat '%' [] = error $ "didn't provide enough args! (format string: " <> show ppData.formatString <> ")"
       tryFormat c remaining = (remaining, pp c)
 
       (remainingArgs, s) = foldr (\c (remaining, now) -> (<> now) <$> tryFormat c remaining) (ppData.args, "") ppData.formatString
@@ -700,7 +706,14 @@ data CtxData = CtxData  -- basically stuff like printing options or something (e
   , displayLocations :: Bool
   , displayDetailedCons :: Bool
 
-  , typingContext :: Maybe (TypeID -> Context, UnionUniID -> Context, UnionUniID -> Context)
+  , printContext :: Maybe PrintContext
+  }
+
+data PrintContext = PrintContext
+  { tpc :: TypeID -> Context
+  , upc :: UnionUniID -> Context
+  , uidpc :: UnionUniID -> Context
+  , epc :: EnvID -> Context
   }
 
 -- nested printf

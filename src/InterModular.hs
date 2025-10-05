@@ -7,15 +7,16 @@
 -- should join pipeline and 
 module InterModular (module InterModular) where
 
-import AST.Def (TypeID, UnionUniID, Log (plog), Context, typingContext, PrintfType)
+import AST.Def (TypeID, UnionUniID, Log (plog), Context, printContext, PrintfType, EnvID)
 import Data.Text (Text)
 import Data.Map (Map, (!?))
 import qualified AST.Untyped as U
 import AST.Common (Module, Function, FunDec (functionId, functionOther))
 import AST.Typed (TC, FunOther (functionScheme), Scheme (Scheme))
 import Data.List.NonEmpty (NonEmpty ((:|)))
-import TypingContext (globalTypeUni, TypingContext)
+import TypingContext (globalTypeUni, TypingContext, globalInsts, globalEnvs)
 import qualified TypingContext as TC
+import qualified AST.Typed as T
 import Control.Monad.Trans.RST (RST)
 import qualified Control.Monad.Trans.RST as RST
 import Data.Functor ((<&>))
@@ -189,6 +190,9 @@ modifyUniUni f = tc %= TC.modifyUniUni f
 getTypeUni :: InterModular TC.TypeUni
 getTypeUni = use $ tc . globalTypeUni
 
+getTypingContext :: InterModular TC.TypingContext
+getTypingContext = use tc
+
 numTypesAndUnionsDefined :: InterModular (Int, Int)
 numTypesAndUnionsDefined = use tc <&> TC.numTypesAndUnionsDefined
 
@@ -200,16 +204,28 @@ trackInstantiation (beforeTypes, beforeUnions) fn = do
   IM $ lift $ BaseCtx.trackInstantiation inst
 
 
-addEnvAdditions :: TC.Envs -> InterModular ()
-addEnvAdditions newEnvAdditions = do
-  undefined
-  -- tc . globalEnvAddition' %= Map.unionWith mergeEnvAdditions newEnvAdditions
+addEnvAdditions :: TC.EnvsAdds -> InterModular ()
+addEnvAdditions newEnvAdditions =
+  tc . globalEnvs %= \og -> foldr
+    ( \(eid, nuvars) ->
+      Map.adjust (T.addToEnv nuvars) eid
+    )
+    og
+    newEnvAdditions
 
 mergeEnvAdditions :: Ord a => [a] -> [a] -> [a]
 mergeEnvAdditions new old =
     let oldSet = Set.fromList old
     in old <> filter (`Set.notMember` oldSet) new
 
+getEnv :: Def.EnvID -> InterModular T.EnvDef
+getEnv eid = do
+  tcc <- use tc
+  pure $ TC.getEnv tcc eid
+
+
+registerEnv :: T.EnvDef -> InterModular ()
+registerEnv envdef = tc . globalEnvs %= Map.insert envdef.envDefID envdef
 
 
 mkModulePath :: U.ModuleQualifier -> InterModular FilePath
@@ -227,13 +243,19 @@ relativeTo newBasePath = IM . RST.local (\ccc ->
 imLift :: BaseCtx a -> InterModular a
 imLift !x = IM $! lift $! x
 
+addInstance :: Def.ClassInstID -> Function TC -> T.Match -> InterModular ()
+addInstance cid instfun match = tc . globalInsts %= Map.insert cid (instfun, match)
+
+
 
 instance (unit ~ ()) => Log (InterModular unit) where
   plog lt x = do
     typePrinter <- wholeTypePrinter
     unionPrinter <- wholeUnionPrinter
     unionIDPrinter <- unionIDPrinter
-    IM $ lift $ plog lt $ local (\c -> c { typingContext = Just (typePrinter, unionPrinter, unionIDPrinter ) }) x
+    envPrinter <- wholeEnvPrinter
+    let pcontext = Def.PrintContext { tpc = typePrinter, upc = unionPrinter, uidpc = unionIDPrinter, epc = envPrinter }
+    IM $ lift $ plog lt $ local (\c -> c { printContext = Just pcontext }) x
 
 wholeTypePrinter :: InterModular (TypeID -> Context)
 wholeTypePrinter = do
@@ -244,6 +266,11 @@ wholeUnionPrinter :: InterModular (UnionUniID -> Context)
 wholeUnionPrinter = do
   tu <- use $ tc . globalTypeUni
   pure $ TC.ppUnionFromUniSafe tu
+
+wholeEnvPrinter :: InterModular (EnvID -> Context)
+wholeEnvPrinter = do
+  envs <- use $ tc . globalEnvs
+  pure $ TC.ppEnvFromUniSafe envs
 
 unionIDPrinter :: InterModular (UnionUniID -> Context)
 unionIDPrinter = do

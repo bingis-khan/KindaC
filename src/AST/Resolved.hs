@@ -218,7 +218,7 @@ instance PP LamDec where
   pp (LamDec uv e) = pp uv <> pp e
 
 instance PP Env where
-  pp env = Def.pf "%s(%s)%s" (pp env.envID) (pp env.envStackLevel) $ Def.encloseSepBy "[" "]" ", " $ env.fromEnv <&> \(v, l) -> Def.ppVar l $ asPUniqueVar v
+  pp env = Def.pf "%s(%s)%s" (ppDef env.envID) (pp env.envStackLevel) $ Def.encloseSepBy "[" "]" ", " $ env.fromEnv <&> \(v, l) -> Def.ppVar l $ asPUniqueVar v
 
 instance PP FunOther where
   pp fo = Def.pf "FO[% % %]" fo.foFunStack fo.foAnnotations fo.foLocation

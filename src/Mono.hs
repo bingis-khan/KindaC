@@ -42,9 +42,9 @@ import Data.Bifoldable (bifold)
 import Control.Monad (void, (<=<))
 import Data.String (fromString)
 import Data.List (find, partition, tails, unsnoc)
-import AST.Common (AnnStmt, Module, StmtF (..), Expr, ExprNode (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), askNode)
+import AST.Common (AnnStmt, Module, StmtF (..), Expr, ExprNode (..), ExprF (..), Function (..), TypeF (..), ClassFunDec (..), Type, CaseF (..), Case, Decon, DeconF (..), FunDec (..), TVar (..), DataDef (..), DataCon (..), ClassDef, InstDef, IfStmt (..), instFunDec, InstFun, MutAccess (..), askNode, XEnv)
 import AST.Mono (M)
-import AST.Def ((:.) (..), Annotated (..), Locality (..), PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>), Located (..), Log (..), PrintfType)
+import AST.Def ((:.) (..), Annotated (..), Locality (..), PP (..), fmap2, PPDef (..), traverse2, sequenceA2, (<+>), Located (..), Log (..), PrintfType, PrintContext (..))
 import qualified AST.Def as Def
 import Data.List (nubBy)
 import Data.List (nub)
@@ -130,8 +130,8 @@ mAnnStmt = cata (fmap embed . thisAnd (countUp mStmtNum) .  f) where
         mann $ While cond bod
 
       Fun fn -> do
-        let env = fn.functionDeclaration.functionEnv
-        let envID = T.envDefID env
+        -- let env = fn.functionDeclaration.functionEnv
+        let envID = fn.functionDeclaration.functionEnv
         envInsts <- State.gets envInstantiations
 
         let currentEnvUses = fromMaybe mempty $ envInsts !? envID
@@ -150,8 +150,7 @@ mAnnStmt = cata (fmap embed . thisAnd (countUp mStmtNum) .  f) where
         envInsts <- State.gets envInstantiations
 
         let envUses = flip concatMap inst.instFuns $ \fn ->
-              let env = fn.instFunDec.functionEnv
-                  envID = T.envDefID env
+              let envID = fn.instFunDec.functionEnv
                   currentEnvUses = fromMaybe mempty $ envInsts !? envID
                   defs = foldMap Set.toList $ fromEnvUses currentEnvUses
               in  defs
@@ -310,7 +309,7 @@ mExpr = cata $ thisAnd (countUp mExprNum) . fmap embed . \(N en expr) -> do
           mc <- constructor c menvtvs =<< bitraverse mUnion mType match
 
           -- don't forget to register usage. (for codegen)
-          void $ withEnv Nothing (T.EnvDef eid [] []) $ pure ()
+          void $ withEnv Nothing eid $ pure ()
 
           pure $ Con mc ()
 
@@ -346,13 +345,13 @@ mExpr = cata $ thisAnd (countUp mExprNum) . fmap embed . \(N en expr) -> do
 
   pure $ N mt mexpr
 
-withEnv :: Maybe (Function IM) -> T.EnvDefF T.EnvUnion (Type T) -> Context a -> Context (a, IM.EnvDef)
-withEnv mfn env@(T.EnvDef eid _ lev) cx = do
+withEnv :: Maybe (Function IM) -> XEnv T -> Context a -> Context (a, IM.EnvDef)
+withEnv mfn eid cx = do
   funStack <- State.gets functionStack
-  menv@(IM.EnvDef _ envContent _) <- memo' memoEnv (\m c -> c { memoEnv = m }) (eid, funStack) $ \(_, _) _ -> do
+  menv@(IM.EnvDef _ envContent _) <- memo' memoEnv (\m c -> c { memoEnv = m }) (eid, funStack) $ \(eid', _) _ -> do
       newEID <- newEnvID
-      (T.EnvDef _ envContent envStack) <- bitraverse mUnion mType env
-      let envLevel = Def.envStackToLevel lev
+      (T.EnvDef _ envContent envStack) <- bitraverse mUnion mType =<< getEnv eid'
+      let envLevel = Def.envStackToLevel envStack
       menvContent <- for envContent $ \(v, l, mt) -> do
         let vv = v
         mv <- variable vv
@@ -374,6 +373,7 @@ withEnv mfn env@(T.EnvDef eid _ lev) cx = do
   cusKeys <- Map.keysSet . Memo.memoToMap <$> State.gets cuckedUnions
 
   -- SET NEW LOCAL STATE
+  T.EnvDef _ _ lev <- getEnv eid
   let curlev = eid : lev
 
   State.modify' $ \c -> c
@@ -403,7 +403,7 @@ withEnv mfn env@(T.EnvDef eid _ lev) cx = do
     }
 
 
-  pf "%M: % =WITH ENV%=> %" (pp $ T.envDefID env) (pp env) (case mfn of { Nothing -> "" :: Def.Context; Just fn -> fromString $ Def.pf " (%)" $ pp fn.functionDeclaration.functionId }) (pp menv)
+  pf "%M: % =WITH ENV%=> %" (ppDef eid) eid (case mfn of { Nothing -> "" :: Def.Context; Just fn -> fromString $ Def.pf " (%)" $ pp fn.functionDeclaration.functionId }) (pp menv)
 
   pure (x, menv)
 
@@ -412,18 +412,25 @@ withEnv mfn env@(T.EnvDef eid _ lev) cx = do
 -- Evaluate the locality of a class function after we have access to the instance.
 reLocality :: Def.EnvStack -> Def.Locality -> T.VariableF u a -> Context Def.Locality
 reLocality envStack ogLocality = \case
-  v@(T.DefinedClassFunction _ classInstID) -> do
-    (ivfn, _) <- selectInstance classInstID
+  -- NOTE: I COMMENTED IT OUT FOR NOW WHILE I'M BEGINNING THE TYPECLASS IMPLEMENTATION.
+  -- v@(T.DefinedClassFunction _ classInstID) -> do
+  --   (_, es) <- selectInstance' classInstID
 
-    let vfn = Common.instanceToFunction ivfn
-    let (T.EnvDef _ _ instEnvStack) = vfn.functionDeclaration.functionEnv
-    let newLoc = if envStack == instEnvStack then Local else FromEnvironment (Def.envStackToLevel instEnvStack)
-    pf "NEW LOCALITY % (% =?= %) OF VAR (miau)" (pp newLoc) (pp instEnvStack) (pp envStack)
-    pure newLoc
+  --   let vfn = Common.instanceToFunction ivfn
+  --   let (T.EnvDef _ _ instEnvStack) = vfn.functionDeclaration.functionEnv
+  --   let newLoc = if envStack == instEnvStack then Local else FromEnvironment (Def.envStackToLevel instEnvStack)
+  --   pf "NEW LOCALITY % (% =?= %) OF VAR (miau)" (pp newLoc) (pp instEnvStack) (pp envStack)
+  --   pure newLoc
 
 
   _ -> pure ogLocality
 
+
+getEnv :: XEnv T -> Context T.EnvDef
+getEnv eid = do
+  tc <- State.gets typingContext
+  let envdef = TC.getEnv tc eid
+  pure envdef
 
 findUsedVarsInExpr :: Expr T -> Set (T.Variable, Type T)
 findUsedVarsInExpr = cata $ \(N en expr) -> case expr of
@@ -480,7 +487,7 @@ variable (T.DefinedFunction vfn match) = do
 variable v@(T.DefinedClassFunction cfd classInstID) = do
   pf "VARIABLE: %" (pp v)
 
-  fn <- selectInstance' classInstID
+  fn <- selectInstance classInstID
   pure $ IM.DefinedFunction fn
 
 
@@ -537,7 +544,7 @@ mFunction match vfn = do
   let thisFunsEnvInsts = envInsts
   let
     nuEnvID = M.envDefID fn.functionDeclaration.functionEnv
-    oldEnvID = T.envDefID vfn.functionDeclaration.functionEnv
+    oldEnvID = vfn.functionDeclaration.functionEnv
     envuse = EnvUses $ Map.singleton fn.functionDeclaration.functionEnv (Set.singleton fn)
   State.modify' $ \c -> c
     { envInstantiations
@@ -552,7 +559,8 @@ mFunction match vfn = do
 trimmedStack :: Function T -> Context [Function IM]
 trimmedStack vfn = do
   funStack <- State.gets functionStack
-  let envStack = vfn.functionDeclaration.functionEnv.envStack  -- HACK: should be a "function stack" - right now it should work, but if I add a multiline lambda, it'll break. we need info about generalization/instantiation stack.
+  envdef <- getEnv vfn.functionDeclaration.functionEnv
+  let envStack = envdef.envStack  -- HACK: should be a "function stack" - right now it should work, but if I add a multiline lambda, it'll break. we need info about generalization/instantiation stack.
       sz = length envStack
   pure $ reverse $ take sz $ reverse funStack
 
@@ -578,17 +586,26 @@ withTrimmed fns fx = do
 --     _ -> error "NOT A FUNCTION TYPE BRUH"
 
 
-selectInstance' :: Def.ClassInstID -> Context (Function IM)
-selectInstance' cid = do
-  (ifn, match) <- selectInstance cid
-  let tfn = Common.instanceToFunction ifn
-  fn <- mFunction match tfn
-  pure fn
+-- selectInstance' :: Def.ClassInstID -> Context (Function IM)
+-- selectInstance' cid = do
+--   (ifn, match) <- selectInstance cid
+--   let tfn = Common.instanceToFunction ifn
+--   fn <- mFunction match tfn
+--   pure fn
 
-selectInstance :: Def.ClassInstID -> Context (InstFun T, T.MatchF IM.EnvUnion (Type IM))
+selectInstance :: Def.ClassInstID -> Context (Function IM)
 selectInstance classInstID = do
+  tm <- State.gets tvarMap
+  case tm.tmAssocMap !? classInstID of
+    Just fn -> pure fn
+    Nothing -> do
+      tc <- State.gets typingContext
+      case (tc ^. TC.globalInsts) !? classInstID of
+        Just (tfn, tmatch) -> do
+          match <- bitraverse mUnion mType tmatch
+          mFunction match tfn
+        Nothing -> error $ pf "Instance not found for %." classInstID
   -- get instance from typing context, profit.
-  error "todo"
   -- mself <- mType self
   -- ucis <- State.gets classInstantiationAssociations
   -- pf "SNAPSHOT UCIS: %" (ppDef $ Map.keysSet <$> ucis)
@@ -946,7 +963,7 @@ unionMemberToEnv = \case
     pure menv
 
   T.UnionConEnv eid ->
-    snd <$> withEnv Nothing (T.EnvDef eid [] []) (pure ())
+    snd <$> withEnv Nothing eid (pure ())
 
 -- we assume these are "top matches" - they are already mapped and we don't need a type map.
 enstack :: [(Function T, T.Match)] -> Context [Function IM]
@@ -1073,7 +1090,7 @@ mkTypeMap' sms = mdo
   let (T.Scheme sTVs suUnions suAssocs, T.Match mTVs mUnions muAssocs) = sconcat sms
   let tu = tc ^. globalTypeUni
   let sUnions = T.unionID . snd . TC.getUnionFromUni tu <$> suUnions
-  let sAssocs = suAssocs <&> \(T.FunctionTypeAssociation _ _ _ classInstID) -> classInstID
+  let sAssocs = suAssocs <&> \(T.FunctionTypeAssociation _ _ _ classInstID _) -> classInstID
 
   -- NOTE NEW: not sure if this is correct. we want to apply all previous type maps to this, from left to right.
   -- prevtm <- fold <$> traverse (uncurry mkTypeMap) prevMatches
@@ -1086,7 +1103,7 @@ mkTypeMap' sms = mdo
 
   (mAssocs) <- withTypeMap tm $ do  -- not sure I need back references here? the thing is, it probably does not matter where it will get evaluated. but just in case?
     -- mmUnions <- traverse mUnionWithoutTopMap muUnions
-    mmAssocs <- traverse selectInstance' muAssocs
+    mmAssocs <- traverse selectInstance muAssocs
     pure (mmAssocs)
 
   pure tm
@@ -1171,11 +1188,16 @@ withContext fn (Context sx) =
 
 instance (unit ~ ()) => Log (Context unit) where
   plog lt x = do
-    tu <- State.gets $ TC._globalTypeUni . typingContext
+    tc <- State.gets typingContext
+    let tu = tc ^. TC.globalTypeUni
+        te = tc ^. TC.globalEnvs
     let typePrinter = TC.ppTypeFromUniSafe tu
         unionPrinter = TC.ppUnionFromUniSafe tu
         unionIDPrinter = TC.ppUnionIDFromUniSafe tu
-    Context $ lift $ plog lt $ Reader.local (\c -> c { Def.typingContext = Just (typePrinter, unionPrinter, unionIDPrinter) }) x
+        envPrinter = TC.ppEnvFromUniSafe te
+
+        p = PrintContext typePrinter unionPrinter unionIDPrinter envPrinter
+    Context $ lift $ plog lt $ Reader.local (\c -> c { Def.printContext = Just p }) x
 
 
 

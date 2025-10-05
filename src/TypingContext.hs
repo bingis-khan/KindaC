@@ -1,24 +1,27 @@
 {-# LANGUAGE OverloadedRecordDot, TemplateHaskell #-}
 module TypingContext (module TypingContext) where
 
-import Data.Map (Map)
 import qualified AST.Def as Def
-import AST.Def (PP, TypeID (..), UnionUniID (..), Context)
+import AST.Def (PP, TypeID (..), UnionUniID (..), Context, EnvID)
 import Data.IntMap (IntMap)
 import AST.Typed (TC, EnvUnionF)
-import AST.Common (TypeF, Type)
+import AST.Common (TypeF, Type, InstFun, Function)
 import qualified AST.Typed as T
 import Data.Biapplicative (first)
 import qualified Data.IntMap as IntMap
 import Data.Fix (Fix)
 import Lens.Micro (ASetter', sets, (^.), (%~), (.~), (&))
 import Lens.Micro.TH (makeLenses)
+import Data.Map (Map, (!?))
+import qualified Data.Map as Map
 
 
 
 type TypeTypeUni = RefMap TypeID (TypeF TC TypeID)
 type UnionTypeUni = RefMap UnionUniID (EnvUnionF T.EnvUnion TypeID)
 type RefMap k a = IntMap (Either Int a)  -- TODO: change it later to IntMap and observe an improvement?
+
+type Instances = Map Def.ClassInstID (Function TC, T.Match)
 
 newtype TypeIDGen = TypeIDGen TypeID
 newtype UnionIDGen = UnionIDGen UnionUniID
@@ -30,14 +33,15 @@ data TypeUni = TypeUni
   }
 makeLenses ''TypeUni
 
-type Envs = Map Def.EnvID (T.EnvDef, T.Scheme TC)
+type EnvsAdds = [(Def.EnvID, [(T.Variable, Def.Locality, Type TC)])]
+type Envs = Map Def.EnvID T.EnvDef
 
 data TypingContext = TypingContext
     { globalTypeIDGen :: TypeIDGen
     , globalUnionIDGen :: UnionIDGen
     , _globalTypeUni :: TypeUni
-    , globalEnvs :: Envs
-    , globalInsts :: ()
+    , _globalEnvs :: Envs  -- TODO: for more type safety, just store vars here and make EnvID/EnvStack local.
+    , _globalInsts :: Instances
     }
 makeLenses ''TypingContext
 
@@ -51,8 +55,8 @@ emptyContext = TypingContext
   { globalTypeIDGen = TypeIDGen $ TypeID 0
   , globalUnionIDGen = UnionIDGen $ UnionUniID 0
   , _globalTypeUni = TypeUni { _typeUni = mempty, _unionUni = mempty }
-  , globalEnvs = mempty
-  , globalInsts = mempty
+  , _globalEnvs = mempty
+  , _globalInsts = mempty
   }
 
 
@@ -92,6 +96,11 @@ ppUnionFromUniSafe tu uuid =
         Just (Right a) -> Def.pp $ ppTypeFromUniSafe tu <$> a
         Just (Left nx) -> go $ UnionUniID nx
   in go uuid
+
+ppEnvFromUniSafe :: Envs -> EnvID -> Context
+ppEnvFromUniSafe envs eid = case envs !? eid of
+  Nothing -> Def.pf "%" (T.EnvDef eid [] [] :: T.EnvDef)
+  Just ed -> Def.pf "%" ed
 
 ppUnionIDFromUniSafe :: TypeUni -> UnionUniID -> Context
 ppUnionIDFromUniSafe tu uuid =
@@ -145,3 +154,9 @@ modifyUniUni :: (UnionTypeUni -> UnionTypeUni) -> TCMod
 modifyUniUni f = globalTypeUni . unionUni %~ f
 
 
+getEnv :: TypingContext -> Def.EnvID -> T.EnvDef
+getEnv tc eid = case (tc ^. globalEnvs) !? eid of
+  Just env -> env
+  Nothing -> -- NOTE: this means that it's a Con environment, so just return a con env
+    T.EnvDef eid [] []
+    -- it might be a bit error prone tho. Maybe we should register constructor environments beforehand?

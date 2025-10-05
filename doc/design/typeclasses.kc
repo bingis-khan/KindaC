@@ -176,6 +176,10 @@ Another look that might clear the situation up?
 
 	# hmmm. so, we must somehow check which instances does this stuff have.
 
+	# NOTE 10.04.25: I think with the current scheme, it'll get generalized, and then any instantiation would produce a type error, because no instances are accessible.
+		# I think allowing it would be interesting though. Would be like an arbitrarily restricted class thing, almost like OOP (:OOOOOOOOOOOOOOOOO soypog)
+		# But the type will get generalized, so I think the current expected behavior is correct (like, the ScopeSnapshot won't propagate.)
+
 Anonymous typeclasses! HOW!
 
 ######################
