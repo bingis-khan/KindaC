@@ -827,6 +827,7 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
   pf "instanceeee"
   klass <- inferClass inst.instClass
   it <- inferDatatype $ fst inst.instType
+  let (_, ddEnvVars) = it.ddOther
   tvars <- traverse inferTVar $ snd inst.instType
 
   let instDef = InstDef
@@ -838,14 +839,15 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
 
   fns <- for inst.instFuns $ \rfn -> do
     pf "fn"
-    cfd@(CFD _ _ cparams cret _) <- inferClassFunDec klass rfn.instClassFunDec
+    cfd@(CFD _ _ cparams cret cscheme) <- inferClassFunDec klass rfn.instClassFunDec
 
     -- TODO: add check?
     fn <- generalize rfn.instFunDec.functionEnv $ mdo
       pf "lam generalize"
       -- TODO NEW: same as in `inferType`
       Match tvs unions _ <- instantiateScheme' mempty $ fst it.ddOther
-      self <- mkType $ TCon it tvs (unions, undefined)  -- TODO: when we stop ignoring tvars, properly instantiate them here.
+      newEnvVars <- traverse (const fresh) ddEnvVars
+      self <- mkType $ TCon it tvs (unions, newEnvVars)
       pf "miau"
 
       -- Infer function declaration.
@@ -878,13 +880,21 @@ inferInstance = memo memoInstance (\mem s -> s { memoInstance = mem }) $ \inst _
 
       -- now unify it with the base class function type.
       -- NOTE: this is most likely wrong: we should not instantiate the class function to match the instance. We should match both declarations it in a specific way.
-      -- (classFunType, _) <- instantiateClassFunction cfd mempty Def.TmpNoLocation
+      -- But then we need to implement assoc accessors, which we don't yet necessarily need.
+      (_, (iparams, iret)) <- instantiateScheme mempty Nothing cscheme $ do
+        let cmapTVs = mapTVs <=< lift . mkTypeFromClassType self
+        ts <- traverse (cmapTVs . snd) cparams
+        r <- cmapTVs cret
+        pure (ts, r)
+
+      fnUnion <- emptyUnion
+      cfnType <- mkType $ TFun fnUnion iparams iret
 
       union <- emptyUnion
       genFun <- mkType $ TFun union (snd <$> params) ret
 
       let instFunHeaderLocation = rfn.instFunDec.functionOther.foLocation
-      -- (instFunHeaderLocation, genFun) `uni` (Nothing, classFunType)
+      (instFunHeaderLocation, genFun) `uni` (Nothing, cfnType)
 
 
       -- Set up temporary recursive env (if this function is recursive, this env will be used).
@@ -2740,7 +2750,7 @@ instance Error TypeError where
     DataTypeDoesNotHaveMember location dd memname -> renderError source (pf "datatype % does not have member %" (ppDef dd) memname) $ ln (location, Nothing) --printf "Record type %s does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
     DataTypeIsNotARecordType location dd memname -> renderError source (pf "attempt to subscript % with %, but it's not a record type" (ppDef dd) (pp memname)) $ ln (location, Nothing) --printf "%s is not a record type and thus does not have member %s." (sctx $ pp ut) (sctx $ pp memname)
     FunctionIsNotARecord _ t _ -> error "FunctionIsNotARecord" --printf "Cannot subscript a function (%s)." (pp t)
-    TVarIsNotARecord _ tv _ -> error "TVarIsNotARecord" --printf "Cannot subscript a type variable. (%s)" (pp tv)
+    TVarIsNotARecord _ tv _ -> error $ Def.pf "TVarIsNotARecord %" tv --printf "Cannot subscript a type variable. (%s)" (pp tv)
     DataDefDoesNotImplementClass loc dd cd -> renderError source (pf "datatype % does not implement class %" (ppDef dd) (ppDef cd)) $ ln (loc, Nothing) --printf "Type %s does not implement instance of class %s." (sctx $ pp ut) (sctx $ pp cd.classID)
     TVarDoesNotConstrainThisClass location tv cd -> renderError source (pf "tvar % is not constrained by class %" tv (ppDef cd)) $ ln (location, Nothing) --printf "TVar %s is not constrained by class %s." (pp tv) (pp cd.classID)
     FunctionTypeConstrainedByClass _ t cd -> error "FunctionTypeConstrainedByClass"
