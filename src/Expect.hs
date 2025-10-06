@@ -139,7 +139,7 @@ readHeader path = readFile path <&> \m ->
 
       testName = trim . drop 2 <$> find ("#$" `isPrefixOf`) ctlLines
       exitCode = maybe ExitSuccess ((intToExitCode . read) . trim . drop 2) $ find ("#?" `isPrefixOf`) ctlLines
-      expected = trim . drop 1 <$> filter (not . (\line -> any (`isPrefixOf` line) ["#$", "#?"])) ctlLines
+      expected = trim . drop 1 <$> filter (not . (\line -> any (`isPrefixOf` line) ["#$", "#?", "#="])) ctlLines
   in TestHeader { name = testName, expectedExitCode = exitCode, expectedOutput = expected }
 
 

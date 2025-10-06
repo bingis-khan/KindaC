@@ -9,7 +9,9 @@
 	- they get eliminated in CPrinter, but that's bad....
 	- this is because the class funs instantiation is known immediately, the envs are added AND THEN we carry on with typechecking and readd these variables.
 	- I guess I need to store "EnvAdditions" after all (these additions will not be propagated when instantiating)
-
+- function stack is bad and confusing.
+- 5_t33 has extraenous stuff in the environment. (but it works.)
+- 5_t36 - f() does not seem to have a correct "typed" environment.
 
 
 Quick description of main points of the algorithm:

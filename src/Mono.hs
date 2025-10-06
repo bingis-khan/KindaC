@@ -351,7 +351,6 @@ withEnv mfn eid cx = do
   menv@(IM.EnvDef _ envContent _) <- memo' memoEnv (\m c -> c { memoEnv = m }) (eid, funStack) $ \(eid', _) _ -> do
       newEID <- newEnvID
       (T.EnvDef _ envContent envStack) <- bitraverse mUnion mType =<< getEnv eid'
-      let envLevel = Def.envStackToLevel envStack
       menvContent <- for envContent $ \(v, l, mt) -> do
         let vv = v
         mv <- variable vv
@@ -360,7 +359,7 @@ withEnv mfn eid cx = do
 
         pure (mv, newLocality, mt)
 
-      pure $ IM.EnvDef newEID menvContent envLevel  -- env IDs changed, so kind of hard to track env stack. that's why only level. might not even need this.
+      pure $ IM.EnvDef newEID menvContent envStack  -- env IDs changed, so kind of hard to track env stack. that's why only level. might not even need this.
 
   pf "[env] % % => %" eid (ppDef <$> mfn) (M.envDefID menv)
   
@@ -413,12 +412,12 @@ withEnv mfn eid cx = do
 -- OKAY, WE NEED TO UPDATE THE LOCALITY OF VARIABLES IN AN EXPRESSION.
 reLocality :: Def.EnvStack -> Def.Locality -> T.VariableF u a -> Context Def.Locality
 reLocality envStack ogLocality = \case
-  v@(T.DefinedClassFunction _ classInstID) -> do
+  v@(T.DefinedClassFunction cfd classInstID) -> do
     vfn <- selectInstance classInstID
 
-    let (M.EnvDef _ _ menvLevel) = vfn.functionDeclaration.functionEnv
-    let newLoc = if Def.envStackToLevel envStack == menvLevel then Local else FromEnvironment menvLevel
-    -- pf "NEW LOCALITY % (% =?= %) OF VAR (miau)" (pp newLoc) (pp instEnvStack) (pp envStack)
+    let (M.EnvDef _ _ mEnvStack) = vfn.functionDeclaration.functionEnv
+    let newLoc = if envStack == mEnvStack then Local else FromEnvironment (Def.envStackToLevel mEnvStack)
+    pf "NEW LOCALITY % (% =?= %) OF VAR (%)" newLoc (Def.envStackToLevel envStack) mEnvStack cfd.classFunID
     pure newLoc
 
 
@@ -484,15 +483,21 @@ variable (T.DefinedFunction vfn match) = do
   pure $ IM.DefinedFunction mfn
 
 variable v@(T.DefinedClassFunction cfd classInstID) = do
-  pf "VARIABLE: %" (pp v)
+  pf "[var] defined class function: %" (pp v)
 
   fn <- selectInstance classInstID
+  pf "[var] class function % turned to %" v (ppDef fn)
   pure $ IM.DefinedFunction fn
 
 
 -- Since instances should effectively act the same as functions, I need to ensure the code is the same to not intrudoce any bugs.
 mFunction :: T.MatchF IM.EnvUnion (Type IM) -> Function T -> Context (Function IM)
 mFunction match vfn = do
+  funStack <- State.gets functionStack
+  fst <$> mFunction' funStack match vfn
+
+mFunction' :: [Function IM] -> T.MatchF IM.EnvUnion (Type IM) -> Function T -> Context (Function IM, Map Def.EnvID EnvUses)
+mFunction' ogFunStack match vfn = do
   pf "[fun] mFunction %" $ ppDef vfn
     -- NOTE: Env must be properly monomorphised with the type map, because it can also call other functions, so each env might have different types though albeit
     --  doc/compiler/why-monomorphize-env-types-for-memo
@@ -501,22 +506,23 @@ mFunction match vfn = do
 
     -- see definition of Context for exact purpose of these parameters.
   -- funStack <- relativeFunStack vfn.functionDeclaration.functionOther.functionStack undefined
-  funStack <- trimmedStack vfn
+  funStack <- trimmedStack ogFunStack vfn
+  pf "[fun] OG stack: %" $ ppDef <$> ogFunStack
   pf "[fun] FORCE stack: %" $ ppDef <$> funStack
   pf "[fun] memo % %" (ppDef vfn) (ppDef funStack)
   (fn, envInsts) <- memo' memoFunction (\(~mem) ~s -> s { memoFunction = mem }) (vfn, match, funStack) $ \(tfn, _, funStack') addMemo -> withTrimmed funStack' $ do
     pf "[fun] in memo"
   -- creates a type mapping for this function.
-    typemap <- mkTypeMap vfn.functionDeclaration.functionOther.functionScheme match
+    typemap <- mkTypeMap (Just ogFunStack) vfn.functionDeclaration.functionOther.functionScheme match
     withTypeMap typemap $ mdo
       pf "[fun] in typemap"
       uv <- newUniqueVar tfn.functionDeclaration.functionId
+      pf "[fun] % -> %" vfn.functionDeclaration.functionId uv
       let fundec = FD env uv params ret vfn.functionDeclaration.functionOther.functionAnnotations :: FunDec IM
       let fn = Function { functionDeclaration = fundec, functionBody = body } :: Function IM
       addMemo (fn, envInsts)
       State.modify' $ \s -> s { functionStack = fn : s.functionStack }
 
-      pf "VARIABLE OF MEMO: %" (pp uv)
 
       params <- traverse (bitraverse mDecon mType) tfn.functionDeclaration.functionParameters
       ret <- mType tfn.functionDeclaration.functionReturnType
@@ -545,19 +551,22 @@ mFunction match vfn = do
     nuEnvID = M.envDefID fn.functionDeclaration.functionEnv
     oldEnvID = vfn.functionDeclaration.functionEnv
     envuse = EnvUses $ Map.singleton fn.functionDeclaration.functionEnv (Set.singleton fn)
-  State.modify' $ \c -> c
-    { envInstantiations
+    allInsts
       = Map.insertWith (<>) nuEnvID envuse   -- NOTE: this shid outside of memo
       $ Map.insertWith (<>) oldEnvID envuse
-      $ Map.unionWith (<>) thisFunsEnvInsts c.envInstantiations
+      $ thisFunsEnvInsts
+
+  State.modify' $ \c -> c
+    { envInstantiations = Map.unionWith (<>) allInsts c.envInstantiations
     }
-  pf "[fun] REGISTERED FUNCTION % (env: %) with ENV INSTANTIATIONS: %" (pp fn.functionDeclaration.functionId) (pp $ IM.envDefID fn.functionDeclaration.functionEnv) (pp fn.functionDeclaration.functionOther)
-  pure fn
+  pf "[fun] fun with env %(%) -%-> %(%)" (ppDef vfn) (ppDef vfn.functionDeclaration.functionEnv) (ppDef funStack) (ppDef fn) (ppDef fn.functionDeclaration.functionEnv)
+
+  pf "[fun] REGISTERED FUNCTION % (env: %) with ENV INSTANTIATIONS: %" (pp fn.functionDeclaration.functionId) (pp $ IM.envDefID fn.functionDeclaration.functionEnv) thisFunsEnvInsts
+  pure (fn, allInsts)
 
 -- they should somehow be connected, shouldn't they?
-trimmedStack :: Function T -> Context [Function IM]
-trimmedStack vfn = do
-  funStack <- State.gets functionStack
+trimmedStack :: [Function IM] -> Function T -> Context [Function IM]
+trimmedStack funStack vfn = do
   envdef <- getEnv vfn.functionDeclaration.functionEnv
   let envStack = envdef.envStack  -- HACK: should be a "function stack" - right now it should work, but if I add a multiline lambda, it'll break. we need info about generalization/instantiation stack.
       sz = length envStack
@@ -585,24 +594,33 @@ withTrimmed fns fx = do
 --     _ -> error "NOT A FUNCTION TYPE BRUH"
 
 
--- selectInstance' :: Def.ClassInstID -> Context (Function IM)
--- selectInstance' cid = do
---   (ifn, match) <- selectInstance cid
---   let tfn = Common.instanceToFunction ifn
---   fn <- mFunction match tfn
---   pure fn
-
 selectInstance :: Def.ClassInstID -> Context (Function IM)
-selectInstance classInstID = do
+selectInstance cid = do
+  funStack <- State.gets functionStack
+  fst <$> selectInstance' funStack cid
+
+selectInstance' :: [Function IM] -> Def.ClassInstID -> Context (Function IM, Map Def.EnvID EnvUses)
+selectInstance' instStack classInstID = do
+  pf "[instance selection] % %" (ppDef instStack) classInstID
   tm <- State.gets tvarMap
   case tm.tmAssocMap !? classInstID of
-    Just fn -> pure fn
+    Just (fn, envInsts) -> do
+      -- TODO: this should be put in a function or something, because Map.unionWith (<>) is REQUIRED and easy to miss.
+      State.modify' $ \c -> c { envInstantiations = Map.unionWith (<>) envInsts c.envInstantiations }
+      pure (fn, envInsts)
     Nothing -> do
       tc <- State.gets typingContext
       case (tc ^. TC.globalInsts) !? classInstID of
         Just (tfn, tmatch) -> do
+          -- TODO: maybe we should set the funstack here? So that class defs in unions would be monomorphised properly?
+          -- yup. 5_t33.
+          -- NOTE: THIS BAD.
+          ogfs <- State.gets functionStack
+          State.modify' $ \c -> c { functionStack = instStack }
           match <- bitraverse mUnion mType tmatch
-          mFunction match tfn
+          fn <- mFunction' instStack match tfn
+          State.modify' $ \c -> c { functionStack = ogfs }
+          pure fn
         Nothing -> error $ pf "Instance not found for %." classInstID
   -- get instance from typing context, profit.
   -- mself <- mType self
@@ -647,6 +665,8 @@ mBody dbgName body = do
     pure ()
 
 
+  pf "[body] % after initial insts: %" dbgName =<< State.gets envInstantiations
+
   -- then actually do the scope thing.
   traverse mAnnStmt body
 
@@ -669,7 +689,7 @@ constructor tdc@(DC dd@(DD ut (scheme, _) _ _) _ _ _) env match = do
   -- -- TODO: also, in this place, we should eliminate unused constructors. (either here or in mfDataDef!)
 
   -- Like in typechecking, find this constructor by performing an unsafe lookup!
-  tm <- mkTypeMap scheme match
+  tm <- mkTypeMap Nothing scheme match
   (_, dcQuery) <- mDataDef (dd, match, env)
   let mdc = case dcQuery !? tdc of
         Just m -> m
@@ -735,7 +755,7 @@ hideEmptyUnions u = do
 mDataDef :: (DataDef T, MatchF IM.EnvUnion (Type IM), [Type IM]) -> Context (DataDef IM, Map (DataCon T) (DataCon IM))
 mDataDef = memo memoDatatype (\mem s -> s { memoDatatype = mem }) $ \(tdd@(DD ut (scheme@(T.Scheme tvs unions _), envScheme) tdcs ann), match, envs) addMemo -> do
     pf "[data] % % %" tdd match envs
-    tm <- mkTypeMap' $ (scheme, match) :| [(T.Scheme envScheme [] [], T.Match envs [] [])]
+    tm <- mkTypeMap' Nothing $ (scheme, match) :| [(T.Scheme envScheme [] [], T.Match envs [] [])]
     withTypeMap tm $ mdo
 
       pf "OLD TYPE: %" ut
@@ -913,7 +933,7 @@ mUnionWithoutTopMap tunionUID = thisAnd (countUp mUnionNum) $ do
                       -- check disabled for now. we're not eliminating unused unions yet.
                       -- error $ Def.pf "[COMPILER ERROR]: Encountered an empty union (ID: %) - should not happen." (show tunion.unionID)
                       neid <- newEnvID  -- TEMP
-                      pure $ NonEmpty.singleton $ M.EnvDef neid [] 0
+                      pure $ NonEmpty.singleton $ M.EnvDef neid [] []
 
                     (e:es) -> do
                       -- pf "NEW NORMAL UNION: % % % => %" tunion'' params ret nuid
@@ -949,7 +969,7 @@ unionMemberToEnv = \case
     pf "[mem2env] after bitraverse"
 
     prevFunStack <- State.gets functionStack
-    pf "[mem2env] old' fun stack: %" $ ppDef prevFunStack
+    pf "[mem2env] old fun stack: %" $ ppDef prevFunStack
     pf "[mem2env] match: %" mmatch
     outerfns <- enstack outers
     mfn <- stackFun (reverse outerfns) $ mFunction mmatch fn
@@ -984,8 +1004,10 @@ stackFun :: [Function IM] -> Context a -> Context a
 stackFun fns fx = do
   prevFunStack <- State.gets functionStack
   State.modify' $ \s -> s { functionStack = fns ++ s.functionStack }
+  pf "[stackfun] new %" =<< ppDef <$> State.gets functionStack
   x <- fx
   State.modify' $ \s -> s { functionStack = prevFunStack }
+  pf "[stackfun] revert %" =<< ppDef <$> State.gets functionStack
   pure x
 
 
@@ -1062,7 +1084,7 @@ startingContext tc = Context'
 data TypeMap = TypeMap
   { tmTVarMap :: (Map (TVar T) (Type IM))
   , tmUnionMap :: (Map Def.UnionID IM.EnvUnion)
-  , tmAssocMap :: (Map Def.ClassInstID (Function IM))
+  , tmAssocMap :: (Map Def.ClassInstID (Function IM, Map Def.EnvID EnvUses))
   }
 
 instance Semigroup TypeMap where
@@ -1079,11 +1101,13 @@ ppTypeMap (TypeMap tvs unions assocs) = Def.ppLines'
   -- , (Def.ppMap . fmap (bimap pp pp) . Map.toList) assocs
   ]
 
-mkTypeMap :: T.Scheme T -> T.MatchF IM.EnvUnion (Type IM) -> Context TypeMap
-mkTypeMap s m = mkTypeMap' (NonEmpty.singleton (s, m))
+mkTypeMap :: Maybe [Function IM] -> T.Scheme T -> T.MatchF IM.EnvUnion (Type IM) -> Context TypeMap
+mkTypeMap mInstStack s m = do
+  mkTypeMap' mInstStack (NonEmpty.singleton (s, m))
 
-mkTypeMap' :: NonEmpty (T.Scheme T, T.MatchF IM.EnvUnion (Type IM)) -> Context TypeMap
-mkTypeMap' sms = mdo
+mkTypeMap' :: Maybe [Function IM] -> NonEmpty (T.Scheme T, T.MatchF IM.EnvUnion (Type IM)) -> Context TypeMap
+mkTypeMap' mInstStack sms = mdo
+  instStack <- fromMaybe (State.gets functionStack) (pure <$> mInstStack)
   tc <- State.gets typingContext
 
   let (T.Scheme sTVs suUnions suAssocs, T.Match mTVs mUnions muAssocs) = sconcat sms
@@ -1102,7 +1126,7 @@ mkTypeMap' sms = mdo
 
   (mAssocs) <- withTypeMap tm $ do  -- not sure I need back references here? the thing is, it probably does not matter where it will get evaluated. but just in case?
     -- mmUnions <- traverse mUnionWithoutTopMap muUnions
-    mmAssocs <- traverse selectInstance muAssocs
+    mmAssocs <- traverse (selectInstance' instStack) muAssocs
     pure (mmAssocs)
 
   pure tm

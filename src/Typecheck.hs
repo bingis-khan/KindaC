@@ -1011,6 +1011,7 @@ substAssociations = do
     case unFrom of
         TCon dd _ _ -> case insts !? cd >>= (!? dd) of
           Just inst -> do
+            pf "[subst] substituing cid % (selected %)" classInstID (ppDef dd)
             -- select instance function to instantiate.
             let instFun = Def.mustOr (pf "[COMPILER ERROR]: Could not select function %s bruh," (pp uv)) $ find (\InstFun { instClassFunDec = CFD _ cuv _ _ _ } -> cuv == uv) inst.instFuns
 
@@ -1088,7 +1089,9 @@ addExtraToEnv envIds (fn, match, fnt) theseInsts instEnvStack =
 
 -- TODO TO BE REDONE, because both cases are similar and also the info.
 addClassFunDefs :: Def.EnvStack -> [(Def.EnvStack, (T.Variable, Def.Locality, Type TC))] -> Infer ()
-addClassFunDefs currentEnvStack cfds = lift $ InterModular.addEnvAdditions addition where
+addClassFunDefs currentEnvStack cfds = do
+  pf "[addclassfundefs] addition %" addition
+  lift $ InterModular.addEnvAdditions addition where
   addition = flip concatMap cfds $ \(envStack, (v, l, t)) -> case l of
     -- ENV STACK is sampled INSIDE a function, so if it's local, that the class is local, so the function does not have that env.
     -- but localities are from the point of view of the enclosing ENVIRONMENT BRUH.
@@ -1117,8 +1120,8 @@ addClassFunDefs currentEnvStack cfds = lift $ InterModular.addEnvAdditions addit
     --   g(123)
     --   g(False)
     Def.FromEnvironment classLevel ->
-      let cfInstLevel = length envStack
-          numAffectedEnvs = cfInstLevel - classLevel
+      let currentEnvNum = length currentEnvStack  -- NOTE: TODO: before it was different, but I guess this is correct.
+          numAffectedEnvs = currentEnvNum - classLevel
           affectedEnvs = take numAffectedEnvs envStack  -- TOP STACK: INNERMOST ENVS
 
           revNewLocalities = repeat (Def.FromEnvironment classLevel)
@@ -1323,6 +1326,7 @@ constructSchemeForFunctionDeclaration localCIDs renv dec = do
 
   -- TODO: maybe move the construction of classEnvVarsFromAssocs inside?
   currentEnvStack <- T.envStack <$> getEnv dec.functionEnv
+  pf "CurrentEnvStack: %" (ppDef currentEnvStack)
   addClassFunDefs currentEnvStack classEnvVarsFromAssocs
 
   pure assocScheme
@@ -1568,8 +1572,6 @@ instantiateFunction assocLocation snapshot fn = do
     pf "Scope Snapshot:\n%" (T.dbgSnapshot snapshot) :: Infer ()
     pf "after schemin: %" =<< presentFunctionType fn <$> getTC
 
-    -- pc $ (Def.ppMap . fmap (bimap pp pp) . Map.toList) tvmap
-    -- pc $ (Def.ppMap . fmap (bimap Def.ppUnionID pp) . Map.toList) unionmap
 
     pc =<< lift InterModular.getTypeUni
     gfn <- presentFunctionType fn <$> getTC

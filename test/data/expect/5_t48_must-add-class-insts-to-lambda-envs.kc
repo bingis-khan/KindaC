@@ -1,0 +1,24 @@
+#$ Must add class insts to lambda env.
+# () -> Int at \*
+# 1
+
+class Dupa
+	dupa (x _) -> Int
+
+inst Dupa Int
+	dupa (x) -> Int
+		return x
+
+inst Dupa Bool
+	dupa (x) -> Int
+		if x
+			return 1
+		else
+			return 0
+
+f (n)
+	return :dupa(n)
+
+ff = f(1)
+print ff
+print ff()

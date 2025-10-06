@@ -7,7 +7,7 @@
 module AST.Mono (module AST.Mono) where
 import AST.Common (AnnStmt, Function, Type, Module, XFunDef, XLVar, XReturn, Expr, XExprNode, XMem, XCon, DataCon, XVar, XVarOther, XLamOther, XLamVar, XConOther, DataDef, XTCon, XTFun, XTConOther, XDataOther, Rec, XDCon, XEnv, XFunVar, XFunType, XFunOther, XDTCon, XOther, XTOther, functionId, functionDeclaration, XTVar, XInstDef, functionEnv, functionBody, MutAccess, XMutAccess, XStringInterpolation, TypeF)
 import qualified AST.Def as Def
-import AST.Def (Locality, PP (..), (<+>))
+import AST.Def (Locality, PP (..), (<+>), ppDef, PPDef)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.String (fromString)
@@ -80,7 +80,7 @@ data Variable
 
 type IsRecursive = Bool
 
-data EnvDef = EnvDef Def.EnvID [(Variable, Locality, Type M)] Def.Level
+data EnvDef = EnvDef Def.EnvID [(Variable, Locality, Type M)] [Def.EnvID]
 
 data Env
   = Env EnvDef
@@ -100,7 +100,7 @@ envDefID :: EnvDef -> Def.EnvID
 envDefID (EnvDef eid _ _) = eid
 
 envDefLevel :: EnvDef -> Def.Level
-envDefLevel (EnvDef _ _ lvl) = lvl
+envDefLevel (EnvDef _ _ stack) = Def.envStackToLevel stack
 
 data EnvUnion = EnvUnion
   { unionID :: Def.UnionID
@@ -159,17 +159,17 @@ instance PP EnvInsts where
 
 instance PP EnvInst where
   pp (EnvInst { envDef, notYetInstantiated = [] }) = pp envDef
-  pp (EnvInst { envDef, notYetInstantiated }) = Def.ppBody' pp (fromString $ Def.pf "% \\\\ %" (pp envDef.functionDeclaration) (Def.encloseSepBy "{" "}" ", " $ pp . functionDeclaration <$> notYetInstantiated)) envDef.functionBody -- Def.ppBody' pp (pp envDef.functionDeclaration <+>  "|" <+> Def.encloseSepBy "" "" ", " (notYetInstantiated <&> \fn -> pp fn.functionDeclaration.functionId)) envDef.functionBody
+  pp (EnvInst { envDef, notYetInstantiated }) = Def.ppBody' pp (fromString $ Def.pf "% \\\\ %" (pp envDef.functionDeclaration) (Def.encloseSepBy "{" "}" ", " $ pp . functionDeclaration <$> notYetInstantiated)) envDef.functionBody
 
 instance PP EnvMod where
   pp em =
-    let envAss = "<-" <+> pp (envDefID $ functionEnv $ functionDeclaration em.assignee)
+    let envAss = "<-" <+> ppDef (functionEnv $ functionDeclaration em.assignee)
     in case em.assigned of
-      LocalEnv ea -> pp (envDefID ea) <+> envAss
+      LocalEnv ea -> ppDef ea <+> envAss
       EnvFromEnv eas -> Def.sepBy "\n" $ (<+> envAss) . pp <$> NonEmpty.toList eas
 
 instance PP EnvAccess where
-  pp ea = Def.sepBy "." (NonEmpty.toList $ ea.access <&> \(fn, _) -> pp fn.functionDeclaration.functionId <> "(" <> pp (envDefID fn.functionDeclaration.functionEnv) <> ")") <> "." <> pp (envDefID ea.accessedEnv)
+  pp ea = Def.sepBy "." (NonEmpty.toList $ ea.access <&> \(fn, _) -> pp fn.functionDeclaration.functionId <> "(" <> ppDef fn.functionDeclaration.functionEnv <> ")") <> "." <> ppDef ea.accessedEnv
 
 instance PP OtherDD where
   pp _ = mempty
@@ -184,6 +184,9 @@ instance PP Env where
 
 instance PP EnvDef where
   pp (EnvDef eid vs _) = Def.ppDef eid <> Def.encloseSepBy "[" "]" ", " (fmap (\(v, loc, t) -> pp loc <> pp v <+> pp t) vs)
+
+instance PPDef EnvDef where
+  ppDef = ppDef . envDefID
 
 
 instance PP Variable where

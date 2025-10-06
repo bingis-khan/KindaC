@@ -1,6 +1,6 @@
-# Must recursively add other instantiations from an instance function.
+#$ Must recursively add other instantiations from an instance function.
 # 420
-# $envsize f 1
+#= envsize f 1
 
 class ToInt
 	to-int (n _) -> Int
