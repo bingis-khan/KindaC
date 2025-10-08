@@ -1,3 +1,6 @@
+use Iter
+	to
+	reduce
 
 min (l Int, r Int) -> Int
 	if l < r
@@ -10,3 +13,6 @@ max (l Int, r Int) -> Int
 		return l
 	else
 		return r
+
+pow (base, p):
+	0 to (p - 1) reduce(1, (item, x): x * base)

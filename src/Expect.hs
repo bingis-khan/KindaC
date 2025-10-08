@@ -1,9 +1,10 @@
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE LambdaCase #-}
 module Expect (expect) where
 
-import Data.List ( isPrefixOf, find, sort )
+import Data.List ( isPrefixOf, find, sort, sortBy )
 import Data.Functor ((<&>))
-import Data.Char (isSpace)
+import Data.Char (isSpace, isDigit)
 import Data.Foldable (for_)
 import System.Directory (listDirectory)
 import System.IO.Temp (withTempDirectory)
@@ -29,36 +30,47 @@ import TypingContext (TypingContext(..), globalTypeUni)
 import BaseCtx (withBaseContext)
 import Lens.Micro ((^.))
 import AST.Typed (topLevelStatements)
+import Data.Map (Map)
+import qualified Data.Map as Map
+import qualified AST.Def as Def
+import AST.Def (PrintfType)
+import Data.Maybe (fromMaybe)
+import System.Timeout (timeout)
 
 -- smol config
 testdir :: FilePath
 testdir = "test/data/expect"
 
+pf :: PrintfType r => String -> r
+pf = Def.pf
+
 
 expect :: IO ()
 expect = do
-  tests <- sort <$> listDirectory testdir
+  tests <- toPhases <$> listDirectory testdir
   (preludeAndState, _) <- withBaseContext (defaultConfig "") $ runModuleCtx "" loadPrelude
 
   withTempDirectory "." "intermediate-test-outputs" $ \dir ->
     hspec $ parallel $ do
-      for_ tests $ \filename -> do
-        let path = testdir </> filename
-        runIO $ putStrLn filename
-        header <- runIO $ readHeader path
-        describe (filename <?> (": " <>) <$> header.name) $ do
-            errorOrFilepath <- runIO $ compileAndOutputFile preludeAndState path dir
+      for_ tests $ \(mphase, filenames) -> do
+        let phase = fromMaybe "other" (Def.pp <$> mphase)
+        let desc = Map.findWithDefault "<description not provided>" mphase phaseNames
+        describe (pf "%: %" phase desc) $ do
+          for_ filenames $ \filename -> do
+            let path = testdir </> filename
+            header <- runIO $ readHeader path
 
-            it "should compile" $ do
-              expectNoError errorOrFilepath
+            it filename $ do
+              let second = 1000000
+              errorOrFilepath <- timeout (second `div` 2) $ compileAndOutputFile preludeAndState path dir  -- NOTE: for some reason, 'cyclic evaluation in fixio' gave way to busy looping when I moved this statement here. Timeout was added to "replace" that.
 
-            -- TODO: I think the idiomatic way to use a lot of those is to use sstuff like beforeAll or something. Everything inside 'it' is executed in parallel, so yeh. How do I make tests depend on each other? (I mean, if I have something like beforeAll, maybe I don't need it?)
-            case errorOrFilepath of
-              Left _ -> pure ()  -- should be no error.
-              Right cpath -> do
-                let execpath = dir </> takeBaseName filename
-                (exitCode, ccout, ccerr) <- runIO $ readProcessWithExitCode "cc" [cpath, "-o", execpath] ""
-                it "should compile the generated C source" $ do
+              -- TODO: I think the idiomatic way to use a lot of those is to use sstuff like beforeAll or something. Everything inside 'it' is executed in parallel, so yeh. How do I make tests depend on each other? (I mean, if I have something like beforeAll, maybe I don't need it?)
+              case errorOrFilepath of
+                Nothing         -> expectationFailure $ "Timeout..."
+                Just (Left err) -> expectationFailure $ "Compiling error:\n" <> Text.unpack err
+                Just (Right cpath) -> do
+                  let execpath = dir </> takeBaseName filename
+                  (exitCode, ccout, ccerr) <- readProcessWithExitCode "cc" [cpath, "-o", execpath] ""
 
                   case exitCode of
                     ExitSuccess -> pure ()
@@ -70,22 +82,20 @@ expect = do
                       <> "stderr:\n"
                       <> ccerr
 
-                -- kinda weird, make it look better (the idea is to make all tests visible. this should be fixed if you do the previously mentioned beforeAll stuff.)
-                mresult <- if exitCode == ExitSuccess
-                  then fmap Just $ runIO $ readProcessWithExitCode execpath [] ""
-                  else pure Nothing
+                  -- kinda weird, make it look better (the idea is to make all tests visible. this should be fixed if you do the previously mentioned beforeAll stuff.)
+                  mresult <- if exitCode == ExitSuccess
+                    then fmap Just $ readProcessWithExitCode execpath [] ""
+                    else pure Nothing
 
-                it "should not fail" $ do
                   case mresult of
                     Just (execexit, _, _) -> execexit `shouldBe` header.expectedExitCode
                     Nothing -> expectationFailure "C code not compiled."
 
-                it "should have correct output" $ do
                   case mresult of
                     Just (_, stdout, _) -> lines stdout `shouldBeWithWildcard` header.expectedOutput
                     Nothing -> expectationFailure "C code not compiled."
 
-                return ()
+                  return ()
 
 
 shouldBeWithWildcard :: [String] -> [String] -> Expectation
@@ -147,6 +157,33 @@ intToExitCode :: Int -> ExitCode
 intToExitCode 0 = ExitSuccess
 intToExitCode x = ExitFailure x
 
+
+type Phase = Int
+toPhases :: [FilePath] -> [(Maybe Phase, [FilePath])]
+toPhases
+  = Map.toList  -- map has a defined "sorted" order.
+  . fmap sort
+  . Map.fromListWith (<>)
+  . map (\s -> (tryParseNum (takeWhile isDigit s), [s]))
+  . sort
+
+tryParseNum :: [Char] -> Maybe Int
+tryParseNum = \case
+  [] -> Nothing
+  xs -> Just (read xs)
+
+phaseNames :: Map (Maybe Phase) String
+phaseNames = Map.fromList
+  [ (Just 0, "Parsing")
+  , (Just 1, "General")
+  , (Just 2, "Function Datatypes")
+  , (Just 3, "Datatypes")
+  , (Just 4, "Records")
+  , (Just 5, "Typeclasses")
+  , (Just 6, "Pointers")
+  , (Just 7, "Full")
+  , (Nothing, "Others")
+  ]
 
 
 trim :: String -> String

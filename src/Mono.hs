@@ -48,7 +48,7 @@ import AST.Def ((:.) (..), Annotated (..), Locality (..), PP (..), fmap2, PPDef 
 import qualified AST.Def as Def
 import Data.List (nubBy)
 import Data.List (nub)
-import Stats (Counter, mStmtNum, mExprNum, mTypeNum, mUnionNum, mfStmtNum, mfExprNum, mfTypeNum, mfUnionNum, Stats)
+import Stats (Counter, mStmtNum, mExprNum, mTypeNum, mUnionNum, Stats)
 import BaseCtx (BaseCtx, countUp')
 import AST.Typed (TC, MatchF)
 import qualified TypingContext as TC

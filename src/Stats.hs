@@ -32,11 +32,6 @@ data Stats = Stats
   , _mTypeNum :: Counter
   , _mUnionNum :: Counter
 
-  , _mfExprNum :: Counter
-  , _mfStmtNum :: Counter
-  , _mfTypeNum :: Counter
-  , _mfUnionNum :: Counter
-
   , _numCreatedTypes :: Int
   , _numCreatedUnions :: Int
   , _numSeparateUnifications :: Counter
@@ -64,11 +59,6 @@ emptyStats = Stats
   , _mStmtNum = 0
   , _mTypeNum = 0
   , _mUnionNum = 0
-
-  , _mfExprNum = 0
-  , _mfStmtNum = 0
-  , _mfTypeNum = 0
-  , _mfUnionNum = 0
 
   , _numCreatedTypes = 0
   , _numCreatedUnions = 0

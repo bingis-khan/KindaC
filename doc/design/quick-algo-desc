@@ -12,6 +12,7 @@
 - function stack is bad and confusing.
 - 5_t33 has extraenous stuff in the environment. (but it works.)
 - 5_t36 - f() does not seem to have a correct "typed" environment.
+- CYCLIC EVALUATION FOR SOMETHING IN LIST MODULE WTF (union inside the same union, then we compare if the new union is equal AND THIS COMPARISON causes the fixIO cyclic evaluation error.)
 
 
 Quick description of main points of the algorithm:

@@ -70,11 +70,6 @@ printStats cfg s = do
     pf "M type: %" $ s ^. mTypeNum
     pf "M union: %" $ s ^. mUnionNum
 
-    pf "MF expr: %" $ s ^. mfExprNum
-    pf "MF stmt: %" $ s ^. mfStmtNum
-    pf "MF type: %" $ s ^. mfTypeNum
-    pf "MF union: %" $ s ^. mfUnionNum
-
   when cfg.statG $ do
     pf "Modules loaded: %" (s ^. numLoadedModules)
 

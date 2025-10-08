@@ -97,3 +97,6 @@ external ftell (file Ptr FILE) -> Int
 
 #[cstdinclude 'stdio.h']
 external fread (buffer Ptr a, size Int, count Int, stream Ptr FILE) -> SizeT
+
+#[cstdinclude 'stdio.h']
+external fflush (file Ptr FILE) -> Void

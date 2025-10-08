@@ -64,6 +64,7 @@ try-write-contents (filename, contents) -> Bool
 		case next(&it)
 			None
 				# ughh.... write the file char-by-char............
+				file Cnile.fclose()
 				return True
 			Just(c)
 				chars-written = Cnile.fprintf(file, '%c', c)

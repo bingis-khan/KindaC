@@ -7,6 +7,8 @@ use Iter
 	to
 	multiply
 	map
+use Math
+	pow
 
 # contains the Str class and instances for types defined in prelude.
 # this is to prevent circular dependencies.
@@ -57,27 +59,50 @@ inst Str Unit
 	chars (self Unit): chars('Unit')
 
 
+count-digits (self Int) -> Int
+	if self == 0
+		return 1
+
+	digits = 0
+	while self > 0
+		self <= self / 10
+		digits <= digits + 1
+
+	return digits
+
+
 IntStrIter
 	int Int
-	cur Int
+	len Int
 
 inst Str Int
 	print-str (self Int) -> Unit
 		Cnile.printf('%d', self)
 		return
 
-	length (self Int) -> Int
-		if self == 0
-			return 1
+	length (self Int): self count-digits()
 
-		digits = 0
-		while self > 0
-			self <= self / 10
-			digits <= digits + 1
+	chars (self Int):
+		IntStrIter { int: self, len: self count-digits() }
 
-		return digits
+inst Iter IntStrIter
+	next (self Ptr IntStrIter) -> Maybe Cnile.Char
+		if self&.len <= 0
+			return None
 
-	chars (self Int): IntStrIter { int: self, cur: 0 }
+		trim-down = 10 pow (self&.len - 1)
+		print trim-down
+		upper = self&.int / trim-down
+		upper-mask = (upper / 10) * 10
+		digit = upper - upper-mask
+
+		self <&.len= self&.len - 1
+
+		digit-char = Retarded.cast(digit + 48)
+		return Just(digit-char)
+
+		
+
 
 inst Str Bool
 	print-str (self Bool) -> Unit

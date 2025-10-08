@@ -29,11 +29,11 @@ import Data.Fix (Fix (Fix))
 import Data.Functor.Foldable (Base, cata, embed)
 import Control.Monad (replicateM, zipWithM_, unless, (<=<), (>=>))
 import Data.Bitraversable (bitraverse)
-import Data.Foldable (for_, fold, foldlM, traverse_)
+import Data.Foldable (for_, fold, foldlM)
 import Data.Set (Set, (\\))
 import qualified Data.Set as Set
 import Data.Bifunctor (bimap)
-import Data.List ( find, partition )
+import Data.List ( find )
 import Data.Bifoldable (bifoldMap, bifold)
 import Data.Traversable (for)
 
@@ -46,7 +46,7 @@ import Data.Unique (newUnique)
 import Data.Functor ((<&>))
 import Data.Maybe (fromMaybe, mapMaybe, catMaybes, isJust)
 import Control.Applicative (liftA3)
-import Data.List.NonEmpty (NonEmpty, (<|))
+import Data.List.NonEmpty (NonEmpty)
 import Misc.Memo (memo, Memo(..), emptyMemo)
 import qualified AST.Common as Common
 import AST.Prelude (Prelude)
@@ -67,8 +67,6 @@ import InterModular (InterModular, imLift)
 import qualified InterModular
 import Control.Monad.Trans.Reader (Reader)
 import qualified Control.Monad.Trans.Reader as Reader
-import Control.Monad.Trans.State.Strict (StateT)
-import qualified Control.Monad.Trans.State.Strict as State
 import qualified Data.IntMap.Strict as IntMap
 import qualified TypingContext as TC
 import Stats (tStmtNum, tExprNum, numSeparateUnifications, numTVMaps, numCSMaps)
@@ -967,7 +965,6 @@ generalize renv ifn = do
 
   pf "Substituted function %:" fn.functionDeclaration.functionId
   pc generalizedFnWithScheme
-  pc =<< lift InterModular.getTypeUni
 
   pure generalizedFnWithScheme
 
@@ -1554,11 +1551,16 @@ instantiateFunction assocLocation snapshot fn = do
     pf "Before schemin: %" fundec.functionId
     pf "Before schemin: %" =<< presentFunctionType fn <$> getTC
     (match@(Match tvs unions _), (funparams, funret, envInsts)) <- instantiateScheme snapshot (Just fn) fundec.functionOther.functionScheme $ do
+      pf "miau"
       params <- traverse (mapTVs . snd) fundec.functionParameters
+      pf "miau 2"
       ret <- mapTVs fundec.functionReturnType
+      pf "miau 3 (function %)" fundec.functionId
 
       -- TODO: I should get rid of these lifts around here.
+      -- also, this should absolutely be lazy.
       envInsts <- instantiationsRelativeToFunction =<< lift (getEnv fundec.functionEnv)
+      pf "miau 4"
       pure (params, ret, envInsts)
 
 
@@ -1573,7 +1575,7 @@ instantiateFunction assocLocation snapshot fn = do
 
     pf "cock 3"
     punions <- traverse getUnion unions
-    pf "TypeUni for % after scheme instantiation: %" fundec.functionId =<< lift InterModular.getTypeUni
+    -- pf "TypeUni for % after scheme instantiation: %" fundec.functionId =<< lift InterModular.getTypeUni
     pf "GOT SCHEME: % %" tvs punions
 
     pf "Instantiation of %" (pp fundec.functionId) :: Infer ()
@@ -1611,9 +1613,11 @@ instantiationsRelativeToFunction (T.EnvDef _ baseVars _) = do
   let gatherInstsFromEnvironment :: [(T.Variable, Def.Locality, Type TC)] -> UltraMap (Set (T.Variable, Def.Locality, Type TC))
       gatherInstsFromEnvironment vars = flip trafold vars $ \case
             (envVar@(T.DefinedFunction fn match), l@Def.Local, t) -> do
+              pf "miau defined function local"
               -- NOTE: we need mapped envs, so we have to dig through the type. but, are we too permissive? should we only choose this current env? or all of them? how do we distinguish the "current" one?
               -- NEW ALGO: future typeclass thing?
               mappedT <- mapTVs t
+              pf "miau defined function local after mapTVs"
               let scheme = fn.functionDeclaration.functionOther.functionScheme
               -- TODO: ugly lift.
               env <- withMatch scheme match =<< lift (getEnv fn.functionDeclaration.functionEnv)
@@ -1623,17 +1627,22 @@ instantiationsRelativeToFunction (T.EnvDef _ baseVars _) = do
             
             -- non-expanding.
             (T.DefinedFunction fn match, l, t) -> do
+              pf "miau defined function"
               mappedT <- mapTVs t
               mmatch <- mapMatch match
               pure $ Set.singleton (T.DefinedFunction fn mmatch, l, mappedT)
 
             (T.DefinedVariable uv, l, t) -> do
+              pf "miau defined variable"
               mappedT <- mapTVs t
               pure $ Set.singleton (T.DefinedVariable uv, l, mappedT)
 
             (T.DefinedClassFunction cfd instid, l, t) -> do
+              pf "miau defined class function"
               mt <- mapTVs t
+              pf "miau class function map inst id"
               minstid <- mapClassInstID instid
+              pf "miau after map class inst"
               pure $ Set.singleton (T.DefinedClassFunction cfd minstid, l, mt)
 
   gatherInstsFromEnvironment baseVars
@@ -1820,21 +1829,23 @@ ump = ultraMapThing
 -- so this thing is only used when instantiating stuff.
 mapTVs :: Type TC -> UltraMap (Type TC)
 mapTVs tid = do
-  pf "mapTVs"
+  pf "[maptvs] mapTVs"
   tryMemoType tid $ \baseTid ttt -> upMapSthTVs >> traverse mapTVs ttt >>= \case
     TO (TVar tv) -> error "bruh"  -- lift $ getType $ fromMaybe baseTid (tvmap !? tv)
     TFun union ts tret -> do
-      pf "mapTVs: TFun"
+      pf "[maptvs] mapTVs: TFun"
       union' <- mapUnion union
+      pf "[maptvs] mapTVs: TFun (after mapUnion)"
       pure $ TFun union' ts tret
     TCon dd ts (unions, envtvs) -> do
-      pf "mapTVs: TCon"
+      pf "[maptvs] mapTVs: TCon"
       unions' <- for unions $ \union -> do
         mapUnion union
+      pf "[maptvs] mapTVs: TCon (after mapUnions)"
       envTVs <- traverse mapTVs envtvs
       pure $ TCon dd ts (unions', envTVs)
     TO tt -> do
-      pf "mapTVs: TO"
+      pf "[maptvs] mapTVs: TO"
       pure $ TO tt
 
 tryMemoType :: Type TC -> (Type TC -> TypeF TC TypeID -> UltraMap (TypeF TC TypeID)) -> UltraMap (Type TC)
@@ -1863,7 +1874,7 @@ mapUnion = tryMemoUnion $ \_ u -> mapUnion' u
 mapUnion' :: T.EnvUnionF T.EnvUnion (Type TC) -> UltraMap (T.EnvUnionF T.EnvUnion (Type TC))
 mapUnion' u = do
     upMapSthTVs
-    pf "union"
+    pf "[mapunion] union"
     newUnion <- for u.union $ \case
       T.UnionFun fn outermatch match -> do
         mumt <- RST.asks ultraMatchThing
@@ -1875,11 +1886,14 @@ mapUnion' u = do
                   then (m:)
                   else id
 
-        RST.local (\um -> um { ultraMatchThing = Nothing })
+        -- TEMP NAME
+        cock <- RST.local (\um -> um { ultraMatchThing = Nothing })
           $ T.UnionFun fn
           <$> msm
               <$> traverse2 mapMatch outermatch
           <*> mapMatch match
+        pf "miau after cock"
+        pure cock
       T.UnionLam env outer -> do
         mumt <- RST.asks ultraMatchThing
         fnenvdef <- lift $ getEnv env  -- SMELL: access to inner monad in a "hot" function. (before 03.10.25, envs were local / not in TypingContext)
@@ -1896,32 +1910,37 @@ mapUnion' u = do
           -- ts' <- traverse mapTVs ts
           -- env' <- mapEnv premade exclude tvmap unionmap env
           -- pure (muci, ufi, ts', env')
+    pf "[mapunion] after union"
     pure $ u { T.union = newUnion }
 
 tryMemoUnion :: (T.EnvUnion -> T.EnvUnionF T.EnvUnion TypeID -> UltraMap (T.EnvUnionF T.EnvUnion TypeID)) -> T.EnvUnion -> UltraMap T.EnvUnion
 tryMemoUnion fux uid = do
-  pf "tryMemoUnion: %" uid
+  pf "[mapunion] tryMemoUnion: %" uid
   (baseUid, u) <- lift $ getUnion' uid
-  pf "tryMemoUnion 1.5"
+  pf "[mapunion] tryMemoUnion 1.5"
   RST.gets snd >>= \us -> do
-    pf "FUCK UAOJDOJSAOD"
-    pf "exists? %" $ isJust $ us !? baseUid
+    pf "[mapunion] exists? %" $ isJust $ us !? baseUid
     case us !? baseUid of
         Just newU -> do
-          pf "tryMemoUnion 1.75"
+          pf "[mapunion] tryMemoUnion 1.75"
           pure newU
         Nothing -> do
-          pf "tryMemoUnion 2"
+          pf "[mapunion] tryMemoUnion 2"
           unionmap <- RST.asks ultraUnionMap
           case unionmap !? u.unionID of
             Just mu -> pure mu
             Nothing -> mdo
-              pf "tryMemoUnion 3"
+              pf "[mapunion] tryMemoUnion 3"
               RST.modify $ fmap $ Map.insert baseUid newU
+              pf "[mapunion] union %" u
               evaldUnion <- fux baseUid u
+              pf "[mapunion] will compare % now" u.unionID
               newU <- if u == evaldUnion
-                then pure uid
+                then do
+                  pf "miau true"
+                  pure uid
                 else do
+                  pf "miau false"
                   lift $ mkUnion evaldUnion
               pure newU
 
@@ -1948,7 +1967,8 @@ mapEnv (T.EnvDef eid vars stack) = do
 --   or maybe not. imagine an inner instance, which has tvars in its environment, but depends on some top level var for its type.
 -- so... maybe. NOTE: right now I'm leaving it be, but I should keep it in mind.
 mapMatch :: T.Match -> UltraMap T.Match
-mapMatch (Match ts us as) =
+mapMatch m@(Match ts us as) = do
+  pf "[mapmatch] %" m
   Match
     <$> traverse mapTVs ts
     <*> traverse mapUnion us
@@ -1957,6 +1977,7 @@ mapMatch (Match ts us as) =
 mapClassInstID :: Def.ClassInstID -> UltraMap Def.ClassInstID
 mapClassInstID cid = do
   assocmap <- RST.asks ultraAssocMap
+  pf "miau gotten assoc map"
   pure $ fromMaybe cid (assocmap !? cid)
 
 -- Constructs an environment from all the instantiations.
