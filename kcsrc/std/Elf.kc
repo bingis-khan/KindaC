@@ -1,0 +1,46 @@
+
+# an example ELF generation module. I called it "ELF", but maybe it should be something like "Exe" or "Executable" or whatever.
+# maybe I want to have a platform independent executable generator, like:
+#  - ELF: Linux and Mac
+#  - PE: Windows
+# with an intersection of features.
+# Yes, that's it!
+
+# I'll focus on ELF now, because it's directly testable on my laptop, but I should do a combined module and MAYBE two different modules for their own special features.
+
+# two ways:
+
+# functional
+executable-file (filename, code-writer Writer U8 -> Unit, data-writer Writer U8 -> Unit)
+
+# sane
+begin-executable-file (filename) -> Exec
+
+exec = begin-executable-file(filename)
+write-code(exec.code-writer)
+write-section(exec.data-writer)
+exec end()
+
+
+# I should do functional :333333
+# or maybe not. even shitposty slow, I think sane might be more ergonomic, because we don't have to create a function.
+# on the other hand, functional has control over the ORDER OF OPERATIONS. I'm not sure about the elf format yet,
+# but in the "sane" part we (as API creator) can't really control the order. But, if it's sectional by nature, then this interface would be natural!
+
+code = exe begin-section(Code)
+code write-all([
+	mov(RAX, $(0)),  # maybe make $ a normal identifier char to allow this? :blushing-face-emoji:
+	cmp(cock, whatever),
+	ret
+])
+exe end-section()
+exe begin-section(Data)
+exe end-section()
+
+# or maybe both?
+
+exe section(Code, w: w write-all([
+	mov(RAX, $(0))
+]))
+
+# wait, we can just backpatch the executable if there is some previous info for this.
