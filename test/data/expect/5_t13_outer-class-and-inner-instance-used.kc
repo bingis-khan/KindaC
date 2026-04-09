@@ -4,6 +4,9 @@
 # 69
 # ()
 # 1
+#= envsize f 1
+#= envsize g 2
+#= envsize h 3
 
 class A
 	do-sth (x _) -> Unit

@@ -2217,7 +2217,7 @@ addConstraint location ttid (klass, instances) = do
       TO (TyVar tyv) -> do
         -- create new tyvar with both classes merged!
         let cids = (klass, instances) : tyv.tyvConstraints
-        newtyv <- freshTyVarInSubst cids
+        newtyv <- freshWithClasses cids
         newtyvid <- lift InterModular.nextTypeID
         lift $ InterModular.modifyTypeUni $
             IntMap.insert newtyvid.fromTypeID $ Right $ TO $ TyVar newtyv
@@ -2628,8 +2628,8 @@ freshTyVar = do
   RWS.modify $ \s -> s { tvargen = TVG (nextVar + 1) }
   pure $ T.TyV uniq (letters !! nextVar) mempty
 
-freshTyVarInSubst :: [(ClassDef TC, T.PossibleInstances TC)] -> Infer T.TyVar
-freshTyVarInSubst cdis = do
+freshWithClasses :: [(ClassDef TC, T.PossibleInstances TC)] -> Infer T.TyVar
+freshWithClasses cdis = do
   uniq <- liftIO newUnique
   TVG nextVar <- RWS.gets tvargen
   RWS.modify $ \s -> s { tvargen = TVG (nextVar + 1) }

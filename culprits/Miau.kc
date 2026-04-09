@@ -20,15 +20,15 @@ add (s Ptr State, x Int)
 	return
 
 one = 1
-pop (s Ptr State)
-	List.pop(&s&.counter)
-	return
+# pop (s Ptr State)
+# 	List.pop(&s&.counter)
+# 	return
 
 adda (x Int): Action { do: s: add(s, x) }
-popa (): Action { do: pop }
+# popa (): Action { do: pop }
 actions List.add(adda(420))
 actions List.add(adda(69))
-#actions List.add(popa())
+# actions List.add(popa())
 #actions List.add(adda(1337))
 
 

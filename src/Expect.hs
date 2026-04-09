@@ -2,7 +2,8 @@
 {-# LANGUAGE LambdaCase #-}
 module Expect (expect) where
 
-import Data.List ( isPrefixOf, find, sort, sortBy )
+import Assertion
+import Data.List ( isPrefixOf, find, sort )
 import Data.Functor ((<&>))
 import Data.Char (isSpace, isDigit)
 import Data.Foldable (for_)
@@ -24,18 +25,20 @@ import GHC.Exception (SomeException)
 import qualified Data.List.NonEmpty as NonEmpty
 import Control.Monad.IO.Class (liftIO)
 import InterModular (CompilationState, runModuleCtx, resumeModuleCtx)
-import Pipeline (loadPrelude, loadModule, codegen)
+import Pipeline (loadPrelude, loadModule)
 import Entry (defaultConfig)
-import TypingContext (TypingContext(..), globalTypeUni)
 import BaseCtx (withBaseContext)
-import Lens.Micro ((^.))
 import AST.Typed (topLevelStatements)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified AST.Def as Def
 import AST.Def (PrintfType)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import System.Timeout (timeout)
+import Data.Either (partitionEithers)
+import Control.Monad (when)
+import Mono (mono)
+import CPrinter (cModule)
 
 -- smol config
 testdir :: FilePath
@@ -58,17 +61,23 @@ expect = do
         describe (pf "%: %" phase desc) $ do
           for_ filenames $ \filename -> do
             let path = testdir </> filename
-            header <- runIO $ readHeader path
+            (headerParseErrors, header) <- runIO $ readHeader path
 
             it filename $ do
+              -- reporting parse errors at the start, because that's the easiest to fix.
+              when (not $ null $ headerParseErrors) $ do
+                expectationFailure $ unlines $
+                  [ "Failed to parse some assertions, yo:"
+                  ] <> map (\(og, err) -> Def.pf "Error in '%': %" og err) headerParseErrors
+
+
               let second = 1000000
               errorOrFilepath <- timeout (second `div` 2) $ compileAndOutputFile preludeAndState path dir  -- NOTE: for some reason, 'cyclic evaluation in fixio' gave way to busy looping when I moved this statement here. Timeout was added to "replace" that.
 
-              -- TODO: I think the idiomatic way to use a lot of those is to use sstuff like beforeAll or something. Everything inside 'it' is executed in parallel, so yeh. How do I make tests depend on each other? (I mean, if I have something like beforeAll, maybe I don't need it?)
               case errorOrFilepath of
                 Nothing         -> expectationFailure $ "Timeout..."
                 Just (Left err) -> expectationFailure $ "Compiling error:\n" <> Text.unpack err
-                Just (Right cpath) -> do
+                Just (Right (cpath, codestate)) -> do
                   let execpath = dir </> takeBaseName filename
                   (exitCode, ccout, ccerr) <- readProcessWithExitCode "cc" [cpath, "-o", execpath] ""
 
@@ -88,12 +97,18 @@ expect = do
                     else pure Nothing
 
                   case mresult of
-                    Just (execexit, _, _) -> execexit `shouldBe` header.expectedExitCode
+                    Just (execexit, stdout, _) -> do
+                      execexit `shouldBe` header.expectedExitCode
+
+                      lines stdout `shouldBeWithWildcard` header.expectedOutput
+
                     Nothing -> expectationFailure "C code not compiled."
 
-                  case mresult of
-                    Just (_, stdout, _) -> lines stdout `shouldBeWithWildcard` header.expectedOutput
-                    Nothing -> expectationFailure "C code not compiled."
+                  -- last, check assertions about generated code
+                  case mapMaybe (checkAssertion codestate) header.assertions of
+                    asses@(_:_) -> expectationFailure $
+                      "There were following assertion errors:\n" <> unlines (map (" - " <>) asses)
+                    [] -> pure ()
 
                   return ()
 
@@ -114,13 +129,8 @@ shouldBeWithWildcard is expected =
       E.throwIO (HUnitFailure Nothing $ ExpectedButGot Nothing (unlines expected) (unlines is))
 
 
-expectNoError :: Either Error a -> Expectation
-expectNoError (Right _) = pure ()
-expectNoError (Left err) = expectationFailure $ "Compiling error:\n" <> Text.unpack err
-
-
 type Error = Text
-compileAndOutputFile :: (Prelude, CompilationState) -> FilePath -> FilePath -> IO (Either Error FilePath)
+compileAndOutputFile :: (Prelude, CompilationState) -> FilePath -> FilePath -> IO (Either Error (FilePath, CodeState))
 compileAndOutputFile (prelude, state) filepath outdirpath = do
   let compile = fmap fst $ withBaseContext (defaultConfig "") $ do
         let basePath = "."  -- maybe make a special testing "module" directory for testing module imports?
@@ -129,10 +139,13 @@ compileAndOutputFile (prelude, state) filepath outdirpath = do
           Left err -> pure $ Left $ Text.unlines $ NonEmpty.toList err
           Right (mods, tc) -> do
             let tmods = concat $ NonEmpty.toList $ topLevelStatements <$>  mods
-            cmod <- codegen tc tmods
+            mmod <- mono tc tmods
+            let cmod = cModule mmod
             let outpath = outdirpath </> takeBaseName filepath <> ".c"
             liftIO $ TextIO.writeFile outpath cmod
-            pure $ Right outpath
+
+            let codestate = CodeState tc mods mmod
+            pure $ Right (outpath, codestate)
   catch compile $ \e -> pure $ Left $ Text.pack $ "(exception)\n" <> show (e :: SomeException)
 
 
@@ -141,16 +154,22 @@ data TestHeader = TestHeader
   { name :: Maybe String
   , expectedExitCode :: ExitCode
   , expectedOutput :: [String]  -- output CAN be empty!
+  , assertions :: [Assertion]
   } deriving Show
 
-readHeader :: FilePath -> IO TestHeader
+readHeader :: FilePath -> IO ([(String, AssertionParseError)], TestHeader)
 readHeader path = readFile path <&> \m ->
   let ctlLines = takeWhile ("#" `isPrefixOf`) $ lines m
 
       testName = trim . drop 2 <$> find ("#$" `isPrefixOf`) ctlLines
       exitCode = maybe ExitSuccess ((intToExitCode . read) . trim . drop 2) $ find ("#?" `isPrefixOf`) ctlLines
       expected = trim . drop 1 <$> filter (not . (\line -> any (`isPrefixOf` line) ["#$", "#?", "#="])) ctlLines
-  in TestHeader { name = testName, expectedExitCode = exitCode, expectedOutput = expected }
+      errOrAssertions
+        = map (parseAssertion . trim . drop 2)
+        $ filter ("#=" `isPrefixOf`)
+          ctlLines
+      (assertionErrors, assertions) = partitionEithers errOrAssertions
+  in (assertionErrors, TestHeader { name = testName, expectedExitCode = exitCode, expectedOutput = expected, assertions = assertions })
 
 
 intToExitCode :: Int -> ExitCode
@@ -206,8 +225,3 @@ endsWith base ending =
 dropEnd :: Int -> [a] -> [a]
 dropEnd len = reverse . drop len . reverse
 
-
-infixl 3 <?>
-(<?>) :: String -> Maybe String -> String
-(<?>) s Nothing = s
-(<?>) s (Just rs) = s <> rs

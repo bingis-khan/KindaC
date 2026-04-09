@@ -1,6 +1,6 @@
 packages: ./
 
-import: https://www.stackage.org/lts-24.4/cabal.config
+import: https://www.stackage.org/lts-24.26/cabal.config
 
 tests: True
 multi-repl: True

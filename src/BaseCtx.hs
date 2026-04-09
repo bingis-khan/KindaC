@@ -7,7 +7,7 @@ import Control.Monad.Trans.RST (RST)
 import Stats (Stats, Counter, FunInstTrack, emptyStats, instantiationsByNumTypes) --, instantiationsByNumTypes)accessor +~ 1
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.RWS (MonadReader, MonadState, MonadTrans (..), modify')
-import Lens.Micro (Lens', (+~))
+import Lens.Micro (Lens', (+~), (%~))
 import AST.Def (Log (plog), CtxData, LogType (..), ctx, debugContext, displayDetailedCons)
 import Lens.Micro.Mtl ((+=), (%=))
 import qualified Control.Monad.Trans.RST as RST
@@ -68,7 +68,7 @@ countUp'' :: (MonadTrans t, MonadTrans t') => Lens' Stats Counter -> t (t' BaseC
 countUp'' !accessor = lift $ lift $ countUp accessor
 
 trackInstantiation :: FunInstTrack -> BaseCtx ()
-trackInstantiation fit = instantiationsByNumTypes %= (fit:)
+trackInstantiation fit = modify' $ instantiationsByNumTypes %~ (fit:)
 
 
 instance (unit ~ ()) => Log (BaseCtx unit) where  -- base instance

@@ -3,6 +3,7 @@
 # 8008
 # 69
 # 420
+#= envsize f 1
 
 class MyStr
 	print-str (x _) -> Unit

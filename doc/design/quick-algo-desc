@@ -11,7 +11,9 @@
 	- I guess I need to store "EnvAdditions" after all (these additions will not be propagated when instantiating)
 - function stack is bad and confusing.
 - 5_t33 has extraenous stuff in the environment. (but it works.)
+	- added an assertion for it
 - 5_t36 - f() does not seem to have a correct "typed" environment.
+	- added an assertion for it
 - CYCLIC EVALUATION FOR SOMETHING IN LIST MODULE WTF (union inside the same union, then we compare if the new union is equal AND THIS COMPARISON causes the fixIO cyclic evaluation error.)
 
 

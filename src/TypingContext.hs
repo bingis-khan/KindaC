@@ -5,15 +5,13 @@ import qualified AST.Def as Def
 import AST.Def (PP, TypeID (..), UnionUniID (..), Context, EnvID)
 import Data.IntMap (IntMap)
 import AST.Typed (TC, EnvUnionF)
-import AST.Common (TypeF, Type, InstFun, Function)
+import AST.Common (TypeF, Type, Function)
 import qualified AST.Typed as T
 import Data.Biapplicative (first)
 import qualified Data.IntMap as IntMap
-import Data.Fix (Fix)
-import Lens.Micro (ASetter', sets, (^.), (%~), (.~), (&))
+import Lens.Micro ((^.), (%~))
 import Lens.Micro.TH (makeLenses)
 import Data.Map (Map, (!?))
-import qualified Data.Map as Map
 
 
 
@@ -74,11 +72,11 @@ getUnionFromUni typeUni = getSomethingFromRefMap fromUnionUniID UnionUniID typeU
 
 getSomethingFromRefMap :: (k -> Int) -> (Int -> k) -> RefMap k a -> k -> (k, a)
 {-# inline getSomethingFromRefMap #-}
-getSomethingFromRefMap toInt fromInt refmap = first fromInt . go . toInt where
-  go x = case refmap IntMap.!? x of
+getSomethingFromRefMap toInt fromInt refmap = first fromInt . goRef . toInt where
+  goRef x = case refmap IntMap.!? x of
     Nothing -> (x, error "key not found. should not happen")
     Just (Right a) -> (x, a)
-    Just (Left nx) -> go nx
+    Just (Left nx) -> goRef nx
 
 -- pp type and replaces the default.
 ppTypeFromUniSafe :: TypeUni -> TypeID -> Context

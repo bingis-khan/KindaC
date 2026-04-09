@@ -81,3 +81,25 @@ class Error err
 To render a text like this, I think one function is good:
 
 renderError :: ErrorTitle -> NonEmpty (Location, Maybe Comment) -> Text
+
+
+
+
+RUST ERROR:
+
+   Compiling testtt v0.1.0 (/home/bob/tmp/testtt)
+error[E0275]: overflow evaluating the requirement `{integer}: Step`
+   --> src/main.rs:131:10
+    |
+131 |         .take(5)
+    |          ^^^^
+    |
+    = help: consider increasing the recursion limit by adding a `#![recursion_limit = "256"]` attribute to your crate (`testtt`)
+    = note: required for `std::ops::Range<{integer}>` to implement `Iterator`
+    = note: 128 redundant requirements hidden
+    = note: required for `Take<Take<Take<Take<Take<Take<Take<Take<Take<Take<Take<Take<...>>>>>>>>>>>>` to implement `Iterator`
+    = note: the full name for the type has been written to '/home/bob/tmp/testtt/target/debug/deps/testtt-daecce844d691e2b.long-type-13107368200260991598.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+For more information about this error, try `rustc --explain E0275`.
+error: could not compile `testtt` (bin "testtt") due to 1 previous error

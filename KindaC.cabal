@@ -84,6 +84,7 @@ library
       Stats
       Typecheck
       TypingContext
+      Assertion
   other-modules:
       Paths_KindaC
   hs-source-dirs:

@@ -2,6 +2,7 @@
 # 8008135
 # 8008135
 # 420
+#= envsize f 1
 
 class MyStr
 	do-sth (x _) -> Unit
